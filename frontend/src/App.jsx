@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import RecommendationTable from './components/RecommendationTable';
 import { getRecommendations, getHealth } from './api';
@@ -12,12 +12,7 @@ function App() {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [healthStatus, setHealthStatus] = useState(null);
 
-  useEffect(() => {
-    checkHealth();
-    loadRecommendations();
-  }, [assetType]);
-
-  const checkHealth = async () => {
+  const checkHealth = useCallback(async () => {
     try {
       const health = await getHealth();
       setHealthStatus(health);
@@ -27,9 +22,9 @@ function App() {
     } catch (err) {
       console.error('Health check failed:', err);
     }
-  };
+  }, []);
 
-  const loadRecommendations = async () => {
+  const loadRecommendations = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -44,7 +39,12 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [assetType]);
+
+  useEffect(() => {
+    checkHealth();
+    loadRecommendations();
+  }, [checkHealth, loadRecommendations]);
 
   const handleRefresh = () => {
     loadRecommendations();
