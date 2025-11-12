@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import RecommendationTable from './components/RecommendationTable';
-import { getRecommendations, getHealth } from './api';
+import { getRecommendations, getHealth, API_BASE_URL } from './api';
 import './styles.css';
 
 function App() {
@@ -66,7 +66,7 @@ function App() {
             <div className="error-banner">
               <strong>Error:</strong> {error}
               <br />
-              <small>Make sure the backend API is running at {process.env.REACT_APP_API_URL || 'http://localhost:8000'}</small>
+              <small>Make sure the backend API is reachable at {process.env.REACT_APP_API_URL || API_BASE_URL}</small>
             </div>
           )}
 

@@ -1,5 +1,24 @@
+/**
+ * Resolve the backend base URL.
+ * Defaults to the deployed Render service in production, while keeping the
+ * localhost URL for local development unless REACT_APP_API_URL is provided.
+ */
+function resolveDefaultApiBaseUrl() {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return 'http://localhost:8000/api/v1';
+    }
+  }
+  return 'https://quant-48da.onrender.com/api/v1';
+}
+
+const envApiUrl = process.env.REACT_APP_API_URL
+  ? process.env.REACT_APP_API_URL.trim().replace(/\/$/, '')
+  : '';
+
 /** API client for backend communication */
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
+export const API_BASE_URL = envApiUrl || resolveDefaultApiBaseUrl();
 
 /**
  * Fetch wrapper with error handling
