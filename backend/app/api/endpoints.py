@@ -26,19 +26,22 @@ backtester = Backtester(recommender)
 data_manager = DataManager()
 storage = Storage()
 
-# Track app start time
+# Track app start time and cached metadata without relying on globals
 app_start_time = time.time()
-last_update_time: Optional[datetime] = None
+_state = {
+    "last_update_time": None  # type: Optional[datetime]
+}
 
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint."""
     uptime = time.time() - app_start_time
+    last_update = _state["last_update_time"]
     return HealthResponse(
         status="healthy",
         uptime_seconds=uptime,
-        last_update=last_update_time
+        last_update=last_update
     )
 
 
@@ -49,13 +52,14 @@ async def get_recommendations(
     tickers: Optional[str] = Query(default=None, description="Comma-separated list of tickers to analyze")
 ):
     """Get ranked trading recommendations."""
-    global last_update_time   # <-- FIXED: must be here at top
 
     try:
+        now = datetime.now()
+        last_update_time: Optional[datetime] = _state["last_update_time"]
         # Check cache first
         cached_recs = storage.get_cached_recommendations()
         if cached_recs and last_update_time:
-            age = (datetime.now() - last_update_time).total_seconds()
+            age = (now - last_update_time).total_seconds()
             if age < 3600:
                 recommendations = [
                     Recommendation(**rec) for rec in cached_recs
@@ -87,12 +91,13 @@ async def get_recommendations(
         recommendations = recommendations[:limit]
 
         # Cache results
-        last_update_time = datetime.now()
+        refreshed_at = datetime.now()
+        _state["last_update_time"] = refreshed_at
         storage.cache_recommendations([r.dict() for r in recommendations])
 
         return RecommendationsResponse(
             recommendations=recommendations,
-            last_update=last_update_time,
+            last_update=refreshed_at,
             total_count=len(recommendations)
         )
 
@@ -130,6 +135,7 @@ async def get_asset_detail(ticker: str):
 
         recent_recommendations = []
         cached = storage.get_cached_recommendations()
+        last_update_time: Optional[datetime] = _state["last_update_time"]
         if cached:
             for rec in cached:
                 if rec['ticker'] == ticker:

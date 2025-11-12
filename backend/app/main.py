@@ -19,8 +19,13 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(",")
+# Configure CORS. Allow all origins by default so hosted frontends
+# (e.g., Netlify) can connect; override via CORS_ORIGINS env var.
+cors_origins_env = os.getenv("CORS_ORIGINS")
+if cors_origins_env:
+    cors_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+else:
+    cors_origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,

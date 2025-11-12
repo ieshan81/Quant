@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import RecommendationTable from './components/RecommendationTable';
-import { getRecommendations, getHealth } from './api';
+import { getRecommendations, getHealth, API_BASE_URL } from './api';
 import './styles.css';
 
 function App() {
@@ -12,12 +12,7 @@ function App() {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [healthStatus, setHealthStatus] = useState(null);
 
-  useEffect(() => {
-    checkHealth();
-    loadRecommendations();
-  }, [assetType]);
-
-  const checkHealth = async () => {
+  const checkHealth = useCallback(async () => {
     try {
       const health = await getHealth();
       setHealthStatus(health);
@@ -27,9 +22,9 @@ function App() {
     } catch (err) {
       console.error('Health check failed:', err);
     }
-  };
+  }, []);
 
-  const loadRecommendations = async () => {
+  const loadRecommendations = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -44,7 +39,12 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [assetType]);
+
+  useEffect(() => {
+    checkHealth();
+    loadRecommendations();
+  }, [checkHealth, loadRecommendations]);
 
   const handleRefresh = () => {
     loadRecommendations();
@@ -66,7 +66,7 @@ function App() {
             <div className="error-banner">
               <strong>Error:</strong> {error}
               <br />
-              <small>Make sure the backend API is running at {process.env.REACT_APP_API_URL || 'http://localhost:8000'}</small>
+              <small>Make sure the backend API is reachable at {process.env.REACT_APP_API_URL || API_BASE_URL}</small>
             </div>
           )}
 
