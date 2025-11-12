@@ -1,0 +1,83 @@
+[
+  {
+    "ticker": "AAPL",
+    "asset_type": "stocks",
+    "score": 1.245,
+    "confidence": 78.5,
+    "recommendation": "BUY",
+    "volatility": 0.0234,
+    "contributing_signals": {
+      "ma_crossover": 1.12,
+      "rsi_mean_reversion": 0.85,
+      "multi_factor": 1.45,
+      "ml_strategy": 0.32
+    },
+    "current_price": 205.80,
+    "price_change_pct": 2.34
+  },
+  {
+    "ticker": "MSFT",
+    "asset_type": "stocks",
+    "score": 0.987,
+    "confidence": 72.3,
+    "recommendation": "BUY",
+    "volatility": 0.0198,
+    "contributing_signals": {
+      "ma_crossover": 0.95,
+      "rsi_mean_reversion": 0.72,
+      "multi_factor": 1.18,
+      "ml_strategy": 0.28
+    },
+    "current_price": 428.50,
+    "price_change_pct": 1.87
+  },
+  {
+    "ticker": "GOOGL",
+    "asset_type": "stocks",
+    "score": 0.234,
+    "confidence": 45.2,
+    "recommendation": "HOLD",
+    "volatility": 0.0287,
+    "contributing_signals": {
+      "ma_crossover": 0.15,
+      "rsi_mean_reversion": -0.12,
+      "multi_factor": 0.42,
+      "ml_strategy": 0.18
+    },
+    "current_price": 152.30,
+    "price_change_pct": -0.45
+  },
+  {
+    "ticker": "TSLA",
+    "asset_type": "stocks",
+    "score": -0.678,
+    "confidence": 65.8,
+    "recommendation": "SELL",
+    "volatility": 0.0456,
+    "contributing_signals": {
+      "ma_crossover": -0.82,
+      "rsi_mean_reversion": -0.45,
+      "multi_factor": -0.91,
+      "ml_strategy": -0.35
+    },
+    "current_price": 245.60,
+    "price_change_pct": -3.21
+  },
+  {
+    "ticker": "NVDA",
+    "asset_type": "stocks",
+    "score": 0.892,
+    "confidence": 69.4,
+    "recommendation": "BUY",
+    "volatility": 0.0312,
+    "contributing_signals": {
+      "ma_crossover": 0.78,
+      "rsi_mean_reversion": 0.65,
+      "multi_factor": 1.05,
+      "ml_strategy": 0.42
+    },
+    "current_price": 875.20,
+    "price_change_pct": 4.12
+  }
+]
+

@@ -1,0 +1,290 @@
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 2rem;
+  animation: fadeIn 0.2s;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  max-width: 900px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  animation: slideUp 0.3s;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid #e9ecef;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.close-button {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+  font-size: 2rem;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.close-button:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: rotate(90deg);
+}
+
+.modal-body {
+  padding: 2rem;
+}
+
+.loading,
+.error {
+  text-align: center;
+  padding: 3rem;
+  color: #6c757d;
+}
+
+.error {
+  color: #dc3545;
+}
+
+.asset-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+  padding: 1.5rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+}
+
+.summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.summary-item label {
+  font-size: 0.85rem;
+  color: #6c757d;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.summary-item .price-large {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #212529;
+}
+
+.strategy-signals {
+  margin-bottom: 2rem;
+}
+
+.strategy-signals h3 {
+  margin-bottom: 1rem;
+  color: #212529;
+}
+
+.signals-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.signal-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: white;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+}
+
+.signal-name {
+  font-size: 0.9rem;
+  color: #495057;
+}
+
+.signal-score {
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.signal-score.positive {
+  color: #28a745;
+}
+
+.signal-score.negative {
+  color: #dc3545;
+}
+
+.price-history {
+  margin-bottom: 2rem;
+}
+
+.price-history h3 {
+  margin-bottom: 1rem;
+  color: #212529;
+}
+
+.history-chart {
+  background: white;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 1rem;
+  min-height: 200px;
+}
+
+.simple-chart {
+  width: 100%;
+}
+
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.chart-price {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #212529;
+}
+
+.chart-change {
+  font-weight: 600;
+}
+
+.chart-change.positive {
+  color: #28a745;
+}
+
+.chart-change.negative {
+  color: #dc3545;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 150px;
+}
+
+.no-chart-data {
+  text-align: center;
+  padding: 3rem;
+  color: #6c757d;
+}
+
+.recent-recommendations h3 {
+  margin-bottom: 1rem;
+  color: #212529;
+}
+
+.recommendations-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.recommendations-table th,
+.recommendations-table td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.recommendations-table th {
+  background: #f8f9fa;
+  font-weight: 600;
+  color: #495057;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+}
+
+.badge {
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.badge-buy {
+  background: #d4edda;
+  color: #155724;
+}
+
+.badge-sell {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.badge-hold {
+  background: #fff3cd;
+  color: #856404;
+}
+
+@media (max-width: 768px) {
+  .modal-content {
+    max-width: 100%;
+    margin: 1rem;
+  }
+
+  .modal-header,
+  .modal-body {
+    padding: 1rem;
+  }
+
+  .asset-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
