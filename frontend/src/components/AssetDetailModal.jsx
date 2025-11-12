@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { getAssetDetail } from '../api';
 import './AssetDetailModal.css';
 
@@ -7,13 +7,7 @@ function AssetDetailModal({ ticker, onClose }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    if (ticker) {
-      loadAssetData();
-    }
-  }, [ticker]);
-
-  const loadAssetData = async () => {
+  const loadAssetData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -24,7 +18,13 @@ function AssetDetailModal({ ticker, onClose }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [ticker]);
+
+  useEffect(() => {
+    if (ticker) {
+      loadAssetData();
+    }
+  }, [ticker, loadAssetData]);
 
   const formatPrice = (price) => {
     if (!price) return 'N/A';
