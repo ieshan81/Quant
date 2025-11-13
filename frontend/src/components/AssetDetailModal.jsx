@@ -1,6 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import Plot from 'react-plotly.js';
-import clsx from 'clsx';
+import React, { useState, useEffect, useCallback } from 'react';
 import { getAssetDetail } from '../api';
 import styles from './AssetDetailModal.module.css';
 
@@ -14,12 +12,10 @@ const timeframes = [
 
 function AssetDetailModal({ ticker, onClose }) {
   const [assetData, setAssetData] = useState(null);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [activeTimeframe, setActiveTimeframe] = useState('3M');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const load = useCallback(async () => {
-    if (!ticker) return;
+  const loadAssetData = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
@@ -37,30 +33,10 @@ function AssetDetailModal({ ticker, onClose }) {
   }, [ticker]);
 
   useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    if (!ticker) {
-      setAssetData(null);
-      setError('');
+    if (ticker) {
+      loadAssetData();
     }
-  }, [ticker]);
-
-  const timeframeSeries = useMemo(() => {
-    if (!assetData?.timeframes) return [];
-    return assetData.timeframes[activeTimeframe] || [];
-  }, [assetData, activeTimeframe]);
-
-  const chartData = useMemo(() => {
-    if (!timeframeSeries || timeframeSeries.length === 0) return null;
-
-    const dates = timeframeSeries.map((item) => item.date);
-    const open = timeframeSeries.map((item) => item.open);
-    const high = timeframeSeries.map((item) => item.high);
-    const low = timeframeSeries.map((item) => item.low);
-    const close = timeframeSeries.map((item) => item.close);
-    const volume = timeframeSeries.map((item) => item.volume);
+  }, [ticker, loadAssetData]);
 
     const dateSet = new Set(dates);
     const ma50 = (assetData?.indicators?.ma50 || []).filter((entry) => dateSet.has(entry.date));
