@@ -1,4 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import Plot from 'react-plotly.js';
+import clsx from 'clsx';
+
 import { getAssetDetail } from '../api';
 import styles from './AssetDetailModal.module.css';
 
@@ -13,7 +16,8 @@ const timeframes = [
 function AssetDetailModal({ ticker, onClose }) {
   const [assetData, setAssetData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState('');
+  const [activeTimeframe, setActiveTimeframe] = useState(timeframes[0].value);
 
   const loadAssetData = useCallback(async () => {
     setLoading(true);
@@ -21,8 +25,11 @@ function AssetDetailModal({ ticker, onClose }) {
     try {
       const response = await getAssetDetail(ticker);
       setAssetData(response);
-      if (response.timeframes && response.timeframes['3M']) {
-        setActiveTimeframe('3M');
+      if (response.timeframes) {
+        const preferred = response.timeframes['3M'] ? '3M' : Object.keys(response.timeframes)[0];
+        if (preferred) {
+          setActiveTimeframe(preferred);
+        }
       }
     } catch (err) {
       console.error('Asset detail error', err);
@@ -37,6 +44,23 @@ function AssetDetailModal({ ticker, onClose }) {
       loadAssetData();
     }
   }, [ticker, loadAssetData]);
+
+  const timeframeSeries = useMemo(() => {
+    if (!assetData?.timeframes) return [];
+    return assetData.timeframes[activeTimeframe] || [];
+  }, [assetData, activeTimeframe]);
+
+  const chartData = useMemo(() => {
+    if (!timeframeSeries || timeframeSeries.length === 0) {
+      return null;
+    }
+
+    const dates = timeframeSeries.map((item) => item.date);
+    const open = timeframeSeries.map((item) => item.open);
+    const high = timeframeSeries.map((item) => item.high);
+    const low = timeframeSeries.map((item) => item.low);
+    const close = timeframeSeries.map((item) => item.close);
+    const volume = timeframeSeries.map((item) => item.volume ?? 0);
 
     const dateSet = new Set(dates);
     const ma50 = (assetData?.indicators?.ma50 || []).filter((entry) => dateSet.has(entry.date));
@@ -87,7 +111,9 @@ function AssetDetailModal({ ticker, onClose }) {
             <div className={styles.summaryRow}>
               <div className={styles.priceCard}>
                 <span className={styles.priceLabel}>Current Price</span>
-                <span className={styles.priceValue}>${assetData.current_price.toFixed(2)}</span>
+                <span className={styles.priceValue}>
+                  {assetData?.current_price != null ? `$${assetData.current_price.toFixed(2)}` : '—'}
+                </span>
               </div>
               <div className={styles.recommendationBadge}>
                 {assetData.recommendation}
@@ -327,7 +353,9 @@ function AssetDetailModal({ ticker, onClose }) {
                       <tr key={idx}>
                         <td>{new Date(item.date).toLocaleString()}</td>
                         <td>
-                          <span className={clsx(styles.badge, styles[`badge${item.recommendation}`])}>{item.recommendation}</span>
+                          <span className={clsx(styles.badge, styles[`badge${item.recommendation}`])}>
+                            {item.recommendation}
+                          </span>
                         </td>
                         <td>{item.score.toFixed(3)}</td>
                         <td>{item.confidence.toFixed(0)}%</td>
