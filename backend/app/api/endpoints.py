@@ -9,12 +9,15 @@ import pandas as pd
 from app.models.schemas import (
     RecommendationsResponse, Recommendation, AssetDetail,
     BacktestRequest, BacktestResult, HealthResponse,
-    StrategiesResponse, StrategyInfo, AssetType
+    StrategiesResponse, StrategyInfo, AssetType,
+    LivePriceResponse, SearchResult, AnalyticsResponse, AnalyticsSummary
 )
 from app.services.recommender import Recommender
 from app.services.backtester import Backtester
 from app.services.data_manager import DataManager
 from app.db.storage import Storage
+from app.services.analytics import AnalyticsService
+from app.utils.indicators import calculate_moving_average, calculate_rsi, calculate_macd
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +28,7 @@ recommender = Recommender()
 backtester = Backtester(recommender)
 data_manager = DataManager()
 storage = Storage()
+analytics_service = AnalyticsService(data_manager)
 
 # Track app start time and cached metadata without relying on globals
 app_start_time = time.time()
@@ -111,7 +115,7 @@ async def get_asset_detail(ticker: str):
     """Get detailed information for a specific asset."""
     try:
         end_date = datetime.now().strftime('%Y-%m-%d')
-        start_date = (datetime.now() - pd.Timedelta(days=60)).strftime('%Y-%m-%d')
+        start_date = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
 
         data = data_manager.fetch_historical(ticker, start_date, end_date)
 
@@ -123,7 +127,7 @@ async def get_asset_detail(ticker: str):
             raise HTTPException(status_code=500, detail=f"Could not generate recommendation for {ticker}")
 
         price_history = []
-        for date, row in data.tail(60).iterrows():
+        for date, row in data.tail(120).iterrows():
             price_history.append({
                 'date': date.isoformat(),
                 'open': float(row['open']),
@@ -132,6 +136,14 @@ async def get_asset_detail(ticker: str):
                 'close': float(row['close']),
                 'volume': float(row['volume'])
             })
+
+        timeframes = {
+            '1D': data_manager.get_timeframe_history(ticker, 1, '1h'),
+            '1W': data_manager.get_timeframe_history(ticker, 7, '1h'),
+            '1M': data_manager.get_timeframe_history(ticker, 30, '1d'),
+            '3M': data_manager.get_timeframe_history(ticker, 90, '1d'),
+            '1Y': data_manager.get_timeframe_history(ticker, 365, '1wk'),
+        }
 
         recent_recommendations = []
         cached = storage.get_cached_recommendations()
@@ -155,17 +167,46 @@ async def get_asset_detail(ticker: str):
         elif '=X' in ticker:
             asset_type = AssetType.FOREX
 
+        close_series = data['close']
+        indicators = {}
+        try:
+            ma50 = calculate_moving_average(close_series, 50)
+            ma200 = calculate_moving_average(close_series, 200)
+            rsi_series = calculate_rsi(close_series, 14)
+            macd_df = calculate_macd(close_series)
+            indicators = {
+                'ma50': [{"date": idx.isoformat(), "value": float(val)} for idx, val in ma50.dropna().items()],
+                'ma200': [{"date": idx.isoformat(), "value": float(val)} for idx, val in ma200.dropna().items()],
+                'rsi': [{"date": idx.isoformat(), "value": float(val)} for idx, val in rsi_series.dropna().items()],
+                'macd': [
+                    {
+                        "date": idx.isoformat(),
+                        "macd": float(row['macd']),
+                        "signal": float(row['signal']),
+                        "hist": float(row['hist']),
+                    }
+                    for idx, row in macd_df.dropna().iterrows()
+                ],
+            }
+        except Exception as indicator_error:
+            logger.warning("Failed to compute indicators for %s: %s", ticker, indicator_error)
+            indicators = {}
+
         return AssetDetail(
             ticker=ticker,
             asset_type=asset_type,
             current_price=current_price,
+            recommendation=recommendation.recommendation,
             price_history=price_history,
+            timeframes=timeframes,
             strategy_signals=recommendation.contributing_signals,
             recent_recommendations=recent_recommendations,
             metadata={
                 'volatility': recommendation.volatility,
                 'last_update': last_update_time.isoformat() if last_update_time else None
-            }
+            },
+            indicators=indicators,
+            position_size=recommendation.position_size,
         )
 
     except HTTPException:
@@ -225,4 +266,59 @@ async def get_strategies():
     return StrategiesResponse(
         strategies=strategies,
         default_weights=default_weights
+    )
+
+
+@router.get("/price/live/{ticker}", response_model=LivePriceResponse)
+async def get_live_price(ticker: str):
+    """Return a live quote snapshot."""
+    quote = data_manager.get_live_quote(ticker)
+    if quote.get('price') is None:
+        raise HTTPException(status_code=404, detail=f"Live quote unavailable for {ticker}")
+
+    return LivePriceResponse(
+        ticker=ticker.upper(),
+        price=quote['price'],
+        bid=quote.get('bid'),
+        ask=quote.get('ask'),
+        change_pct=quote.get('change_pct'),
+        volume_24h=quote.get('volume_24h'),
+        timestamp=quote.get('timestamp', datetime.utcnow())
+    )
+
+
+@router.get("/search/{query}", response_model=SearchResult)
+async def search_symbol(query: str):
+    """Validate ticker and surface detected asset type."""
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    result = data_manager.search_symbol(query)
+    return SearchResult(
+        symbol=result['symbol'],
+        name=result.get('name'),
+        asset_type=result['asset_type']
+    )
+
+
+@router.get("/analytics/portfolio", response_model=AnalyticsResponse)
+async def get_portfolio_analytics(
+    asset_type: AssetType = Query(default=AssetType.STOCKS),
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    """Simulate portfolio analytics based on current recommendations."""
+
+    base_tickers = {
+        AssetType.STOCKS: ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'TSLA'],
+        AssetType.CRYPTO: ['BTC-USD', 'ETH-USD', 'SOL-USD', 'ADA-USD', 'LTC-USD'],
+        AssetType.FOREX: ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X'],
+    }
+
+    tickers = base_tickers.get(asset_type, base_tickers[AssetType.STOCKS])
+    recommendations = recommender.generate_recommendations(tickers, asset_type)[:limit]
+    summary = analytics_service.build_summary(recommendations)
+
+    return AnalyticsResponse(
+        generated_at=datetime.utcnow(),
+        summary=AnalyticsSummary(**summary)
     )

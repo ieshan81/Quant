@@ -56,6 +56,7 @@ function App() {
     console.log('Asset clicked:', ticker);
   };
 
+function App() {
   return (
     <div className="app">
       <Header lastUpdate={lastUpdate} onRefresh={handleRefresh} />
@@ -92,50 +93,42 @@ function App() {
               </select>
             </div>
           </div>
+          <div className={styles.environment}>
+            <span className={styles.envLabel}>API</span>
+            <span className={styles.envValue}>{API_BASE_URL}</span>
+          </div>
+        </header>
 
-          {loading ? (
-            <div className="loading-container">
-              <div className="spinner"></div>
-              <p>Loading recommendations...</p>
-            </div>
-          ) : (
-            <RecommendationTable
-              recommendations={recommendations}
-              assetType={assetType}
-              onAssetClick={handleAssetClick}
-            />
-          )}
+        <nav className={styles.navbar}>
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) => clsx(styles.navLink, isActive && styles.navLinkActive)}
+          >
+            Dashboard
+          </NavLink>
+          <NavLink
+            to="/analytics"
+            className={({ isActive }) => clsx(styles.navLink, isActive && styles.navLinkActive)}
+          >
+            Analytics
+          </NavLink>
+        </nav>
 
-          {recommendations.length > 0 && (
-            <div className="summary-stats">
-              <div className="stat-card">
-                <div className="stat-label">Total Recommendations</div>
-                <div className="stat-value">{recommendations.length}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Buy Signals</div>
-                <div className="stat-value buy">{recommendations.filter(r => r.recommendation === 'BUY').length}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Sell Signals</div>
-                <div className="stat-value sell">{recommendations.filter(r => r.recommendation === 'SELL').length}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Hold Signals</div>
-                <div className="stat-value hold">{recommendations.filter(r => r.recommendation === 'HOLD').length}</div>
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
+        <main className={styles.mainContent}>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/analytics" element={<AnalyticsPage />} />
+          </Routes>
+        </main>
 
-      <footer className="footer">
-        <p>Quantitative Trading Recommendation System v1.0.0</p>
-        <p>For informational purposes only. Not financial advice.</p>
-      </footer>
-    </div>
+        <footer className={styles.footer}>
+          <div>© {new Date().getFullYear()} Quant Platform. All rights reserved.</div>
+          <div className={styles.disclaimer}>Trade responsibly. Educational purposes only.</div>
+        </footer>
+      </div>
+    </Router>
   );
 }
 
 export default App;
-

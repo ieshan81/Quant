@@ -1,0 +1,208 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.filterGroup {
+  display: inline-flex;
+  background: rgba(22, 27, 34, 0.8);
+  border-radius: 999px;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.filterButton {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.filterButton:hover {
+  color: var(--text-primary);
+}
+
+.filterActive {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+  color: #01120c;
+}
+
+.filterBadge {
+  background: rgba(0, 0, 0, 0.2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.assetLabel {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.tableScroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+}
+
+.table thead tr {
+  text-align: left;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.table th,
+.table td {
+  padding: 14px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.row {
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.row:hover {
+  background: rgba(0, 255, 149, 0.05);
+}
+
+.tickerCell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tickerSymbol {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.sparkline {
+  width: 120px;
+  height: 40px;
+}
+
+.sparklineEmpty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.badge {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.badgeBUY {
+  background: rgba(0, 255, 149, 0.18);
+  color: var(--accent-primary);
+}
+
+.badgeSELL {
+  background: rgba(255, 94, 91, 0.18);
+  color: var(--danger);
+}
+
+.badgeHOLD {
+  background: rgba(0, 200, 179, 0.18);
+  color: var(--accent-secondary);
+}
+
+.confidenceBar {
+  position: relative;
+  background: rgba(48, 54, 61, 0.6);
+  border-radius: 999px;
+  overflow: hidden;
+  height: 12px;
+}
+
+.confidenceFill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+}
+
+.confidenceLabel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  color: #01120c;
+  font-weight: 600;
+}
+
+.priceCell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quoteMeta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.positionCell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.positionHeadline {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.positionMeta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.loadingCell,
+.emptyCell {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-muted);
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.positive {
+  color: var(--accent-primary);
+}
+
+.negative {
+  color: var(--danger);
+}

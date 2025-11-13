@@ -1,17 +1,23 @@
 """Trading strategy implementations."""
 import pandas as pd
 import numpy as np
+import pandas as pd
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 import logging
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 import warnings
+
 warnings.filterwarnings('ignore')
 
 from app.utils.indicators import (
-    calculate_rsi, calculate_moving_average, 
-    calculate_returns, normalize_to_zscore
+    calculate_rsi,
+    calculate_moving_average,
+    calculate_returns,
+    normalize_to_zscore,
+    calculate_macd,
+    calculate_atr,
 )
 
 logger = logging.getLogger(__name__)
@@ -373,5 +379,67 @@ class MLStrategy(BaseStrategy):
             
         except Exception as e:
             logger.error(f"Error calculating ML signal: {e}")
+            return 0.0
+
+
+class VolumeAnomalyStrategy(BaseStrategy):
+    """Detects unusual volume spikes indicating potential breakouts."""
+
+    def __init__(self, lookback: int = 30, weight: float = 0.8):
+        super().__init__("volume_anomaly", weight)
+        self.lookback = lookback
+
+    def calculate_signal(self, data: pd.DataFrame, **kwargs) -> float:
+        if len(data) < self.lookback:
+            return 0.0
+
+        try:
+            volume = data["volume"]
+            recent_volume = volume.iloc[-1]
+            baseline = volume.iloc[-self.lookback : -1]
+            if baseline.empty or baseline.mean() == 0:
+                return 0.0
+
+            zscore = (recent_volume - baseline.mean()) / (baseline.std() + 1e-8)
+            score = np.clip(zscore / 3.0, -2.0, 2.0)
+            self.update_historical(score)
+            return score
+        except Exception as exc:
+            logger.error("Error calculating volume anomaly signal: %s", exc)
+            return 0.0
+
+
+class VolatilityBreakoutStrategy(BaseStrategy):
+    """ATR-based breakout detection strategy."""
+
+    def __init__(self, atr_window: int = 14, breakout_multiplier: float = 1.5, weight: float = 1.0):
+        super().__init__("volatility_breakout", weight)
+        self.atr_window = atr_window
+        self.breakout_multiplier = breakout_multiplier
+
+    def calculate_signal(self, data: pd.DataFrame, **kwargs) -> float:
+        if len(data) < self.atr_window + 2:
+            return 0.0
+
+        try:
+            atr = calculate_atr(data, self.atr_window)
+            if atr.empty or np.isnan(atr.iloc[-1]):
+                return 0.0
+
+            recent_close = data["close"].iloc[-1]
+            prev_close = data["close"].iloc[-2]
+            threshold = atr.iloc[-1] * self.breakout_multiplier
+            diff = recent_close - prev_close
+
+            if abs(diff) < threshold:
+                score = 0.0
+            else:
+                score = np.sign(diff) * (abs(diff) / (threshold + 1e-8))
+
+            score = np.clip(score, -2.5, 2.5)
+            self.update_historical(score)
+            return score
+        except Exception as exc:
+            logger.error("Error calculating volatility breakout signal: %s", exc)
             return 0.0
 

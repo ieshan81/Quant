@@ -7,10 +7,15 @@ from datetime import datetime
 
 from app.services.data_manager import DataManager
 from app.services.strategies import (
-    BaseStrategy, MovingAverageCrossoverStrategy, 
-    RSIMeanReversionStrategy, MultiFactorStrategy, MLStrategy
+    BaseStrategy,
+    MovingAverageCrossoverStrategy,
+    RSIMeanReversionStrategy,
+    MultiFactorStrategy,
+    MLStrategy,
+    VolumeAnomalyStrategy,
+    VolatilityBreakoutStrategy,
 )
-from app.utils.indicators import calculate_returns, calculate_volatility
+from app.utils.indicators import calculate_returns, calculate_volatility, calculate_atr
 from app.models.schemas import Recommendation, RecommendationType, AssetType
 
 logger = logging.getLogger(__name__)
@@ -37,7 +42,9 @@ class Recommender:
             'ma_crossover': 1.0,
             'rsi_mean_reversion': 1.0,
             'multi_factor': 1.0,
-            'ml_strategy': 0.5
+            'ml_strategy': 0.5,
+            'volume_anomaly': 0.8,
+            'volatility_breakout': 1.0,
         }
         self.threshold_buy = threshold_buy
         self.threshold_sell = threshold_sell
@@ -52,7 +59,9 @@ class Recommender:
             MovingAverageCrossoverStrategy(weight=self.strategy_weights.get('ma_crossover', 1.0)),
             RSIMeanReversionStrategy(weight=self.strategy_weights.get('rsi_mean_reversion', 1.0)),
             MultiFactorStrategy(weight=self.strategy_weights.get('multi_factor', 1.0)),
-            MLStrategy(weight=self.strategy_weights.get('ml_strategy', 0.5))
+            MLStrategy(weight=self.strategy_weights.get('ml_strategy', 0.5)),
+            VolumeAnomalyStrategy(weight=self.strategy_weights.get('volume_anomaly', 0.8)),
+            VolatilityBreakoutStrategy(weight=self.strategy_weights.get('volatility_breakout', 1.0)),
         ]
     
     def _calculate_volatility_penalty(self, data: pd.DataFrame, window: int = 20) -> float:
@@ -146,10 +155,10 @@ class Recommender:
     
     def _map_to_recommendation(self, final_score: float) -> RecommendationType:
         """Map final score to recommendation type.
-        
+
         Args:
             final_score: Aggregated final score
-            
+
         Returns:
             Recommendation type
         """
@@ -159,6 +168,45 @@ class Recommender:
             return RecommendationType.SELL
         else:
             return RecommendationType.HOLD
+
+    def _calculate_position_size(
+        self,
+        current_price: Optional[float],
+        recommendation_type: RecommendationType,
+        atr_value: Optional[float],
+        risk_pct: float = 1.0,
+        equity: float = 10000.0,
+    ) -> Optional[Dict[str, float]]:
+        """Derive position sizing guidance using ATR-derived stops."""
+
+        if current_price is None or recommendation_type == RecommendationType.HOLD:
+            return None
+
+        if atr_value is None or np.isnan(atr_value) or atr_value <= 0:
+            return None
+
+        risk_fraction = (risk_pct / 100.0) if risk_pct > 1 else (risk_pct / 100.0)
+
+        if recommendation_type == RecommendationType.BUY:
+            stop_loss = max(current_price - atr_value * 1.5, 0.0)
+            take_profit = current_price + atr_value * 3.0
+        else:
+            stop_loss = current_price + atr_value * 1.5
+            take_profit = max(current_price - atr_value * 3.0, 0.0)
+
+        stop_distance = abs(current_price - stop_loss)
+        if stop_distance <= 0:
+            return None
+
+        capital_at_risk = equity * risk_fraction
+        size = capital_at_risk / stop_distance
+
+        return {
+            "risk_pct": float(risk_pct),
+            "recommended_size": float(max(size, 0.0)),
+            "stop_loss": float(stop_loss),
+            "take_profit": float(take_profit),
+        }
     
     def generate_recommendation(self, ticker: str, asset_type: AssetType = AssetType.STOCKS,
                                lookback_days: int = 252) -> Optional[Recommendation]:
@@ -211,11 +259,23 @@ class Recommender:
             
             # Calculate confidence
             confidence = self._calculate_confidence(volatility_adjusted_score, strategy_scores, volatility)
-            
+
             # Get current price and change
             current_price = self.data_manager.get_latest_price(ticker)
             price_change_pct = self.data_manager.get_price_change_pct(ticker, days=1)
-            
+
+            atr_series = calculate_atr(data, 14)
+            atr_value = float(atr_series.iloc[-1]) if not atr_series.empty and not pd.isna(atr_series.iloc[-1]) else None
+            position_guidance = self._calculate_position_size(
+                current_price=current_price,
+                recommendation_type=recommendation_type,
+                atr_value=atr_value,
+                risk_pct=1.0,
+                equity=10000.0,
+            )
+
+            sparkline = [float(val) for val in data['close'].tail(20).tolist()]
+
             return Recommendation(
                 ticker=ticker,
                 asset_type=asset_type,
@@ -225,7 +285,9 @@ class Recommender:
                 volatility=float(volatility),
                 contributing_signals={k: float(v) for k, v in strategy_scores.items()},
                 current_price=current_price,
-                price_change_pct=price_change_pct
+                price_change_pct=price_change_pct,
+                position_size=position_guidance,
+                sparkline=sparkline,
             )
             
         except Exception as e:

@@ -24,7 +24,7 @@ export const API_BASE_URL = envApiUrl || resolveDefaultApiBaseUrl();
  * Fetch wrapper with error handling
  */
 async function fetchAPI(endpoint, options = {}) {
-  const url = `${API_BASE_URL}${endpoint}`;
+  const url = `${API_V1}${endpoint}`;
   
   try {
     const response = await fetch(url, {
@@ -81,6 +81,10 @@ export async function getAssetDetail(ticker) {
   return fetchAPI(`/asset/${ticker}`);
 }
 
+export async function getLivePrice(ticker) {
+  return fetchAPI(`/price/live/${ticker}`);
+}
+
 /**
  * Run backtest
  * @param {Object} backtestParams - Backtest parameters
@@ -97,5 +101,14 @@ export async function runBacktest(backtestParams) {
  */
 export async function getStrategies() {
   return fetchAPI('/strategies');
+}
+
+export async function searchTicker(query) {
+  return fetchAPI(`/search/${encodeURIComponent(query)}`);
+}
+
+export async function getPortfolioAnalytics(assetType = 'stocks', limit = 10) {
+  const params = new URLSearchParams({ asset_type: assetType, limit: limit.toString() });
+  return fetchAPI(`/analytics/portfolio?${params.toString()}`);
 }
 
