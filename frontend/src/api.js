@@ -24,7 +24,7 @@ export const API_BASE_URL = envApiUrl || resolveDefaultApiBaseUrl();
  * Fetch wrapper with error handling
  */
 async function fetchAPI(endpoint, options = {}) {
-  const url = `${API_V1}${endpoint}`;
+  const url = `${API_BASE_URL}${endpoint}`;
   
   try {
     const response = await fetch(url, {
