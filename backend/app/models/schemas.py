@@ -37,6 +37,11 @@ class Recommendation(BaseModel):
     contributing_signals: Dict[str, float] = Field(..., description="Per-strategy scores")
     current_price: Optional[float] = None
     price_change_pct: Optional[float] = None
+    position_size: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Position sizing guidance including risk_pct, recommended_size, stop_loss, and take_profit",
+    )
+    sparkline: Optional[List[float]] = Field(default=None, description="Short-term price series for sparkline display")
 
 
 class RecommendationsResponse(BaseModel):
@@ -51,10 +56,14 @@ class AssetDetail(BaseModel):
     ticker: str
     asset_type: AssetType
     current_price: float
+    recommendation: RecommendationType
     price_history: List[Dict[str, Any]]  # [{date, open, high, low, close, volume}, ...]
+    timeframes: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
     strategy_signals: Dict[str, float]
     recent_recommendations: List[Dict[str, Any]]
     metadata: Optional[Dict[str, Any]] = None
+    indicators: Optional[Dict[str, Any]] = None
+    position_size: Optional[Dict[str, Any]] = None
 
 
 class BacktestRequest(BaseModel):
@@ -89,6 +98,38 @@ class HealthResponse(BaseModel):
     uptime_seconds: float
     last_update: Optional[datetime]
     version: str = "1.0.0"
+
+
+class LivePriceResponse(BaseModel):
+    """Live price data payload."""
+    ticker: str
+    price: float
+    bid: Optional[float]
+    ask: Optional[float]
+    change_pct: Optional[float]
+    volume_24h: Optional[float]
+    timestamp: datetime
+
+
+class SearchResult(BaseModel):
+    """Search result describing detected asset metadata."""
+    symbol: str
+    name: Optional[str]
+    asset_type: AssetType
+
+
+class AnalyticsSummary(BaseModel):
+    """Portfolio analytics summary."""
+    equity_curve: List[Dict[str, Any]]
+    performance_metrics: Dict[str, float]
+    allocation: Dict[str, float]
+    win_loss: Dict[str, float]
+
+
+class AnalyticsResponse(BaseModel):
+    """Analytics endpoint payload."""
+    generated_at: datetime
+    summary: AnalyticsSummary
 
 
 class StrategyInfo(BaseModel):

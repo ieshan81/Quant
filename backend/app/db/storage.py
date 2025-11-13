@@ -54,10 +54,30 @@ class Storage:
                 recommendation TEXT,
                 volatility REAL,
                 contributing_signals TEXT,
+                current_price REAL,
+                price_change_pct REAL,
+                position_size TEXT,
+                sparkline TEXT,
                 cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
+        # Ensure new columns exist when upgrading from previous schema versions
+        cursor.execute("PRAGMA table_info(recommendations_cache)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        migrations = [
+            ("current_price", "ALTER TABLE recommendations_cache ADD COLUMN current_price REAL"),
+            ("price_change_pct", "ALTER TABLE recommendations_cache ADD COLUMN price_change_pct REAL"),
+            ("position_size", "ALTER TABLE recommendations_cache ADD COLUMN position_size TEXT"),
+            ("sparkline", "ALTER TABLE recommendations_cache ADD COLUMN sparkline TEXT"),
+        ]
+        for column, statement in migrations:
+            if column not in existing_columns:
+                try:
+                    cursor.execute(statement)
+                except Exception as exc:
+                    logger.warning("Failed to migrate column %s: %s", column, exc)
+
         # Cache metadata
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS cache_metadata (
@@ -165,10 +185,16 @@ class Storage:
             
             # Insert new recommendations
             for rec in recommendations:
+                position_payload = rec.get('position_size') if isinstance(rec, dict) else None
+                if position_payload:
+                    position_json = json.dumps(position_payload)
+                else:
+                    position_json = None
+
                 cursor.execute("""
                     INSERT INTO recommendations_cache
-                    (ticker, asset_type, score, confidence, recommendation, volatility, contributing_signals)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (ticker, asset_type, score, confidence, recommendation, volatility, contributing_signals, current_price, price_change_pct, position_size, sparkline)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     rec['ticker'],
                     rec['asset_type'],
@@ -176,7 +202,11 @@ class Storage:
                     rec['confidence'],
                     rec['recommendation'],
                     rec['volatility'],
-                    json.dumps(rec['contributing_signals'])
+                    json.dumps(rec['contributing_signals']),
+                    rec.get('current_price'),
+                    rec.get('price_change_pct'),
+                    position_json,
+                    json.dumps(rec.get('sparkline')) if rec.get('sparkline') else None,
                 ))
             
             # Update last_update timestamp
@@ -201,7 +231,7 @@ class Storage:
             cursor = conn.cursor()
             
             cursor.execute("""
-                SELECT ticker, asset_type, score, confidence, recommendation, volatility, contributing_signals
+                SELECT ticker, asset_type, score, confidence, recommendation, volatility, contributing_signals, current_price, price_change_pct, position_size, sparkline
                 FROM recommendations_cache
                 ORDER BY score DESC
             """)
@@ -221,7 +251,11 @@ class Storage:
                     'confidence': row[3],
                     'recommendation': row[4],
                     'volatility': row[5],
-                    'contributing_signals': json.loads(row[6])
+                    'contributing_signals': json.loads(row[6]),
+                    'current_price': row[7],
+                    'price_change_pct': row[8],
+                    'position_size': json.loads(row[9]) if row[9] else None,
+                    'sparkline': json.loads(row[10]) if row[10] else None,
                 })
             
             return recommendations

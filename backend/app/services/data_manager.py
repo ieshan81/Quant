@@ -3,12 +3,14 @@ import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 import logging
 import time
 
 from app.db.storage import Storage
+from app.models.schemas import AssetType
+from app.utils.assets import CRYPTO_TOP_SYMBOLS
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +37,7 @@ class DataManager:
                 time.sleep(self.rate_limit_delay - elapsed)
         self.last_fetch_time[source] = time.time()
     
-    def fetch_historical(self, ticker: str, start: Optional[str] = None, 
+    def fetch_historical(self, ticker: str, start: Optional[str] = None,
                         end: Optional[str] = None, frequency: str = '1d') -> pd.DataFrame:
         """Fetch historical OHLCV data for a ticker.
         
@@ -88,7 +90,7 @@ class DataManager:
         except Exception as e:
             logger.error(f"Error fetching historical data for {ticker}: {e}")
             return pd.DataFrame()
-    
+
     def get_latest_price(self, ticker: str) -> Optional[float]:
         """Get the latest price for a ticker.
         
@@ -130,6 +132,48 @@ class DataManager:
         except Exception as e:
             logger.error(f"Error fetching latest price for {ticker}: {e}")
             return None
+
+    def get_live_quote(self, ticker: str) -> Dict[str, Optional[float]]:
+        """Fetch real-time style quote snapshot."""
+
+        try:
+            self._rate_limit("yfinance")
+            ticker_obj = yf.Ticker(ticker)
+            info = ticker_obj.fast_info if hasattr(ticker_obj, "fast_info") else {}
+            price = None
+            bid = None
+            ask = None
+            volume = None
+
+            if info:
+                price = float(info.get("last_price") or info.get("lastPrice") or info.get("regularMarketPrice") or info.get("previous_close") or 0.0)
+                bid = info.get("bid")
+                ask = info.get("ask")
+                volume = info.get("last_volume") or info.get("volume")
+
+            if price is None or price == 0.0:
+                price = self.get_latest_price(ticker)
+
+            change_pct = self.get_price_change_pct(ticker, days=1)
+
+            return {
+                "price": float(price) if price is not None else None,
+                "bid": float(bid) if bid else None,
+                "ask": float(ask) if ask else None,
+                "change_pct": float(change_pct) if change_pct is not None else None,
+                "volume_24h": float(volume) if volume else None,
+                "timestamp": datetime.utcnow(),
+            }
+        except Exception as exc:
+            logger.error("Error fetching live quote for %s: %s", ticker, exc)
+            return {
+                "price": self.get_latest_price(ticker),
+                "bid": None,
+                "ask": None,
+                "change_pct": self.get_price_change_pct(ticker, days=1),
+                "volume_24h": None,
+                "timestamp": datetime.utcnow(),
+            }
     
     def get_price_change_pct(self, ticker: str, days: int = 1) -> Optional[float]:
         """Get price change percentage over last N days.
@@ -157,6 +201,62 @@ class DataManager:
         except Exception as e:
             logger.error(f"Error calculating price change for {ticker}: {e}")
             return None
+
+    def detect_asset_type(self, ticker: str) -> AssetType:
+        """Determine asset type for a symbol."""
+
+        upper = ticker.upper()
+        if upper.endswith("=X"):
+            return AssetType.FOREX
+        if upper.endswith("-USD") or upper in CRYPTO_TOP_SYMBOLS:
+            return AssetType.CRYPTO
+        return AssetType.STOCKS
+
+    def search_symbol(self, query: str) -> Dict[str, Optional[str]]:
+        """Lookup basic metadata for a symbol."""
+
+        symbol = query.upper()
+        try:
+            self._rate_limit("yfinance")
+            ticker_obj = yf.Ticker(symbol)
+            info = ticker_obj.info or {}
+            long_name = info.get("longName") or info.get("shortName")
+        except Exception:
+            long_name = None
+
+        asset_type = self.detect_asset_type(symbol)
+
+        if symbol in CRYPTO_TOP_SYMBOLS and not long_name:
+            long_name = CRYPTO_TOP_SYMBOLS[symbol]
+
+        return {"symbol": symbol, "name": long_name, "asset_type": asset_type}
+
+    def get_timeframe_history(self, ticker: str, days: int, interval: str) -> List[Dict[str, float]]:
+        """Return OHLCV data for a specific timeframe."""
+
+        end = datetime.now()
+        start = end - timedelta(days=days)
+        df = self.fetch_historical(ticker, start=start.strftime('%Y-%m-%d'), end=end.strftime('%Y-%m-%d'), frequency=interval)
+        if df.empty:
+            return []
+
+        records = []
+        for date, row in df.iterrows():
+            if isinstance(date, datetime):
+                dt_str = date.isoformat()
+            else:
+                dt_str = pd.to_datetime(date).isoformat()
+            records.append(
+                {
+                    "date": dt_str,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row["volume"]),
+                }
+            )
+        return records
     
     def get_fundamental_data(self, ticker: str) -> dict:
         """Get fundamental data (P/E ratio, etc.) if available.
