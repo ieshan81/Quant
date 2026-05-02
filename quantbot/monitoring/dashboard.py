@@ -1,20 +1,14 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.makedirs(os.path.join(sys.path[0], "data"), exist_ok=True)
+
 """Flask monitoring dashboard (Sprint 8) — port 5000 by default, JSON + HTML UI.
 
 Import policy: this module must not import ``main_worker``, ``training.*``, or other
 heavy trading/sentiment stacks. Use only Flask, loguru, ``config``, and lazy imports
 inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
 """
-
-from __future__ import annotations
-
-import os
-import sys
-
-# Quant package root (parent of `monitoring/`) must be first so `data` resolves to
-# `quantbot/data/` (the package), not a stray `./data` directory from cwd (Railway).
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, _ROOT)
-os.makedirs(os.path.join(_ROOT, "data"), exist_ok=True)
 
 import json
 from typing import Any
