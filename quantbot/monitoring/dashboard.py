@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.makedirs(os.path.join(sys.path[0], "data"), exist_ok=True)
+os.makedirs(os.path.join(sys.path[0], "persist"), exist_ok=True)
 
 """Flask monitoring dashboard (Sprint 8) — port 5000 by default, JSON + HTML UI.
 
