@@ -77,7 +77,7 @@ def _run_symbol_once(trader: PaperTrader, asset_class: AssetClass, symbol: str) 
     close = df["Close"]
     vol = df["Volume"] if "Volume" in df.columns else None
     sigs = discrete_signal_bundle(close, vol)
-    score, action = signal_combiner.evaluate(sigs)
+    score, action = signal_combiner.evaluate(sigs, asset_class=asset_class)
     mid = float(close.iloc[-1])
     if mid <= 0.0:
         return

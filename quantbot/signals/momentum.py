@@ -4,6 +4,23 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from loguru import logger
+
+
+def log_last_rsi_for_btc_eth(close: pd.Series, symbol: str) -> None:
+    """Log last Wilder RSI for BTC/USDT and ETH/USDT (Railway data sanity)."""
+    key = symbol.strip().upper()
+    if key not in ("BTC/USDT", "ETH/USDT"):
+        return
+    c = close.astype(float)
+    if len(c) < 14:
+        logger.info("RSI trace {} | bars={} last_rsi=n/a (too short)", symbol, len(c))
+        return
+    rsi = compute_rsi(c, period=14).dropna()
+    if rsi.empty:
+        logger.info("RSI trace {} | bars={} last_rsi=n/a (no rsi)", symbol, len(c))
+        return
+    logger.info("RSI trace {} | bars={} last_rsi={:.2f}", symbol, len(c), float(rsi.iloc[-1]))
 
 
 def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:

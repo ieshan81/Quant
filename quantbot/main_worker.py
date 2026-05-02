@@ -8,6 +8,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -26,7 +27,7 @@ from monitoring import alerts
 from risk import drawdown_guard
 from risk import portfolio_limiter
 from risk import position_sizer
-from signals import signal_combiner
+from signals import momentum, signal_combiner
 from signals.sentiment_signal import sentiment_for_symbol
 from training.backtester import load_yfinance_history
 from training.paper_trader import AssetClass, PaperTrader, create_paper_trader
@@ -50,6 +51,8 @@ MAX_CRYPTO_POS = 5
 MAX_SLEEVE_FRAC = 0.10
 STOP_LOSS_FRAC = 0.03
 TAKE_PROFIT_FRAC = 0.06
+# Below this bar count, MACD/RSI inputs are weak; combiner inputs stay ~0 (see paper_trading_loop).
+MIN_OHLCV_BARS_FOR_SIGNALS = 35
 
 _stop = threading.Event()
 _halted = threading.Event()
@@ -156,12 +159,42 @@ def analyze_symbol(asset_class: AssetClass, symbol: str, kraken_ex: Any) -> Cycl
         df = load_crypto_bars(kraken_ex, sym)
     mid = _mid_from_stock_df(df) if asset_class == "stock" else _mid_from_crypto_df(df)
     if df is None or mid is None or mid <= 0:
+        logger.warning("No OHLCV for {} {} — skipping signals", asset_class, sym)
         return CycleSignal(asset_class, sym, {}, 0.0, "HOLD", mid, "no_data")
+    n_bars = len(df)
+    if n_bars < MIN_OHLCV_BARS_FOR_SIGNALS:
+        logger.warning(
+            "Insufficient OHLCV for {} {}: {} bars (need ~{} for stable MACD/RSI) — "
+            "discrete signals may stay neutral (score≈0)",
+            asset_class,
+            sym,
+            n_bars,
+            MIN_OHLCV_BARS_FOR_SIGNALS,
+        )
     close = df["Close"]
     vol = df["Volume"] if "Volume" in df.columns else None
+    if asset_class == "crypto":
+        momentum.log_last_rsi_for_btc_eth(close, sym)
     sigs = discrete_signal_bundle(close, vol)
     sigs["sentiment"] = _sentiment_discrete(sym, asset_class)
-    score, action = signal_combiner.evaluate(sigs)
+    label = f"{asset_class}:{sym}"
+    score, action = signal_combiner.evaluate(sigs, symbol=label, asset_class=asset_class)
+    rsi_raw = float("nan")
+    if n_bars >= 14:
+        rsi_ser = momentum.compute_rsi(close.astype(float), 14).dropna()
+        if not rsi_ser.empty:
+            rsi_raw = float(rsi_ser.iloc[-1])
+    logger.info(
+        "signal {} | bars={} rsi_last={:.2f} disc_rsi={} disc_macd={} disc_bb={} combined={:.4f} {}",
+        label,
+        n_bars,
+        rsi_raw,
+        sigs.get("rsi"),
+        sigs.get("macd"),
+        sigs.get("bollinger"),
+        score,
+        action,
+    )
     return CycleSignal(asset_class, sym, sigs, score, action, mid, None)
 
 
@@ -402,6 +435,12 @@ def run_trading_cycle_once(
     summary = execute_cycle_results(trader, results)
     summary["stop_events"] = lines
     summary["analyzed"] = len(results)
+    sorted_crypto_scores = sorted(
+        ((r.symbol, r.score) for r in results if r.asset_class == "crypto" and not r.error),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    logger.info(f"Top crypto scores: {sorted_crypto_scores[:4]}")
     logger.info(
         "Cycle complete | analyzed={} buys={} sells={} holds={} errs={}",
         summary["analyzed"],
@@ -434,7 +473,8 @@ def _on_signal(signum: int, frame: Any) -> None:
     _stop.set()
 
 
-def run_worker_forever() -> None:
+def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread]:
+    """Initialize DB, Kraken, universe scanner thread, FinBERT (best-effort), and paper trader."""
     setup_logging()
     init_schema()
     logger.info("QuantBot worker | mode={} | db={}", config.MODE, config.DB_PATH)
@@ -458,14 +498,30 @@ def run_worker_forever() -> None:
 
         get_finbert_pipeline()
         logger.info("FinBERT pipeline preloaded for worker sentiment")
-    except Exception:
-        logger.warning("FinBERT preload failed; first sentiment call will retry or skip")
+    except Exception as exc:
+        tb = traceback.format_exc()
+        logger.error("FinBERT preload failed:\n{}", tb)
+        if alerts.telegram_alerts_configured():
+            alerts.send_telegram(f"⚠️ FinBERT preload failed: {str(exc)[:200]}")
 
     trader = create_paper_trader(telegram_on_fills=False)
 
     signal.signal(signal.SIGTERM, _on_signal)
     if hasattr(signal, "SIGINT"):
         signal.signal(signal.SIGINT, _on_signal)
+
+    return trader, universe, kraken_ex, scan_thread
+
+
+def run_worker_forever() -> None:
+    try:
+        trader, universe, kraken_ex, scan_thread = _worker_startup()
+    except Exception as e:
+        logger.error("WORKER STARTUP CRASH: {}", e)
+        logger.error(traceback.format_exc())
+        if alerts.telegram_alerts_configured():
+            alerts.send_telegram(f"⚠️ Worker startup crash: {str(e)[:200]}")
+        raise
 
     while not _stop.is_set():
         try:
@@ -476,8 +532,13 @@ def run_worker_forever() -> None:
                 _halted.set()
             else:
                 run_trading_cycle_once(trader, universe, kraken_ex)
-        except Exception:
-            logger.exception("Trading cycle error")
+        except Exception as e:
+            logger.error("TRADING CYCLE CRASH: {}", e)
+            logger.error(traceback.format_exc())
+            if alerts.telegram_alerts_configured():
+                alerts.send_telegram(f"⚠️ Worker crash: {str(e)[:200]}")
+            time.sleep(10)
+            continue
         if _stop.is_set():
             break
         time.sleep(float(TRADE_INTERVAL_SEC))

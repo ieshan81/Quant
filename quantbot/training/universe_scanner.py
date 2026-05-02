@@ -22,7 +22,7 @@ TOP_STOCKS = 20
 TOP_CRYPTO = 15
 MIN_CRYPTO_QUOTE_VOLUME_USD = 1_000_000.0
 
-# Used when Wikipedia read_html fails or no symbols score (e.g. missing lxml / network).
+# Hardcoded universe when Wikipedia/yfinance scan fails or yields no tradeable names.
 FALLBACK_STOCKS = [
     "AAPL",
     "MSFT",
@@ -33,17 +33,17 @@ FALLBACK_STOCKS = [
     "TSLA",
     "BRK-B",
     "JPM",
+    "JNJ",
+    "V",
+    "PG",
     "UNH",
     "XOM",
-    "V",
-    "MA",
-    "JNJ",
-    "PG",
     "HD",
-    "MRK",
+    "MA",
     "ABBV",
-    "AVGO",
+    "MRK",
     "CVX",
+    "PEP",
 ]
 
 FALLBACK_CRYPTO = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
@@ -129,27 +129,34 @@ def scan_sp500_top_symbols(
     max_workers: int = STOCK_SCAN_WORKERS,
     symbols: list[str] | None = None,
 ) -> list[str]:
-    """Rank S&P names by momentum score; return top `top_n` wiki symbols (for yfinance mapping in worker)."""
-    syms = symbols if symbols is not None else fetch_sp500_symbols_from_wikipedia()
-    scores: list[tuple[str, float]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(_score_one_stock, s): s for s in syms}
-        for fut in as_completed(futs):
-            try:
-                sym, sc = fut.result()
-                scores.append((sym, sc))
-            except Exception as exc:
-                logger.debug("Stock score task failed: {}", exc)
-    scores.sort(key=lambda x: x[1], reverse=True)
-    out = [s for s, sc in scores if sc > float("-inf")][:top_n]
-    if not out:
-        logger.warning(
-            "Universe scan | no stocks passed scoring ({} input) — using FALLBACK_STOCKS",
-            len(syms),
-        )
+    """Rank S&P names by momentum score; on any failure or empty result return ``FALLBACK_STOCKS``."""
+    try:
+        syms = symbols if symbols is not None else fetch_sp500_symbols_from_wikipedia()
+        if not syms:
+            logger.warning("Stock symbol list empty before scoring — using FALLBACK_STOCKS")
+            return list(FALLBACK_STOCKS)[:top_n]
+        scores: list[tuple[str, float]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {ex.submit(_score_one_stock, s): s for s in syms}
+            for fut in as_completed(futs):
+                try:
+                    sym, sc = fut.result()
+                    scores.append((sym, sc))
+                except Exception as exc:
+                    logger.debug("Stock score task failed: {}", exc)
+        scores.sort(key=lambda x: x[1], reverse=True)
+        out = [s for s, sc in scores if sc > float("-inf")][:top_n]
+        if not out:
+            logger.warning(
+                "Universe scan | no stocks passed scoring ({} input) — using FALLBACK_STOCKS",
+                len(syms),
+            )
+            return list(FALLBACK_STOCKS)[:top_n]
+        logger.info("Universe scan | top {} stocks selected (of {} scored)", len(out), len(scores))
+        return out
+    except Exception as exc:
+        logger.warning("Stock universe scan crashed ({}); using FALLBACK_STOCKS", exc)
         return list(FALLBACK_STOCKS)[:top_n]
-    logger.info("Universe scan | top {} stocks selected (of {} scored)", len(out), len(scores))
-    return out
 
 
 def _kraken_public() -> Any:
@@ -256,8 +263,20 @@ class UniverseState:
             return list(self._stocks), list(self._crypto)
 
     def refresh(self, *, exchange: Any | None = None) -> None:
-        stocks = scan_sp500_top_symbols()
-        crypto = scan_kraken_top_crypto(exchange=exchange)
+        try:
+            stocks = scan_sp500_top_symbols()
+            crypto = scan_kraken_top_crypto(exchange=exchange)
+        except Exception as exc:
+            logger.warning("Universe refresh scan failed ({}); using hardcoded fallbacks", exc)
+            stocks = list(FALLBACK_STOCKS)[:TOP_STOCKS]
+            crypto = list(FALLBACK_CRYPTO)[:TOP_CRYPTO]
+        if not stocks:
+            logger.warning("Stock universe empty after scan — forcing FALLBACK_STOCKS")
+            stocks = list(FALLBACK_STOCKS)[:TOP_STOCKS]
+        if not crypto:
+            logger.warning("Crypto universe empty after scan — forcing FALLBACK_CRYPTO")
+            crypto = list(FALLBACK_CRYPTO)[:TOP_CRYPTO]
+        logger.info("Universe loaded: {} stocks, {} crypto", len(stocks), len(crypto))
         with self._lock:
             self._stocks = stocks
             self._crypto = crypto
@@ -277,6 +296,15 @@ class UniverseState:
                 self.refresh(exchange=ex)
             except Exception:
                 logger.exception("Universe refresh failed")
+                with self._lock:
+                    self._stocks = list(FALLBACK_STOCKS)[:TOP_STOCKS]
+                    self._crypto = list(FALLBACK_CRYPTO)[:TOP_CRYPTO]
+                    self._last_refresh = time.time()
+                logger.info(
+                    "Universe loaded: {} stocks, {} crypto (fallback after background error)",
+                    len(self._stocks),
+                    len(self._crypto),
+                )
             if stop.is_set():
                 break
             remaining = sleep_sec

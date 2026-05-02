@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from loguru import logger
+
 import config
 
 # Each input signal is in {-1.0, 0.0, 1.0}. Weights sum to 1.0.
@@ -17,6 +19,9 @@ WEIGHTS: dict[str, float] = {
 }
 
 TradeAction = Literal["BUY", "SELL", "HOLD"]
+
+# Crypto discrete scores cluster near 0; use a lower BUY bar than equities.
+BUY_THRESHOLD_CRYPTO = 0.15
 
 
 def __getattr__(name: str) -> float:
@@ -45,15 +50,36 @@ def combined_score(signals: dict[str, float]) -> float:
     return max(-1.0, min(1.0, total))
 
 
-def trading_action(score: float) -> TradeAction:
-    if score > config.BUY_THRESHOLD:
+def trading_action(score: float, *, asset_class: str | None = None) -> TradeAction:
+    if (asset_class or "").lower() == "crypto":
+        if score >= BUY_THRESHOLD_CRYPTO:
+            return "BUY"
+    elif score > float(config.BUY_THRESHOLD):
         return "BUY"
     if score < config.SELL_THRESHOLD:
         return "SELL"
     return "HOLD"
 
 
-def evaluate(signals: dict[str, float]) -> tuple[float, TradeAction]:
-    """Return (combined_score, BUY | SELL | HOLD)."""
+def evaluate(
+    signals: dict[str, float],
+    *,
+    symbol: str | None = None,
+    asset_class: str | None = None,
+) -> tuple[float, TradeAction]:
+    """Return (combined_score, BUY | SELL | HOLD). Optional ``symbol`` / ``asset_class`` for logging & crypto BUY bar."""
     s = combined_score(signals)
-    return s, trading_action(s)
+    act = trading_action(s, asset_class=asset_class)
+    if symbol:
+        rsi = float(signals.get("rsi", 0.0))
+        macd = float(signals.get("macd", 0.0))
+        bb = float(signals.get("bollinger", 0.0))
+        logger.debug(
+            "{} RSI={:.2f} MACD={:.4f} BB={:.4f} score={:.3f}",
+            symbol,
+            rsi,
+            macd,
+            bb,
+            s,
+        )
+    return s, act

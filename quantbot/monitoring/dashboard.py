@@ -8,19 +8,16 @@ inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
 from __future__ import annotations
 
 import os
+import sys
 
-os.makedirs("data", exist_ok=True)
+# Quant package root (parent of `monitoring/`) must be first so `data` resolves to
+# `quantbot/data/` (the package), not a stray `./data` directory from cwd (Railway).
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+os.makedirs(os.path.join(_ROOT, "data"), exist_ok=True)
 
 import json
-import sys
-from pathlib import Path
 from typing import Any
-
-# Project root must be on sys.path before `import config` when started as
-# `python monitoring/dashboard.py` (Railway Procfile / Nixpacks).
-_root = Path(__file__).resolve().parent.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
 
 from flask import Flask, Response, render_template_string
 from loguru import logger
@@ -287,9 +284,7 @@ def run_dashboard() -> None:
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 
-if __name__ == '__main__':
-    import os
-
+if __name__ == "__main__":
     app = create_app()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
