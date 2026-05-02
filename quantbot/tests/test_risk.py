@@ -23,6 +23,17 @@ class TestKillSwitch:
                 assert drawdown_guard.check_kill_switch(8_500.0) is False
                 assert drawdown_guard.check_kill_switch(9_000.0) is False
 
+    def test_mark_kill_switch_alert_sent_suppresses_notify(self) -> None:
+        drawdown_guard.reset_kill_switch_alert_flag()
+        try:
+            drawdown_guard.mark_kill_switch_alert_sent()
+            with patch("monitoring.alerts.telegram_alerts_configured", return_value=True):
+                with patch("monitoring.alerts.send_telegram") as mock_send:
+                    drawdown_guard.notify_kill_switch_if_tripped(1_000.0)
+            mock_send.assert_not_called()
+        finally:
+            drawdown_guard.reset_kill_switch_alert_flag()
+
 
 class TestPositionSizer:
     def test_kelly_positive_capped(self) -> None:

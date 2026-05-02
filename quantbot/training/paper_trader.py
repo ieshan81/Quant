@@ -55,6 +55,7 @@ class PaperTrader:
         persist_sqlite: bool = True,
         db_path: Path | str | None = None,
         mode: str | None = None,
+        telegram_on_fills: bool = True,
     ) -> None:
         self.cash_stocks = float(
             stocks_cash if stocks_cash is not None else config.PAPER_STOCKS_STARTING_CASH
@@ -70,6 +71,11 @@ class PaperTrader:
         self.mode = (mode or config.MODE or "paper").strip().lower()
         if self.mode not in ("paper", "live"):
             self.mode = "paper"
+        self._telegram_on_fills = bool(telegram_on_fills)
+
+    def set_telegram_on_fills(self, value: bool) -> None:
+        """When False, filled orders skip Telegram (e.g. worker sends custom Sprint 9 messages)."""
+        self._telegram_on_fills = bool(value)
 
     @property
     def persistence_path(self) -> Path | None:
@@ -175,15 +181,16 @@ class PaperTrader:
                 kill_switch_active=False,
                 meta={"source": "paper_trader"},
             )
-            self._telegram_after_trade(
-                asset_class=asset_class,
-                symbol=symbol,
-                side=side,
-                quantity=quantity,
-                price=price,
-                status=status,
-                reason_code=reason_code,
-            )
+            if self._telegram_on_fills:
+                self._telegram_after_trade(
+                    asset_class=asset_class,
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=price,
+                    status=status,
+                    reason_code=reason_code,
+                )
 
         self._persist(_w)
         try:
@@ -370,6 +377,11 @@ def create_paper_trader(
     *,
     persist_sqlite: bool = True,
     db_path: Path | str | None = None,
+    telegram_on_fills: bool = True,
 ) -> PaperTrader:
     """Factory: by default persists to config.DB_PATH; set persist_sqlite=False for in-memory tests."""
-    return PaperTrader(persist_sqlite=persist_sqlite, db_path=db_path)
+    return PaperTrader(
+        persist_sqlite=persist_sqlite,
+        db_path=db_path,
+        telegram_on_fills=telegram_on_fills,
+    )

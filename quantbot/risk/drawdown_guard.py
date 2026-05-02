@@ -29,6 +29,12 @@ def reset_kill_switch_alert_flag() -> None:
     _kill_switch_telegram_sent = False
 
 
+def mark_kill_switch_alert_sent() -> None:
+    """Worker: after a custom kill-switch Telegram, suppress duplicate from trade persistence."""
+    global _kill_switch_telegram_sent
+    _kill_switch_telegram_sent = True
+
+
 def notify_kill_switch_if_tripped(current_balance: float) -> None:
     """
     One notification per process when equity trips the kill switch.
