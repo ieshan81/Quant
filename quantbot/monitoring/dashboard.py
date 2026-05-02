@@ -8,6 +8,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Project root must be on sys.path before `import config` when started as
+# `python monitoring/dashboard.py` (Railway Procfile / Nixpacks).
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
 from flask import Flask, Response, render_template_string
 from loguru import logger
 
@@ -278,7 +284,4 @@ def run_dashboard() -> None:
 
 
 if __name__ == "__main__":
-    _root = Path(__file__).resolve().parent.parent
-    if str(_root) not in sys.path:
-        sys.path.insert(0, str(_root))
     run_dashboard()
