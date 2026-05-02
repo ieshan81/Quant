@@ -1,8 +1,7 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "builder": "NIXPACKS",
-    "buildCommand": "pip install -r requirements-deploy.txt"
+    "builder": "NIXPACKS"
   },
   "deploy": {
     "startCommand": "python monitoring/dashboard.py",

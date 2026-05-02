@@ -1,0 +1,7 @@
+# Railway / Nixpacks: one dependency install (avoid pip install requirements.txt + buildCommand duplicate).
+# Default Python provider would run `pip install -r requirements.txt` — we override install only.
+
+[phases.install]
+cmds = [
+  "python -m venv --copies /opt/venv && . /opt/venv/bin/activate && pip install -U pip setuptools wheel && pip install -r requirements-deploy.txt",
+]

@@ -1,5 +1,7 @@
-# Full QuantBot stack for Linux/Railway (pip install -r requirements-deploy.txt)
-# TA-Lib needs libta-lib0 on the image; if the build fails, remove TA-Lib and use numpy/pandas only.
+# Linux / Railway — single `pip install -r requirements-deploy.txt` (see nixpacks.toml)
+# CPU-only PyTorch: default PyPI torch pulls multi‑GB CUDA wheels; Railway hosts are usually CPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
 
 python-dotenv>=1.0.0
 loguru>=0.7.0
@@ -13,8 +15,6 @@ yfinance>=0.2.28
 praw>=7.7.0
 feedparser>=6.0.0
 transformers>=4.36.0
-torch>=2.0.0
-TA-Lib>=0.4.28
 tweepy>=4.14.0
 websocket-client>=1.6.0
 schedule>=1.2.0
