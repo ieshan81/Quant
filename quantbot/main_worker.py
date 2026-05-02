@@ -33,8 +33,17 @@ from training.paper_trader import AssetClass, PaperTrader, create_paper_trader
 from training.paper_trading_loop import discrete_signal_bundle
 from training.universe_scanner import UniverseState, start_scanner_thread
 
-TRADE_INTERVAL_SEC = int(os.getenv("WORKER_TRADE_INTERVAL_SEC", "60"))
-SCAN_INTERVAL_SEC = int(os.getenv("WORKER_SCAN_INTERVAL_SEC", str(30 * 60)))
+def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        v = int(str(raw).strip())
+    except ValueError:
+        v = default
+    return max(minimum, v)
+
+
+TRADE_INTERVAL_SEC = _int_env("WORKER_TRADE_INTERVAL_SEC", 60, minimum=1)
+SCAN_INTERVAL_SEC = _int_env("WORKER_SCAN_INTERVAL_SEC", 30 * 60, minimum=60)
 CYCLE_WORKERS = int(os.getenv("WORKER_CYCLE_EXECUTOR_WORKERS", "16"))
 MAX_STOCK_POS = 5
 MAX_CRYPTO_POS = 5
@@ -437,6 +446,14 @@ def run_worker_forever() -> None:
 
     scan_thread = start_scanner_thread(universe, _stop, interval_sec=float(SCAN_INTERVAL_SEC))
 
+    try:
+        from data.sentiment_feed import get_finbert_pipeline
+
+        get_finbert_pipeline()
+        logger.info("FinBERT pipeline preloaded for worker sentiment")
+    except Exception:
+        logger.warning("FinBERT preload failed; first sentiment call will retry or skip")
+
     trader = create_paper_trader(telegram_on_fills=False)
 
     signal.signal(signal.SIGTERM, _on_signal)
@@ -444,17 +461,18 @@ def run_worker_forever() -> None:
         signal.signal(signal.SIGINT, _on_signal)
 
     while not _stop.is_set():
-        if _halted.is_set():
-            time.sleep(float(TRADE_INTERVAL_SEC))
-            continue
         try:
-            if drawdown_guard.check_kill_switch(trader.equity_total()):
+            if _halted.is_set():
+                pass
+            elif drawdown_guard.check_kill_switch(trader.equity_total()):
                 _handle_kill_switch(trader, kraken_ex)
                 _halted.set()
-                continue
-            run_trading_cycle_once(trader, universe, kraken_ex)
+            else:
+                run_trading_cycle_once(trader, universe, kraken_ex)
         except Exception:
             logger.exception("Trading cycle error")
+        if _stop.is_set():
+            break
         time.sleep(float(TRADE_INTERVAL_SEC))
 
     _shutdown_graceful(trader, kraken_ex)

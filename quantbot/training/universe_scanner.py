@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -262,21 +263,33 @@ class UniverseState:
             self._crypto = crypto
             self._last_refresh = time.time()
 
-    def run_background(self, stop: threading.Event, interval_sec: float = 1800.0) -> None:
-        """Blocking loop: refresh universe every `interval_sec` until `stop` is set."""
+    def run_background(self, stop: threading.Event, interval_sec: float | None = None) -> None:
+        """
+        Refresh universe, then sleep WORKER_SCAN_INTERVAL_SEC (default 1800s) before the next scan.
+        Uses chunked time.sleep so ``stop`` is checked frequently and a zero/invalid interval cannot spin.
+        """
+        if interval_sec is None:
+            interval_sec = float(os.getenv("WORKER_SCAN_INTERVAL_SEC", str(30 * 60)))
+        sleep_sec = max(60.0, float(interval_sec))
         ex = _kraken_public()
         while not stop.is_set():
             try:
                 self.refresh(exchange=ex)
             except Exception:
                 logger.exception("Universe refresh failed")
-            stop.wait(interval_sec)
+            if stop.is_set():
+                break
+            remaining = sleep_sec
+            while remaining > 0.0 and not stop.is_set():
+                chunk = min(30.0, remaining)
+                time.sleep(chunk)
+                remaining -= chunk
 
 
 def start_scanner_thread(
     state: UniverseState,
     stop: threading.Event,
-    interval_sec: float = 1800.0,
+    interval_sec: float | None = None,
 ) -> threading.Thread:
     t = threading.Thread(
         target=state.run_background,

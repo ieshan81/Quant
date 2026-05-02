@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from statistics import mean
 from typing import Any
 from urllib.parse import quote
@@ -22,7 +23,8 @@ except ImportError:  # pragma: no cover
 
 from loguru import logger
 
-_FINBERT_PIPE: Any = None
+_finbert_pipeline: Any = None
+_finbert_pipeline_lock = threading.Lock()
 
 
 def _yahoo_ticker(symbol: str) -> str:
@@ -139,26 +141,29 @@ def collect_texts(symbol: str) -> tuple[list[str], dict[str, int]]:
 
 
 def get_finbert_pipeline() -> Any:
-    """Lazy-load HuggingFace FinBERT pipeline (CPU)."""
-    global _FINBERT_PIPE
-    if _FINBERT_PIPE is not None:
-        return _FINBERT_PIPE
-    try:
-        import torch
-        from transformers import pipeline
+    """Module-level singleton FinBERT pipeline (thread-safe, loads once)."""
+    global _finbert_pipeline
+    if _finbert_pipeline is not None:
+        return _finbert_pipeline
+    with _finbert_pipeline_lock:
+        if _finbert_pipeline is not None:
+            return _finbert_pipeline
+        try:
+            import torch
+            from transformers import pipeline
 
-        device = 0 if torch.cuda.is_available() else -1
-        _FINBERT_PIPE = pipeline(
-            "sentiment-analysis",
-            model=config.FINBERT_MODEL,
-            tokenizer=config.FINBERT_MODEL,
-            device=device,
-        )
-        logger.info("FinBERT pipeline loaded | model={}", config.FINBERT_MODEL)
-    except Exception as exc:
-        logger.exception("Failed to load FinBERT: {}", exc)
-        raise
-    return _FINBERT_PIPE
+            device = 0 if torch.cuda.is_available() else -1
+            _finbert_pipeline = pipeline(
+                "sentiment-analysis",
+                model=config.FINBERT_MODEL,
+                tokenizer=config.FINBERT_MODEL,
+                device=device,
+            )
+            logger.info("FinBERT pipeline loaded | model={}", config.FINBERT_MODEL)
+        except Exception as exc:
+            logger.exception("Failed to load FinBERT: {}", exc)
+            raise
+    return _finbert_pipeline
 
 
 def _scalar_from_finbert_row(row: Any) -> float:
