@@ -1,7 +1,7 @@
 {
   "build": { "builder": "nixpacks" },
   "deploy": {
-    "startCommand": "python monitoring/dashboard.py",
+    "startCommand": "bash start.sh",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE"

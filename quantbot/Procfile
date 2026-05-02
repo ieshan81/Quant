@@ -1,1 +1,1 @@
-web: python monitoring/dashboard.py
+web: bash start.sh
