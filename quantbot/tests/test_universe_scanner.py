@@ -26,6 +26,20 @@ def test_wikipedia_symbol_to_yfinance() -> None:
     assert us.wikipedia_symbol_to_yfinance("AAPL") == "AAPL"
 
 
+@patch("training.universe_scanner.pd.read_html", side_effect=ImportError("lxml"))
+def test_fetch_sp500_falls_back_on_read_html_failure(_mock_read_html) -> None:
+    out = us.fetch_sp500_symbols_from_wikipedia()
+    assert out == list(us.FALLBACK_STOCKS)
+
+
+@patch("training.universe_scanner.kraken_usdt_pairs_over_volume", return_value=[])
+def test_scan_kraken_top_falls_back_when_no_candidates(_mock_pairs) -> None:
+    ex = MagicMock()
+    ex.markets = {"BTC/USDT": {}}
+    out = us.scan_kraken_top_crypto(top_n=15, max_workers=2, exchange=ex, candidates=None)
+    assert out == list(us.FALLBACK_CRYPTO)
+
+
 def test_combined_momentum_score() -> None:
     df = _ohlcv_df(50)
     s = us.combined_momentum_score(df["Close"], df["Volume"])

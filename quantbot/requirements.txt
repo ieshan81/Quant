@@ -13,6 +13,7 @@ ccxt>=4.0.0
 # Sprint 3 — signals (pandas/numpy indicators)
 numpy>=1.24.0
 pandas>=2.0.0
+lxml>=5.0.0
 yfinance>=0.2.28
 
 # Sprint 7 — sentiment (Reddit + RSS + FinBERT)

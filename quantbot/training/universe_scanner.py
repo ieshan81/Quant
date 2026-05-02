@@ -21,6 +21,32 @@ TOP_STOCKS = 20
 TOP_CRYPTO = 15
 MIN_CRYPTO_QUOTE_VOLUME_USD = 1_000_000.0
 
+# Used when Wikipedia read_html fails or no symbols score (e.g. missing lxml / network).
+FALLBACK_STOCKS = [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "AMZN",
+    "META",
+    "TSLA",
+    "BRK-B",
+    "JPM",
+    "UNH",
+    "XOM",
+    "V",
+    "MA",
+    "JNJ",
+    "PG",
+    "HD",
+    "MRK",
+    "ABBV",
+    "AVGO",
+    "CVX",
+]
+
+FALLBACK_CRYPTO = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
+
 
 def wikipedia_symbol_to_yfinance(sym: str) -> str:
     """Wikipedia uses e.g. BRK.B; yfinance expects BRK-B."""
@@ -67,11 +93,19 @@ def combined_momentum_score(close: pd.Series, vol: pd.Series | None) -> float:
 
 
 def fetch_sp500_symbols_from_wikipedia() -> list[str]:
-    """Current S&P 500 tickers from Wikipedia (first HTML table)."""
-    tables = pd.read_html(SP500_WIKI_URL)
-    df = tables[0]
-    sym_col = "Symbol" if "Symbol" in df.columns else df.columns[0]
-    return [str(x).strip() for x in df[sym_col].tolist() if str(x).strip()]
+    """Current S&P 500 tickers from Wikipedia (first HTML table); fallback list on any failure."""
+    try:
+        tables = pd.read_html(SP500_WIKI_URL)
+        df = tables[0]
+        sym_col = "Symbol" if "Symbol" in df.columns else df.columns[0]
+        out = [str(x).strip() for x in df[sym_col].tolist() if str(x).strip()]
+        if not out:
+            logger.warning("Wikipedia S&P table empty — using FALLBACK_STOCKS ({})", len(FALLBACK_STOCKS))
+            return list(FALLBACK_STOCKS)
+        return out
+    except Exception as exc:
+        logger.warning("Wikipedia S&P fetch failed ({}); using FALLBACK_STOCKS", exc)
+        return list(FALLBACK_STOCKS)
 
 
 def _score_one_stock(wiki_sym: str) -> tuple[str, float]:
@@ -107,6 +141,12 @@ def scan_sp500_top_symbols(
                 logger.debug("Stock score task failed: {}", exc)
     scores.sort(key=lambda x: x[1], reverse=True)
     out = [s for s, sc in scores if sc > float("-inf")][:top_n]
+    if not out:
+        logger.warning(
+            "Universe scan | no stocks passed scoring ({} input) — using FALLBACK_STOCKS",
+            len(syms),
+        )
+        return list(FALLBACK_STOCKS)[:top_n]
     logger.info("Universe scan | top {} stocks selected (of {} scored)", len(out), len(scores))
     return out
 
@@ -121,25 +161,29 @@ def kraken_usdt_pairs_over_volume(
     min_quote_usd: float = MIN_CRYPTO_QUOTE_VOLUME_USD,
 ) -> list[str]:
     """Active Kraken markets quoted in USDT with 24h quote volume >= threshold."""
-    ex = _kraken_public()
-    ex.load_markets()
-    tickers = ex.fetch_tickers()
-    out: list[str] = []
-    for sym, t in tickers.items():
-        if not sym.endswith("/USDT"):
-            continue
-        m = ex.markets.get(sym)
-        if not m or not m.get("active", True):
-            continue
-        qv = t.get("quoteVolume")
-        if qv is None:
-            continue
-        try:
-            if float(qv) >= min_quote_usd:
-                out.append(sym)
-        except (TypeError, ValueError):
-            continue
-    return out
+    try:
+        ex = _kraken_public()
+        ex.load_markets()
+        tickers = ex.fetch_tickers()
+        out: list[str] = []
+        for sym, t in tickers.items():
+            if not sym.endswith("/USDT"):
+                continue
+            m = ex.markets.get(sym)
+            if not m or not m.get("active", True):
+                continue
+            qv = t.get("quoteVolume")
+            if qv is None:
+                continue
+            try:
+                if float(qv) >= min_quote_usd:
+                    out.append(sym)
+            except (TypeError, ValueError):
+                continue
+        return out
+    except Exception as exc:
+        logger.warning("Kraken USDT volume scan failed ({}); candidates empty → fallback path", exc)
+        return []
 
 
 def _score_one_crypto(ex: Any, symbol: str) -> tuple[str, float]:
@@ -164,9 +208,18 @@ def scan_kraken_top_crypto(
     candidates: list[str] | None = None,
 ) -> list[str]:
     ex = exchange or _kraken_public()
-    if not getattr(ex, "markets", None):
-        ex.load_markets()
+    try:
+        if not getattr(ex, "markets", None):
+            ex.load_markets()
+    except Exception as exc:
+        logger.warning("Kraken load_markets failed ({}); using FALLBACK_CRYPTO", exc)
+        return list(FALLBACK_CRYPTO)[:top_n]
+
     cands = candidates if candidates is not None else kraken_usdt_pairs_over_volume()
+    if not cands:
+        logger.warning("No Kraken USDT candidates — using FALLBACK_CRYPTO ({})", len(FALLBACK_CRYPTO))
+        return list(FALLBACK_CRYPTO)[:top_n]
+
     scores: list[tuple[str, float]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futs = {pool.submit(_score_one_crypto, ex, s): s for s in cands}
@@ -178,6 +231,12 @@ def scan_kraken_top_crypto(
                 logger.debug("Crypto score task failed: {}", exc)
     scores.sort(key=lambda x: x[1], reverse=True)
     out = [s for s, sc in scores if sc > float("-inf")][:top_n]
+    if not out:
+        logger.warning(
+            "Universe scan | no crypto passed scoring ({} candidates) — using FALLBACK_CRYPTO",
+            len(cands),
+        )
+        return list(FALLBACK_CRYPTO)[:top_n]
     logger.info("Universe scan | top {} crypto selected (of {} scored)", len(out), len(scores))
     return out
 
