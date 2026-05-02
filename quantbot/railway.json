@@ -1,8 +1,9 @@
 {
   "build": { "builder": "nixpacks" },
   "deploy": {
-    "startCommand": "python main_worker.py",
-    "restartPolicyType": "ON_FAILURE",
-    "numReplicas": 1
+    "startCommand": "python monitoring/dashboard.py",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 60,
+    "restartPolicyType": "ON_FAILURE"
   }
 }
