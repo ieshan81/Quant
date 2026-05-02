@@ -38,3 +38,10 @@ def test_index_renders(dash_app) -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert b"QuantBot monitoring" in r.data
+
+
+def test_health(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert json.loads(r.data) == {"status": "ok"}

@@ -14,8 +14,10 @@ load_dotenv(ROOT_DIR / ".env")
 DATA_DIR = ROOT_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Portable default (no .resolve() so repo-relative path stays stable across OS / Railway)
-DEFAULT_DB_PATH = DATA_DIR / "quantbot.sqlite3"
+# Portable default: project-root data dir (no hardcoded absolute paths).
+DEFAULT_DB_PATH = Path(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "quantbot.sqlite3")
+)
 _db_override = os.getenv("QUANTBOT_DB_PATH")
 if _db_override and str(_db_override).strip():
     raw = Path(str(_db_override).strip()).expanduser()

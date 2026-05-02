@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
+
+os.makedirs("data", exist_ok=True)
+
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -211,7 +214,12 @@ def _fmt_signals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def create_app() -> Flask:
+    init_schema()
     app = Flask(__name__)
+
+    @app.route("/health")
+    def health():
+        return {"status": "ok"}, 200
 
     @app.get("/api/dashboard")
     def api_dashboard() -> Response:
@@ -263,25 +271,19 @@ def create_app() -> Flask:
 
 
 def run_dashboard() -> None:
-    init_schema()
-    port = int(os.environ.get("PORT", str(config.FLASK_PORT)))
-    host = os.environ.get("FLASK_HOST") or (
-        "0.0.0.0" if os.environ.get("PORT") else config.FLASK_HOST
-    )
+    port = int(os.environ.get("PORT", "5000"))
     logger.info(
-        "Monitoring dashboard | http://{}:{} (refresh {}s)",
-        host,
+        "Monitoring dashboard | http://0.0.0.0:{} (refresh {}s)",
         port,
         _REFRESH_SEC,
     )
     app = create_app()
-    app.run(
-        host=host,
-        port=port,
-        debug=False,
-        threaded=True,
-    )
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 
-if __name__ == "__main__":
-    run_dashboard()
+if __name__ == '__main__':
+    import os
+
+    app = create_app()
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)

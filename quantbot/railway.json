@@ -1,10 +1,9 @@
 {
-  "$schema": "https://railway.com/railway.schema.json",
-  "build": {
-    "builder": "NIXPACKS"
-  },
+  "build": { "builder": "nixpacks" },
   "deploy": {
     "startCommand": "python monitoring/dashboard.py",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE"
   }
 }
