@@ -371,12 +371,19 @@ def run_trading_cycle_once(
     stocks_override: list[str] | None = None,
     crypto_override: list[str] | None = None,
 ) -> dict[str, Any]:
+    stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
+    crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
+    logger.info(
+        f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "
+        f"stock_symbols={len(stock_symbols)} | crypto_symbols={len(crypto_symbols)}"
+    )
+
     lines = apply_stops_and_targets(trader, kraken_ex)
     for ln in lines:
         logger.info(ln)
 
-    st = stocks_override if stocks_override is not None else universe.snapshot()[0]
-    cr = crypto_override if crypto_override is not None else universe.snapshot()[1]
+    st = stock_symbols
+    cr = crypto_symbols
     tasks: list[tuple[AssetClass, str]] = [("stock", s) for s in st] + [("crypto", s) for s in cr]
     max_sym = os.getenv("SPRINT9_MAX_CYCLE_SYMBOLS")
     if max_sym:

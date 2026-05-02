@@ -1,4 +1,9 @@
-"""Flask monitoring dashboard (Sprint 8) — port 5000 by default, JSON + HTML UI."""
+"""Flask monitoring dashboard (Sprint 8) — port 5000 by default, JSON + HTML UI.
+
+Import policy: this module must not import ``main_worker``, ``training.*``, or other
+heavy trading/sentiment stacks. Use only Flask, loguru, ``config``, and lazy imports
+inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
+"""
 
 from __future__ import annotations
 
@@ -21,8 +26,6 @@ from flask import Flask, Response, render_template_string
 from loguru import logger
 
 import config
-from data.data_store import get_connection, init_schema
-from monitoring.dashboard_data import build_dashboard_payload
 
 _REFRESH_SEC = 30
 
@@ -214,6 +217,9 @@ def _fmt_signals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def create_app() -> Flask:
+    from data.data_store import get_connection, init_schema
+    from monitoring.dashboard_data import build_dashboard_payload
+
     init_schema()
     app = Flask(__name__)
 
