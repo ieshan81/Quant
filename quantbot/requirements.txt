@@ -1,0 +1,22 @@
+# Sprint 1+ core
+python-dotenv>=1.0.0
+loguru>=0.7.0
+pytest>=7.4.0
+
+# Sprint 8 — monitoring dashboard
+Flask>=3.0.0
+
+# Sprint 2 — brokers & market data
+alpaca-trade-api>=3.0.0
+ccxt>=4.0.0
+
+# Sprint 3 — signals (pandas/numpy indicators)
+numpy>=1.24.0
+pandas>=2.0.0
+yfinance>=0.2.28
+
+# Sprint 7 — sentiment (Reddit + RSS + FinBERT)
+praw>=7.7.0
+feedparser>=6.0.0
+transformers>=4.36.0
+torch>=2.0.0

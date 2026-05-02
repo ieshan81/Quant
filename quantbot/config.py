@@ -1,0 +1,108 @@
+"""Central configuration: thresholds, paths, env-driven settings."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Project root (directory containing this file)
+ROOT_DIR = Path(__file__).resolve().parent
+load_dotenv(ROOT_DIR / ".env")
+
+DATA_DIR = ROOT_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Portable default (no .resolve() so repo-relative path stays stable across OS / Railway)
+DEFAULT_DB_PATH = DATA_DIR / "quantbot.sqlite3"
+_db_override = os.getenv("QUANTBOT_DB_PATH")
+if _db_override and str(_db_override).strip():
+    raw = Path(str(_db_override).strip()).expanduser()
+    DB_PATH = (ROOT_DIR / raw).resolve() if not raw.is_absolute() else raw.resolve()
+else:
+    DB_PATH = DEFAULT_DB_PATH
+
+MODE = os.getenv("QUANTBOT_MODE", "paper").strip().lower()
+if MODE not in ("paper", "live"):
+    MODE = "paper"
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+
+
+def _comma_separated_symbols(env_name: str, default: str) -> list[str]:
+    raw = os.getenv(env_name, default)
+    return [s.strip() for s in str(raw).split(",") if s.strip()]
+
+
+# Sprint 2 — symbols for `python main.py --quotes`
+ALPACA_QUOTE_SYMBOLS = _comma_separated_symbols("ALPACA_QUOTE_SYMBOLS", "AAPL")
+CRYPTO_QUOTE_SYMBOLS = _comma_separated_symbols(
+    "CRYPTO_QUOTE_SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT"
+)
+
+# CCXT exchange id for crypto quotes (default binance). Use e.g. kraken, binanceus if Binance.com is blocked.
+CRYPTO_CCXT_EXCHANGE = os.getenv("CRYPTO_CCXT_EXCHANGE", "binance").strip().lower()
+
+# Alpaca
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+
+# Binance / Coinbase (CCXT)
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
+COINBASE_API_KEY = os.getenv("COINBASE_API_KEY", "")
+COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET", "")
+COINBASE_API_PASSPHRASE = os.getenv("COINBASE_API_PASSPHRASE", "")
+
+# Sentiment / macro / alerts
+TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
+# Sprint 7 — Reddit (PRAW) + RSS + FinBERT (free sentiment; no paid X API)
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "").strip()
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "QuantBot/1.0 (paper trading research)").strip()
+REDDIT_SUBREDDITS = os.getenv("REDDIT_SUBREDDITS", "stocks+investing+StockMarket").strip()
+def _comma_separated_urls(env_name: str, default: str) -> list[str]:
+    raw = os.getenv(env_name, default)
+    return [s.strip() for s in str(raw).split(",") if s.strip()]
+
+
+RSS_EXTRA_FEEDS = _comma_separated_urls("RSS_EXTRA_FEEDS", "")
+FINBERT_MODEL = os.getenv("FINBERT_MODEL", "ProsusAI/finbert").strip()
+SENTIMENT_MAX_TEXTS = int(os.getenv("SENTIMENT_MAX_TEXTS", "24"))
+SENTIMENT_HTTP_USER_AGENT = os.getenv("SENTIMENT_HTTP_USER_AGENT", "QuantBot/1.0 (+https://example.local)").strip()
+
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# Sprint 8 — Flask monitoring dashboard
+FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1").strip()
+FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
+
+# Paper trading worker (`main.py` default when mode is paper)
+PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))
+
+# Sprint 4 — risk (defaults from technical brief §6)
+STARTING_BALANCE = float(os.getenv("STARTING_BALANCE", "10000"))
+KILL_SWITCH_PCT = float(os.getenv("KILL_SWITCH_PCT", "0.85"))  # halt if balance < 85% of start (-15%)
+MAX_PER_TRADE_RISK_PCT = float(os.getenv("MAX_PER_TRADE_RISK_PCT", "0.02"))
+MAX_SINGLE_ASSET_PCT = float(os.getenv("MAX_SINGLE_ASSET_PCT", "0.10"))
+MAX_PORTFOLIO_DEPLOYED_PCT = float(os.getenv("MAX_PORTFOLIO_DEPLOYED_PCT", "0.60"))
+TARGET_CRYPTO_ALLOCATION = float(os.getenv("TARGET_CRYPTO_ALLOCATION", "0.50"))
+COOLDOWN_MINUTES_AFTER_STOP = int(os.getenv("COOLDOWN_MINUTES_AFTER_STOP", "30"))
+
+# Signal combiner thresholds (Sprint 4+; relaxed from brief defaults for more trades in backtests)
+BUY_THRESHOLD = float(os.getenv("BUY_THRESHOLD", "0.35"))
+SELL_THRESHOLD = float(os.getenv("SELL_THRESHOLD", "-0.35"))
+
+# Backtest (`training/backtester`) uses smooth [-1,1] inputs + these thresholds
+BACKTEST_BUY_THRESHOLD = float(os.getenv("BACKTEST_BUY_THRESHOLD", "0.035"))
+BACKTEST_SELL_THRESHOLD = float(os.getenv("BACKTEST_SELL_THRESHOLD", "-0.06"))
+# When long, exit if combined score falls below this (enables multiple round-trips)
+BACKTEST_EXIT_LONG_SCORE = float(os.getenv("BACKTEST_EXIT_LONG_SCORE", "0.128"))
+
+# Sprint 5 — paper trading (technical brief §7)
+PAPER_STOCKS_STARTING_CASH = float(os.getenv("PAPER_STOCKS_STARTING_CASH", "10000"))
+PAPER_CRYPTO_STARTING_CASH = float(os.getenv("PAPER_CRYPTO_STARTING_CASH", "10000"))
