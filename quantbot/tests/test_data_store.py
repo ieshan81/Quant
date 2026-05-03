@@ -10,9 +10,16 @@ import pytest
 from data.data_store import SCHEMA_SQL, init_schema
 
 
-def test_schema_sql_defines_four_tables() -> None:
+def test_schema_sql_defines_core_tables() -> None:
     lowered = SCHEMA_SQL.lower()
-    for name in ("trades", "signals", "portfolio_state", "performance_log"):
+    for name in (
+        "trades",
+        "signals",
+        "portfolio_state",
+        "performance_log",
+        "bot_config",
+        "rl_learning_log",
+    ):
         assert f"create table if not exists {name}" in lowered
 
 
@@ -38,3 +45,5 @@ def test_init_schema_creates_tables(tmp_path: Path) -> None:
     assert "signals" in names
     assert "portfolio_state" in names
     assert "performance_log" in names
+    assert "bot_config" in names
+    assert "rl_learning_log" in names

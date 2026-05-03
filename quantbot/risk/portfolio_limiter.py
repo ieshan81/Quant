@@ -26,11 +26,17 @@ def us_stock_market_open(now: datetime | None = None) -> bool:
     return _US_MARKET_OPEN <= t < _US_MARKET_CLOSE
 
 
-def within_single_asset_cap(notional: float, wallet: float) -> bool:
-    """One position notional must not exceed MAX_SINGLE_ASSET_PCT of wallet."""
+def within_single_asset_cap(
+    notional: float,
+    wallet: float,
+    *,
+    max_single_pct: float | None = None,
+) -> bool:
+    """One position notional must not exceed the configured cap fraction of wallet."""
     if wallet <= 0:
         return False
-    return notional <= wallet * config.MAX_SINGLE_ASSET_PCT + 1e-9
+    cap = config.MAX_SINGLE_ASSET_PCT if max_single_pct is None else float(max_single_pct)
+    return notional <= wallet * cap + 1e-9
 
 
 def within_portfolio_deployed_cap(total_deployed: float, wallet: float) -> bool:

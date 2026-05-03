@@ -7,20 +7,26 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import main_worker as mw
+from data.data_store import BOT_CONFIG_DEFAULTS
 from training.paper_trader import create_paper_trader
 from training.universe_scanner import UniverseState
 
 
+def _rt() -> dict[str, float]:
+    return {k: float(v[0]) for k, v in BOT_CONFIG_DEFAULTS.items()}
+
+
 def test_buy_notional_respects_sleeve_cap() -> None:
     t = create_paper_trader(persist_sqlite=False)
-    n = mw._buy_notional(t, "stock")
-    assert n <= t.equity_stocks() * mw.MAX_SLEEVE_FRAC + 1e-6
+    rt = _rt()
+    n = mw._buy_notional(t, "stock", rt)
+    assert n <= t.equity_stocks() * rt["max_position_pct"] + 1e-6
 
 
 def test_can_buy_rejects_when_market_closed() -> None:
     t = create_paper_trader(persist_sqlite=False)
     with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=False):
-        ok, reason = mw._can_buy(t, "stock", "AAPL", 100.0, 500.0)
+        ok, reason = mw._can_buy(t, "stock", "AAPL", 100.0, 500.0, _rt())
     assert ok is False
     assert reason == "market_closed"
 
@@ -28,7 +34,7 @@ def test_can_buy_rejects_when_market_closed() -> None:
 def test_execute_cycle_hold_only() -> None:
     t = create_paper_trader(persist_sqlite=False)
     sig = mw.CycleSignal("stock", "ZZZ", {"rsi": 0.0}, 0.0, "HOLD", 50.0, None)
-    summary = mw.execute_cycle_results(t, [sig])
+    summary = mw.execute_cycle_results(t, [sig], _rt())
     assert summary["holds"] == 1
     assert summary["buys"] == 0
 
@@ -38,7 +44,9 @@ def test_run_trading_cycle_once_with_overrides() -> None:
     u = UniverseState()
     ex = MagicMock()
     ex.fetch_ohlcv = MagicMock(return_value=[])
-    with patch.object(mw, "analyze_symbol") as mock_a:
+    with patch.object(mw, "analyze_symbol") as mock_a, patch.object(
+        mw, "load_runtime_config_dict", _rt
+    ), patch.object(mw, "maybe_nudge_thresholds", lambda *a, **k: None):
         mock_a.return_value = mw.CycleSignal("stock", "FAKE", {}, 0.0, "HOLD", 10.0, "no_data")
         summary = mw.run_trading_cycle_once(
             t,

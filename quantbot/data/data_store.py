@@ -6,9 +6,22 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
+from typing import Any, Generator
 
 import config
+
+BOT_CONFIG_DEFAULTS: dict[str, tuple[float, str]] = {
+    "buy_threshold": (0.20, "Score needed to trigger a BUY (stocks)"),
+    "sell_threshold": (-0.20, "Score needed to trigger a SELL (stocks)"),
+    "crypto_buy_threshold": (0.12, "Score needed to trigger a BUY (crypto)"),
+    "rsi_oversold": (35.0, "RSI level considered oversold → bullish signal"),
+    "rsi_overbought": (65.0, "RSI level considered overbought → bearish signal"),
+    "kelly_fraction": (0.25, "Kelly fraction for position sizing (0–1)"),
+    "stop_loss_pct": (0.04, "Stop loss percentage (e.g. 0.04 = 4%)"),
+    "take_profit_pct": (0.08, "Take profit percentage (e.g. 0.08 = 8%)"),
+    "max_position_pct": (0.10, "Max portfolio % per position"),
+    "rl_pair_checkpoint": (0.0, "internal: last closed-trade count after RL nudge"),
+}
 
 
 SCHEMA_SQL = """
@@ -78,6 +91,24 @@ CREATE TABLE IF NOT EXISTS performance_log (
 
 CREATE INDEX IF NOT EXISTS idx_perf_logged ON performance_log(logged_at);
 CREATE INDEX IF NOT EXISTS idx_perf_metric ON performance_log(metric_name);
+
+CREATE TABLE IF NOT EXISTS bot_config (
+    key TEXT PRIMARY KEY,
+    value REAL NOT NULL,
+    description TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rl_learning_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    summary TEXT NOT NULL,
+    trade_count INTEGER NOT NULL DEFAULT 0,
+    win_rate REAL,
+    changes_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_rl_learning_created ON rl_learning_log(created_at);
 """
 
 
@@ -93,6 +124,17 @@ def ensure_db_path(db_path: Path | str) -> None:
         os.makedirs(parent, exist_ok=True)
 
 
+def _seed_bot_config_if_empty(conn: sqlite3.Connection) -> None:
+    for key, (val, desc) in BOT_CONFIG_DEFAULTS.items():
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO bot_config (key, value, description, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            """,
+            (key, float(val), desc),
+        )
+
+
 def init_schema(db_path: Path | str | None = None) -> None:
     """Create database file and all tables if they do not exist."""
     path = _resolved_db_path(db_path)
@@ -100,9 +142,65 @@ def init_schema(db_path: Path | str | None = None) -> None:
     conn = sqlite3.connect(str(path))
     try:
         conn.executescript(SCHEMA_SQL)
+        _seed_bot_config_if_empty(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def get_config(key: str, db_path: Path | str | None = None) -> float:
+    """Return a single numeric bot parameter (must exist in ``bot_config``)."""
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT value FROM bot_config WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown bot_config key: {key!r}")
+        return float(row[0])
+
+
+def set_config(key: str, value: float, db_path: Path | str | None = None) -> None:
+    """Update one bot parameter; raises if key is unknown."""
+    if key not in BOT_CONFIG_DEFAULTS:
+        raise KeyError(f"unknown bot_config key: {key!r}")
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE bot_config SET value = ?, updated_at = datetime('now') WHERE key = ?
+            """,
+            (float(value), key),
+        )
+        if cur.rowcount == 0:
+            desc = BOT_CONFIG_DEFAULTS[key][1]
+            conn.execute(
+                """
+                INSERT INTO bot_config (key, value, description, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                """,
+                (key, float(value), desc),
+            )
+
+
+def fetch_all_bot_config_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    cur = conn.execute(
+        "SELECT key, value, description, updated_at FROM bot_config ORDER BY key ASC"
+    )
+    return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def reset_bot_config_to_defaults(db_path: Path | str | None = None) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM bot_config")
+        _seed_bot_config_if_empty(conn)
+
+
+def load_runtime_config_dict(db_path: Path | str | None = None) -> dict[str, float]:
+    """All ``bot_config`` rows as ``key -> value`` (one query per trading cycle)."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute("SELECT key, value FROM bot_config").fetchall()
+    return {str(r[0]): float(r[1]) for r in rows}
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {k: row[k] for k in row.keys()}
 
 
 @contextmanager

@@ -21,12 +21,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import config
-from data.data_store import init_schema
+from data.data_store import get_connection, init_schema, load_runtime_config_dict
+from learning.rl_nudge import maybe_nudge_thresholds
 from execution import order_manager
-from monitoring import alerts
+from monitoring import alerts, trade_logger
 from risk import drawdown_guard
 from risk import portfolio_limiter
-from risk import position_sizer
 from signals import momentum, signal_combiner
 from signals.sentiment_signal import sentiment_for_symbol
 from training.backtester import load_yfinance_history
@@ -48,9 +48,6 @@ SCAN_INTERVAL_SEC = _int_env("WORKER_SCAN_INTERVAL_SEC", 30 * 60, minimum=60)
 CYCLE_WORKERS = int(os.getenv("WORKER_CYCLE_EXECUTOR_WORKERS", "16"))
 MAX_STOCK_POS = 5
 MAX_CRYPTO_POS = 5
-MAX_SLEEVE_FRAC = 0.10
-STOP_LOSS_FRAC = 0.03
-TAKE_PROFIT_FRAC = 0.06
 # Below this bar count, MACD/RSI inputs are weak; combiner inputs stay ~0 (see paper_trading_loop).
 MIN_OHLCV_BARS_FOR_SIGNALS = 35
 
@@ -151,7 +148,12 @@ class CycleSignal(NamedTuple):
     error: str | None
 
 
-def analyze_symbol(asset_class: AssetClass, symbol: str, kraken_ex: Any) -> CycleSignal:
+def analyze_symbol(
+    asset_class: AssetClass,
+    symbol: str,
+    kraken_ex: Any,
+    rt: dict[str, float],
+) -> CycleSignal:
     sym = symbol.strip()
     if asset_class == "stock":
         df = load_stock_bars(sym)
@@ -175,10 +177,22 @@ def analyze_symbol(asset_class: AssetClass, symbol: str, kraken_ex: Any) -> Cycl
     vol = df["Volume"] if "Volume" in df.columns else None
     if asset_class == "crypto":
         momentum.log_last_rsi_for_btc_eth(close, sym)
-    sigs = discrete_signal_bundle(close, vol)
+    sigs = discrete_signal_bundle(
+        close,
+        vol,
+        rsi_oversold=float(rt["rsi_oversold"]),
+        rsi_overbought=float(rt["rsi_overbought"]),
+    )
     sigs["sentiment"] = _sentiment_discrete(sym, asset_class)
     label = f"{asset_class}:{sym}"
-    score, action = signal_combiner.evaluate(sigs, symbol=label, asset_class=asset_class)
+    th = {
+        "buy_threshold": float(rt["buy_threshold"]),
+        "sell_threshold": float(rt["sell_threshold"]),
+        "crypto_buy_threshold": float(rt["crypto_buy_threshold"]),
+    }
+    score, action = signal_combiner.evaluate(
+        sigs, symbol=label, asset_class=asset_class, thresholds=th
+    )
     rsi_raw = float("nan")
     if n_bars >= 14:
         rsi_ser = momentum.compute_rsi(close.astype(float), 14).dropna()
@@ -198,11 +212,13 @@ def analyze_symbol(asset_class: AssetClass, symbol: str, kraken_ex: Any) -> Cycl
     return CycleSignal(asset_class, sym, sigs, score, action, mid, None)
 
 
-def _buy_notional(trader: PaperTrader, asset_class: AssetClass) -> float:
+def _buy_notional(trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]) -> float:
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
-    cap10 = max(0.0, sleeve * MAX_SLEEVE_FRAC)
-    kelly = position_sizer.position_notional_cap(sleeve, 0.55, 1.15)
-    return max(0.0, min(cap10, kelly, sleeve * 0.99))
+    max_pct = float(rt["max_position_pct"])
+    kelly_frac = float(rt["kelly_fraction"])
+    cap10 = max(0.0, sleeve * max_pct)
+    k_notional = max(0.0, sleeve * kelly_frac)
+    return max(0.0, min(cap10, k_notional, sleeve * 0.99))
 
 
 def _can_buy(
@@ -211,6 +227,7 @@ def _can_buy(
     symbol: str,
     mid: float,
     notional: float,
+    rt: dict[str, float],
 ) -> tuple[bool, str]:
     if drawdown_guard.check_kill_switch(trader.equity_total()):
         return False, "kill_switch"
@@ -224,7 +241,9 @@ def _can_buy(
     if asset_class == "crypto" and n_cr >= MAX_CRYPTO_POS:
         return False, "max_crypto_positions"
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
-    if not portfolio_limiter.within_single_asset_cap(notional, sleeve):
+    if not portfolio_limiter.within_single_asset_cap(
+        notional, sleeve, max_single_pct=float(rt["max_position_pct"])
+    ):
         return False, "single_asset_cap"
     s_mv, c_mv = _deployed_notional(trader)
     total_eq = trader.equity_total()
@@ -237,8 +256,14 @@ def _can_buy(
     return True, "ok"
 
 
-def apply_stops_and_targets(trader: PaperTrader, kraken_ex: Any) -> list[str]:
-    """-3% stop, +6% take profit. Returns list of log lines."""
+def apply_stops_and_targets(
+    trader: PaperTrader,
+    kraken_ex: Any,
+    rt: dict[str, float],
+) -> list[str]:
+    """Stop loss / take profit from live ``bot_config`` (SQLite)."""
+    stop_loss_frac = float(rt["stop_loss_pct"])
+    take_profit_frac = float(rt["take_profit_pct"])
     lines: list[str] = []
     for pos in list(trader._positions.values()):
         if pos.asset_class == "stock":
@@ -249,7 +274,7 @@ def apply_stops_and_targets(trader: PaperTrader, kraken_ex: Any) -> list[str]:
         if mid is None or mid <= 0:
             continue
         entry = float(pos.avg_price)
-        if mid <= entry * (1.0 - STOP_LOSS_FRAC):
+        if mid <= entry * (1.0 - stop_loss_frac):
             trader.set_telegram_on_fills(False)
             try:
                 r = order_manager.paper_market_sell(
@@ -265,7 +290,7 @@ def apply_stops_and_targets(trader: PaperTrader, kraken_ex: Any) -> list[str]:
                 trader.set_telegram_on_fills(True)
             pnl = (mid - entry) * pos.quantity
             lines.append(f"STOP_LOSS {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
-        elif mid >= entry * (1.0 + TAKE_PROFIT_FRAC):
+        elif mid >= entry * (1.0 + take_profit_frac):
             trader.set_telegram_on_fills(False)
             try:
                 r = order_manager.paper_market_sell(
@@ -331,7 +356,11 @@ def liquidate_all(trader: PaperTrader, kraken_ex: Any) -> None:
         trader.set_telegram_on_fills(True)
 
 
-def execute_cycle_results(trader: PaperTrader, results: list[CycleSignal]) -> dict[str, Any]:
+def execute_cycle_results(
+    trader: PaperTrader,
+    results: list[CycleSignal],
+    rt: dict[str, float],
+) -> dict[str, Any]:
     """Sequential execution after parallel analysis (PaperTrader is not thread-safe)."""
     out: dict[str, Any] = {"buys": 0, "sells": 0, "holds": 0, "errors": 0}
     for cs in sorted(results, key=lambda x: (x.asset_class, x.symbol)):
@@ -355,8 +384,8 @@ def execute_cycle_results(trader: PaperTrader, results: list[CycleSignal]) -> di
             continue
         with _trader_lock:
             if cs.action == "BUY":
-                notional = _buy_notional(trader, cs.asset_class)
-                ok, reason = _can_buy(trader, cs.asset_class, cs.symbol, mid, notional)
+                notional = _buy_notional(trader, cs.asset_class, rt)
+                ok, reason = _can_buy(trader, cs.asset_class, cs.symbol, mid, notional, rt)
                 qty = notional / mid
                 if cs.asset_class == "stock":
                     qty = round(qty, 4)
@@ -406,12 +435,13 @@ def run_trading_cycle_once(
 ) -> dict[str, Any]:
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
+    rt = load_runtime_config_dict()
     logger.info(
         f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "
         f"stock_symbols={len(stock_symbols)} | crypto_symbols={len(crypto_symbols)}"
     )
 
-    lines = apply_stops_and_targets(trader, kraken_ex)
+    lines = apply_stops_and_targets(trader, kraken_ex, rt)
     for ln in lines:
         logger.info(ln)
 
@@ -425,14 +455,14 @@ def run_trading_cycle_once(
 
     results: list[CycleSignal] = []
     with ThreadPoolExecutor(max_workers=CYCLE_WORKERS) as pool:
-        futs = {pool.submit(analyze_symbol, ac, sym, kraken_ex): (ac, sym) for ac, sym in tasks}
+        futs = {pool.submit(analyze_symbol, ac, sym, kraken_ex, rt): (ac, sym) for ac, sym in tasks}
         for fut in as_completed(futs):
             try:
                 results.append(fut.result())
             except Exception as exc:
                 logger.warning("Analyze failed {}: {}", futs[fut], exc)
 
-    summary = execute_cycle_results(trader, results)
+    summary = execute_cycle_results(trader, results, rt)
     summary["stop_events"] = lines
     summary["analyzed"] = len(results)
     sorted_crypto_scores = sorted(
@@ -449,6 +479,7 @@ def run_trading_cycle_once(
         summary["holds"],
         summary["errors"],
     )
+    maybe_nudge_thresholds()
     return summary
 
 
@@ -505,6 +536,28 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
             alerts.send_telegram(f"⚠️ FinBERT preload failed: {str(exc)[:200]}")
 
     trader = create_paper_trader(telegram_on_fills=False)
+    try:
+        with get_connection() as conn:
+            eq_s = trader.equity_stocks()
+            eq_c = trader.equity_crypto()
+            s_mv, c_mv = trader.positions_market_value()
+            dep = s_mv + c_mv
+            eq_t = trader.equity_total()
+            dep_pct = (dep / eq_t * 100.0) if eq_t > 0.0 else 0.0
+            trade_logger.log_portfolio_snapshot(
+                conn,
+                mode=config.MODE,
+                cash_stocks=trader.cash_stocks,
+                cash_crypto=trader.cash_crypto,
+                equity_stocks=eq_s,
+                equity_crypto=eq_c,
+                equity_total=eq_t,
+                deployed_pct=dep_pct,
+                kill_switch_active=False,
+                meta={"bootstrap": True, "source": "worker_startup"},
+            )
+    except Exception:
+        logger.exception("Startup portfolio snapshot failed")
 
     signal.signal(signal.SIGTERM, _on_signal)
     if hasattr(signal, "SIGINT"):

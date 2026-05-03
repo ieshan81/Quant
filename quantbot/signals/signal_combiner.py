@@ -20,9 +20,6 @@ WEIGHTS: dict[str, float] = {
 
 TradeAction = Literal["BUY", "SELL", "HOLD"]
 
-# Crypto discrete scores cluster near 0; use a lower BUY bar than equities.
-BUY_THRESHOLD_CRYPTO = 0.15
-
 
 def __getattr__(name: str) -> float:
     """Expose BUY_THRESHOLD / SELL_THRESHOLD from config for backward compatibility."""
@@ -50,13 +47,32 @@ def combined_score(signals: dict[str, float]) -> float:
     return max(-1.0, min(1.0, total))
 
 
-def trading_action(score: float, *, asset_class: str | None = None) -> TradeAction:
+def _thresholds_or_config(thresholds: dict[str, float] | None) -> dict[str, float]:
+    if thresholds is not None:
+        return thresholds
+    return {
+        "buy_threshold": float(config.BUY_THRESHOLD),
+        "sell_threshold": float(config.SELL_THRESHOLD),
+        "crypto_buy_threshold": 0.15,
+    }
+
+
+def trading_action(
+    score: float,
+    *,
+    asset_class: str | None = None,
+    thresholds: dict[str, float] | None = None,
+) -> TradeAction:
+    th = _thresholds_or_config(thresholds)
+    buy_stock = float(th["buy_threshold"])
+    sell_stock = float(th["sell_threshold"])
+    crypto_buy = float(th["crypto_buy_threshold"])
     if (asset_class or "").lower() == "crypto":
-        if score >= BUY_THRESHOLD_CRYPTO:
+        if score >= crypto_buy:
             return "BUY"
-    elif score > float(config.BUY_THRESHOLD):
+    elif score > buy_stock:
         return "BUY"
-    if score < config.SELL_THRESHOLD:
+    if score < sell_stock:
         return "SELL"
     return "HOLD"
 
@@ -66,10 +82,11 @@ def evaluate(
     *,
     symbol: str | None = None,
     asset_class: str | None = None,
+    thresholds: dict[str, float] | None = None,
 ) -> tuple[float, TradeAction]:
-    """Return (combined_score, BUY | SELL | HOLD). Optional ``symbol`` / ``asset_class`` for logging & crypto BUY bar."""
+    """Return (combined_score, BUY | SELL | HOLD). ``thresholds`` from DB each cycle when live."""
     s = combined_score(signals)
-    act = trading_action(s, asset_class=asset_class)
+    act = trading_action(s, asset_class=asset_class, thresholds=thresholds)
     if symbol:
         rsi = float(signals.get("rsi", 0.0))
         macd = float(signals.get("macd", 0.0))

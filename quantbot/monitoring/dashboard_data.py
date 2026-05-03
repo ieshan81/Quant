@@ -104,12 +104,85 @@ def fetch_open_positions_from_trades(conn: sqlite3.Connection) -> list[dict[str,
     return [_row_to_dict(r) for r in cur.fetchall()]
 
 
+def fetch_rl_learning_recent(conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
+    cur = conn.execute(
+        """
+        SELECT id, created_at, summary, trade_count, win_rate, changes_json
+        FROM rl_learning_log
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        d = _row_to_dict(r)
+        raw = d.get("changes_json")
+        if raw:
+            try:
+                d["changes"] = json.loads(str(raw))
+            except json.JSONDecodeError:
+                d["changes"] = None
+        else:
+            d["changes"] = None
+        del d["changes_json"]
+        out.append(d)
+    return out
+
+
+def _closed_round_trip_pairs(conn: sqlite3.Connection) -> list[tuple[float, float]]:
+    """(buy_price, sell_price) per FIFO closed lot — same semantics as RL nudge."""
+    from collections import deque
+
+    cur = conn.execute(
+        """
+        SELECT asset_class, symbol, side, price, status
+        FROM trades
+        WHERE status = 'filled' AND price IS NOT NULL
+        ORDER BY id ASC
+        """
+    )
+    stacks: dict[tuple[str, str], deque[float]] = {}
+    closed: list[tuple[float, float]] = []
+    for ac, sym, side, price, _st in cur.fetchall():
+        key = (str(ac), str(sym))
+        px = float(price)
+        if side == "buy":
+            stacks.setdefault(key, deque()).append(px)
+        elif side == "sell":
+            q = stacks.get(key)
+            if q:
+                closed.append((q.popleft(), px))
+    return closed
+
+
+def fetch_performance_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    cur = conn.execute("SELECT COUNT(*) FROM trades WHERE status = 'filled'")
+    total_trades = int(cur.fetchone()[0])
+    pairs = _closed_round_trip_pairs(conn)
+    pnls = [s - b for b, s in pairs]
+    wins = sum(1 for p in pnls if p > 0)
+    n_closed = len(pnls)
+    win_rate_pct = (100.0 * wins / float(n_closed)) if n_closed else None
+    best_trade = max(pnls) if pnls else None
+    worst_trade = min(pnls) if pnls else None
+    return {
+        "total_trades": total_trades,
+        "closed_round_trips": n_closed,
+        "win_rate_pct": win_rate_pct,
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+    }
+
+
 def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     latest = fetch_latest_portfolio(conn)
     series = fetch_portfolio_equity_series(conn)
     trades = fetch_recent_trades(conn)
     signals = fetch_recent_signals(conn)
     positions = fetch_open_positions_from_trades(conn)
+    rl_history = fetch_rl_learning_recent(conn, 10)
+    performance = fetch_performance_summary(conn)
 
     pnl_pct = None
     if latest:
@@ -131,4 +204,6 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "open_positions": positions,
         "recent_trades": trades,
         "recent_signals": signals,
+        "rl_learning_history": rl_history,
+        "performance": performance,
     }

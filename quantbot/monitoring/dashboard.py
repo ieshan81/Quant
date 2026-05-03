@@ -13,7 +13,7 @@ inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
 import json
 from typing import Any
 
-from flask import Flask, Response, render_template_string
+from flask import Flask, Response, render_template_string, request
 from loguru import logger
 
 import config
@@ -112,7 +112,51 @@ _PAGE = """<!DOCTYPE html>
     </tbody></table>
     {% else %}<p class="muted">No signals logged.</p>{% endif %}
   </div>
-  <p class="muted">JSON: <a href="/api/dashboard">/api/dashboard</a></p>
+  <div class="card" style="margin-top:1rem;">
+    <h2>Performance</h2>
+    <p class="muted">Total filled rows: <strong>{{ perf.total_trades }}</strong> |
+       Closed round-trips: <strong>{{ perf.closed_round_trips }}</strong>
+       {% if perf.win_rate_pct is not none %} | Win rate: <strong>{{ (perf.win_rate_pct | round(1)) }}%</strong>{% endif %}
+       {% if perf.best_trade is not none %} | Best Δ (per unit): <strong>{{ (perf.best_trade | round(4)) }}</strong>{% endif %}
+       {% if perf.worst_trade is not none %} | Worst Δ: <strong>{{ (perf.worst_trade | round(4)) }}</strong>{% endif %}
+    </p>
+  </div>
+  <div class="card" style="margin-top:1rem;">
+    <h2>⚙️ Bot Parameters</h2>
+    <p class="muted">Saved to SQLite — worker reads fresh values each trading cycle.</p>
+    <table>
+      <thead><tr><th>Parameter</th><th>Slider</th><th>Value</th><th></th></tr></thead>
+      <tbody>
+      {% for row in bot_ui %}
+        <tr data-key="{{ row.key }}">
+          <td><span title="{{ row.description }}">{{ row.key }}</span></td>
+          <td><input type="range" class="cfg-range" data-key="{{ row.key }}"
+              min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}"/></td>
+          <td><input type="number" class="cfg-num" data-key="{{ row.key }}"
+              min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}" style="width:6rem"/></td>
+          <td><button type="button" class="cfg-save" data-key="{{ row.key }}">Save</button></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p style="margin-top:0.75rem;"><button type="button" id="cfg-reset">Reset to defaults</button></p>
+  </div>
+  <div class="card" style="margin-top:1rem;">
+    <h2>Learning History</h2>
+    {% if rl_history %}
+    <table><thead><tr><th>Time</th><th>Summary</th><th>Pairs</th><th>Win%</th></tr></thead><tbody>
+      {% for e in rl_history %}
+      <tr>
+        <td>{{ e.created_at }}</td>
+        <td>{{ e.summary }}</td>
+        <td>{{ e.trade_count }}</td>
+        <td>{% if e.win_rate is not none %}{{ (e.win_rate * 100) | round(1) }}%{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
+  </div>
+  <p class="muted">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a></p>
   <script id="dash-payload" type="application/json">{{ chart_data|tojson }}</script>
   <script>
     const REFRESH_MS = {{ refresh_sec }} * 1000;
@@ -161,6 +205,47 @@ _PAGE = """<!DOCTYPE html>
       } catch (e) { console.warn(e); }
     }
     setInterval(poll, REFRESH_MS);
+    function bindCfg() {
+      document.querySelectorAll(".cfg-range").forEach((r) => {
+        r.oninput = () => {
+          const k = r.dataset.key;
+          const n = document.querySelector('.cfg-num[data-key="' + k + '"]');
+          if (n) n.value = r.value;
+        };
+      });
+      document.querySelectorAll(".cfg-num").forEach((n) => {
+        n.oninput = () => {
+          const k = n.dataset.key;
+          const r = document.querySelector('.cfg-range[data-key="' + k + '"]');
+          if (r) r.value = n.value;
+        };
+      });
+      document.querySelectorAll(".cfg-save").forEach((btn) => {
+        btn.onclick = async () => {
+          const k = btn.dataset.key;
+          const n = document.querySelector('.cfg-num[data-key="' + k + '"]');
+          const v = parseFloat(n.value);
+          const res = await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: k, value: v }),
+          });
+          if (res.ok) {
+            btn.textContent = "Saved";
+            setTimeout(() => { btn.textContent = "Save"; }, 1200);
+          }
+        };
+      });
+      const rst = document.getElementById("cfg-reset");
+      if (rst) {
+        rst.onclick = async () => {
+          if (!confirm("Reset all bot parameters to defaults?")) return;
+          await fetch("/api/config/reset", { method: "POST" });
+          location.reload();
+        };
+      }
+    }
+    bindCfg();
   </script>
 </body>
 </html>
@@ -191,6 +276,35 @@ def _fmt_trades(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+_SLIDER_LIMITS: dict[str, tuple[float, float, float]] = {
+    "buy_threshold": (0.05, 0.40, 0.01),
+    "sell_threshold": (-0.40, -0.05, 0.01),
+    "crypto_buy_threshold": (0.05, 0.35, 0.01),
+    "rsi_oversold": (10.0, 45.0, 0.5),
+    "rsi_overbought": (55.0, 90.0, 0.5),
+    "kelly_fraction": (0.01, 0.99, 0.01),
+    "stop_loss_pct": (0.01, 0.25, 0.005),
+    "take_profit_pct": (0.02, 0.50, 0.01),
+    "max_position_pct": (0.02, 0.25, 0.01),
+}
+
+
+def _bot_ui_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        key = str(r["key"])
+        if key.startswith("rl_"):
+            continue
+        lo, hi, st = _SLIDER_LIMITS.get(key, (0.0, 1.0, 0.01))
+        d = dict(r)
+        d["min"] = lo
+        d["max"] = hi
+        d["step"] = st
+        d["value"] = float(d["value"])
+        out.append(d)
+    return out
+
+
 def _fmt_signals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for r in rows:
@@ -208,6 +322,7 @@ def _fmt_signals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def create_app() -> Flask:
+    from data import data_store
     from data.data_store import get_connection, init_schema
     from monitoring.dashboard_data import build_dashboard_payload
 
@@ -227,10 +342,35 @@ def create_app() -> Flask:
             mimetype="application/json",
         )
 
+    @app.get("/api/config")
+    def api_config_get() -> Response:
+        with get_connection() as conn:
+            rows = data_store.fetch_all_bot_config_rows(conn)
+        return Response(json.dumps(rows, default=str), mimetype="application/json")
+
+    @app.post("/api/config")
+    def api_config_post() -> tuple[dict[str, Any], int]:
+        body = request.get_json(force=True, silent=True) or {}
+        key = str(body.get("key", "")).strip()
+        if not key or key.startswith("rl_") or key not in data_store.BOT_CONFIG_DEFAULTS:
+            return {"ok": False, "error": "invalid key"}, 400
+        try:
+            val = float(body["value"])
+        except (TypeError, ValueError, KeyError):
+            return {"ok": False, "error": "invalid value"}, 400
+        data_store.set_config(key, val)
+        return {"ok": True}, 200
+
+    @app.post("/api/config/reset")
+    def api_config_reset() -> tuple[dict[str, Any], int]:
+        data_store.reset_bot_config_to_defaults()
+        return {"ok": True}, 200
+
     @app.get("/")
     def index() -> str:
         with get_connection() as conn:
             payload = build_dashboard_payload(conn)
+            bot_ui = _bot_ui_rows(data_store.fetch_all_bot_config_rows(conn))
         latest = payload.get("portfolio") or {}
         pnl = payload.get("pnl_vs_start_pct")
         pnl_str = f"{pnl:+.2f}%" if pnl is not None else "—"
@@ -249,6 +389,8 @@ def create_app() -> Flask:
         dep_str = f"{dep:.1f}%" if dep is not None else "—"
         mode_str = str(payload.get("mode") or latest.get("mode") or "—")
         chart_data = {"equity_series": payload.get("equity_series") or []}
+        perf = payload.get("performance") or {}
+        rl_history = payload.get("rl_learning_history") or []
         return render_template_string(
             _PAGE,
             refresh_sec=_REFRESH_SEC,
@@ -262,6 +404,9 @@ def create_app() -> Flask:
             trades=_fmt_trades(payload.get("recent_trades") or []),
             signals=_fmt_signals(payload.get("recent_signals") or []),
             chart_data=chart_data,
+            bot_ui=bot_ui,
+            perf=perf,
+            rl_history=rl_history,
         )
 
     return app
