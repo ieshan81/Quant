@@ -41,6 +41,9 @@ _PAGE = """<!DOCTYPE html>
     .big { font-size: 1.5rem; font-weight: 700; }
     .pos { color: #3ecf8e; }
     .neg { color: #f56565; }
+    .cal-ok { color: #3ecf8e; }
+    .cal-mid { color: #ecc94b; }
+    .cal-bad { color: #f56565; }
     table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
     th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #2a3545; }
     th { color: #8b9bb4; font-weight: 600; }
@@ -122,6 +125,21 @@ _PAGE = """<!DOCTYPE html>
     </p>
   </div>
   <div class="card" style="margin-top:1rem;">
+    <h2>📊 Signal Calibration</h2>
+    {% if calibration %}
+    <table><thead><tr><th>Signal Leg</th><th>Total Predictions</th><th>Accuracy %</th><th>Weight</th></tr></thead><tbody>
+      {% for leg, row in calibration.items()|sort %}
+      <tr class="{% if row.resolved < 1 %}muted{% elif row.accuracy > 55 %}cal-ok{% elif row.accuracy >= 45 %}cal-mid{% else %}cal-bad{% endif %}">
+        <td>{{ leg }}</td>
+        <td>{{ row.total }}</td>
+        <td>{% if row.resolved > 0 %}{{ row.accuracy }}%{% else %}—{% endif %}</td>
+        <td>{{ row.weight_suggestion }}</td>
+      </tr>
+      {% endfor %}
+    </tbody></table>
+    {% else %}<p class="muted">No calibration data.</p>{% endif %}
+  </div>
+  <div class="card" style="margin-top:1rem;">
     <h2>⚙️ Bot Parameters</h2>
     <p class="muted">Saved to SQLite — worker reads fresh values each trading cycle.</p>
     <table>
@@ -156,7 +174,7 @@ _PAGE = """<!DOCTYPE html>
     </tbody></table>
     {% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
   </div>
-  <p class="muted">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a></p>
+  <p class="muted">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a></p>
   <script id="dash-payload" type="application/json">{{ chart_data|tojson }}</script>
   <script>
     const REFRESH_MS = {{ refresh_sec }} * 1000;
@@ -366,6 +384,14 @@ def create_app() -> Flask:
         data_store.reset_bot_config_to_defaults()
         return {"ok": True}, 200
 
+    @app.get("/api/calibration")
+    def api_calibration() -> Response:
+        from learning.calibrator import get_leg_accuracies
+
+        with get_connection() as conn:
+            data = get_leg_accuracies(conn)
+        return Response(json.dumps(data, default=str), mimetype="application/json")
+
     @app.get("/")
     def index() -> str:
         with get_connection() as conn:
@@ -391,6 +417,7 @@ def create_app() -> Flask:
         chart_data = {"equity_series": payload.get("equity_series") or []}
         perf = payload.get("performance") or {}
         rl_history = payload.get("rl_learning_history") or []
+        calibration = payload.get("calibration") or {}
         return render_template_string(
             _PAGE,
             refresh_sec=_REFRESH_SEC,
@@ -407,6 +434,7 @@ def create_app() -> Flask:
             bot_ui=bot_ui,
             perf=perf,
             rl_history=rl_history,
+            calibration=calibration,
         )
 
     return app

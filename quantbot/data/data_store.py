@@ -109,6 +109,21 @@ CREATE TABLE IF NOT EXISTS rl_learning_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rl_learning_created ON rl_learning_log(created_at);
+
+CREATE TABLE IF NOT EXISTS signal_calibration (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    leg TEXT NOT NULL,
+    predicted_dir INTEGER NOT NULL,
+    actual_dir INTEGER,
+    price_at_signal REAL,
+    price_24h_later REAL,
+    correct INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_calibration_ts ON signal_calibration(ts);
+CREATE INDEX IF NOT EXISTS idx_signal_calibration_symbol ON signal_calibration(symbol);
 """
 
 

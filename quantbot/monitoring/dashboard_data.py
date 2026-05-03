@@ -8,6 +8,8 @@ from typing import Any
 
 import config
 
+from learning.calibrator import get_leg_accuracies
+
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {k: row[k] for k in row.keys()}
@@ -183,6 +185,7 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     positions = fetch_open_positions_from_trades(conn)
     rl_history = fetch_rl_learning_recent(conn, 10)
     performance = fetch_performance_summary(conn)
+    calibration = get_leg_accuracies(conn)
 
     pnl_pct = None
     if latest:
@@ -206,4 +209,5 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "recent_signals": signals,
         "rl_learning_history": rl_history,
         "performance": performance,
+        "calibration": calibration,
     }

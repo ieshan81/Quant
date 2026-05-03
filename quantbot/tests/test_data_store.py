@@ -19,6 +19,7 @@ def test_schema_sql_defines_core_tables() -> None:
         "performance_log",
         "bot_config",
         "rl_learning_log",
+        "signal_calibration",
     ):
         assert f"create table if not exists {name}" in lowered
 
@@ -47,3 +48,4 @@ def test_init_schema_creates_tables(tmp_path: Path) -> None:
     assert "performance_log" in names
     assert "bot_config" in names
     assert "rl_learning_log" in names
+    assert "signal_calibration" in names

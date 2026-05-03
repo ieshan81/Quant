@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import signal
 import sys
@@ -55,6 +56,25 @@ _stop = threading.Event()
 _halted = threading.Event()
 _trader_lock = threading.Lock()
 _sentiment_lock = threading.Lock()
+
+# --- Sprint 11: news aggregator (asyncio loop in background thread) ---
+_news_aggregator: Any = None
+
+
+def _start_news_background() -> None:
+    """Best-effort RSS/Telegram fan-in; failures must not affect trading."""
+    try:
+        from news.news_monitor import NewsAggregator
+
+        def _run() -> None:
+            global _news_aggregator
+            agg = NewsAggregator()
+            _news_aggregator = agg
+            asyncio.run(agg.run())
+
+        threading.Thread(target=_run, name="quantbot-news", daemon=True).start()
+    except Exception:
+        logger.debug("Sprint11 news thread start failed", exc_info=True)
 
 
 def setup_logging() -> None:
@@ -185,13 +205,44 @@ def analyze_symbol(
     )
     sigs["sentiment"] = _sentiment_discrete(sym, asset_class)
     label = f"{asset_class}:{sym}"
+    # --- Sprint 11: news-aware + per-leg calibration (insertion) ---
+    try:
+        from learning import calibrator as _calibrator
+        from news.news_matcher import match_headlines_to_symbol
+
+        headlines = _news_aggregator.get_latest_sync(20) if _news_aggregator is not None else []
+        hits = match_headlines_to_symbol(sym, headlines, top_n=3) if headlines else []
+        if hits:
+            best = max(h.relevance for h in hits)
+            if best > 0:
+                blob = " ".join(h.headline.lower() for h in hits)
+                neg = ("crash", "fall", "loss", "lawsuit", "layoff", "fraud", "cuts", "decline")
+                pos = ("surge", "gain", "rise", "profit", "record", "deal", "beat", "growth")
+                bump = 0.0
+                if any(p in blob for p in pos) and not any(n in blob for n in neg):
+                    bump = min(0.45, float(best) * 0.22)
+                elif any(n in blob for n in neg) and not any(p in blob for p in pos):
+                    bump = -min(0.45, float(best) * 0.22)
+                sigs["sentiment"] = max(-1.0, min(1.0, float(sigs.get("sentiment", 0.0)) + bump))
+                logger.info("Sprint11 news | {} | hits={} best_rel={:.2f}", label, len(hits), best)
+        legs_log = {
+            k: float(sigs[k])
+            for k in ("rsi", "macd", "bollinger", "z_score", "sentiment", "volume")
+            if k in sigs and abs(float(sigs[k])) > 1e-9
+        }
+        if mid is not None and legs_log:
+            _calibrator.log_signal_legs(sym, legs_log, float(mid))
+        sigs_eval = _calibrator.apply_calibrated_weights(dict(sigs))
+    except Exception:
+        logger.debug("Sprint11 news/calib skipped for {}", sym, exc_info=True)
+        sigs_eval = dict(sigs)
     th = {
         "buy_threshold": float(rt["buy_threshold"]),
         "sell_threshold": float(rt["sell_threshold"]),
         "crypto_buy_threshold": float(rt["crypto_buy_threshold"]),
     }
     score, action = signal_combiner.evaluate(
-        sigs, symbol=label, asset_class=asset_class, thresholds=th
+        sigs_eval, symbol=label, asset_class=asset_class, thresholds=th
     )
     rsi_raw = float("nan")
     if n_bars >= 14:
@@ -203,13 +254,13 @@ def analyze_symbol(
         label,
         n_bars,
         rsi_raw,
-        sigs.get("rsi"),
-        sigs.get("macd"),
-        sigs.get("bollinger"),
+        sigs_eval.get("rsi"),
+        sigs_eval.get("macd"),
+        sigs_eval.get("bollinger"),
         score,
         action,
     )
-    return CycleSignal(asset_class, sym, sigs, score, action, mid, None)
+    return CycleSignal(asset_class, sym, sigs_eval, score, action, mid, None)
 
 
 def _buy_notional(trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]) -> float:
@@ -480,6 +531,13 @@ def run_trading_cycle_once(
         summary["errors"],
     )
     maybe_nudge_thresholds()
+    try:
+        from learning import calibrator as _calibrator
+
+        with get_connection() as conn:
+            _calibrator.resolve_calibrations(conn)
+    except Exception:
+        logger.debug("Sprint11 resolve_calibrations skipped", exc_info=True)
     return summary
 
 
@@ -523,6 +581,8 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         logger.exception("Initial universe refresh failed (scanner thread will retry)")
 
     scan_thread = start_scanner_thread(universe, _stop, interval_sec=float(SCAN_INTERVAL_SEC))
+
+    _start_news_background()
 
     try:
         from data.sentiment_feed import get_finbert_pipeline

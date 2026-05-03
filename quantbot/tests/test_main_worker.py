@@ -46,7 +46,9 @@ def test_run_trading_cycle_once_with_overrides() -> None:
     ex.fetch_ohlcv = MagicMock(return_value=[])
     with patch.object(mw, "analyze_symbol") as mock_a, patch.object(
         mw, "load_runtime_config_dict", _rt
-    ), patch.object(mw, "maybe_nudge_thresholds", lambda *a, **k: None):
+    ), patch.object(mw, "maybe_nudge_thresholds", lambda *a, **k: None), patch(
+        "learning.calibrator.resolve_calibrations", lambda conn: None
+    ):
         mock_a.return_value = mw.CycleSignal("stock", "FAKE", {}, 0.0, "HOLD", 10.0, "no_data")
         summary = mw.run_trading_cycle_once(
             t,

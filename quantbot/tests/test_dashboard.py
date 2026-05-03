@@ -32,6 +32,8 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert "performance" in data
     assert "rl_learning_history" in data
     assert data["rl_learning_history"] == []
+    assert "calibration" in data
+    assert "rsi" in data["calibration"]
 
 
 def test_api_config_get_and_post(dash_app) -> None:
@@ -66,6 +68,16 @@ def test_index_renders(dash_app) -> None:
     assert b"QuantBot monitoring" in r.data
     assert b"Bot Parameters" in r.data
     assert b"Performance" in r.data
+    assert b"Signal Calibration" in r.data
+
+
+def test_api_calibration(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/api/calibration")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert "rsi" in data
+    assert "weight_suggestion" in data["rsi"]
 
 
 def test_health(dash_app) -> None:
