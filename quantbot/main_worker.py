@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 import signal
 import sys
 import threading

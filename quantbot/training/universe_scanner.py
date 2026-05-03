@@ -324,7 +324,13 @@ def _score_one_stock(wiki_sym: str) -> tuple[str, float]:
     except Exception as exc:
         logger.debug("Universe skip stock {} ({}): {}", wiki_sym, yf_sym, exc)
         return yf_sym, float("-inf")
-    if df is None or len(df) < 28:
+    if df is None:
+        return yf_sym, float("-inf")
+    n_bars = len(df)
+    if n_bars < 10:
+        logger.warning("Skipping {} — only {} bars available (min 10 required)", yf_sym, n_bars)
+        return yf_sym, float("-inf")
+    if n_bars < 28:
         return yf_sym, float("-inf")
     close = df["Close"]
     vol = df["Volume"] if "Volume" in df.columns else None
@@ -408,7 +414,13 @@ def _score_one_crypto(ex: Any, symbol: str) -> tuple[str, float]:
     except Exception as exc:
         logger.debug("Universe skip crypto {}: {}", symbol, exc)
         return symbol, float("-inf")
-    if not raw or len(raw) < 28:
+    if not raw:
+        return symbol, float("-inf")
+    n_bars = len(raw)
+    if n_bars < 10:
+        logger.warning("Skipping {} — only {} bars available (min 10 required)", symbol, n_bars)
+        return symbol, float("-inf")
+    if n_bars < 28:
         return symbol, float("-inf")
     df = pd.DataFrame(raw, columns=["ts", "Open", "High", "Low", "Close", "Volume"])
     close = df["Close"].astype(float)

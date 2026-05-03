@@ -6,6 +6,10 @@ HuggingFace models are loaded lazily inside ``score_news_text`` / ``score_social
 
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 import re
 import threading
 from statistics import mean

@@ -1,11 +1,13 @@
-"""Reddit momentum: ApeWisdom (primary) + Tradestie fallback. No API key. Cached for dashboard + universe + sentiment."""
+"""Reddit momentum: ApeWisdom → Tradestie → Reddit public JSON. Cached for dashboard + universe + sentiment."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, asdict
 from typing import Any
 from urllib.request import Request, urlopen
@@ -13,15 +15,93 @@ from urllib.request import Request, urlopen
 from loguru import logger
 
 APEWISDOM_URL = "https://apewisdom.io/api/v1.0/filter/{filter}/page/1"
-# Primary host per docs; `api.` subdomain used if apex path returns 404/moves.
 TRADESTIE_FALLBACK_URLS = (
     "https://tradestie.com/api/v1/apps/reddit",
     "https://api.tradestie.com/v1/apps/reddit",
 )
+REDDIT_JSON_URLS = [
+    "https://www.reddit.com/r/wallstreetbets/hot.json?limit=25&raw_json=1",
+    "https://www.reddit.com/r/stocks/hot.json?limit=25&raw_json=1",
+    "https://www.reddit.com/r/CryptoMoonShots/hot.json?limit=25&raw_json=1",
+]
+REDDIT_JSON_UA = "QuantBot/1.0 (paper trading bot)"
+DEFAULT_HTTP_UA = "QuantBot/1.0 (momentum research)"
+
 FILTERS = ["wallstreetbets", "stocks", "pennystocks", "CryptoMoonShots", "all-crypto"]
 
 _CACHE_LOCK = threading.Lock()
 _CACHED_SIGNALS: list["MomentumSignal"] = []
+
+_REDDIT_TICKER_RE = re.compile(r"\b[A-Z]{2,5}\b")
+# Filter obvious non-tickers from ALL-CAPS word regex
+_STOP_TICKERS = frozenset(
+    {
+        "THE",
+        "AND",
+        "FOR",
+        "ARE",
+        "BUT",
+        "NOT",
+        "YOU",
+        "ALL",
+        "CAN",
+        "HER",
+        "WAS",
+        "ONE",
+        "OUR",
+        "OUT",
+        "DAY",
+        "GET",
+        "HAS",
+        "HIM",
+        "HIS",
+        "HOW",
+        "ITS",
+        "MAY",
+        "NEW",
+        "NOW",
+        "OLD",
+        "SEE",
+        "TWO",
+        "WHO",
+        "BOY",
+        "DID",
+        "LET",
+        "PUT",
+        "SAY",
+        "SHE",
+        "TOO",
+        "USE",
+        "MAN",
+        "WAY",
+        "GOT",
+        "BAD",
+        "BIG",
+        "OWN",
+        "END",
+        "IMO",
+        "LOL",
+        "EPS",
+        "CEO",
+        "CFO",
+        "IPO",
+        "ATH",
+        "ATL",
+        "YTD",
+        "USA",
+        "NYSE",
+        "OTC",
+        "WSB",
+        "DD",
+        "TA",
+        "PT",
+        "IT",
+        "TV",
+        "AI",
+        "UK",
+        "EU",
+    }
+)
 
 
 @dataclass
@@ -73,12 +153,22 @@ def _parse_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _http_get_json(url: str, timeout: float = 10.0) -> Any:
-    """GET JSON; raises on network/parse errors so callers can log WARNING with context."""
-    req = Request(url, headers={"User-Agent": "QuantBot/1.0 (momentum research)"})
+def _http_fetch_json(url: str, timeout: float, *, user_agent: str) -> tuple[Any, int, int]:
+    """GET URL, return (parsed_json, http_status, raw_body_length). Raises on failure."""
+    req = Request(url, headers={"User-Agent": user_agent})
     with urlopen(req, timeout=timeout) as resp:  # noqa: S310
-        raw = resp.read().decode("utf-8", errors="replace")
-    return json.loads(raw)
+        status = int(resp.getcode())
+        body = resp.read()
+    body_len = len(body)
+    text = body.decode("utf-8", errors="replace")
+    payload: Any = json.loads(text)
+    return payload, status, body_len
+
+
+def _log_http_success(url: str, status: int, body_len: int, rows: list[Any]) -> None:
+    logger.info(
+        f"[reddit_scanner] {url} returned HTTP {status}, body_length={body_len}, parsed_rows={len(rows)}"
+    )
 
 
 def _normalize_tradestie_payload(payload: Any) -> list[dict[str, Any]]:
@@ -108,16 +198,67 @@ def _normalize_tradestie_payload(payload: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _reddit_json_url_for_filter(filter_name: str) -> str | None:
+    """Map ApeWisdom-style filter name to a Reddit /hot.json URL."""
+    m = {
+        "wallstreetbets": REDDIT_JSON_URLS[0],
+        "stocks": REDDIT_JSON_URLS[1],
+        "pennystocks": REDDIT_JSON_URLS[1],
+        "CryptoMoonShots": REDDIT_JSON_URLS[2],
+        "all-crypto": REDDIT_JSON_URLS[2],
+    }
+    return m.get(filter_name)
+
+
+def _rows_from_reddit_hot_json(payload: Any) -> list[dict[str, Any]]:
+    """Parse Reddit listing JSON → ticker counts from post titles/selftext (ALL-CAPS tokens)."""
+    titles: list[str] = []
+    data = payload if isinstance(payload, dict) else {}
+    children = (data.get("data") or {}).get("children") or []
+    for ch in children:
+        if not isinstance(ch, dict):
+            continue
+        d = ch.get("data")
+        if not isinstance(d, dict):
+            continue
+        title = str(d.get("title") or "")
+        st = str(d.get("selftext") or "")
+        titles.append(f"{title} {st}")
+    blob = " ".join(titles)
+    counts: Counter[str] = Counter()
+    for tok in _REDDIT_TICKER_RE.findall(blob):
+        if tok in _STOP_TICKERS:
+            continue
+        counts[tok] += 1
+    rows: list[dict[str, Any]] = []
+    for idx, (ticker, count) in enumerate(counts.most_common(), start=1):
+        m24 = max(1, count - 1)
+        rows.append(
+            {
+                "ticker": ticker,
+                "mentions": count,
+                "rank": idx,
+                "rank_24h_ago": idx + 1,
+                "mentions_24h_ago": m24,
+            }
+        )
+    return rows
+
+
 class RedditMomentumScanner:
-    """Fetches ApeWisdom trending rows per subreddit filter; Tradestie if ApeWisdom fails."""
+    """ApeWisdom per filter, then Tradestie, then Reddit public JSON."""
 
     async def fetch_trending(self, filter_name: str) -> list[dict[str, Any]]:
         url = APEWISDOM_URL.format(filter=filter_name)
         for attempt in range(2):
             try:
-                payload = await asyncio.to_thread(_http_get_json, url, 10.0)
+                payload, status, blen = await asyncio.to_thread(
+                    _http_fetch_json, url, 10.0, user_agent=DEFAULT_HTTP_UA
+                )
                 rows = _parse_rows(payload)
+                _log_http_success(url, status, blen, rows)
                 if rows:
+                    logger.info(f"[reddit_scanner] source=ApeWisdom filter={filter_name}")
                     return rows
             except Exception as e:
                 logger.warning(f"[reddit_scanner] fetch failed for {filter_name}: {e}")
@@ -126,14 +267,30 @@ class RedditMomentumScanner:
 
         for turl in TRADESTIE_FALLBACK_URLS:
             try:
-                payload = await asyncio.to_thread(_http_get_json, turl, 10.0)
+                payload, status, blen = await asyncio.to_thread(
+                    _http_fetch_json, turl, 10.0, user_agent=DEFAULT_HTTP_UA
+                )
                 rows = _normalize_tradestie_payload(payload)
+                _log_http_success(turl, status, blen, rows)
                 if rows:
                     logger.info(
-                        "[reddit_scanner] Tradestie fallback ok for filter={} via {} (n={})",
-                        filter_name,
-                        turl[:48],
-                        len(rows),
+                        f"[reddit_scanner] source=Tradestie filter={filter_name} url={turl[:64]} rows={len(rows)}"
+                    )
+                    return rows
+            except Exception as e:
+                logger.warning(f"[reddit_scanner] fetch failed for {filter_name}: {e}")
+
+        rurl = _reddit_json_url_for_filter(filter_name)
+        if rurl:
+            try:
+                payload, status, blen = await asyncio.to_thread(
+                    _http_fetch_json, rurl, 15.0, user_agent=REDDIT_JSON_UA
+                )
+                rows = _rows_from_reddit_hot_json(payload)
+                _log_http_success(rurl, status, blen, rows)
+                if rows:
+                    logger.info(
+                        f"[reddit_scanner] source=RedditPublicJson filter={filter_name} url={rurl[:72]} rows={len(rows)}"
                     )
                     return rows
             except Exception as e:
@@ -210,7 +367,7 @@ def _reddit_poll_loop(stop: threading.Event) -> None:
 
 
 def start_reddit_momentum_thread(stop: threading.Event) -> threading.Thread:
-    """Poll ApeWisdom every 5 minutes (300s)."""
+    """Poll sources every 5 minutes (300s)."""
     t = threading.Thread(target=_reddit_poll_loop, args=(stop,), name="reddit_momentum", daemon=True)
     t.start()
     return t

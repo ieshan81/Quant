@@ -10,8 +10,29 @@ from social.reddit_scanner import (
     MomentumSignal,
     RedditMomentumScanner,
     _normalize_tradestie_payload,
+    _rows_from_reddit_hot_json,
     get_breakout_tickers,
 )
+
+
+def test_rows_from_reddit_hot_json_extracts_tickers() -> None:
+    payload = {
+        "data": {
+            "children": [
+                {
+                    "data": {
+                        "title": "YOLO into GME and AMC",
+                        "selftext": "Also watching NVDA",
+                    }
+                }
+            ]
+        }
+    }
+    rows = _rows_from_reddit_hot_json(payload)
+    tickers = {r["ticker"] for r in rows}
+    assert "GME" in tickers
+    assert "AMC" in tickers
+    assert "NVDA" in tickers
 
 
 def test_normalize_tradestie_payload_maps_comments() -> None:
@@ -74,7 +95,7 @@ def test_fetch_trending_retry_empty() -> None:
         def _fail(*_a: object, **_k: object) -> None:
             raise OSError("network down")
 
-        with patch("social.reddit_scanner._http_get_json", side_effect=_fail):
+        with patch("social.reddit_scanner._http_fetch_json", side_effect=_fail):
             out = await scanner.fetch_trending("stocks")
         assert out == []
 
