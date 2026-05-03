@@ -46,8 +46,23 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
     return max(minimum, v)
 
 
-TRADE_INTERVAL_SEC = _int_env("WORKER_TRADE_INTERVAL_SEC", 60, minimum=1)
 SCAN_INTERVAL_SEC = _int_env("WORKER_SCAN_INTERVAL_SEC", 15 * 60, minimum=60)
+# When WORKER_TRADE_INTERVAL_SEC is unset: 80s during NYSE regular session, 5m off-hours (shared SQLite + lower API load).
+_TRADE_OPEN_SEC = 80
+_TRADE_CLOSED_SEC = 300
+
+
+def _trade_interval_sec() -> float:
+    raw = os.getenv("WORKER_TRADE_INTERVAL_SEC", "").strip()
+    if raw:
+        return float(_int_env("WORKER_TRADE_INTERVAL_SEC", 60, minimum=1))
+    try:
+        from market_hours import nyse_regular_session_open
+
+        return float(_TRADE_OPEN_SEC if nyse_regular_session_open() else _TRADE_CLOSED_SEC)
+    except Exception:
+        logger.warning("trade interval: market_hours/pytz failed; using {}s", _TRADE_CLOSED_SEC, exc_info=True)
+        return float(_TRADE_CLOSED_SEC)
 CYCLE_WORKERS = int(os.getenv("WORKER_CYCLE_EXECUTOR_WORKERS", "16"))
 MAX_STOCK_POS = 5
 MAX_CRYPTO_POS = 5
@@ -719,7 +734,7 @@ def run_worker_forever() -> None:
             continue
         if _stop.is_set():
             break
-        time.sleep(float(TRADE_INTERVAL_SEC))
+        time.sleep(_trade_interval_sec())
 
     _shutdown_graceful(trader, kraken_ex)
     scan_thread.join(timeout=5.0)

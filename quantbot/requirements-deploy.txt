@@ -5,6 +5,7 @@ torch==2.5.1+cpu
 
 python-dotenv>=1.0.0
 loguru>=0.7.0
+pytz>=2024.1
 pytest>=7.4.0
 Flask>=3.0.0
 alpaca-trade-api>=3.0.0

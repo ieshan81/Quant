@@ -431,10 +431,9 @@ def create_app() -> Flask:
     @app.get("/api/social")
     def api_social() -> Response:
         try:
-            from social.reddit_scanner import get_cached_signals
-
-            rows = [s.to_public_dict() for s in get_cached_signals()[:10]]
+            rows = data_store.fetch_reddit_signals_public(10)
         except Exception:
+            logger.exception("api/social: failed to read reddit_signals from SQLite")
             rows = []
         return Response(json.dumps(rows, default=str), mimetype="application/json")
 

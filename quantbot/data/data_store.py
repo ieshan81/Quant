@@ -134,6 +134,20 @@ CREATE TABLE IF NOT EXISTS price_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_price_history_symbol_ts ON price_history(symbol, ts);
+
+CREATE TABLE IF NOT EXISTS reddit_signals (
+    ticker TEXT PRIMARY KEY,
+    mentions INTEGER,
+    rank INTEGER,
+    rank_24h_ago INTEGER,
+    rank_change INTEGER,
+    mentions_change_pct REAL,
+    source TEXT,
+    is_breakout INTEGER NOT NULL DEFAULT 0 CHECK (is_breakout IN (0, 1)),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_reddit_signals_mentions ON reddit_signals(mentions DESC);
 """
 
 
@@ -239,3 +253,66 @@ def get_connection(db_path: Path | str | None = None) -> Generator[sqlite3.Conne
         conn.commit()
     finally:
         conn.close()
+
+
+def replace_reddit_signals(rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
+    """Full snapshot replace: worker writes after each Reddit scan (cross-process dashboard reads)."""
+    if not rows:
+        with get_connection(db_path) as conn:
+            conn.execute("DELETE FROM reddit_signals")
+        return
+    tuples = [
+        (
+            str(r["ticker"]),
+            int(r["mentions"]),
+            int(r["rank"]),
+            int(r["rank_24h_ago"]),
+            int(r["rank_change"]),
+            float(r["mentions_change_pct"]),
+            str(r["source"]),
+            1 if r.get("is_breakout") else 0,
+        )
+        for r in rows
+    ]
+    with get_connection(db_path) as conn:
+        conn.execute("DELETE FROM reddit_signals")
+        conn.executemany(
+            """
+            INSERT INTO reddit_signals (
+                ticker, mentions, rank, rank_24h_ago, rank_change,
+                mentions_change_pct, source, is_breakout, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            tuples,
+        )
+
+
+def fetch_reddit_signals_public(limit: int = 10, db_path: Path | str | None = None) -> list[dict[str, Any]]:
+    """Rows for ``/api/social`` — same shape as ``MomentumSignal.to_public_dict``."""
+    lim = max(1, min(int(limit), 500))
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT ticker, mentions, rank, rank_24h_ago, rank_change,
+                   mentions_change_pct, source, is_breakout
+            FROM reddit_signals
+            ORDER BY mentions DESC, rank ASC
+            LIMIT ?
+            """,
+            (lim,),
+        )
+        out: list[dict[str, Any]] = []
+        for r in cur.fetchall():
+            out.append(
+                {
+                    "ticker": str(r["ticker"]),
+                    "mentions": int(r["mentions"]),
+                    "rank": int(r["rank"]),
+                    "rank_24h_ago": int(r["rank_24h_ago"]),
+                    "rank_change": int(r["rank_change"]),
+                    "mentions_change_pct": float(r["mentions_change_pct"]),
+                    "source": str(r["source"]),
+                    "is_breakout": bool(int(r["is_breakout"])),
+                }
+            )
+    return out

@@ -142,6 +142,16 @@ def _set_cache(signals: list[MomentumSignal]) -> None:
         _CACHED_SIGNALS.extend(signals)
 
 
+def _persist_signals_to_db(signals: list[MomentumSignal]) -> None:
+    """Write snapshot to SQLite so Flask (separate process) can serve ``/api/social``."""
+    try:
+        from data.data_store import replace_reddit_signals
+
+        replace_reddit_signals([s.to_public_dict() for s in signals])
+    except Exception as exc:
+        logger.warning("[reddit_scanner] persist to SQLite failed: {}", exc)
+
+
 def _parse_rows(payload: Any) -> list[dict[str, Any]]:
     if payload is None:
         return []
@@ -361,6 +371,7 @@ def _run_scan_once() -> None:
         scanner = RedditMomentumScanner()
         signals = asyncio.run(scanner.scan_all())
         _set_cache(signals)
+        _persist_signals_to_db(signals)
         with _CACHE_LOCK:
             n = len(_CACHED_SIGNALS)
             top5 = [s.ticker for s in _CACHED_SIGNALS[:5]]

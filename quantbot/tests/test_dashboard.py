@@ -85,3 +85,30 @@ def test_health(dash_app) -> None:
     r = client.get("/health")
     assert r.status_code == 200
     assert json.loads(r.data) == {"status": "ok"}
+
+
+def test_api_social_reads_sqlite(dash_app) -> None:
+    from data import data_store
+
+    data_store.replace_reddit_signals(
+        [
+            {
+                "ticker": "GME",
+                "mentions": 99,
+                "rank": 1,
+                "rank_24h_ago": 5,
+                "rank_change": 4,
+                "mentions_change_pct": 1.0,
+                "source": "wallstreetbets",
+                "is_breakout": False,
+            }
+        ],
+        db_path=config.DB_PATH,
+    )
+    client = dash_app.test_client()
+    r = client.get("/api/social")
+    assert r.status_code == 200
+    rows = json.loads(r.data)
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "GME"
+    assert rows[0]["mentions"] == 99

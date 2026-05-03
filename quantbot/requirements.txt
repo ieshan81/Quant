@@ -1,6 +1,7 @@
 # Sprint 1+ core
 python-dotenv>=1.0.0
 loguru>=0.7.0
+pytz>=2024.1
 pytest>=7.4.0
 
 # Sprint 8 — monitoring dashboard

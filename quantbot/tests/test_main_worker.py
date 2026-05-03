@@ -58,3 +58,20 @@ def test_run_trading_cycle_once_with_overrides() -> None:
             crypto_override=[],
         )
     assert summary["analyzed"] >= 1
+
+
+def test_trade_interval_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORKER_TRADE_INTERVAL_SEC", "45")
+    assert mw._trade_interval_sec() == 45.0
+
+
+def test_trade_interval_market_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WORKER_TRADE_INTERVAL_SEC", raising=False)
+    with patch("market_hours.nyse_regular_session_open", return_value=True):
+        assert mw._trade_interval_sec() == 80.0
+
+
+def test_trade_interval_market_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WORKER_TRADE_INTERVAL_SEC", raising=False)
+    with patch("market_hours.nyse_regular_session_open", return_value=False):
+        assert mw._trade_interval_sec() == 300.0
