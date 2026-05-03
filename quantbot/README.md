@@ -9,7 +9,7 @@ Dual-market autonomous trading system (US equities + crypto). Quant-driven signa
 3. `python -m venv .venv` then activate (`.venv\Scripts\activate` on Windows)
 4. `pip install -r requirements.txt`
 5. Copy `.env.example` to `.env` and set keys when ready
-6. `python main.py` — initializes logging and SQLite schema (`data/quantbot.sqlite3` by default)
+6. `python main.py` — initializes logging and SQLite schema (default DB under `persist/quantbot.sqlite3`; static assets remain in `data/`)
 7. `python main.py --quotes` — Sprint 2: live prices from Alpaca + Binance (console)
 8. `pytest` — unit tests
 
@@ -27,7 +27,16 @@ Set `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` for stock quotes. Crypto uses CCXT wi
 
 **Sprint 8 (monitoring + Telegram):** `python main.py --dashboard` serves **Flask** on **`FLASK_PORT`** (default **5000**): live P&L vs `STARTING_BALANCE`, open positions (net qty from filled `trades`), recent trades and signals, equity chart, **HTML meta refresh + JS poll every 30s**, JSON at `/api/dashboard`. Set **`TELEGRAM_BOT_TOKEN`** and **`TELEGRAM_CHAT_ID`** to receive alerts on **process start**, **filled trades**, **kill switch** (from `drawdown_guard.notify_kill_switch_if_tripped` after each paper snapshot), and **stop-loss** sells when `reason_code` contains `STOP_LOSS` (pass `reason_code="STOP_LOSS"` from `paper_market_sell` / `market_sell`). Tests: `tests/test_dashboard.py`, `tests/test_alerts.py`.
 
-**Railway.app:** Treat the **`quantbot/`** folder as the Git repo root (or set Railway **Root Directory** to `quantbot`). **`railway.json`** runs **`bash start.sh`**: **`main_worker.py`** in the background and **`monitoring/dashboard.py`** in the foreground (one container, one **`data/quantbot.sqlite3`**). **`railway.worker.json`** remains optional for a **worker-only** deploy. **`requirements-deploy.txt`** pins **CPU-only** `torch` (set **Custom Install Command** to `pip install -r requirements-deploy.txt` if Nixpacks defaults pull the wrong torch). Use a **volume** on **`/app/data`** for persistence. Also **`runtime.txt`**, **`Procfile`**.
+**Railway.app (read this before deploying):** The Python package lives in a folder named **`data/`** (`data.data_store`, etc.). A Railway **volume must not** be mounted at **`/app/data`**, or Linux replaces that directory with an empty disk mount and imports fail with **`ModuleNotFoundError: No module named 'data.data_store'`**. SQLite and anything else that must survive restarts belongs under **`persist/`** (`config.PERSIST_DIR`, default DB `persist/quantbot.sqlite3`). Mount the volume at **`/app/persist`** only.
+
+1. Connect the GitHub repo; set **Root Directory** to **`quantbot`** (if the monorepo root is the parent folder).
+2. Use **`railway.json`**: **`bash start.sh`** — worker in background, Flask dashboard in foreground; health check **`/health`**.
+3. **Build:** Nixpacks + **`runtime.txt`** (`python-3.11.0`). Prefer **`pip install -r requirements-deploy.txt`** (CPU-only `torch`).
+4. **Volume:** add one volume, mount path **`/app/persist`** (not `/app/data`). Optional: set **`QUANTBOT_PERSIST_DIR=/app/persist`** if you mount elsewhere.
+5. **Env:** copy variables from `.env.example` / local `.env` (`QUANTBOT_MODE=paper`, Alpaca paper keys, `TELEGRAM_*`, etc.).
+6. **Deploy / logs:** after changing the volume path, redeploy; confirm logs show **`Universe loaded`** and no import errors, then hit **`/health`** on the service URL.
+
+**`railway.worker.json`** is optional for a **worker-only** deploy. **`Procfile`** mirrors **`start.sh`**.
 
 Later sprints: `pip install -r requirements-all.txt` (TA-Lib on Windows may need a prebuilt wheel or conda).
 
