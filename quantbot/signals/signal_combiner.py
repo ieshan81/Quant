@@ -10,12 +10,13 @@ import config
 
 # Each input signal is in {-1.0, 0.0, 1.0}. Weights sum to 1.0.
 WEIGHTS: dict[str, float] = {
-    "rsi": 0.25,
-    "macd": 0.20,
-    "bollinger": 0.20,
-    "z_score": 0.15,
-    "sentiment": 0.10,
-    "volume": 0.10,
+    "rsi": 0.20,
+    "macd": 0.16,
+    "bollinger": 0.16,
+    "z_score": 0.12,
+    "sentiment": 0.08,
+    "volume": 0.08,
+    "reddit": 0.20,
 }
 
 TradeAction = Literal["BUY", "SELL", "HOLD"]
@@ -91,12 +92,18 @@ def evaluate(
         rsi = float(signals.get("rsi", 0.0))
         macd = float(signals.get("macd", 0.0))
         bb = float(signals.get("bollinger", 0.0))
+        z_sc = float(signals.get("z_score", 0.0))
+        sent = float(signals.get("sentiment", 0.0))
+        vol = float(signals.get("volume", 0.0))
         logger.debug(
-            "{} RSI={:.2f} MACD={:.4f} BB={:.4f} score={:.3f}",
+            "{} RSI={:.2f} MACD={:.4f} BB={:.4f} z={:.2f} sent={:.2f} vol={:.2f} score={:.3f}",
             symbol,
             rsi,
             macd,
             bb,
+            z_sc,
+            sent,
+            vol,
             s,
         )
     return s, act

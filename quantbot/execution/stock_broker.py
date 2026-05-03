@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from loguru import logger
+
 import config
 
 try:
@@ -54,9 +56,9 @@ def fetch_equity_latest_price(symbol: str) -> float | None:
                 return float(c)
             if isinstance(bar, dict) and bar.get("c") is not None:
                 return float(bar["c"])
-        except Exception:
-            pass
-        return None
+        except Exception as e:
+            logger.debug("[stock_broker] price fetch failed for {}: {}", sym, e)
+            return None
 
 
 def fetch_equity_latest_prices(symbols: list[str]) -> dict[str, float | None]:

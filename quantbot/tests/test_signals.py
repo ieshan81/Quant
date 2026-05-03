@@ -135,7 +135,7 @@ class TestSignalCombiner:
         assert act == "HOLD"
 
     def test_missing_keys_default_zero(self) -> None:
-        assert signal_combiner.combined_score({"rsi": 1.0}) == pytest.approx(0.25)
+        assert signal_combiner.combined_score({"rsi": 1.0}) == pytest.approx(0.20)
 
     def test_trading_action_thresholds(self) -> None:
         assert signal_combiner.trading_action(0.36) == "BUY"
@@ -150,4 +150,4 @@ class TestSignalCombiner:
         assert signal_combiner.trading_action(0.35, asset_class="crypto", thresholds=th) == "BUY"
 
     def test_clamps_non_discrete_inputs(self) -> None:
-        assert signal_combiner.combined_score({"rsi": 5.0, "macd": -5.0}) == pytest.approx(0.05)
+        assert signal_combiner.combined_score({"rsi": 5.0, "macd": -5.0}) == pytest.approx(0.04)

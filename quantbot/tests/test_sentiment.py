@@ -30,12 +30,19 @@ def test_scalar_top1() -> None:
     assert sentiment_feed._scalar_top1({"label": "negative", "score": 0.85}) == pytest.approx(-0.85)
 
 
-@patch("data.sentiment_feed.finbert_score_text", return_value=0.5)
+@patch("data.sentiment_feed.score_social_text", return_value=0.0)
+@patch("data.sentiment_feed.score_news_text", return_value=0.5)
+@patch("data.sentiment_feed.collect_reddit_texts", return_value=[])
 @patch(
-    "data.sentiment_feed.collect_texts",
-    return_value=(["mock headline about growth"], {"rss_snippets": 1, "reddit_posts": 0}),
+    "data.sentiment_feed.collect_rss_texts",
+    return_value=["mock headline about growth enough chars"],
 )
-def test_aggregate_finbert_score(_mock_collect: MagicMock, _mock_finbert: MagicMock) -> None:
+def test_aggregate_sentiment_score(
+    _mock_rss: MagicMock,
+    _mock_rd: MagicMock,
+    _mock_news: MagicMock,
+    _mock_soc: MagicMock,
+) -> None:
     score, meta = sentiment_feed.aggregate_finbert_score("AAPL")
     assert score == pytest.approx(0.5)
     assert meta["texts_used"] == 1

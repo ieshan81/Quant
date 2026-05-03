@@ -62,7 +62,7 @@ COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET", "")
 COINBASE_API_PASSPHRASE = os.getenv("COINBASE_API_PASSPHRASE", "")
 
 # Sentiment / macro / alerts
-TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
+# Twitter stream: reserved for future sprint — requires paid API v2
 # Sprint 7 — Reddit (PRAW) + RSS + FinBERT (free sentiment; no paid X API)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "").strip()
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
@@ -75,6 +75,9 @@ def _comma_separated_urls(env_name: str, default: str) -> list[str]:
 
 RSS_EXTRA_FEEDS = _comma_separated_urls("RSS_EXTRA_FEEDS", "")
 FINBERT_MODEL = os.getenv("FINBERT_MODEL", "ProsusAI/finbert").strip()
+SOCIAL_SENTIMENT_MODEL = os.getenv(
+    "SOCIAL_SENTIMENT_MODEL", "cardiffnlp/twitter-roberta-base-sentiment"
+).strip()
 SENTIMENT_MAX_TEXTS = int(os.getenv("SENTIMENT_MAX_TEXTS", "24"))
 SENTIMENT_HTTP_USER_AGENT = os.getenv("SENTIMENT_HTTP_USER_AGENT", "QuantBot/1.0 (+https://example.local)").strip()
 

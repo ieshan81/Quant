@@ -124,6 +124,16 @@ CREATE TABLE IF NOT EXISTS signal_calibration (
 
 CREATE INDEX IF NOT EXISTS idx_signal_calibration_ts ON signal_calibration(ts);
 CREATE INDEX IF NOT EXISTS idx_signal_calibration_symbol ON signal_calibration(symbol);
+
+CREATE TABLE IF NOT EXISTS price_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    price REAL NOT NULL,
+    volume REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_history_symbol_ts ON price_history(symbol, ts);
 """
 
 

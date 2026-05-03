@@ -10,7 +10,7 @@ from loguru import logger
 
 from data.data_store import get_connection
 
-_LEG_KEYS = frozenset({"rsi", "macd", "bollinger", "z_score", "sentiment", "volume"})
+_LEG_KEYS = frozenset({"rsi", "macd", "bollinger", "z_score", "sentiment", "volume", "reddit"})
 _MIN_ROWS_FOR_WEIGHT = 20
 
 
@@ -81,6 +81,12 @@ def resolve_calibrations(conn: sqlite3.Connection) -> None:
         p0 = float(row[3])
         p1 = _fetch_price_now(sym)
         if p1 is None or p1 <= 0:
+            logger.debug(
+                "[calibrator] skip resolve row id={} symbol={}: no price (p1={})",
+                rid,
+                sym,
+                p1,
+            )
             continue
         actual = 1 if p1 > p0 else (-1 if p1 < p0 else 0)
         if actual == 0:

@@ -1,17 +1,20 @@
-"""Sprint 9 — dynamic universe: S&P 500 (Wikipedia + yfinance) + Kraken /USDT liquid pairs."""
+"""Sprint 9+12 — universe: Alpaca most actives + Reddit breakouts + CoinGecko (Kraken /USDT)."""
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+from urllib.request import Request, urlopen
 
 import numpy as np
 import pandas as pd
 from loguru import logger
 
+import config
 from signals import momentum
 from training.backtester import load_yfinance_history
 
@@ -47,6 +50,211 @@ FALLBACK_STOCKS = [
 ]
 
 FALLBACK_CRYPTO = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
+
+UNIVERSE_TOTAL_CAP = 90
+ALPACA_MOST_ACTIVES_URL = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
+COINGECKO_TRENDING_URL = "https://api.coingecko.com/api/v3/search/trending"
+COINGECKO_MARKETS_URL = (
+    "https://api.coingecko.com/api/v3/coins/markets"
+    "?vs_currency=usd&order=percent_change_24h&per_page=20&page=1&price_change_percentage=24h"
+)
+
+
+def _http_get_json(url: str, timeout: float = 20.0) -> Any | None:
+    req = Request(
+        url,
+        headers={"User-Agent": config.SENTIMENT_HTTP_USER_AGENT or "QuantBot/1.0"},
+    )
+    try:
+        with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.debug("[universe] HTTP {} | {}", url[:96], exc)
+        return None
+
+
+def fetch_alpaca_most_actives(*, top: int = 50) -> list[str]:
+    if not (config.ALPACA_API_KEY and config.ALPACA_SECRET_KEY):
+        return []
+    url = f"{ALPACA_MOST_ACTIVES_URL}?top={top}"
+    req = Request(
+        url,
+        headers={
+            "User-Agent": config.SENTIMENT_HTTP_USER_AGENT or "QuantBot/1.0",
+            "APCA-API-KEY-ID": config.ALPACA_API_KEY,
+            "APCA-API-SECRET-KEY": config.ALPACA_SECRET_KEY,
+        },
+    )
+    try:
+        with urlopen(req, timeout=20.0) as resp:  # noqa: S310
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.debug("[universe] Alpaca most actives failed: {}", exc)
+        return []
+    syms: list[str] = []
+    if isinstance(data, dict):
+        rows = data.get("most_actives") or data.get("symbols") or data.get("results")
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    s = row.get("symbol") or row.get("ticker")
+                    if s:
+                        syms.append(str(s).strip().upper())
+                elif isinstance(row, str):
+                    syms.append(row.strip().upper())
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in syms:
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out[:top]
+
+
+def _reddit_breakout_equity_tickers(max_extra: int = 20) -> list[str]:
+    try:
+        from social.reddit_scanner import get_breakout_tickers
+
+        raw = get_breakout_tickers()
+    except Exception as exc:
+        logger.debug("[universe] reddit breakouts unavailable: {}", exc)
+        return []
+    out: list[str] = []
+    for t in raw:
+        if len(out) >= max_extra:
+            break
+        s = str(t).strip().upper()
+        if not s or "/" in s or len(s) > 8:
+            continue
+        if not s.replace("-", "").isalnum():
+            continue
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def fetch_coingecko_trending_base_symbols(*, top: int = 7) -> list[str]:
+    data = _http_get_json(COINGECKO_TRENDING_URL, 20.0)
+    if not isinstance(data, dict):
+        return []
+    coins = data.get("coins")
+    if not isinstance(coins, list):
+        return []
+    out: list[str] = []
+    for c in coins[: max(top * 2, top)]:
+        if not isinstance(c, dict):
+            continue
+        coin = c.get("item") if isinstance(c.get("item"), dict) else c
+        if not isinstance(coin, dict):
+            continue
+        sym = coin.get("symbol")
+        if sym:
+            out.append(str(sym).strip().upper())
+        if len(out) >= top:
+            break
+    return out[:top]
+
+
+def fetch_coingecko_top_mover_base_symbols(*, top: int = 10) -> list[str]:
+    data = _http_get_json(COINGECKO_MARKETS_URL, 25.0)
+    if not isinstance(data, list):
+        return []
+    scored: list[tuple[str, float]] = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        pct = row.get("price_change_percentage_24h")
+        try:
+            pv = float(pct) if pct is not None else float("-inf")
+        except (TypeError, ValueError):
+            pv = float("-inf")
+        scored.append((sym, pv))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    out: list[str] = []
+    seen: set[str] = set()
+    for sym, pv in scored:
+        if pv == float("-inf"):
+            continue
+        if sym in seen:
+            continue
+        seen.add(sym)
+        out.append(sym)
+        if len(out) >= top:
+            break
+    return out
+
+
+def _to_kraken_usdt(sym: str) -> str:
+    return f"{sym.upper()}/USDT"
+
+
+def _kraken_merge_trending_movers(
+    ex: Any, trending_bases: list[str], mover_bases: list[str]
+) -> tuple[list[str], int]:
+    try:
+        if not getattr(ex, "markets", None):
+            ex.load_markets()
+    except Exception:
+        return [], 0
+    mk = ex.markets or {}
+    out: list[str] = []
+    n_trending_included = 0
+    for base in trending_bases:
+        pair = _to_kraken_usdt(base)
+        m = mk.get(pair)
+        if m and m.get("active", True) and pair not in out:
+            out.append(pair)
+            n_trending_included += 1
+    for base in mover_bases:
+        pair = _to_kraken_usdt(base)
+        m = mk.get(pair)
+        if m and m.get("active", True) and pair not in out:
+            out.append(pair)
+    return out[:20], n_trending_included
+
+
+def build_dynamic_universe(exchange: Any | None) -> tuple[list[str], list[str], dict[str, int]]:
+    """
+    Tier1 Alpaca actives, Tier2 Reddit breakouts (+20 max), Tier3+4 CoinGecko on Kraken.
+    Total symbols capped at UNIVERSE_TOTAL_CAP (trim crypto tail first).
+    """
+    ex = exchange or _kraken_public()
+    meta = {"n_reddit": 0, "n_trending": 0, "n_stocks": 0, "n_crypto": 0}
+
+    alpaca = fetch_alpaca_most_actives(top=50)
+    reddit_extras = _reddit_breakout_equity_tickers(20)
+    base_set = {x.upper() for x in alpaca}
+    extras: list[str] = []
+    for t in reddit_extras:
+        if t not in base_set:
+            extras.append(t)
+        if len(extras) >= 20:
+            break
+    stocks = list(dict.fromkeys([*alpaca[:50], *extras]))
+    meta["n_reddit"] = len(extras)
+
+    trending_bases = fetch_coingecko_trending_base_symbols(top=7)
+    time.sleep(2.0)
+    mover_bases = fetch_coingecko_top_mover_base_symbols(top=10)
+    crypto, n_trend = _kraken_merge_trending_movers(ex, trending_bases, mover_bases)
+    meta["n_trending"] = n_trend
+
+    while len(stocks) + len(crypto) > UNIVERSE_TOTAL_CAP and crypto:
+        crypto.pop()
+    if len(stocks) + len(crypto) > UNIVERSE_TOTAL_CAP:
+        stocks = stocks[: max(0, UNIVERSE_TOTAL_CAP - len(crypto))]
+
+    if not stocks:
+        stocks = list(FALLBACK_STOCKS)[:50]
+    if not crypto:
+        crypto = list(FALLBACK_CRYPTO)[:20]
+
+    meta["n_stocks"] = len(stocks)
+    meta["n_crypto"] = len(crypto)
+    return stocks, crypto, meta
 
 
 def wikipedia_symbol_to_yfinance(sym: str) -> str:
@@ -264,19 +472,25 @@ class UniverseState:
 
     def refresh(self, *, exchange: Any | None = None) -> None:
         try:
-            stocks = scan_sp500_top_symbols()
-            crypto = scan_kraken_top_crypto(exchange=exchange)
+            stocks, crypto, meta = build_dynamic_universe(exchange)
         except Exception as exc:
             logger.warning("Universe refresh scan failed ({}); using hardcoded fallbacks", exc)
-            stocks = list(FALLBACK_STOCKS)[:TOP_STOCKS]
-            crypto = list(FALLBACK_CRYPTO)[:TOP_CRYPTO]
+            stocks = list(FALLBACK_STOCKS)[:50]
+            crypto = list(FALLBACK_CRYPTO)[:20]
+            meta = {"n_reddit": 0, "n_trending": 0, "n_stocks": len(stocks), "n_crypto": len(crypto)}
         if not stocks:
             logger.warning("Stock universe empty after scan — forcing FALLBACK_STOCKS")
-            stocks = list(FALLBACK_STOCKS)[:TOP_STOCKS]
+            stocks = list(FALLBACK_STOCKS)[:50]
         if not crypto:
             logger.warning("Crypto universe empty after scan — forcing FALLBACK_CRYPTO")
-            crypto = list(FALLBACK_CRYPTO)[:TOP_CRYPTO]
-        logger.info("Universe loaded: {} stocks, {} crypto", len(stocks), len(crypto))
+            crypto = list(FALLBACK_CRYPTO)[:20]
+        logger.info(
+            "Universe refreshed: {} stocks ({} reddit breakouts) + {} crypto ({} trending)",
+            meta.get("n_stocks", len(stocks)),
+            meta.get("n_reddit", 0),
+            meta.get("n_crypto", len(crypto)),
+            meta.get("n_trending", 0),
+        )
         with self._lock:
             self._stocks = stocks
             self._crypto = crypto
@@ -284,11 +498,11 @@ class UniverseState:
 
     def run_background(self, stop: threading.Event, interval_sec: float | None = None) -> None:
         """
-        Refresh universe, then sleep WORKER_SCAN_INTERVAL_SEC (default 1800s) before the next scan.
+        Refresh universe, then sleep WORKER_SCAN_INTERVAL_SEC (default 900s / 15m) before the next scan.
         Uses chunked time.sleep so ``stop`` is checked frequently and a zero/invalid interval cannot spin.
         """
         if interval_sec is None:
-            interval_sec = float(os.getenv("WORKER_SCAN_INTERVAL_SEC", str(30 * 60)))
+            interval_sec = float(os.getenv("WORKER_SCAN_INTERVAL_SEC", str(15 * 60)))
         sleep_sec = max(60.0, float(interval_sec))
         ex = _kraken_public()
         while not stop.is_set():
@@ -297,8 +511,8 @@ class UniverseState:
             except Exception:
                 logger.exception("Universe refresh failed")
                 with self._lock:
-                    self._stocks = list(FALLBACK_STOCKS)[:TOP_STOCKS]
-                    self._crypto = list(FALLBACK_CRYPTO)[:TOP_CRYPTO]
+                    self._stocks = list(FALLBACK_STOCKS)[:50]
+                    self._crypto = list(FALLBACK_CRYPTO)[:20]
                     self._last_refresh = time.time()
                 logger.info(
                     "Universe loaded: {} stocks, {} crypto (fallback after background error)",

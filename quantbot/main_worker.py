@@ -45,7 +45,7 @@ def _int_env(name: str, default: int, *, minimum: int = 1) -> int:
 
 
 TRADE_INTERVAL_SEC = _int_env("WORKER_TRADE_INTERVAL_SEC", 60, minimum=1)
-SCAN_INTERVAL_SEC = _int_env("WORKER_SCAN_INTERVAL_SEC", 30 * 60, minimum=60)
+SCAN_INTERVAL_SEC = _int_env("WORKER_SCAN_INTERVAL_SEC", 15 * 60, minimum=60)
 CYCLE_WORKERS = int(os.getenv("WORKER_CYCLE_EXECUTOR_WORKERS", "16"))
 MAX_STOCK_POS = 5
 MAX_CRYPTO_POS = 5
@@ -59,6 +59,7 @@ _sentiment_lock = threading.Lock()
 
 # --- Sprint 11: news aggregator (asyncio loop in background thread) ---
 _news_aggregator: Any = None
+_pump_detector: Any = None
 
 
 def _start_news_background() -> None:
@@ -166,6 +167,8 @@ class CycleSignal(NamedTuple):
     action: str
     mid: float | None
     error: str | None
+    pump_emergency_buy: bool = False
+    pump_emergency_sell: bool = False
 
 
 def analyze_symbol(
@@ -204,6 +207,18 @@ def analyze_symbol(
         rsi_overbought=float(rt["rsi_overbought"]),
     )
     sigs["sentiment"] = _sentiment_discrete(sym, asset_class)
+    try:
+        from social.social_sentiment import SocialSentimentScorer
+
+        rs = SocialSentimentScorer.get_reddit_sentiment(sym)
+        if rs > 0.3:
+            sigs["reddit"] = 1.0
+        elif rs < -0.3:
+            sigs["reddit"] = -1.0
+        else:
+            sigs["reddit"] = 0.0
+    except Exception:
+        sigs["reddit"] = 0.0
     label = f"{asset_class}:{sym}"
     # --- Sprint 11: news-aware + per-leg calibration (insertion) ---
     try:
@@ -227,7 +242,7 @@ def analyze_symbol(
                 logger.info("Sprint11 news | {} | hits={} best_rel={:.2f}", label, len(hits), best)
         legs_log = {
             k: float(sigs[k])
-            for k in ("rsi", "macd", "bollinger", "z_score", "sentiment", "volume")
+            for k in ("rsi", "macd", "bollinger", "z_score", "sentiment", "volume", "reddit")
             if k in sigs and abs(float(sigs[k])) > 1e-9
         }
         if mid is not None and legs_log:
@@ -260,7 +275,35 @@ def analyze_symbol(
         score,
         action,
     )
-    return CycleSignal(asset_class, sym, sigs_eval, score, action, mid, None)
+    last_vol = 0.0
+    if vol is not None and len(vol) > 0:
+        try:
+            last_vol = float(vol.astype(float).iloc[-1])
+        except Exception:
+            last_vol = 0.0
+    pump_buy = False
+    pump_sell = False
+    pdet = _pump_detector
+    if pdet is not None:
+        try:
+            pdet.record_tick(sym, float(mid), last_vol if last_vol > 0 else None)
+            psig = pdet.check_for_pump(sym, float(mid), last_vol)
+            if psig is not None:
+                pump_buy = bool(psig.emergency_buy)
+                pump_sell = bool(psig.emergency_sell)
+        except Exception:
+            logger.debug("pump pipeline failed for {}", sym, exc_info=True)
+    return CycleSignal(
+        asset_class,
+        sym,
+        sigs_eval,
+        score,
+        action,
+        mid,
+        None,
+        pump_buy,
+        pump_sell,
+    )
 
 
 def _buy_notional(trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]) -> float:
@@ -420,21 +463,30 @@ def execute_cycle_results(
             continue
         assert cs.mid is not None
         mid = cs.mid
-        direction = 1 if cs.action == "BUY" else (-1 if cs.action == "SELL" else 0)
+        eff_action = cs.action
+        eff_score = cs.score
+        with _trader_lock:
+            if cs.pump_emergency_buy and trader.position(cs.asset_class, cs.symbol) is None:
+                eff_action, eff_score = "BUY", 0.5
+            if cs.pump_emergency_sell:
+                pos_e = trader.position(cs.asset_class, cs.symbol)
+                if pos_e is not None and float(pos_e.quantity) > 1e-8:
+                    eff_action = "SELL"
+        direction = 1 if eff_action == "BUY" else (-1 if eff_action == "SELL" else 0)
         trader.log_signal_row(
             symbol=cs.symbol,
             signal_name="combined",
-            raw_value=cs.score,
+            raw_value=eff_score,
             direction=direction,
             weight=1.0,
-            combined_score=cs.score,
-            meta={"action": cs.action, "inputs": cs.signals, "worker": "sprint9"},
+            combined_score=eff_score,
+            meta={"action": eff_action, "inputs": cs.signals, "worker": "sprint12"},
         )
-        if cs.action == "HOLD":
+        if eff_action == "HOLD":
             out["holds"] += 1
             continue
         with _trader_lock:
-            if cs.action == "BUY":
+            if eff_action == "BUY":
                 notional = _buy_notional(trader, cs.asset_class, rt)
                 ok, reason = _can_buy(trader, cs.asset_class, cs.symbol, mid, notional, rt)
                 qty = notional / mid
@@ -449,11 +501,11 @@ def execute_cycle_results(
                 r = order_manager.paper_market_buy(trader, cs.asset_class, cs.symbol, qty, mid)
                 if r.ok:
                     out["buys"] += 1
-                    _telegram_buy(trader, cs.asset_class, cs.symbol, mid, cs.score)
+                    _telegram_buy(trader, cs.asset_class, cs.symbol, mid, eff_score)
                 else:
                     logger.warning("BUY failed {} {}", cs.symbol, r.message)
                     out["holds"] += 1
-            elif cs.action == "SELL":
+            elif eff_action == "SELL":
                 pos = trader.position(cs.asset_class, cs.symbol)
                 if pos is None or pos.quantity <= 1e-8:
                     out["holds"] += 1
@@ -564,13 +616,15 @@ def _on_signal(signum: int, frame: Any) -> None:
 
 def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread]:
     """Initialize DB, Kraken, universe scanner thread, FinBERT (best-effort), and paper trader."""
+    global _pump_detector
     setup_logging()
     init_schema()
     logger.info("QuantBot worker | mode={} | db={}", config.MODE, config.DB_PATH)
 
     if alerts.telegram_alerts_configured():
         alerts.send_telegram(
-            f"🤖 QuantBot started | Mode: {config.MODE} | Universe: S&P500 + Kraken USDT pairs"
+            f"🤖 QuantBot started | Mode: {config.MODE} | "
+            f"Universe: Alpaca most actives + Reddit breakouts + CoinGecko (Kraken USDT)"
         )
 
     kraken_ex = _kraken_exchange()
@@ -585,15 +639,24 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     _start_news_background()
 
     try:
-        from data.sentiment_feed import get_finbert_pipeline
+        from social.reddit_scanner import start_reddit_momentum_thread
 
-        get_finbert_pipeline()
-        logger.info("FinBERT pipeline preloaded for worker sentiment")
-    except Exception as exc:
-        tb = traceback.format_exc()
-        logger.error("FinBERT preload failed:\n{}", tb)
-        if alerts.telegram_alerts_configured():
-            alerts.send_telegram(f"⚠️ FinBERT preload failed: {str(exc)[:200]}")
+        start_reddit_momentum_thread(_stop)
+        logger.info("Social momentum scanner started")
+    except Exception:
+        logger.debug("Social momentum scanner thread failed", exc_info=True)
+
+    try:
+        from risk.pump_detector import PumpDetector
+
+        _pump_detector = PumpDetector()
+    except Exception:
+        logger.debug("PumpDetector init failed", exc_info=True)
+
+    logger.info(
+        "HuggingFace sentiment models (FinBERT + social RoBERTa) load lazily on first inference — "
+        "no startup download (Railway healthcheck friendly)"
+    )
 
     trader = create_paper_trader(telegram_on_fills=False)
     try:

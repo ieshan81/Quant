@@ -44,6 +44,7 @@ _PAGE = """<!DOCTYPE html>
     .cal-ok { color: #3ecf8e; }
     .cal-mid { color: #ecc94b; }
     .cal-bad { color: #f56565; }
+    .gold { color: #ecc94b; font-weight: 600; }
     table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
     th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #2a3545; }
     th { color: #8b9bb4; font-weight: 600; }
@@ -116,6 +117,11 @@ _PAGE = """<!DOCTYPE html>
     {% else %}<p class="muted">No signals logged.</p>{% endif %}
   </div>
   <div class="card" style="margin-top:1rem;">
+    <h2>Social Momentum</h2>
+    <p class="muted">ApeWisdom top 10 — updates every 60s (see <a href="/api/social">/api/social</a>)</p>
+    <div id="socialMoRoot"><p class="muted">Loading…</p></div>
+  </div>
+  <div class="card" style="margin-top:1rem;">
     <h2>Performance</h2>
     <p class="muted">Total filled rows: <strong>{{ perf.total_trades }}</strong> |
        Closed round-trips: <strong>{{ perf.closed_round_trips }}</strong>
@@ -174,7 +180,7 @@ _PAGE = """<!DOCTYPE html>
     </tbody></table>
     {% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
   </div>
-  <p class="muted">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a></p>
+  <p class="muted">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a></p>
   <script id="dash-payload" type="application/json">{{ chart_data|tojson }}</script>
   <script>
     const REFRESH_MS = {{ refresh_sec }} * 1000;
@@ -183,6 +189,36 @@ _PAGE = """<!DOCTYPE html>
       const el = document.getElementById("dash-payload");
       return JSON.parse(el.textContent || "{}");
     }
+    function renderSocial(rows) {
+      const root = document.getElementById("socialMoRoot");
+      if (!root) return;
+      if (!rows || !rows.length) {
+        root.innerHTML = "<p class=\"muted\">No momentum data yet.</p>";
+        return;
+      }
+      let html = "<table><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th></th></tr></thead><tbody>";
+      for (const r of rows) {
+        const rc = Number(r.rank_change) || 0;
+        const cls = rc > 0 ? "pos" : (rc < 0 ? "neg" : "");
+        const badge = r.is_breakout ? "<span class=\"gold\">breakout</span>" : "";
+        html += "<tr><td>" + (r.ticker || "") + "</td><td>" + (r.mentions ?? "") + "</td>";
+        html += "<td class=\"" + cls + "\">" + rc + "</td><td>" + badge + "</td></tr>";
+      }
+      html += "</tbody></table>";
+      root.innerHTML = html;
+    }
+    async function pollSocial() {
+      try {
+        const res = await fetch("/api/social");
+        const data = await res.json();
+        renderSocial(data);
+      } catch (e) {
+        const root = document.getElementById("socialMoRoot");
+        if (root) root.innerHTML = "<p class=\"muted\">Social feed unavailable.</p>";
+      }
+    }
+    pollSocial();
+    setInterval(pollSocial, 60000);
     function buildChart(series) {
       const labels = series.map((r) => r.snapshot_at || "");
       const data = series.map((r) => Number(r.equity_total) || 0);
@@ -391,6 +427,16 @@ def create_app() -> Flask:
         with get_connection() as conn:
             data = get_leg_accuracies(conn)
         return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.get("/api/social")
+    def api_social() -> Response:
+        try:
+            from social.reddit_scanner import get_cached_signals
+
+            rows = [s.to_public_dict() for s in get_cached_signals()[:10]]
+        except Exception:
+            rows = []
+        return Response(json.dumps(rows, default=str), mimetype="application/json")
 
     @app.get("/")
     def index() -> str:

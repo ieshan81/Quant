@@ -1,4 +1,8 @@
-"""Free sentiment: Reddit (PRAW) + financial RSS, scored with FinBERT (ProsusAI/finbert)."""
+"""Free sentiment: Reddit (PRAW) + financial RSS, scored with FinBERT + optional social RoBERTa.
+
+HuggingFace models are loaded lazily inside ``score_news_text`` / ``score_social_text`` only
+(double-checked locking). No weights download at import time (Railway healthcheck safe).
+"""
 
 from __future__ import annotations
 
@@ -25,6 +29,11 @@ from loguru import logger
 
 _finbert_pipeline: Any = None
 _finbert_pipeline_lock = threading.Lock()
+_finbert_load_failed: bool = False
+
+_social_pipeline: Any = None
+_social_pipeline_lock = threading.Lock()
+_social_load_failed: bool = False
 
 
 def _yahoo_ticker(symbol: str) -> str:
@@ -140,32 +149,6 @@ def collect_texts(symbol: str) -> tuple[list[str], dict[str, int]]:
     return merged, meta
 
 
-def get_finbert_pipeline() -> Any:
-    """Module-level singleton FinBERT pipeline (thread-safe, loads once)."""
-    global _finbert_pipeline
-    if _finbert_pipeline is not None:
-        return _finbert_pipeline
-    with _finbert_pipeline_lock:
-        if _finbert_pipeline is not None:
-            return _finbert_pipeline
-        try:
-            import torch
-            from transformers import pipeline
-
-            device = 0 if torch.cuda.is_available() else -1
-            _finbert_pipeline = pipeline(
-                "sentiment-analysis",
-                model=config.FINBERT_MODEL,
-                tokenizer=config.FINBERT_MODEL,
-                device=device,
-            )
-            logger.info("FinBERT pipeline loaded | model={}", config.FINBERT_MODEL)
-        except Exception as exc:
-            logger.exception("Failed to load FinBERT: {}", exc)
-            raise
-    return _finbert_pipeline
-
-
 def _scalar_from_finbert_row(row: Any) -> float:
     """Map FinBERT `return_all_scores=True` row to [-1, 1] (bullish positive)."""
     if isinstance(row, dict):
@@ -199,12 +182,49 @@ def _scalar_top1(d: dict[str, Any]) -> float:
     return 0.0
 
 
-def finbert_score_text(text: str) -> float:
-    """Single FinBERT sentiment in approx [-1, 1]."""
-    pipe = get_finbert_pipeline()
+def _scalar_from_cardiff_social_row(row: list[dict[str, Any]]) -> float:
+    """Map twitter-roberta 3-class scores to approx [-1, 1] (positive minus negative mass)."""
+    pos = neg = 0.0
+    for x in row:
+        lab = str(x.get("label", "")).upper()
+        sc = float(x.get("score", 0.0))
+        if "POS" in lab or lab.endswith("_2"):
+            pos = max(pos, sc)
+        elif "NEG" in lab or lab.endswith("_0"):
+            neg = max(neg, sc)
+    return float(max(-1.0, min(1.0, pos - neg)))
+
+
+def score_news_text(text: str) -> float:
+    """FinBERT news sentiment in approx [-1, 1]. Loads the model lazily on first use inside this function."""
+    global _finbert_pipeline, _finbert_load_failed
     t = text.strip()
     if len(t) < 8:
         return 0.0
+    if _finbert_load_failed:
+        return 0.0
+    if _finbert_pipeline is None:
+        with _finbert_pipeline_lock:
+            if _finbert_load_failed:
+                return 0.0
+            if _finbert_pipeline is None:
+                try:
+                    import torch
+                    from transformers import pipeline
+
+                    device = 0 if torch.cuda.is_available() else -1
+                    _finbert_pipeline = pipeline(
+                        "sentiment-analysis",
+                        model=config.FINBERT_MODEL,
+                        tokenizer=config.FINBERT_MODEL,
+                        device=device,
+                    )
+                    logger.info("FinBERT pipeline loaded (lazy) | model={}", config.FINBERT_MODEL)
+                except Exception as exc:
+                    logger.warning("FinBERT load failed; news sentiment will be 0.0: {}", exc)
+                    _finbert_load_failed = True
+                    return 0.0
+    pipe = _finbert_pipeline
     try:
         out = pipe(t[:512], truncation=True, max_length=512, return_all_scores=True)
     except TypeError:
@@ -223,26 +243,124 @@ def finbert_score_text(text: str) -> float:
     return 0.0
 
 
-def aggregate_finbert_score(symbol: str) -> tuple[float, dict[str, Any]]:
+def finbert_score_text(text: str) -> float:
+    """Backward-compatible alias for :func:`score_news_text`."""
+    return score_news_text(text)
+
+
+def score_social_text(text: str) -> float:
+    """Twitter-RoBERTa social sentiment in approx [-1, 1]. Loads lazily on first use inside this function."""
+    global _social_pipeline, _social_load_failed
+    t = text.strip()
+    if len(t) < 8:
+        return 0.0
+    if _social_load_failed:
+        return 0.0
+    if _social_pipeline is None:
+        with _social_pipeline_lock:
+            if _social_load_failed:
+                return 0.0
+            if _social_pipeline is None:
+                try:
+                    import torch
+                    from transformers import pipeline
+
+                    device = 0 if torch.cuda.is_available() else -1
+                    mid = config.SOCIAL_SENTIMENT_MODEL
+                    _social_pipeline = pipeline(
+                        "sentiment-analysis",
+                        model=mid,
+                        tokenizer=mid,
+                        device=device,
+                    )
+                    logger.info("Social sentiment pipeline loaded (lazy) | model={}", mid)
+                except Exception as exc:
+                    logger.warning("Social RoBERTa load failed; social scores will be 0.0: {}", exc)
+                    _social_load_failed = True
+                    return 0.0
+    pipe = _social_pipeline
+    try:
+        out = pipe(t[:512], truncation=True, max_length=512, return_all_scores=True)
+    except TypeError:
+        out = pipe(t[:512], truncation=True, max_length=512)
+    except Exception as exc:
+        logger.warning("Social sentiment inference failed: {}", exc)
+        return 0.0
+    if isinstance(out, list) and out:
+        first = out[0]
+        if isinstance(first, list):
+            return _scalar_from_cardiff_social_row(first)
+        if isinstance(first, dict) and "label" in first:
+            return _scalar_from_cardiff_social_row([first])
+    if isinstance(out, dict) and "label" in out:
+        return _scalar_from_cardiff_social_row([out])
+    return 0.0
+
+
+def _apewisdom_blurb_for_symbol(sym: str) -> str | None:
+    """Single synthetic line for social-model scoring from ApeWisdom cache."""
+    try:
+        from social.reddit_scanner import get_cached_signals
+
+        base = _normalize_symbol(sym).split("/")[0].replace("-", "")
+        for m in get_cached_signals():
+            if m.ticker.replace("-", "") == base:
+                return (
+                    f"{m.ticker} mentions {m.mentions} rank {m.rank} "
+                    f"rank_change_24h {m.rank_change} mentions_pct {m.mentions_change_pct:.1f} "
+                    f"breakout {m.is_breakout}"
+                )
+    except Exception:
+        return None
+    return None
+
+
+def aggregate_sentiment_score(symbol: str) -> tuple[float, dict[str, Any]]:
     """
-    Average FinBERT polarity over collected texts.
-    Returns (score in [-1, 1], metadata dict).
+    RSS headlines scored with FinBERT (``score_news_text``); Reddit + ApeWisdom with
+    ``score_social_text``. Pools averaged when both exist; single pool otherwise.
     """
-    texts, meta = collect_texts(symbol)
-    meta["symbol"] = _normalize_symbol(symbol)
-    meta["texts_used"] = len(texts)
-    if not texts:
-        logger.info("No sentiment texts for {}", symbol)
+    sym = _normalize_symbol(symbol)
+    rss = collect_rss_texts(sym)
+    rd = collect_reddit_texts(sym)
+    meta: dict[str, Any] = {
+        "symbol": sym,
+        "rss_snippets": len(rss),
+        "reddit_posts": len(rd),
+    }
+    news_scores: list[float] = []
+    for chunk in rss:
+        if len(chunk.strip()) >= 8:
+            try:
+                news_scores.append(score_news_text(chunk))
+            except Exception:
+                logger.exception("Skipping bad news sentiment chunk")
+    social_chunks = list(rd)
+    blurb = _apewisdom_blurb_for_symbol(sym)
+    if blurb:
+        social_chunks.append(blurb)
+    social_scores: list[float] = []
+    for chunk in social_chunks:
+        if len(chunk.strip()) >= 8:
+            try:
+                social_scores.append(score_social_text(chunk))
+            except Exception:
+                logger.exception("Skipping bad social sentiment chunk")
+    pools: list[float] = []
+    if news_scores:
+        pools.append(float(mean(news_scores)))
+    if social_scores:
+        pools.append(float(mean(social_scores)))
+    meta["texts_used"] = len(news_scores) + len(social_scores)
+    if not pools:
+        logger.info("No sentiment texts for {}", sym)
         return 0.0, meta
-    scores: list[float] = []
-    for chunk in texts:
-        try:
-            scores.append(finbert_score_text(chunk))
-        except Exception:
-            logger.exception("Skipping bad sentiment chunk")
-    if not scores:
-        return 0.0, meta
-    agg = float(mean(scores))
+    agg = float(mean(pools))
     agg = max(-1.0, min(1.0, agg))
     meta["aggregate_score"] = agg
     return agg, meta
+
+
+def aggregate_finbert_score(symbol: str) -> tuple[float, dict[str, Any]]:
+    """Backward-compatible name for :func:`aggregate_sentiment_score`."""
+    return aggregate_sentiment_score(symbol)

@@ -1,4 +1,5 @@
 #!/bin/bash
+cd "$(dirname "$0")"
 set -e
 # Start the trading worker in background
 python main_worker.py &

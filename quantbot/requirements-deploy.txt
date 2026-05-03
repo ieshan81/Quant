@@ -16,6 +16,7 @@ yfinance>=0.2.28
 praw>=7.7.0
 feedparser>=6.0.0
 transformers>=4.36.0
+# Sprint 12 — HF social model id: cardiffnlp/twitter-roberta-base-sentiment
 tweepy>=4.14.0
 websocket-client>=1.6.0
 schedule>=1.2.0
