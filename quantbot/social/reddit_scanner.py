@@ -121,6 +121,7 @@ class MomentumSignal:
 
 
 def get_cached_signals() -> list[MomentumSignal]:
+    """Shallow copy of the live module cache (callers must not rely on stale imports of the list object)."""
     with _CACHE_LOCK:
         return list(_CACHED_SIGNALS)
 
@@ -135,9 +136,10 @@ def get_breakout_tickers() -> list[str]:
 
 
 def _set_cache(signals: list[MomentumSignal]) -> None:
-    global _CACHED_SIGNALS
+    """Replace cache contents in-place so the module-level list id never changes."""
     with _CACHE_LOCK:
-        _CACHED_SIGNALS = signals
+        _CACHED_SIGNALS.clear()
+        _CACHED_SIGNALS.extend(signals)
 
 
 def _parse_rows(payload: Any) -> list[dict[str, Any]]:
@@ -344,6 +346,13 @@ class RedditMomentumScanner:
         merged = self._merge_rows(per_filter)
         signals = [self._row_to_signal(row, src) for row, src in merged.values()]
         signals.sort(key=lambda s: (-s.mentions, s.rank))
+        raw_counts = sum(len(p) for p in parts)
+        if not signals and raw_counts > 0:
+            logger.warning(
+                "[reddit_scanner] scan_all produced 0 MomentumSignals after merge "
+                "(raw_rows={} across filters) — row keys may lack ticker/symbol",
+                raw_counts,
+            )
         return signals
 
 
@@ -352,9 +361,12 @@ def _run_scan_once() -> None:
         scanner = RedditMomentumScanner()
         signals = asyncio.run(scanner.scan_all())
         _set_cache(signals)
-        logger.debug("[reddit_scanner] cache updated | n={}", len(signals))
+        with _CACHE_LOCK:
+            n = len(_CACHED_SIGNALS)
+            top5 = [s.ticker for s in _CACHED_SIGNALS[:5]]
+        logger.info(f"[reddit_scanner] cache updated: {n} signals, top5={top5}")
     except Exception as exc:
-        logger.debug("[reddit_scanner] scan_all failed: {}", exc)
+        logger.warning("[reddit_scanner] scan_all failed: {}", exc)
 
 
 def _reddit_poll_loop(stop: threading.Event) -> None:
