@@ -6,7 +6,21 @@ import asyncio
 from unittest.mock import patch
 
 from social import reddit_scanner as rs
-from social.reddit_scanner import MomentumSignal, RedditMomentumScanner, get_breakout_tickers
+from social.reddit_scanner import (
+    MomentumSignal,
+    RedditMomentumScanner,
+    _normalize_tradestie_payload,
+    get_breakout_tickers,
+)
+
+
+def test_normalize_tradestie_payload_maps_comments() -> None:
+    raw = [{"ticker": "gme", "no_of_comments": 42, "sentiment": "Bullish"}]
+    out = _normalize_tradestie_payload(raw)
+    assert len(out) == 1
+    assert out[0]["ticker"] == "GME"
+    assert out[0]["mentions"] == 42
+    assert out[0]["rank"] == 1
 
 
 def test_momentum_breakout_flags() -> None:
@@ -56,7 +70,11 @@ def test_get_breakout_tickers_from_cache() -> None:
 def test_fetch_trending_retry_empty() -> None:
     async def _run() -> None:
         scanner = RedditMomentumScanner()
-        with patch("social.reddit_scanner._http_get_json", side_effect=[None, None]):
+
+        def _fail(*_a: object, **_k: object) -> None:
+            raise OSError("network down")
+
+        with patch("social.reddit_scanner._http_get_json", side_effect=_fail):
             out = await scanner.fetch_trending("stocks")
         assert out == []
 

@@ -1,4 +1,4 @@
-"""ApeWisdom Reddit momentum (no API key). Cached for dashboard + universe + sentiment."""
+"""Reddit momentum: ApeWisdom (primary) + Tradestie fallback. No API key. Cached for dashboard + universe + sentiment."""
 
 from __future__ import annotations
 
@@ -8,12 +8,16 @@ import threading
 import time
 from dataclasses import dataclass, asdict
 from typing import Any
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from loguru import logger
 
 APEWISDOM_URL = "https://apewisdom.io/api/v1.0/filter/{filter}/page/1"
+# Primary host per docs; `api.` subdomain used if apex path returns 404/moves.
+TRADESTIE_FALLBACK_URLS = (
+    "https://tradestie.com/api/v1/apps/reddit",
+    "https://api.tradestie.com/v1/apps/reddit",
+)
 FILTERS = ["wallstreetbets", "stocks", "pennystocks", "CryptoMoonShots", "all-crypto"]
 
 _CACHE_LOCK = threading.Lock()
@@ -57,6 +61,8 @@ def _set_cache(signals: list[MomentumSignal]) -> None:
 
 
 def _parse_rows(payload: Any) -> list[dict[str, Any]]:
+    if payload is None:
+        return []
     if isinstance(payload, list):
         return [x for x in payload if isinstance(x, dict)]
     if isinstance(payload, dict):
@@ -67,28 +73,71 @@ def _parse_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _http_get_json(url: str, timeout: float = 10.0) -> Any | None:
+def _http_get_json(url: str, timeout: float = 10.0) -> Any:
+    """GET JSON; raises on network/parse errors so callers can log WARNING with context."""
     req = Request(url, headers={"User-Agent": "QuantBot/1.0 (momentum research)"})
-    try:
-        with urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            raw = resp.read().decode("utf-8", errors="replace")
-        return json.loads(raw)
-    except (URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
-        logger.debug("[reddit_scanner] HTTP failed {}: {}", url[:80], exc)
-        return None
+    with urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        raw = resp.read().decode("utf-8", errors="replace")
+    return json.loads(raw)
+
+
+def _normalize_tradestie_payload(payload: Any) -> list[dict[str, Any]]:
+    """Map Tradestie WSB-style rows into ApeWisdom-compatible dicts (no 24h rank/mentions)."""
+    rows: list[dict[str, Any]]
+    if isinstance(payload, list):
+        rows = [x for x in payload if isinstance(x, dict)]
+    else:
+        rows = _parse_rows(payload)
+    out: list[dict[str, Any]] = []
+    for i, raw in enumerate(rows):
+        t = str(raw.get("ticker") or raw.get("symbol") or "").strip().upper()
+        if not t or len(t) > 12:
+            continue
+        mentions = int(raw.get("no_of_comments") or raw.get("mentions") or 0)
+        rank = i + 1
+        m24 = max(mentions, 1)
+        out.append(
+            {
+                "ticker": t,
+                "mentions": mentions,
+                "rank": rank,
+                "rank_24h_ago": rank,
+                "mentions_24h_ago": m24,
+            }
+        )
+    return out
 
 
 class RedditMomentumScanner:
-    """Fetches ApeWisdom trending rows per subreddit filter."""
+    """Fetches ApeWisdom trending rows per subreddit filter; Tradestie if ApeWisdom fails."""
 
     async def fetch_trending(self, filter_name: str) -> list[dict[str, Any]]:
         url = APEWISDOM_URL.format(filter=filter_name)
         for attempt in range(2):
-            payload = await asyncio.to_thread(_http_get_json, url, 10.0)
-            if payload is not None:
-                return _parse_rows(payload)
+            try:
+                payload = await asyncio.to_thread(_http_get_json, url, 10.0)
+                rows = _parse_rows(payload)
+                if rows:
+                    return rows
+            except Exception as e:
+                logger.warning(f"[reddit_scanner] fetch failed for {filter_name}: {e}")
             if attempt == 0:
                 await asyncio.sleep(0.5)
+
+        for turl in TRADESTIE_FALLBACK_URLS:
+            try:
+                payload = await asyncio.to_thread(_http_get_json, turl, 10.0)
+                rows = _normalize_tradestie_payload(payload)
+                if rows:
+                    logger.info(
+                        "[reddit_scanner] Tradestie fallback ok for filter={} via {} (n={})",
+                        filter_name,
+                        turl[:48],
+                        len(rows),
+                    )
+                    return rows
+            except Exception as e:
+                logger.warning(f"[reddit_scanner] fetch failed for {filter_name}: {e}")
         return []
 
     def _merge_rows(self, per_filter: list[tuple[str, list[dict[str, Any]]]]) -> dict[str, tuple[dict[str, Any], str]]:
