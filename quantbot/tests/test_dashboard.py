@@ -29,6 +29,8 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert data["portfolio"] is None
     assert data["recent_trades"] == []
     assert data["open_positions"] == []
+    assert "market_open" in data
+    assert isinstance(data["market_open"], bool)
     assert "performance" in data
     assert "rl_learning_history" in data
     assert data["rl_learning_history"] == []
@@ -85,6 +87,27 @@ def test_health(dash_app) -> None:
     r = client.get("/health")
     assert r.status_code == 200
     assert json.loads(r.data) == {"status": "ok"}
+
+
+def test_api_symbol_stock_fallback(dash_app) -> None:
+    client = dash_app.test_client()
+    with patch("urllib.request.urlopen", side_effect=OSError("network")):
+        r = client.get("/api/symbol/ZZZNOTREAL")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["symbol"] == "ZZZNOTREAL"
+    assert data["type"] == "stock"
+    assert "unavailable" in data["description"].lower()
+
+
+def test_api_symbol_crypto_fallback(dash_app) -> None:
+    client = dash_app.test_client()
+    with patch("urllib.request.urlopen", side_effect=OSError("network")):
+        r = client.get("/api/symbol/btc%2Fusd")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["type"] == "crypto"
+    assert data["symbol"] == "BTC/USD"
 
 
 def test_api_social_reads_sqlite(dash_app) -> None:

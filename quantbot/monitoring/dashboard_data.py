@@ -9,6 +9,7 @@ from typing import Any
 import config
 
 from learning.calibrator import get_leg_accuracies
+from market_hours import nyse_regular_session_open
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -210,4 +211,5 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         "rl_learning_history": rl_history,
         "performance": performance,
         "calibration": calibration,
+        "market_open": nyse_regular_session_open(),
     }

@@ -13,7 +13,7 @@ inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
 import json
 from typing import Any
 
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, jsonify, render_template_string, request
 from loguru import logger
 
 import config
@@ -196,6 +196,22 @@ _PAGE = """
     .subrow { margin-top: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     @media (max-width: 800px) { .subrow { grid-template-columns: 1fr; } }
     .quantbot-terminal { display: none; }
+    #sym-tooltip {
+      position: fixed; display: none; z-index: 9999; pointer-events: none;
+      background: rgba(10, 14, 26, 0.97); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(0, 212, 255, 0.3); border-radius: 12px; padding: 14px 18px;
+      min-width: 220px; max-width: 300px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+      font-family: Inter, system-ui, sans-serif; font-size: 0.82rem;
+    }
+    #sym-tooltip .tt-name { color: #fff; font-weight: 700; }
+    #sym-tooltip .tt-type-c { color: var(--accent-green); font-size: 0.65rem; margin-left: 0.35rem; font-weight: 700; }
+    #sym-tooltip .tt-type-s { color: var(--accent-blue); font-size: 0.65rem; margin-left: 0.35rem; font-weight: 700; }
+    #sym-tooltip .tt-line2 { color: var(--accent-blue); font-size: 0.72rem; margin-top: 0.35rem; }
+    #sym-tooltip .tt-price { color: var(--accent-green); font-family: "JetBrains Mono", monospace; margin-top: 0.35rem; }
+    #sym-tooltip .tt-desc { color: var(--text-muted); font-size: 0.72rem; margin-top: 0.35rem; line-height: 1.35; }
+    .side-buy { color: var(--accent-green); font-weight: 700; }
+    .side-sell { color: var(--accent-red); font-weight: 700; }
+    .has-symbol { cursor: help; border-bottom: 1px dashed rgba(0, 212, 255, 0.35); }
   </style>
 </head>
 <body data-terminal="1">
@@ -207,9 +223,9 @@ _PAGE = """
   </header>
   <div class="wrap">
     <div class="stats-row">
-      <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}">{{ pnl_str }}</div></div>
-      <div class="card"><h2>Total equity</h2><div class="big mono">{{ eq_str }}</div><div class="spark-wrap"><canvas id="sparkEq"></canvas></div></div>
-      <div class="card"><h2>Mode</h2><div class="big mono">{{ mode_str }}</div><p class="muted" style="margin:0.35rem 0 0;">DB: {{ db }}</p></div>
+      <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}" id="tilePnl">{{ pnl_str }}</div></div>
+      <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div><div class="spark-wrap"><canvas id="sparkEq"></canvas></div></div>
+      <div class="card"><h2>Mode</h2><div class="big mono" id="tileMode">{{ mode_str }}</div><p class="muted" style="margin:0.35rem 0 0;">DB: {{ db }}</p></div>
       <div class="card"><h2>Market (NYSE)</h2><div id="mktLine" class="market-closed">…</div><div class="countdown" id="mktCd"></div></div>
     </div>
 
@@ -218,29 +234,10 @@ _PAGE = """
     <div class="mid-grid">
       <div class="card signal-feed">
         <h2>Signal feed</h2>
-        {% if signals %}
         <div style="overflow-x:auto;">
-        <table><thead><tr><th></th><th>Time</th><th>Symbol</th><th>Signal</th><th>Score</th><th></th></tr></thead><tbody id="sigFeedBody">
-          {% for s in signals %}
-          <tr class="sig-feed-row {{ s.score_row_class }}" data-sig-id="{{ s.id }}">
-            <td class="mono {{ s.dir_class }}">{{ s.dir_arrow }}</td>
-            <td class="mono" style="font-size:0.72rem;color:var(--text-secondary);">{{ s.created_at }}</td>
-            <td class="mono" style="font-weight:700;">{{ s.symbol }}</td>
-            <td>{{ s.signal_name }}</td>
-            <td class="score-cell">
-              <span class="score-txt mono">{{ s.score_fmt }}</span>
-              <div class="score-bar-bg"><div class="score-bar-fill" style="width: {{ s.score_bar_pct }}%;"></div></div>
-            </td>
-            <td>
-              {% if s.action_badge == 'BUY' %}<span class="action-pill pill-buy">BUY</span>
-              {% elif s.action_badge == 'SELL' %}<span class="action-pill pill-sell">SELL</span>
-              {% else %}<span class="action-pill pill-hold">HOLD</span>{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody></table>
+        <table><thead><tr><th></th><th>Time</th><th>Symbol</th><th>Type</th><th>Signal</th><th>Score</th><th></th></tr></thead><tbody id="sigFeedBody"></tbody></table>
         </div>
-        {% else %}<p class="muted">No signals logged.</p>{% endif %}
+        <p class="muted" id="sigFeedEmpty" style="display:none;margin-top:0.5rem;">No signals logged.</p>
       </div>
       <div class="card social-panel">
         <h2><span>🔥</span> Social momentum</h2>
@@ -251,14 +248,12 @@ _PAGE = """
 
     <div class="subrow">
       <div class="card"><h2>Open positions</h2>
-        {% if positions %}<table class="data-table"><thead><tr><th>Class</th><th>Symbol</th><th>Net</th></tr></thead><tbody>
-          {% for p in positions %}<tr><td>{{ p.asset_class }}</td><td class="mono">{{ p.symbol }}</td><td class="mono">{{ p.net_qty_fmt }}</td></tr>{% endfor %}
-        </tbody></table>{% else %}<p class="muted">No open positions.</p>{% endif %}
+        <table class="data-table"><thead><tr><th>Class</th><th>Symbol</th><th>Net</th></tr></thead><tbody id="posTableBody"></tbody></table>
+        <p class="muted" id="posEmpty" style="display:none;">No open positions.</p>
       </div>
       <div class="card"><h2>Recent trades</h2>
-        {% if trades %}<table class="data-table"><thead><tr><th>Time</th><th>Sym</th><th>Side</th><th>Qty</th><th>Status</th></tr></thead><tbody>
-          {% for t in trades %}<tr><td class="mono" style="font-size:0.72rem;">{{ t.created_at }}</td><td class="mono">{{ t.symbol }}</td><td>{{ t.side }}</td><td class="mono">{{ t.qty_fmt }}</td><td>{{ t.status }}{% if t.reason_code %} ({{ t.reason_code }}){% endif %}</td></tr>{% endfor %}
-        </tbody></table>{% else %}<p class="muted">No trades yet.</p>{% endif %}
+        <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Price</th><th>Qty</th><th>Notional</th><th>Status</th></tr></thead><tbody id="tradesTableBody"></tbody></table>
+        <p class="muted" id="tradesEmpty" style="display:none;">No trades yet.</p>
       </div>
     </div>
 
@@ -302,16 +297,162 @@ _PAGE = """
     <p class="last-upd" id="metaNote">Page meta-refresh: {{ refresh_sec }}s · live clock ET</p>
   </div>
 
-  <script id="dash-payload" type="application/json">{{ chart_data|tojson }}</script>
+  <div id="sym-tooltip" aria-hidden="true"></div>
+  <script id="dash-payload" type="application/json">{{ dash_snapshot|tojson }}</script>
   <script>
     const REFRESH_MS = {{ refresh_sec }} * 1000;
     const TZ = "America/New_York";
     let chart, spark;
     let lastPollMs = 0;
+    window._symbolCache = {};
+    let __lastDashMarketOpen = undefined;
+    let __tooltipFetchTimer = null;
+    let __symHoverLast = "";
 
     function readPayload() {
       const el = document.getElementById("dash-payload");
       return JSON.parse(el.textContent || "{}");
+    }
+    function esc(s) {
+      return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+    function equityY(row) {
+      if (!row) return 0;
+      const v = row.equity != null ? row.equity : row.equity_total;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+    function equityLabel(row) {
+      if (!row) return "";
+      return String(row.ts != null ? row.ts : (row.snapshot_at != null ? row.snapshot_at : ""));
+    }
+    function applyLiveTiles(data) {
+      const pnl = data.pnl_vs_start_pct;
+      const el = document.getElementById("tilePnl");
+      if (el) {
+        if (pnl == null || pnl === "" || Number.isNaN(Number(pnl))) { el.textContent = "—"; el.className = "big"; }
+        else {
+          const n = Number(pnl);
+          el.textContent = (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+          el.className = "big " + (n >= 0 ? "pos" : "neg");
+        }
+      }
+      const pf = data.portfolio || {};
+      let eq = pf.equity != null ? Number(pf.equity) : (pf.equity_total != null ? Number(pf.equity_total) : null);
+      if (eq == null || Number.isNaN(eq)) {
+        const ser = data.equity_series || [];
+        const last = ser.length ? ser[ser.length - 1] : null;
+        if (last) eq = equityY(last);
+      }
+      const te = document.getElementById("tileEq");
+      if (te) te.textContent = (eq != null && !Number.isNaN(eq)) ? eq.toFixed(2) : "—";
+      const tm = document.getElementById("tileMode");
+      if (tm) tm.textContent = data.mode != null ? String(data.mode) : "—";
+      if (typeof data.market_open === "boolean") __lastDashMarketOpen = data.market_open;
+    }
+    function fmtNum(v, d) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "—";
+      return n.toFixed(d);
+    }
+    function renderSignalFeed(signals) {
+      const tb = document.getElementById("sigFeedBody");
+      const empty = document.getElementById("sigFeedEmpty");
+      if (!tb) return;
+      const rows = Array.isArray(signals) ? signals : [];
+      if (!rows.length) {
+        tb.innerHTML = "";
+        if (empty) empty.style.display = "block";
+        return;
+      }
+      if (empty) empty.style.display = "none";
+      let html = "";
+      for (const s of rows) {
+        const sym = (s.symbol || "").toString();
+        const isCrypto = sym.indexOf("/") >= 0;
+        const typ = isCrypto ? "CRYPTO" : "STOCK";
+        const dir = Number(s.direction) || 0;
+        const arr = dir > 0 ? "▲" : (dir < 0 ? "▼" : "—");
+        const dcls = dir > 0 ? "dir-up" : (dir < 0 ? "dir-down" : "dir-flat");
+        let sc = 0;
+        try { sc = s.combined_score != null ? Number(s.combined_score) : 0; } catch (e) { sc = 0; }
+        if (!Number.isFinite(sc)) sc = 0;
+        const scClamped = Math.max(-1, Math.min(1, sc));
+        const barPct = Math.round((scClamped + 1) / 2 * 100);
+        let rowCls = "sig-neutral";
+        if (sc > 0.3) rowCls = "sig-buy";
+        else if (sc < -0.3) rowCls = "sig-sell";
+        const pill = dir > 0 ? "<span class=\"action-pill pill-buy\">BUY</span>" : (dir < 0 ? "<span class=\"action-pill pill-sell\">SELL</span>" : "<span class=\"action-pill pill-hold\">HOLD</span>");
+        const scoreTxt = s.combined_score != null && Number.isFinite(Number(s.combined_score)) ? Number(s.combined_score).toFixed(3) : "—";
+        html += "<tr class=\"sig-feed-row " + rowCls + "\" data-sig-id=\"" + esc(s.id) + "\">";
+        html += "<td class=\"mono " + dcls + "\">" + arr + "</td>";
+        html += "<td class=\"mono\" style=\"font-size:0.72rem;color:var(--text-secondary);\">" + esc(s.created_at) + "</td>";
+        html += "<td class=\"mono has-symbol\" style=\"font-weight:700;\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td>";
+        html += "<td class=\"mono\" style=\"font-size:0.68rem;color:var(--text-secondary);\">" + typ + "</td>";
+        html += "<td>" + esc(s.signal_name) + "</td>";
+        html += "<td class=\"score-cell\"><span class=\"score-txt mono\">" + scoreTxt + "</span>";
+        html += "<div class=\"score-bar-bg\"><div class=\"score-bar-fill\" style=\"width:" + barPct + "%;\"></div></div></td>";
+        html += "<td>" + pill + "</td></tr>";
+      }
+      tb.innerHTML = html;
+    }
+    function renderPositions(pos) {
+      const tb = document.getElementById("posTableBody");
+      const empty = document.getElementById("posEmpty");
+      if (!tb) return;
+      const rows = Array.isArray(pos) ? pos : [];
+      if (!rows.length) {
+        tb.innerHTML = "";
+        if (empty) empty.style.display = "block";
+        return;
+      }
+      if (empty) empty.style.display = "none";
+      let html = "";
+      for (const p of rows) {
+        const sym = (p.symbol || "").toString();
+        let net = p.net_qty_fmt;
+        if (net == null && p.net_qty != null) {
+          try { net = Number(p.net_qty).toFixed(6); } catch (e) { net = String(p.net_qty); }
+        }
+        html += "<tr><td>" + esc(p.asset_class) + "</td><td class=\"mono has-symbol\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td><td class=\"mono\">" + esc(net) + "</td></tr>";
+      }
+      tb.innerHTML = html;
+    }
+    function renderTrades(trades) {
+      const tb = document.getElementById("tradesTableBody");
+      const empty = document.getElementById("tradesEmpty");
+      if (!tb) return;
+      const rows = Array.isArray(trades) ? trades : [];
+      if (!rows.length) {
+        tb.innerHTML = "";
+        if (empty) empty.style.display = "block";
+        return;
+      }
+      if (empty) empty.style.display = "none";
+      let html = "";
+      for (const t of rows) {
+        const sym = (t.symbol || "").toString();
+        const side = (t.side || "").toString().toLowerCase();
+        const scls = side === "buy" ? "side-buy" : (side === "sell" ? "side-sell" : "");
+        const st = (t.status || "").toString() + (t.reason_code ? " (" + t.reason_code + ")" : "");
+        html += "<tr><td class=\"mono\" style=\"font-size:0.72rem;\">" + esc(t.created_at) + "</td>";
+        html += "<td class=\"mono has-symbol\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td>";
+        html += "<td class=\"mono " + scls + "\">" + esc(t.side) + "</td>";
+        html += "<td class=\"mono\">" + fmtNum(t.price, 4) + "</td><td class=\"mono\">" + fmtNum(t.quantity, 6) + "</td>";
+        html += "<td class=\"mono\">" + fmtNum(t.notional, 2) + "</td><td>" + esc(st) + "</td></tr>";
+      }
+      tb.innerHTML = html;
+    }
+    function applyLiveDashboard(data) {
+      applyLiveTiles(data);
+      const ser = data.equity_series || [];
+      buildChart(ser);
+      buildSpark(ser);
+      renderSignalFeed(data.recent_signals);
+      renderPositions(data.open_positions);
+      renderTrades(data.recent_trades);
+      const el = document.getElementById("dash-payload");
+      if (el) el.textContent = JSON.stringify(data);
     }
 
     function fmtEtTime(d) {
@@ -332,7 +473,6 @@ _PAGE = """
       const mins = etHM(d);
       return mins >= 9 * 60 + 30 && mins < 16 * 60;
     }
-    function pad(n) { return String(n).padStart(2, "0"); }
     function fmtDur(ms) {
       if (ms < 0) ms = 0;
       const s = Math.floor(ms / 1000);
@@ -358,7 +498,7 @@ _PAGE = """
       const now = new Date();
       const el = document.getElementById("clockEt");
       if (el) el.textContent = fmtEtTime(now) + " ET";
-      const open = isNyseOpenAt(now);
+      const open = (typeof __lastDashMarketOpen === "boolean") ? __lastDashMarketOpen : isNyseOpenAt(now);
       const line = document.getElementById("mktLine");
       const cd = document.getElementById("mktCd");
       if (line) {
@@ -384,23 +524,21 @@ _PAGE = """
     function renderSocial(rows) {
       const root = document.getElementById("socialMoRoot");
       if (!root) return;
-      if (!rows || !rows.length) {
-        root.innerHTML = "<p class=\"muted\">No momentum data (worker persists to SQLite).</p>";
+      if (!Array.isArray(rows) || !rows.length) {
+        root.innerHTML = "<p class=\"muted\">Scanner updates every 5 min</p>";
         return;
       }
-      let html = "<table class=\"social-table\"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>%Δ mentions</th><th>Source</th><th></th></tr></thead><tbody>";
+      let html = "<table class=\"social-table\"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>Source</th></tr></thead><tbody>";
       for (const r of rows) {
         const t = (r.ticker || "").toString();
         const br = !!r.is_breakout;
-        const tcls = br ? "mono breakout-name" : "mono";
+        const tcls = br ? "mono breakout-name has-symbol" : "mono has-symbol";
         const rc = Number(r.rank_change) || 0;
         const rcls = rc > 0 ? "rc-up" : (rc < 0 ? "rc-down" : "muted");
         const arr = rc > 0 ? "▲ " : (rc < 0 ? "▼ " : "— ");
-        const mp = (r.mentions_change_pct != null && r.mentions_change_pct !== "") ? Number(r.mentions_change_pct).toFixed(1) + "%" : "—";
         const src = (r.source || "").toString();
-        const badge = br ? "<span class=\"action-pill\" style=\"border:1px solid var(--accent-gold);color:var(--accent-gold);\">BREAKOUT</span>" : "";
-        html += "<tr><td class=\"" + tcls + "\">" + t + "</td><td class=\"mono\">" + (r.mentions ?? "—") + "</td>";
-        html += "<td class=\"mono " + rcls + "\">" + arr + rc + "</td><td class=\"mono\">" + mp + "</td><td style=\"font-size:0.72rem;\">" + src + "</td><td>" + badge + "</td></tr>";
+        html += "<tr><td class=\"" + tcls + "\" data-symbol=\"" + esc(t) + "\">" + esc(t) + "</td><td class=\"mono\">" + esc(r.mentions ?? "—") + "</td>";
+        html += "<td class=\"mono " + rcls + "\">" + arr + rc + "</td><td style=\"font-size:0.72rem;\">" + esc(src) + "</td></tr>";
       }
       html += "</tbody></table>";
       root.innerHTML = html;
@@ -408,8 +546,9 @@ _PAGE = """
     async function pollSocial() {
       try {
         const res = await fetch("/api/social", { cache: "no-store" });
+        if (!res.ok) throw new Error("bad status");
         const data = await res.json();
-        renderSocial(data);
+        renderSocial(Array.isArray(data) ? data : []);
       } catch (e) {
         const root = document.getElementById("socialMoRoot");
         if (root) root.innerHTML = "<p class=\"muted\">Social feed unavailable.</p>";
@@ -421,13 +560,13 @@ _PAGE = """
     function buildSpark(series) {
       const pts = (series || []).slice(-32);
       const labels = pts.map((r) => "");
-      const data = pts.map((r) => Number(r.equity_total) || 0);
+      const data = pts.map((r) => equityY(r));
       const ctx = document.getElementById("sparkEq");
       if (!ctx) return;
       if (spark) spark.destroy();
       spark = new Chart(ctx, {
         type: "line",
-        data: { labels, datasets: [{ data, borderColor: "#00d4ff", backgroundColor: "rgba(0,212,255,0.12)", fill: true, tension: 0.3, pointRadius: 0 }] },
+        data: { labels, datasets: [{ data, borderColor: "#00d4ff", backgroundColor: "rgba(0,212,255,0.12)", fill: true, tension: 0.35, pointRadius: 0 }] },
         options: {
           responsive: true, maintainAspectRatio: false,
           plugins: { legend: { display: false } },
@@ -436,8 +575,13 @@ _PAGE = """
       });
     }
     function buildChart(series) {
-      const labels = series.map((r) => r.snapshot_at || "");
-      const data = series.map((r) => Number(r.equity_total) || 0);
+      let ser = Array.isArray(series) ? series.slice() : [];
+      let labels = ser.map((r) => equityLabel(r));
+      let data = ser.map((r) => equityY(r));
+      if (!data.length) {
+        labels = ["", ""];
+        data = [20000, 20000];
+      }
       const ctx = document.getElementById("eqChart");
       if (chart) chart.destroy();
       chart = new Chart(ctx, {
@@ -448,9 +592,11 @@ _PAGE = """
             label: "Equity",
             data,
             borderColor: "#00d4ff",
-            backgroundColor: "rgba(0, 212, 255, 0.12)",
+            backgroundColor: "rgba(0, 212, 255, 0.08)",
             fill: true,
-            tension: 0.2,
+            tension: 0.35,
+            pointRadius: 0,
+            pointHoverRadius: 0,
           }],
         },
         options: {
@@ -465,17 +611,112 @@ _PAGE = """
       });
     }
     const boot = readPayload();
+    if (typeof boot.market_open === "boolean") __lastDashMarketOpen = boot.market_open;
+    applyLiveTiles(boot);
     buildChart(boot.equity_series || []);
     buildSpark(boot.equity_series || []);
+    renderSignalFeed(boot.recent_signals);
+    renderPositions(boot.open_positions);
+    renderTrades(boot.recent_trades);
+
+    function positionTooltip(ev, tip) {
+      const pad = 15;
+      let x = ev.clientX + pad, y = ev.clientY + pad;
+      const w = tip.offsetWidth || 260;
+      const h = tip.offsetHeight || 120;
+      if (x + w > window.innerWidth - 8) x = window.innerWidth - w - 8;
+      if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+      tip.style.left = x + "px";
+      tip.style.top = y + "px";
+    }
+    function renderTooltipHtml(info) {
+      const typ = (info.type || "").toLowerCase();
+      const badge = typ === "crypto"
+        ? "<span class=\"tt-type-c\">CRYPTO</span>" : "<span class=\"tt-type-s\">STOCK</span>";
+      let line2 = "";
+      if (typ === "crypto") {
+        const rk = info.market_cap_rank;
+        line2 = rk != null ? ("Rank #" + esc(String(rk)) + " by market cap") : "";
+      } else {
+        line2 = esc(info.exchange || "");
+      }
+      let line3 = "";
+      if (info.current_price != null && Number.isFinite(Number(info.current_price))) {
+        line3 = "<div class=\"tt-price\">" + fmtNum(info.current_price, 4);
+        if (info.previous_close != null && Number.isFinite(Number(info.previous_close))) {
+          line3 += " <span style=\"color:var(--text-secondary);\">prev " + fmtNum(info.previous_close, 4) + "</span>";
+        }
+        line3 += "</div>";
+      }
+      const thumb = (typ === "crypto" && info.thumb) ? "<img src=\"" + esc(info.thumb) + "\" width=\"20\" height=\"20\" style=\"vertical-align:middle;border-radius:4px;margin-right:6px;\" alt=\"\"/>" : "";
+      return thumb + "<div><span class=\"tt-name\">" + esc(info.name || info.symbol) + "</span>" + badge + "</div>"
+        + "<div class=\"tt-line2\">" + line2 + "</div>" + line3
+        + "<div class=\"tt-desc\">" + esc(info.description || "") + "</div>";
+    }
+    function setupSymbolTooltips() {
+      const tip = document.getElementById("sym-tooltip");
+      if (!tip) return;
+      document.body.addEventListener("mousemove", (ev) => {
+        const el = ev.target;
+        if (!el || !el.closest) return;
+        const cell = el.closest("[data-symbol]");
+        if (!cell) {
+          if (__symHoverLast) {
+            tip.style.display = "none";
+            __symHoverLast = "";
+          }
+          return;
+        }
+        const sym = cell.getAttribute("data-symbol");
+        if (!sym) return;
+        if (sym !== __symHoverLast) {
+          __symHoverLast = sym;
+          tip.style.display = "block";
+          tip.innerHTML = "<div class=\"tt-desc\">Loading symbol data…</div>";
+          positionTooltip(ev, tip);
+          if (__tooltipFetchTimer) clearTimeout(__tooltipFetchTimer);
+          __tooltipFetchTimer = setTimeout(() => {
+            if (__symHoverLast === sym) tip.innerHTML = "<div class=\"tt-desc\">Loading symbol data…</div>";
+          }, 3000);
+          const cache = window._symbolCache;
+          if (cache[sym]) {
+            clearTimeout(__tooltipFetchTimer);
+            tip.innerHTML = renderTooltipHtml(cache[sym]);
+            positionTooltip(ev, tip);
+            return;
+          }
+          const url = "/api/symbol/" + encodeURIComponent(sym);
+          const ac = new AbortController();
+          const to = setTimeout(() => ac.abort(), 5000);
+          fetch(url, { signal: ac.signal }).then((r) => r.json()).then((j) => {
+            clearTimeout(to);
+            clearTimeout(__tooltipFetchTimer);
+            cache[sym] = j;
+            if (__symHoverLast === sym) {
+              tip.innerHTML = renderTooltipHtml(j);
+              positionTooltip(ev, tip);
+            }
+          }).catch(() => {
+            clearTimeout(to);
+            clearTimeout(__tooltipFetchTimer);
+            if (__symHoverLast === sym) tip.innerHTML = "<div class=\"tt-desc\">Live data unavailable.</div>";
+          });
+        } else {
+          positionTooltip(ev, tip);
+        }
+      });
+      document.body.addEventListener("mouseleave", () => {
+        tip.style.display = "none";
+        __symHoverLast = "";
+      });
+    }
+    setupSymbolTooltips();
 
     async function poll() {
       try {
         const r = await fetch("/api/dashboard", { cache: "no-store" });
         const j = await r.json();
-        const el = document.getElementById("dash-payload");
-        el.textContent = JSON.stringify(j);
-        buildChart(j.equity_series || []);
-        buildSpark(j.equity_series || []);
+        applyLiveDashboard(j);
         lastPollMs = Date.now();
         document.querySelectorAll(".sig-feed-row").forEach((row) => { row.classList.add("row-flash"); });
         setTimeout(() => document.querySelectorAll(".sig-feed-row").forEach((row) => row.classList.remove("row-flash")), 650);
@@ -680,6 +921,78 @@ def create_app() -> Flask:
             rows = []
         return Response(json.dumps(rows, default=str), mimetype="application/json")
 
+    @app.route("/api/symbol/<path:symbol>")
+    def symbol_info(symbol: str) -> Any:
+        import json as _json
+        from urllib.error import URLError, HTTPError
+        from urllib.parse import quote
+        from urllib.request import Request, urlopen
+
+        symbol_upper = symbol.upper().strip()
+        is_crypto = "/" in symbol_upper
+
+        if is_crypto:
+            base = symbol_upper.split("/")[0].lower()
+            try:
+                url = f"https://api.coingecko.com/api/v3/search?query={quote(base)}"
+                req = Request(url, headers={"User-Agent": "QuantBot/1.0"})
+                with urlopen(req, timeout=5) as resp:
+                    raw = _json.loads(resp.read().decode("utf-8", errors="replace"))
+                coins = raw.get("coins") or []
+                if coins:
+                    c = coins[0]
+                    rk = c.get("market_cap_rank")
+                    return jsonify(
+                        {
+                            "symbol": symbol_upper,
+                            "name": c.get("name", symbol_upper),
+                            "type": "crypto",
+                            "market_cap_rank": rk,
+                            "thumb": c.get("thumb", ""),
+                            "description": f"Rank #{rk if rk is not None else '?'} crypto by market cap",
+                        }
+                    )
+            except (OSError, URLError, HTTPError, ValueError, KeyError, TypeError):
+                logger.debug("symbol_info CoinGecko failed for {}", symbol_upper, exc_info=True)
+            return jsonify(
+                {
+                    "symbol": symbol_upper,
+                    "name": base.upper(),
+                    "type": "crypto",
+                    "description": "Cryptocurrency",
+                }
+            )
+
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol_upper, safe='')}?interval=1d&range=1d"
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode("utf-8", errors="replace"))
+            meta = data["chart"]["result"][0]["meta"]
+            prev = meta.get("chartPreviousClose", meta.get("previousClose"))
+            return jsonify(
+                {
+                    "symbol": symbol_upper,
+                    "name": meta.get("longName") or meta.get("shortName", symbol_upper),
+                    "type": "stock",
+                    "exchange": meta.get("exchangeName", ""),
+                    "currency": meta.get("currency", "USD"),
+                    "current_price": meta.get("regularMarketPrice"),
+                    "previous_close": prev,
+                    "description": f"{meta.get('instrumentType', 'Stock')} on {meta.get('exchangeName', '')}",
+                }
+            )
+        except (OSError, URLError, HTTPError, ValueError, KeyError, IndexError, TypeError):
+            logger.debug("symbol_info Yahoo failed for {}", symbol_upper, exc_info=True)
+        return jsonify(
+            {
+                "symbol": symbol_upper,
+                "name": symbol_upper,
+                "type": "stock",
+                "description": "Stock — live data unavailable",
+            }
+        )
+
     @app.get("/")
     def index() -> str:
         with get_connection() as conn:
@@ -702,7 +1015,7 @@ def create_app() -> Flask:
             dep = None
         dep_str = f"{dep:.1f}%" if dep is not None else "—"
         mode_str = str(payload.get("mode") or latest.get("mode") or "—")
-        chart_data = {"equity_series": payload.get("equity_series") or []}
+        dash_snapshot = dict(payload)
         perf = payload.get("performance") or {}
         rl_history = payload.get("rl_learning_history") or []
         calibration = payload.get("calibration") or {}
@@ -718,7 +1031,7 @@ def create_app() -> Flask:
             positions=_fmt_positions(payload.get("open_positions") or []),
             trades=_fmt_trades(payload.get("recent_trades") or []),
             signals=_fmt_signals(payload.get("recent_signals") or []),
-            chart_data=chart_data,
+            dash_snapshot=dash_snapshot,
             bot_ui=bot_ui,
             perf=perf,
             rl_history=rl_history,
