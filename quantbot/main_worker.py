@@ -344,6 +344,7 @@ def _can_buy(
         return False, "kill_switch"
     if notional < mid * 0.01:
         return False, "notional_too_small"
+    # Crypto is 24/7 — only US equities are gated on regular session.
     if asset_class == "stock" and not portfolio_limiter.us_stock_market_open():
         return False, "market_closed"
     n_st, n_cr = _open_counts(trader)
@@ -506,13 +507,25 @@ def execute_cycle_results(
             if eff_action == "BUY":
                 notional = _buy_notional(trader, cs.asset_class, rt)
                 ok, reason = _can_buy(trader, cs.asset_class, cs.symbol, mid, notional, rt)
+                if reason == "market_closed" and cs.asset_class == "crypto":
+                    ok, reason = True, "ok"
                 qty = notional / mid
                 if cs.asset_class == "stock":
                     qty = round(qty, 4)
                 else:
                     qty = round(qty, 6)
                 if not ok or qty <= 0:
-                    logger.info("BUY skipped {} {} — {}", cs.asset_class, cs.symbol, reason)
+                    if reason == "market_closed":
+                        import pytz
+                        from datetime import datetime as _dt
+
+                        logger.info(
+                            "BUY skipped {} — market closed ET={}",
+                            cs.symbol,
+                            _dt.now(pytz.timezone("America/New_York")).strftime("%H:%M"),
+                        )
+                    else:
+                        logger.info("BUY skipped {} {} — {}", cs.asset_class, cs.symbol, reason)
                     out["holds"] += 1
                     continue
                 r = order_manager.paper_market_buy(trader, cs.asset_class, cs.symbol, qty, mid)
@@ -636,6 +649,14 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     global _pump_detector
     setup_logging()
     init_schema()
+    from data.data_store import get_config
+    from market_hours import nyse_regular_session_open
+
+    logger.info(f"[startup] DB_PATH={config.DB_PATH}")
+    logger.info(
+        f"[startup] buy_threshold={get_config('buy_threshold')} crypto_buy_threshold={get_config('crypto_buy_threshold')}"
+    )
+    logger.info(f"[startup] market_open_right_now={nyse_regular_session_open()}")
     logger.info("QuantBot worker | mode={} | db={}", config.MODE, config.DB_PATH)
 
     if alerts.telegram_alerts_configured():

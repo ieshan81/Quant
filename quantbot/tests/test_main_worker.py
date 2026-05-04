@@ -31,6 +31,13 @@ def test_can_buy_rejects_when_market_closed() -> None:
     assert reason == "market_closed"
 
 
+def test_can_buy_crypto_not_blocked_by_stock_market_hours() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=False):
+        ok, reason = mw._can_buy(t, "crypto", "BTC/USD", 50000.0, 500.0, _rt())
+    assert reason != "market_closed"
+
+
 def test_execute_cycle_hold_only() -> None:
     t = create_paper_trader(persist_sqlite=False)
     sig = mw.CycleSignal("stock", "ZZZ", {"rsi": 0.0}, 0.0, "HOLD", 50.0, None)

@@ -14,19 +14,16 @@ load_dotenv(ROOT_DIR / ".env")
 DATA_DIR = ROOT_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Persistent storage directory — must NOT overlap with the Python `data` package.
-# The Railway volume should be mounted at /app/persist.
-PERSIST_DIR = Path(os.environ.get("QUANTBOT_PERSIST_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "persist")))
+# Persistent storage directory — Railway volume at /app/persist by default.
+PERSIST_DIR = Path(os.environ.get("QUANTBOT_PERSIST_DIR", "/app/persist"))
 PERSIST_DIR.mkdir(parents=True, exist_ok=True)
 
-# Portable default: persist dir (no hardcoded absolute paths).
-DEFAULT_DB_PATH = PERSIST_DIR / "quantbot.sqlite3"
-_db_override = os.getenv("QUANTBOT_DB_PATH")
-if _db_override and str(_db_override).strip():
-    raw = Path(str(_db_override).strip()).expanduser()
+_db_env = os.environ.get("QUANTBOT_DB_PATH", "").strip()
+if _db_env:
+    raw = Path(_db_env).expanduser()
     DB_PATH = (ROOT_DIR / raw).resolve() if not raw.is_absolute() else raw.resolve()
 else:
-    DB_PATH = DEFAULT_DB_PATH
+    DB_PATH = Path(os.path.join(os.environ.get("QUANTBOT_PERSIST_DIR", "/app/persist"), "quantbot.sqlite3"))
 
 MODE = os.getenv("QUANTBOT_MODE", "paper").strip().lower()
 if MODE not in ("paper", "live"):

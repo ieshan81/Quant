@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from unittest.mock import patch
 
 import pytz
 
@@ -14,25 +15,45 @@ def _et(y: int, m: int, d: int, hh: int, mm: int = 0) -> datetime:
     return tz.localize(datetime(y, m, d, hh, mm))
 
 
+def _patch_dt(fixed: datetime):
+    class _DT:
+        @staticmethod
+        def now(tz: object | None = None) -> datetime:  # noqa: ARG004
+            return fixed
+
+    return patch("market_hours.datetime", _DT)
+
+
 def test_nyse_open_midweek_afternoon() -> None:
-    assert nyse_regular_session_open(_et(2026, 4, 29, 14, 0)) is True
+    with _patch_dt(_et(2026, 4, 29, 14, 0)):
+        assert nyse_regular_session_open() is True
 
 
 def test_nyse_closed_weekend() -> None:
-    assert nyse_regular_session_open(_et(2026, 5, 2, 14, 0)) is False
+    with _patch_dt(_et(2026, 5, 2, 14, 0)):
+        assert nyse_regular_session_open() is False
 
 
 def test_nyse_closed_before_open() -> None:
-    assert nyse_regular_session_open(_et(2026, 4, 29, 9, 29)) is False
+    with _patch_dt(_et(2026, 4, 29, 9, 29)):
+        assert nyse_regular_session_open() is False
 
 
 def test_nyse_open_at_open() -> None:
-    assert nyse_regular_session_open(_et(2026, 4, 29, 9, 30)) is True
+    with _patch_dt(_et(2026, 4, 29, 9, 30)):
+        assert nyse_regular_session_open() is True
 
 
 def test_nyse_closed_at_4pm() -> None:
-    assert nyse_regular_session_open(_et(2026, 4, 29, 16, 0)) is False
+    with _patch_dt(_et(2026, 4, 29, 16, 0)):
+        assert nyse_regular_session_open() is False
 
 
 def test_nyse_open_before_close() -> None:
-    assert nyse_regular_session_open(_et(2026, 4, 29, 15, 59)) is True
+    with _patch_dt(_et(2026, 4, 29, 15, 59)):
+        assert nyse_regular_session_open() is True
+
+
+def test_nyse_fail_open_on_broken_timezone() -> None:
+    with patch("market_hours.pytz.timezone", side_effect=RuntimeError("no tz")):
+        assert nyse_regular_session_open() is True

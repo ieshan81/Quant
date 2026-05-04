@@ -58,17 +58,17 @@ def test_api_config_reset(dash_app) -> None:
     assert r.status_code == 200
     rows = json.loads(client.get("/api/config").data)
     buy = next(x for x in rows if x["key"] == "buy_threshold")
-    assert float(buy["value"]) == pytest.approx(0.20)
+    assert float(buy["value"]) == pytest.approx(0.10)
 
 
 def test_index_renders(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
-    assert b"QuantBot monitoring" in r.data
-    assert b"Bot Parameters" in r.data
+    assert b"QUANTBOT" in r.data
+    assert b"Bot parameters" in r.data
     assert b"Performance" in r.data
-    assert b"Signal Calibration" in r.data
+    assert b"Signal calibration" in r.data
 
 
 def test_api_calibration(dash_app) -> None:

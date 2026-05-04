@@ -11,14 +11,14 @@ from typing import Any, Generator
 import config
 
 BOT_CONFIG_DEFAULTS: dict[str, tuple[float, str]] = {
-    "buy_threshold": (0.20, "Score needed to trigger a BUY (stocks)"),
-    "sell_threshold": (-0.20, "Score needed to trigger a SELL (stocks)"),
-    "crypto_buy_threshold": (0.12, "Score needed to trigger a BUY (crypto)"),
+    "buy_threshold": (0.10, "Score to trigger BUY (stocks)"),
+    "sell_threshold": (-0.10, "Score to trigger SELL (stocks)"),
+    "crypto_buy_threshold": (0.08, "Score to trigger BUY (crypto)"),
     "rsi_oversold": (35.0, "RSI level considered oversold → bullish signal"),
     "rsi_overbought": (65.0, "RSI level considered overbought → bearish signal"),
-    "kelly_fraction": (0.25, "Kelly fraction for position sizing (0–1)"),
-    "stop_loss_pct": (0.04, "Stop loss percentage (e.g. 0.04 = 4%)"),
-    "take_profit_pct": (0.08, "Take profit percentage (e.g. 0.08 = 8%)"),
+    "kelly_fraction": (0.30, "Kelly fraction"),
+    "stop_loss_pct": (0.05, "Stop loss %"),
+    "take_profit_pct": (0.10, "Take profit %"),
     "max_position_pct": (0.10, "Max portfolio % per position"),
     "rl_pair_checkpoint": (0.0, "internal: last closed-trade count after RL nudge"),
 }
