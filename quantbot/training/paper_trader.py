@@ -95,11 +95,23 @@ class PaperTrader:
         return self._positions.get(_position_key(asset_class, symbol))
 
     def positions_market_value(self) -> tuple[float, float]:
-        """(stocks_notional, crypto_notional) using average entry as mark."""
+        """Signed book contribution per sleeve (``qty * avg``; shorts are negative)."""
         s_val = 0.0
         c_val = 0.0
         for pos in self._positions.values():
             v = pos.quantity * pos.avg_price
+            if pos.asset_class == "stock":
+                s_val += v
+            else:
+                c_val += v
+        return s_val, c_val
+
+    def positions_gross_notional(self) -> tuple[float, float]:
+        """Gross notional at avg entry (``abs(qty) * avg``) for deployed / cap checks."""
+        s_val = 0.0
+        c_val = 0.0
+        for pos in self._positions.values():
+            v = abs(pos.quantity) * pos.avg_price
             if pos.asset_class == "stock":
                 s_val += v
             else:
@@ -121,7 +133,7 @@ class PaperTrader:
         eq = self.equity_total()
         if eq <= 0.0:
             return 0.0
-        s_mv, c_mv = self.positions_market_value()
+        s_mv, c_mv = self.positions_gross_notional()
         deployed = s_mv + c_mv
         return (deployed / eq) * 100.0
 
@@ -164,10 +176,11 @@ class PaperTrader:
                 meta=meta,
             )
             s_mv, c_mv = self.positions_market_value()
+            g_s, g_c = self.positions_gross_notional()
             eq_s = self.cash_stocks + s_mv
             eq_c = self.cash_crypto + c_mv
             eq_t = eq_s + eq_c
-            deployed = s_mv + c_mv
+            deployed = g_s + g_c
             dep_pct = (deployed / eq_t * 100.0) if eq_t > 0.0 else 0.0
             trade_logger.log_portfolio_snapshot(
                 conn,
@@ -240,13 +253,91 @@ class PaperTrader:
         symbol: str,
         quantity: float,
         mid_price: float,
+        *,
+        reason_code: str | None = None,
+        meta: dict[str, Any] | None = None,
     ) -> FillResult:
         if quantity <= 0 or mid_price <= 0:
             return FillResult(
                 False, "buy", asset_class, symbol, 0.0, mid_price, 0.0, "quantity and mid_price must be positive"
             )
-        notional = quantity * mid_price
+        key = _position_key(asset_class, symbol)
+        existing = self._positions.get(key)
         cash = self._cash_for(asset_class)
+
+        # Cover short (full or partial); remainder opens/adds long when flat after cover.
+        if existing is not None and existing.quantity < -1e-12:
+            abs_s = abs(existing.quantity)
+            cover = min(quantity, abs_s)
+            rem = quantity - cover
+            need = cover * mid_price + (rem * mid_price if rem > 1e-12 else 0.0)
+            if cash + 1e-9 < need:
+                msg = f"insufficient {asset_class} cash: need {need:.2f}, have {cash:.2f}"
+                self._log_trade_row(
+                    asset_class=asset_class,
+                    symbol=symbol.strip(),
+                    side="buy",
+                    quantity=quantity,
+                    price=mid_price,
+                    notional=need,
+                    status="rejected",
+                    broker_order_id=None,
+                    reason_code="INSUFFICIENT_CASH",
+                    meta={"message": msg},
+                )
+                return FillResult(False, "buy", asset_class, symbol, 0.0, mid_price, 0.0, msg)
+
+            new_q = existing.quantity + cover
+            cover_notional = cover * mid_price
+            self._set_cash(asset_class, cash - cover_notional)
+            if abs(new_q) < 1e-12:
+                self._positions.pop(key, None)
+            else:
+                self._positions[key] = Position(
+                    asset_class, symbol.strip(), new_q, existing.avg_price
+                )
+            oid1 = f"paper-{uuid.uuid4().hex[:16]}"
+            self._log_trade_row(
+                asset_class=asset_class,
+                symbol=symbol.strip(),
+                side="buy",
+                quantity=cover,
+                price=mid_price,
+                notional=cover_notional,
+                status="filled",
+                broker_order_id=oid1,
+                reason_code=reason_code,
+                meta=meta,
+            )
+            if rem <= 1e-12:
+                return FillResult(True, "buy", asset_class, symbol, quantity, mid_price, need, "filled", oid1)
+
+            cash2 = self._cash_for(asset_class)
+            rem_notional = rem * mid_price
+            ex2 = self._positions.get(key)
+            if ex2 is None:
+                self._positions[key] = Position(asset_class, symbol.strip(), rem, mid_price)
+            else:
+                qn = ex2.quantity + rem
+                avgn = (ex2.quantity * ex2.avg_price + rem * mid_price) / qn
+                self._positions[key] = Position(asset_class, symbol.strip(), qn, avgn)
+            self._set_cash(asset_class, cash2 - rem_notional)
+            oid2 = f"paper-{uuid.uuid4().hex[:16]}"
+            self._log_trade_row(
+                asset_class=asset_class,
+                symbol=symbol.strip(),
+                side="buy",
+                quantity=rem,
+                price=mid_price,
+                notional=rem_notional,
+                status="filled",
+                broker_order_id=oid2,
+                reason_code=reason_code,
+                meta=meta,
+            )
+            return FillResult(True, "buy", asset_class, symbol, quantity, mid_price, need, "filled", oid1)
+
+        notional = quantity * mid_price
         if cash + 1e-9 < notional:
             msg = f"insufficient {asset_class} cash: need {notional:.2f}, have {cash:.2f}"
             self._log_trade_row(
@@ -263,9 +354,7 @@ class PaperTrader:
             )
             return FillResult(False, "buy", asset_class, symbol, 0.0, mid_price, 0.0, msg)
 
-        key = _position_key(asset_class, symbol)
-        existing = self._positions.get(key)
-        if existing is None:
+        if existing is None or abs(existing.quantity) < 1e-12:
             self._positions[key] = Position(asset_class, symbol.strip(), quantity, mid_price)
         else:
             q = existing.quantity + quantity
@@ -283,8 +372,8 @@ class PaperTrader:
             notional=notional,
             status="filled",
             broker_order_id=oid,
-            reason_code=None,
-            meta=None,
+            reason_code=reason_code,
+            meta=meta,
         )
         return FillResult(True, "buy", asset_class, symbol, quantity, mid_price, notional, "filled", oid)
 
@@ -304,31 +393,87 @@ class PaperTrader:
             )
         key = _position_key(asset_class, symbol)
         existing = self._positions.get(key)
-        if existing is None or existing.quantity + 1e-12 < quantity:
-            msg = "insufficient position"
+        notional = quantity * mid_price
+        cash = self._cash_for(asset_class)
+
+        if existing is not None and existing.quantity > 1e-12:
+            if existing.quantity + 1e-12 < quantity:
+                msg = "insufficient position"
+                self._log_trade_row(
+                    asset_class=asset_class,
+                    symbol=symbol.strip(),
+                    side="sell",
+                    quantity=quantity,
+                    price=mid_price,
+                    notional=notional,
+                    status="rejected",
+                    broker_order_id=None,
+                    reason_code="INSUFFICIENT_POSITION",
+                    meta={"message": msg},
+                )
+                return FillResult(False, "sell", asset_class, symbol, 0.0, mid_price, 0.0, msg)
+            new_q = existing.quantity - quantity
+            if new_q <= 1e-12:
+                self._positions.pop(key, None)
+            else:
+                self._positions[key] = Position(asset_class, symbol.strip(), new_q, existing.avg_price)
+            self._set_cash(asset_class, cash + notional)
+            oid = f"paper-{uuid.uuid4().hex[:16]}"
             self._log_trade_row(
                 asset_class=asset_class,
                 symbol=symbol.strip(),
                 side="sell",
                 quantity=quantity,
                 price=mid_price,
-                notional=quantity * mid_price,
-                status="rejected",
-                broker_order_id=None,
-                reason_code="INSUFFICIENT_POSITION",
-                meta={"message": msg},
+                notional=notional,
+                status="filled",
+                broker_order_id=oid,
+                reason_code=reason_code,
+                meta=meta,
             )
-            return FillResult(False, "sell", asset_class, symbol, 0.0, mid_price, 0.0, msg)
+            return FillResult(True, "sell", asset_class, symbol, quantity, mid_price, notional, "filled", oid)
 
-        notional = quantity * mid_price
-        new_q = existing.quantity - quantity
-        if new_q <= 1e-12:
-            self._positions.pop(key, None)
-        else:
-            self._positions[key] = Position(asset_class, symbol.strip(), new_q, existing.avg_price)
+        if existing is not None and existing.quantity < -1e-12:
+            new_q = existing.quantity - quantity
+            abs_old = abs(existing.quantity)
+            abs_new = abs(new_q)
+            new_avg = (abs_old * existing.avg_price + quantity * mid_price) / abs_new
+            self._positions[key] = Position(asset_class, symbol.strip(), new_q, new_avg)
+            self._set_cash(asset_class, cash + notional)
+            oid = f"paper-{uuid.uuid4().hex[:16]}"
+            self._log_trade_row(
+                asset_class=asset_class,
+                symbol=symbol.strip(),
+                side="sell",
+                quantity=quantity,
+                price=mid_price,
+                notional=notional,
+                status="filled",
+                broker_order_id=oid,
+                reason_code=reason_code,
+                meta=meta,
+            )
+            return FillResult(True, "sell", asset_class, symbol, quantity, mid_price, notional, "filled", oid)
 
-        self._set_cash(asset_class, self._cash_for(asset_class) + notional)
-        oid = f"paper-{uuid.uuid4().hex[:16]}"
+        if asset_class == "stock":
+            self._positions[key] = Position(asset_class, symbol.strip(), -quantity, mid_price)
+            self._set_cash(asset_class, cash + notional)
+            oid = f"paper-{uuid.uuid4().hex[:16]}"
+            self._log_trade_row(
+                asset_class=asset_class,
+                symbol=symbol.strip(),
+                side="sell",
+                quantity=quantity,
+                price=mid_price,
+                notional=notional,
+                status="filled",
+                broker_order_id=oid,
+                reason_code=reason_code,
+                meta=meta,
+            )
+            return FillResult(True, "sell", asset_class, symbol, quantity, mid_price, notional, "filled", oid)
+
+        msg = "insufficient position"
         self._log_trade_row(
             asset_class=asset_class,
             symbol=symbol.strip(),
@@ -336,12 +481,12 @@ class PaperTrader:
             quantity=quantity,
             price=mid_price,
             notional=notional,
-            status="filled",
-            broker_order_id=oid,
-            reason_code=reason_code,
-            meta=meta,
+            status="rejected",
+            broker_order_id=None,
+            reason_code="INSUFFICIENT_POSITION",
+            meta={"message": msg},
         )
-        return FillResult(True, "sell", asset_class, symbol, quantity, mid_price, notional, "filled", oid)
+        return FillResult(False, "sell", asset_class, symbol, 0.0, mid_price, 0.0, msg)
 
     def log_signal_row(
         self,

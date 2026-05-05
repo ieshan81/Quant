@@ -89,6 +89,19 @@ def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     assert any("TAKE_PROFIT" in ln for ln in lines)
 
 
+def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_sell("stock", "SHS", 1.0, 100.0, reason_code="short_entry", meta=None).ok
+    monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 94.0)
+    lines, checked, fired = mw._check_and_execute_exits(
+        t, None, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
+    )
+    assert checked >= 1
+    assert fired >= 1
+    assert any("TAKE_PROFIT_SHORT" in ln for ln in lines)
+    assert t.position("stock", "SHS") is None
+
+
 def test_execute_cycle_hold_only() -> None:
     t = create_paper_trader(persist_sqlite=False)
     sig = mw.CycleSignal("stock", "ZZZ", {"rsi": 0.0}, 0.0, "HOLD", 50.0, None)

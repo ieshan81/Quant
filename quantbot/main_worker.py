@@ -205,8 +205,7 @@ def _open_counts(trader: PaperTrader) -> tuple[int, int]:
 
 
 def _deployed_notional(trader: PaperTrader) -> tuple[float, float]:
-    s_mv, c_mv = trader.positions_market_value()
-    return s_mv, c_mv
+    return trader.positions_gross_notional()
 
 
 class CycleSignal(NamedTuple):
@@ -466,21 +465,58 @@ def _can_buy(
     pos = trader.position(asset_class, symbol)
     if pos is not None and pos.quantity > 1e-8:
         return False, "already_long"
+    if pos is not None and pos.quantity < -1e-8:
+        return False, "already_short"
     return True, "ok"
 
 
-def apply_stops_and_targets(
+def _can_open_short_stock(
+    trader: PaperTrader,
+    symbol: str,
+    mid: float,
+    notional: float,
+    rt: dict[str, float],
+) -> tuple[bool, str]:
+    """Strong SELL stock short entry: same sizing/caps as buys; no crypto shorts."""
+    if drawdown_guard.check_kill_switch(trader.equity_total()):
+        return False, "kill_switch"
+    if notional < float(config.MIN_ORDER_NOTIONAL_USD):
+        return False, "notional_too_small"
+    if not portfolio_limiter.us_stock_market_open():
+        return False, "market_closed"
+    n_st, n_cr = _open_counts(trader)
+    if n_st >= MAX_STOCK_POS:
+        return False, "max_stock_positions"
+    sleeve = trader.equity_stocks()
+    eff_pct = _effective_max_position_pct_for_sizing(sleeve, float(rt["max_position_pct"]))
+    if not portfolio_limiter.within_single_asset_cap(
+        notional, sleeve, max_single_pct=eff_pct
+    ):
+        return False, "single_asset_cap"
+    s_mv, c_mv = _deployed_notional(trader)
+    total_eq = trader.equity_total()
+    if not portfolio_limiter.within_portfolio_deployed_cap(s_mv + c_mv + notional, total_eq):
+        return False, "portfolio_cap"
+    pos = trader.position("stock", symbol)
+    if pos is not None and pos.quantity > 1e-8:
+        return False, "already_long"
+    if pos is not None and pos.quantity < -1e-8:
+        return False, "already_short"
+    return True, "ok"
+
+
+def _check_and_execute_exits(
     trader: PaperTrader,
     kraken_ex: Any,
-    rt: dict[str, float],
+    risk_params: dict[str, float],
 ) -> tuple[list[str], int, int]:
     """
-    Every cycle: compare mark vs avg entry; sell on stop-loss or take-profit.
+    Every cycle (before new signals): TP/SL vs mark for longs (sell) and shorts (buy to cover).
     Stocks use Alpaca last trade when configured; crypto uses Kraken ticker (24/7).
     Returns ``(log_lines, positions_checked, exits_filled_ok)``.
     """
-    stop_loss_frac = float(rt["stop_loss_pct"])
-    take_profit_frac = float(rt["take_profit_pct"])
+    stop_loss_frac = float(risk_params.get("stop_loss_pct", 0.015))
+    take_profit_frac = float(risk_params.get("take_profit_pct", 0.03))
     lines: list[str] = []
     positions = list(trader._positions.values())
     checked = 0
@@ -499,62 +535,133 @@ def apply_stops_and_targets(
         if entry <= 0:
             logger.warning("[exits] skip {} {} — invalid entry {}", pos.asset_class, pos.symbol, entry)
             continue
-        pnl_pct = (mid - entry) / entry
-        if pnl_pct <= -stop_loss_frac:
-            logger.info(
-                "[exit] STOP_LOSS {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
-                pos.asset_class,
-                pos.symbol,
-                entry,
-                mid,
-                pnl_pct,
-                -stop_loss_frac,
-            )
-            trader.set_telegram_on_fills(False)
-            try:
-                r = order_manager.paper_market_sell(
-                    trader,
+        qty = float(pos.quantity)
+        if qty > 1e-12:
+            pnl_pct = (mid - entry) / entry
+            if pnl_pct <= -stop_loss_frac:
+                logger.info(
+                    "[exit] STOP_LOSS {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
                     pos.asset_class,
                     pos.symbol,
-                    pos.quantity,
+                    entry,
                     mid,
-                    reason_code="STOP_LOSS",
-                    meta=None,
+                    pnl_pct,
+                    -stop_loss_frac,
                 )
-            finally:
-                trader.set_telegram_on_fills(True)
-            if r.ok:
-                exits_ok += 1
-            pnl = (mid - entry) * pos.quantity
-            lines.append(f"STOP_LOSS {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
-        elif pnl_pct >= take_profit_frac:
-            logger.info(
-                "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
-                pos.asset_class,
-                pos.symbol,
-                entry,
-                mid,
-                pnl_pct,
-                take_profit_frac,
-            )
-            trader.set_telegram_on_fills(False)
-            try:
-                r = order_manager.paper_market_sell(
-                    trader,
+                trader.set_telegram_on_fills(False)
+                try:
+                    r = order_manager.paper_market_sell(
+                        trader,
+                        pos.asset_class,
+                        pos.symbol,
+                        qty,
+                        mid,
+                        reason_code="STOP_LOSS",
+                        meta=None,
+                    )
+                finally:
+                    trader.set_telegram_on_fills(True)
+                if r.ok:
+                    exits_ok += 1
+                pnl = (mid - entry) * qty
+                lines.append(f"STOP_LOSS {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+            elif pnl_pct >= take_profit_frac:
+                logger.info(
+                    "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
                     pos.asset_class,
                     pos.symbol,
-                    pos.quantity,
+                    entry,
                     mid,
-                    reason_code="TAKE_PROFIT",
-                    meta=None,
+                    pnl_pct,
+                    take_profit_frac,
                 )
-            finally:
-                trader.set_telegram_on_fills(True)
-            if r.ok:
-                exits_ok += 1
-            pnl = (mid - entry) * pos.quantity
-            lines.append(f"TAKE_PROFIT {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+                trader.set_telegram_on_fills(False)
+                try:
+                    r = order_manager.paper_market_sell(
+                        trader,
+                        pos.asset_class,
+                        pos.symbol,
+                        qty,
+                        mid,
+                        reason_code="TAKE_PROFIT",
+                        meta=None,
+                    )
+                finally:
+                    trader.set_telegram_on_fills(True)
+                if r.ok:
+                    exits_ok += 1
+                pnl = (mid - entry) * qty
+                lines.append(f"TAKE_PROFIT {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+        elif qty < -1e-12:
+            pnl_pct = (entry - mid) / entry
+            if pnl_pct <= -stop_loss_frac:
+                logger.info(
+                    "[exit] STOP_LOSS_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                    pos.asset_class,
+                    pos.symbol,
+                    entry,
+                    mid,
+                    pnl_pct,
+                    -stop_loss_frac,
+                )
+                trader.set_telegram_on_fills(False)
+                try:
+                    r = order_manager.paper_market_buy(
+                        trader,
+                        pos.asset_class,
+                        pos.symbol,
+                        abs(qty),
+                        mid,
+                        reason_code="STOP_LOSS",
+                        meta={"short": True},
+                    )
+                finally:
+                    trader.set_telegram_on_fills(True)
+                if r.ok:
+                    exits_ok += 1
+                pnl = (entry - mid) * abs(qty)
+                lines.append(f"STOP_LOSS_SHORT {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+            elif pnl_pct >= take_profit_frac:
+                logger.info(
+                    "[exit] TAKE_PROFIT_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                    pos.asset_class,
+                    pos.symbol,
+                    entry,
+                    mid,
+                    pnl_pct,
+                    take_profit_frac,
+                )
+                trader.set_telegram_on_fills(False)
+                try:
+                    r = order_manager.paper_market_buy(
+                        trader,
+                        pos.asset_class,
+                        pos.symbol,
+                        abs(qty),
+                        mid,
+                        reason_code="TAKE_PROFIT",
+                        meta={"short": True},
+                    )
+                finally:
+                    trader.set_telegram_on_fills(True)
+                if r.ok:
+                    exits_ok += 1
+                pnl = (entry - mid) * abs(qty)
+                lines.append(f"TAKE_PROFIT_SHORT {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+    logger.info("[exits] checked {} positions: {} exits fired", checked, exits_ok)
     return lines, checked, exits_ok
+
+
+def apply_stops_and_targets(
+    trader: PaperTrader,
+    kraken_ex: Any,
+    rt: dict[str, float],
+) -> tuple[list[str], int, int]:
+    risk_params = {
+        "take_profit_pct": float(rt["take_profit_pct"]),
+        "stop_loss_pct": float(rt["stop_loss_pct"]),
+    }
+    return _check_and_execute_exits(trader, kraken_ex, risk_params)
 
 
 def _telegram_buy(trader: PaperTrader, asset_class: AssetClass, symbol: str, price: float, score: float) -> None:
@@ -591,15 +698,27 @@ def liquidate_all(trader: PaperTrader, kraken_ex: Any) -> None:
             mid = _mid_from_stock_df(df)
             if mid is None or mid <= 0:
                 continue
-            order_manager.paper_market_sell(
-                trader,
-                pos.asset_class,
-                pos.symbol,
-                pos.quantity,
-                mid,
-                reason_code="KILL_SWITCH_LIQUIDATE",
-                meta=None,
-            )
+            q = float(pos.quantity)
+            if q > 1e-8:
+                order_manager.paper_market_sell(
+                    trader,
+                    pos.asset_class,
+                    pos.symbol,
+                    q,
+                    mid,
+                    reason_code="KILL_SWITCH_LIQUIDATE",
+                    meta=None,
+                )
+            elif q < -1e-8:
+                order_manager.paper_market_buy(
+                    trader,
+                    pos.asset_class,
+                    pos.symbol,
+                    abs(q),
+                    mid,
+                    reason_code="KILL_SWITCH_LIQUIDATE",
+                    meta={"short": True},
+                )
     finally:
         trader.set_telegram_on_fills(True)
 
@@ -610,7 +729,14 @@ def execute_cycle_results(
     rt: dict[str, float],
 ) -> dict[str, Any]:
     """Sequential execution after parallel analysis (PaperTrader is not thread-safe)."""
-    out: dict[str, Any] = {"buys": 0, "sells": 0, "holds": 0, "errors": 0}
+    out: dict[str, Any] = {
+        "buys": 0,
+        "sells": 0,
+        "holds": 0,
+        "errors": 0,
+        "short_entries": 0,
+        "short_covers": 0,
+    }
     for cs in sorted(results, key=lambda x: (x.asset_class, x.symbol)):
         if cs.error:
             logger.error(
@@ -642,6 +768,35 @@ def execute_cycle_results(
             combined_score=eff_score,
             meta={"action": eff_action, "inputs": cs.signals, "worker": "sprint12"},
         )
+        with _trader_lock:
+            pos_short = trader.position(cs.asset_class, cs.symbol)
+        if (
+            cs.asset_class == "stock"
+            and pos_short is not None
+            and float(pos_short.quantity) < -1e-8
+            and (eff_action == "BUY" or eff_score > -0.05)
+        ):
+            sq = abs(float(pos_short.quantity))
+            logger.info("[short] COVER {} qty={:.4f} action={} score={:.4f}", cs.symbol, sq, eff_action, eff_score)
+            trader.set_telegram_on_fills(False)
+            try:
+                r = order_manager.paper_market_buy(
+                    trader,
+                    "stock",
+                    cs.symbol,
+                    sq,
+                    mid,
+                    reason_code="short_cover",
+                    meta=None,
+                )
+            finally:
+                trader.set_telegram_on_fills(True)
+            if r.ok:
+                out["short_covers"] += 1
+            else:
+                logger.warning("[short] COVER failed {} {}", cs.symbol, r.message)
+            continue
+
         if eff_action == "HOLD":
             out["holds"] += 1
             continue
@@ -700,23 +855,63 @@ def execute_cycle_results(
                     out["holds"] += 1
             elif eff_action == "SELL":
                 pos = trader.position(cs.asset_class, cs.symbol)
-                if pos is None or pos.quantity <= 1e-8:
+                if pos is not None and pos.quantity > 1e-8:
+                    entry = float(pos.avg_price)
+                    qty = float(pos.quantity)
+                    trader.set_telegram_on_fills(False)
+                    try:
+                        r = order_manager.paper_market_sell(
+                            trader, cs.asset_class, cs.symbol, qty, mid, reason_code=None, meta=None
+                        )
+                    finally:
+                        trader.set_telegram_on_fills(True)
+                    if r.ok:
+                        out["sells"] += 1
+                        _telegram_sell(trader, cs.asset_class, cs.symbol, mid, entry, qty)
+                    else:
+                        logger.warning("SELL failed {} {}", cs.symbol, r.message)
+                        out["holds"] += 1
+                elif pos is not None and pos.quantity < -1e-8:
                     out["holds"] += 1
-                    continue
-                entry = float(pos.avg_price)
-                qty = float(pos.quantity)
-                trader.set_telegram_on_fills(False)
-                try:
-                    r = order_manager.paper_market_sell(
-                        trader, cs.asset_class, cs.symbol, qty, mid, reason_code=None, meta=None
+                elif cs.asset_class == "crypto":
+                    out["holds"] += 1
+                elif eff_score <= -0.20:
+                    notional, _bd = _buy_notional_breakdown(trader, "stock", rt)
+                    stocks_open = portfolio_limiter.us_stock_market_open()
+                    logger.info(
+                        "[short] ENTER {} score={:.4f} mid={:.4f} notional={:.2f} stocks_open={}",
+                        cs.symbol,
+                        eff_score,
+                        mid,
+                        notional,
+                        stocks_open,
                     )
-                finally:
-                    trader.set_telegram_on_fills(True)
-                if r.ok:
-                    out["sells"] += 1
-                    _telegram_sell(trader, cs.asset_class, cs.symbol, mid, entry, qty)
+                    ok, reason = _can_open_short_stock(trader, cs.symbol, mid, notional, rt)
+                    qty = notional / mid
+                    qty = round(qty, 4)
+                    if not ok or qty <= 0:
+                        logger.info("[short] skip {} reason={} ok={} qty={}", cs.symbol, reason, ok, qty)
+                        out["holds"] += 1
+                        continue
+                    trader.set_telegram_on_fills(False)
+                    try:
+                        r = order_manager.paper_market_sell(
+                            trader,
+                            "stock",
+                            cs.symbol,
+                            qty,
+                            mid,
+                            reason_code="short_entry",
+                            meta=None,
+                        )
+                    finally:
+                        trader.set_telegram_on_fills(True)
+                    if r.ok:
+                        out["short_entries"] += 1
+                    else:
+                        logger.warning("[short] ENTER failed {} {}", cs.symbol, r.message)
+                        out["holds"] += 1
                 else:
-                    logger.warning("SELL failed {} {}", cs.symbol, r.message)
                     out["holds"] += 1
     return out
 
@@ -729,13 +924,18 @@ def run_trading_cycle_once(
     stocks_override: list[str] | None = None,
     crypto_override: list[str] | None = None,
 ) -> dict[str, Any]:
-    stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
-    crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
     rt = dict(load_runtime_config_dict())
     equity = _latest_portfolio_equity_for_cycle(trader)
     p = dynamic_risk_params(equity)
     rt["take_profit_pct"] = float(p["take_profit_pct"])
     rt["stop_loss_pct"] = float(p["stop_loss_pct"])
+    risk_params = {"take_profit_pct": rt["take_profit_pct"], "stop_loss_pct": rt["stop_loss_pct"]}
+    lines, _, _ = _check_and_execute_exits(trader, kraken_ex, risk_params)
+    for ln in lines:
+        logger.info(ln)
+
+    stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
+    crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
     logger.info(
         f"[risk] equity={equity:.2f} take_profit={p['take_profit_pct']} stop_loss={p['stop_loss_pct']}"
     )
@@ -743,11 +943,6 @@ def run_trading_cycle_once(
         f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "
         f"stock_symbols={len(stock_symbols)} | crypto_symbols={len(crypto_symbols)}"
     )
-
-    lines, n_exit_checked, n_exits_fired = apply_stops_and_targets(trader, kraken_ex, rt)
-    logger.info("[exits] checked {} positions: {} exits fired", n_exit_checked, n_exits_fired)
-    for ln in lines:
-        logger.info(ln)
 
     st = stock_symbols
     cr = crypto_symbols
@@ -821,8 +1016,8 @@ def _persist_portfolio_snapshot(trader: PaperTrader, *, meta: dict[str, Any] | N
     try:
         eq_s = trader.equity_stocks()
         eq_c = trader.equity_crypto()
-        s_mv, c_mv = trader.positions_market_value()
-        dep = s_mv + c_mv
+        g_s, g_c = trader.positions_gross_notional()
+        dep = g_s + g_c
         eq_t = trader.equity_total()
         dep_pct = (dep / eq_t * 100.0) if eq_t > 0.0 else 0.0
         ks = drawdown_guard.check_kill_switch(eq_t)

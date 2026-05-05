@@ -13,8 +13,13 @@ def paper_market_buy(
     symbol: str,
     quantity: float,
     mid_price: float,
+    *,
+    reason_code: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> FillResult:
-    return trader.market_buy(asset_class, symbol, quantity, mid_price)
+    return trader.market_buy(
+        asset_class, symbol, quantity, mid_price, reason_code=reason_code, meta=meta
+    )
 
 
 def paper_market_sell(

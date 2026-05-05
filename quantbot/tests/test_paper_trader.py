@@ -92,3 +92,21 @@ def test_create_paper_trader_memory_only() -> None:
     r = t.market_buy("stock", "MSFT", 1.0, 50.0)
     assert r.ok
     assert t.persistence_path is None
+
+
+def test_paper_stock_short_open_and_cover(paper_db: Path) -> None:
+    t = PaperTrader(10_000.0, 10_000.0, persist_sqlite=True, db_path=paper_db, mode="paper")
+    r_short = t.market_sell("stock", "XYZ", 2.0, 50.0, reason_code="short_entry", meta=None)
+    assert r_short.ok
+    p = t.position("stock", "XYZ")
+    assert p is not None
+    assert p.quantity == pytest.approx(-2.0)
+    r_cov = t.market_buy("stock", "XYZ", 2.0, 48.0, reason_code="short_cover", meta=None)
+    assert r_cov.ok
+    assert t.position("stock", "XYZ") is None
+
+
+def test_paper_crypto_rejects_short_from_flat(paper_db: Path) -> None:
+    t = PaperTrader(10_000.0, 10_000.0, persist_sqlite=True, db_path=paper_db, mode="paper")
+    r = t.market_sell("crypto", "BTC/USD", 0.01, 50_000.0)
+    assert not r.ok

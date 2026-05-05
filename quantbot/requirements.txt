@@ -6,6 +6,8 @@ pytest>=7.4.0
 
 # Sprint 8 — monitoring dashboard
 Flask>=3.0.0
+flask-socketio>=5.3.0
+eventlet>=0.35.0
 
 # Sprint 2 — brokers & market data
 alpaca-trade-api>=3.0.0

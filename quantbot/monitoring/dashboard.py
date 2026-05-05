@@ -26,12 +26,13 @@ _PAGE = """
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta http-equiv="refresh" content="{{ refresh_sec }}"/>
+  <meta http-equiv="refresh" content="3600"/>
   <title>QuantBot — Terminal</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
   <style>
     :root {
       --bg-primary: #0a0e1a;
@@ -114,6 +115,8 @@ _PAGE = """
     .pos { color: var(--accent-green); }
     .neg { color: var(--accent-red); }
     .muted { color: var(--text-muted); font-size: 0.78rem; }
+    .sync-live { color: var(--accent-green) !important; font-weight: 600; }
+    .sync-reconnect { color: #ffb020 !important; font-weight: 600; }
     .spark-wrap { height: 48px; margin-top: 0.35rem; }
 
     .market-open { color: var(--accent-green); font-weight: 700; font-family: "JetBrains Mono", monospace; }
@@ -233,7 +236,7 @@ _PAGE = """
     <div class="brand"><span class="live-dot" title="live"></span><span class="mono">⚡ QUANTBOT</span></div>
     <div class="header-center">
       <div class="clock-et" id="clockEt">—</div>
-      <div class="muted" id="lastUpd" style="font-size:0.68rem;margin-top:0.2rem;">Last sync: —</div>
+      <div class="muted sync-reconnect" id="last-sync" style="font-size:0.68rem;margin-top:0.2rem;">Reconnecting…</div>
       <div class="sym-legend muted" title="Symbol coloring in tables below">
         <span class="legend-stock">● STOCK</span>
         <span class="legend-crypto">● CRYPTO</span>
@@ -314,7 +317,7 @@ _PAGE = """
     </div>
 
     <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a></p>
-    <p class="last-upd" id="metaNote">Page meta-refresh: {{ refresh_sec }}s · live clock ET</p>
+    <p class="last-upd" id="metaNote">Live dashboard via WebSocket (fallback poll {{ refresh_sec }}s) · clock ET</p>
   </div>
 
   <div id="sym-tooltip" aria-hidden="true"></div>
@@ -324,6 +327,9 @@ _PAGE = """
     const TZ = "America/New_York";
     let chart, spark;
     let lastPollMs = 0;
+    window.__dashWsConnected = false;
+    window.__dashWsEnabled = typeof io !== "undefined";
+    window.__dashPollTimer = null;
     window._symbolCache = {};
     let __lastDashMarketOpen = undefined;
     let __tooltipFetchTimer = null;
@@ -565,10 +571,35 @@ _PAGE = """
           cd.textContent = label + fmtDur(nb.getTime() - now.getTime());
         } else cd.textContent = "";
       }
-      if (lastPollMs) {
-        const ago = Math.floor((Date.now() - lastPollMs) / 1000);
-        const lu = document.getElementById("lastUpd");
-        if (lu) lu.textContent = "Last dashboard sync: " + ago + "s ago";
+      updateDashSyncStatus();
+    }
+    function updateDashSyncStatus() {
+      const lu = document.getElementById("last-sync");
+      if (!lu) return;
+      if (window.__dashWsConnected) {
+        lu.textContent = "Live ⚡";
+        lu.className = "muted sync-live";
+        return;
+      }
+      if (!window.__dashWsEnabled) {
+        if (lastPollMs) {
+          const ago = Math.floor((Date.now() - lastPollMs) / 1000);
+          lu.textContent = "Last sync: " + ago + "s ago";
+          lu.className = "muted";
+        }
+        return;
+      }
+      lu.textContent = "Reconnecting…";
+      lu.className = "muted sync-reconnect";
+    }
+    function startHttpFallbackPoll() {
+      if (window.__dashPollTimer) return;
+      window.__dashPollTimer = setInterval(poll, REFRESH_MS);
+    }
+    function stopHttpFallbackPoll() {
+      if (window.__dashPollTimer) {
+        clearInterval(window.__dashPollTimer);
+        window.__dashPollTimer = null;
       }
     }
     setInterval(tickClock, 1000);
@@ -782,11 +813,42 @@ _PAGE = """
         const j = await r.json();
         applyLiveDashboard(j);
         lastPollMs = Date.now();
+        if (!window.__dashWsConnected) updateDashSyncStatus();
         document.querySelectorAll(".sig-feed-row").forEach((row) => { row.classList.add("row-flash"); });
         setTimeout(() => document.querySelectorAll(".sig-feed-row").forEach((row) => row.classList.remove("row-flash")), 650);
       } catch (e) { console.warn(e); }
     }
-    setInterval(poll, REFRESH_MS);
+    if (window.__dashWsEnabled) {
+      const dashSocket = io({ transports: ["websocket", "polling"] });
+      dashSocket.on("connect", function () {
+        window.__dashWsConnected = true;
+        updateDashSyncStatus();
+        stopHttpFallbackPoll();
+      });
+      dashSocket.on("disconnect", function () {
+        window.__dashWsConnected = false;
+        updateDashSyncStatus();
+        startHttpFallbackPoll();
+      });
+      dashSocket.on("dashboard_update", function (data) {
+        try {
+          applyLiveDashboard(data);
+        } catch (e) {
+          console.error("dashboard_update", e);
+        }
+        lastPollMs = Date.now();
+        updateDashSyncStatus();
+        document.querySelectorAll(".sig-feed-row").forEach((row) => { row.classList.add("row-flash"); });
+        setTimeout(() => document.querySelectorAll(".sig-feed-row").forEach((row) => row.classList.remove("row-flash")), 650);
+      });
+    } else {
+      console.warn("Socket.IO client not loaded; using HTTP poll only");
+    }
+    if (!window.__dashWsEnabled) {
+      startHttpFallbackPoll();
+    }
+    poll();
+    updateDashSyncStatus();
 
     function bindCfg() {
       document.querySelectorAll(".cfg-range").forEach((r) => {
@@ -930,6 +992,32 @@ def create_app() -> Flask:
 
     init_schema()
     app = Flask(__name__)
+
+    from flask_socketio import SocketIO
+
+    preferred_async = os.environ.get("SOCKETIO_ASYNC_MODE", "eventlet")
+    try:
+        socketio = SocketIO(app, cors_allowed_origins="*", async_mode=preferred_async)
+    except (ValueError, ImportError, ModuleNotFoundError):
+        preferred_async = "threading"
+        socketio = SocketIO(app, cors_allowed_origins="*", async_mode=preferred_async)
+    app.config["SOCKETIO_ASYNC_MODE"] = preferred_async
+
+    def _dashboard_ws_push() -> None:
+        sio = app.extensions["socketio"]
+        while True:
+            try:
+                with app.app_context():
+                    with get_connection() as conn:
+                        payload = build_dashboard_payload(conn)
+                sio.emit("dashboard_update", payload)
+            except Exception:
+                logger.exception("[ws] push error")
+            sio.sleep(2)
+
+    app.extensions["socketio"] = socketio
+    if not app.config.get("TESTING"):
+        socketio.start_background_task(_dashboard_ws_push)
 
     @app.route("/health")
     def health():
@@ -1123,16 +1211,26 @@ def create_app() -> Flask:
 
 def run_dashboard() -> None:
     port = int(os.environ.get("PORT", "5000"))
+    app = create_app()
+    sio = app.extensions.get("socketio")
+    mode = app.config.get("SOCKETIO_ASYNC_MODE", "?")
     logger.info(
-        "Monitoring dashboard | http://0.0.0.0:{} (refresh {}s)",
+        "Monitoring dashboard | http://0.0.0.0:{} (SocketIO async_mode={} · HTTP fallback {}s)",
         port,
+        mode,
         _REFRESH_SEC,
     )
-    app = create_app()
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
+    if sio is not None:
+        sio.run(app, host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    else:
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
 
 
 if __name__ == "__main__":
     app = create_app()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    port = int(os.environ.get("PORT", 5000))
+    sio = app.extensions.get("socketio")
+    if sio is not None:
+        sio.run(app, host="0.0.0.0", port=port, debug=False, use_reloader=False)
+    else:
+        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
