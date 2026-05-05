@@ -12,6 +12,9 @@ import sys
 import threading
 import time
 import traceback
+
+import pytz
+from datetime import datetime as dt_et
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -361,13 +364,42 @@ def _latest_portfolio_equity_for_cycle(trader: PaperTrader) -> float:
     return max(0.0, float(trader.equity_total()))
 
 
-def _buy_notional(trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]) -> float:
+def _effective_max_position_pct_for_sizing(sleeve: float, rt_max_pct: float) -> float:
+    """
+    Ensure proposed size can meet ``MIN_ORDER_NOTIONAL_USD`` when the sleeve can afford it.
+
+    If SQLite ``max_position_pct`` implies a cap below the configured minimum order size,
+    widen the effective percentage up to ``min_order / sleeve`` (still capped at 100% sleeve).
+    """
+    if sleeve <= 0:
+        return float(rt_max_pct)
+    need = float(config.MIN_ORDER_NOTIONAL_USD) / sleeve
+    return min(1.0, max(float(rt_max_pct), need))
+
+
+def _buy_notional_breakdown(
+    trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]
+) -> tuple[float, dict[str, float]]:
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
-    max_pct = float(rt["max_position_pct"])
+    rt_max_pct = float(rt["max_position_pct"])
+    eff_pct = _effective_max_position_pct_for_sizing(sleeve, rt_max_pct)
     kelly_frac = float(rt["kelly_fraction"])
-    cap10 = max(0.0, sleeve * max_pct)
+    cap10 = max(0.0, sleeve * eff_pct)
     k_notional = max(0.0, sleeve * kelly_frac)
-    return max(0.0, min(cap10, k_notional, sleeve * 0.99))
+    n = max(0.0, min(cap10, k_notional, sleeve * 0.99))
+    detail = {
+        "sleeve": sleeve,
+        "rt_max_position_pct": rt_max_pct,
+        "effective_max_position_pct": eff_pct,
+        "cap_notional": cap10,
+        "kelly_notional": k_notional,
+    }
+    return n, detail
+
+
+def _buy_notional(trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]) -> float:
+    n, _ = _buy_notional_breakdown(trader, asset_class, rt)
+    return n
 
 
 def _can_buy(
@@ -391,8 +423,9 @@ def _can_buy(
     if asset_class == "crypto" and n_cr >= MAX_CRYPTO_POS:
         return False, "max_crypto_positions"
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
+    eff_pct = _effective_max_position_pct_for_sizing(sleeve, float(rt["max_position_pct"]))
     if not portfolio_limiter.within_single_asset_cap(
-        notional, sleeve, max_single_pct=float(rt["max_position_pct"])
+        notional, sleeve, max_single_pct=eff_pct
     ):
         return False, "single_asset_cap"
     s_mv, c_mv = _deployed_notional(trader)
@@ -549,7 +582,16 @@ def execute_cycle_results(
             continue
         with _trader_lock:
             if eff_action == "BUY":
-                notional = _buy_notional(trader, cs.asset_class, rt)
+                notional, bd = _buy_notional_breakdown(trader, cs.asset_class, rt)
+                cash = trader.cash_stocks if cs.asset_class == "stock" else trader.cash_crypto
+                stocks_open = portfolio_limiter.us_stock_market_open()
+                logger.info(
+                    f"[buy_attempt] {cs.symbol} asset_class={cs.asset_class} score={eff_score:.4f} "
+                    f"mid={mid:.4f} notional={notional:.2f} sleeve={bd['sleeve']:.2f} cash={cash:.2f} "
+                    f"threshold={config.MIN_ORDER_NOTIONAL_USD} max_pct_rt={bd['rt_max_position_pct']} "
+                    f"max_pct_eff={bd['effective_max_position_pct']} cap_notional={bd['cap_notional']:.4f} "
+                    f"kelly_notional={bd['kelly_notional']:.4f} stocks_open={stocks_open}"
+                )
                 ok, reason = _can_buy(trader, cs.asset_class, cs.symbol, mid, notional, rt)
                 if reason == "market_closed" and cs.asset_class == "crypto":
                     ok, reason = True, "ok"
@@ -559,17 +601,29 @@ def execute_cycle_results(
                 else:
                     qty = round(qty, 6)
                 if not ok or qty <= 0:
-                    if reason == "market_closed":
-                        import pytz
-                        from datetime import datetime as _dt
+                    n_st, n_cr = _open_counts(trader)
+                    s_mv, c_mv = _deployed_notional(trader)
+                    total_eq = trader.equity_total()
 
-                        logger.info(
-                            "BUY skipped {} — market closed ET={}",
-                            cs.symbol,
-                            _dt.now(pytz.timezone("America/New_York")).strftime("%H:%M"),
-                        )
-                    else:
-                        logger.info("BUY skipped {} {} — {}", cs.asset_class, cs.symbol, reason)
+                    logger.info(
+                        "[buy_skip] {} {} reason={} ok={} qty={} stocks_open={} open_stock_pos={} "
+                        "open_crypto_pos={} deployed_stock={:.2f} deployed_crypto={:.2f} equity_total={:.2f} "
+                        "notional={:.2f} min_order={} ET_minute={}",
+                        cs.asset_class,
+                        cs.symbol,
+                        reason,
+                        ok,
+                        qty,
+                        stocks_open,
+                        n_st,
+                        n_cr,
+                        s_mv,
+                        c_mv,
+                        total_eq,
+                        notional,
+                        config.MIN_ORDER_NOTIONAL_USD,
+                        dt_et.now(pytz.timezone("America/New_York")).strftime("%H:%M"),
+                    )
                     out["holds"] += 1
                     continue
                 r = order_manager.paper_market_buy(trader, cs.asset_class, cs.symbol, qty, mid)
@@ -614,14 +668,11 @@ def run_trading_cycle_once(
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
     rt = dict(load_runtime_config_dict())
     equity = _latest_portfolio_equity_for_cycle(trader)
-    dr = dynamic_risk_params(equity)
-    rt["take_profit_pct"] = float(dr["take_profit_pct"])
-    rt["stop_loss_pct"] = float(dr["stop_loss_pct"])
+    p = dynamic_risk_params(equity)
+    rt["take_profit_pct"] = float(p["take_profit_pct"])
+    rt["stop_loss_pct"] = float(p["stop_loss_pct"])
     logger.info(
-        "[risk] equity={:.2f} take_profit={} stop_loss={}",
-        equity,
-        dr["take_profit_pct"],
-        dr["stop_loss_pct"],
+        f"[risk] equity={equity:.2f} take_profit={p['take_profit_pct']} stop_loss={p['stop_loss_pct']}"
     )
     logger.info(
         f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "

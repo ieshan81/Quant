@@ -19,11 +19,21 @@ def _rt() -> dict[str, float]:
     return {k: float(v[0]) for k, v in BOT_CONFIG_DEFAULTS.items()}
 
 
-def test_buy_notional_respects_sleeve_cap() -> None:
+def test_buy_notional_respects_effective_sleeve_cap() -> None:
     t = create_paper_trader(persist_sqlite=False)
     rt = _rt()
     n = mw._buy_notional(t, "stock", rt)
-    assert n <= t.equity_stocks() * rt["max_position_pct"] + 1e-6
+    sleeve = t.equity_stocks()
+    eff = mw._effective_max_position_pct_for_sizing(sleeve, rt["max_position_pct"])
+    assert n <= sleeve * eff + 1e-6
+
+
+def test_effective_max_position_pct_meets_min_order() -> None:
+    """When SQLite max_position_pct implies < $1 trade, bump pct so sizing can reach MIN_ORDER."""
+    sleeve = 100.0
+    rt_pct = 0.005
+    eff = mw._effective_max_position_pct_for_sizing(sleeve, rt_pct)
+    assert eff >= float(config.MIN_ORDER_NOTIONAL_USD) / sleeve - 1e-9
 
 
 def test_can_buy_rejects_when_market_closed() -> None:
