@@ -477,6 +477,12 @@ def execute_cycle_results(
     out: dict[str, Any] = {"buys": 0, "sells": 0, "holds": 0, "errors": 0}
     for cs in sorted(results, key=lambda x: (x.asset_class, x.symbol)):
         if cs.error:
+            logger.error(
+                "cycle signal error {} {}: {}",
+                cs.asset_class,
+                cs.symbol,
+                cs.error,
+            )
             out["errors"] += 1
             continue
         assert cs.mid is not None
@@ -593,7 +599,7 @@ def run_trading_cycle_once(
             try:
                 results.append(fut.result())
             except Exception as exc:
-                logger.warning("Analyze failed {}: {}", futs[fut], exc)
+                logger.error("Analyze failed {}: {}", futs[fut], exc, exc_info=True)
 
     summary = execute_cycle_results(trader, results, rt)
     summary["stop_events"] = lines
@@ -765,37 +771,44 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
 
 
 def run_worker_forever() -> None:
-    try:
-        trader, universe, kraken_ex, scan_thread = _worker_startup()
-    except Exception as e:
-        logger.error("WORKER STARTUP CRASH: {}", e)
-        logger.error(traceback.format_exc())
-        if alerts.telegram_alerts_configured():
-            alerts.send_telegram(f"⚠️ Worker startup crash: {str(e)[:200]}")
-        raise
-
     while not _stop.is_set():
+        trader: PaperTrader | None = None
+        scan_thread: threading.Thread | None = None
         try:
-            if _halted.is_set():
-                pass
-            elif drawdown_guard.check_kill_switch(trader.equity_total()):
-                _handle_kill_switch(trader, kraken_ex)
-                _halted.set()
-            else:
-                run_trading_cycle_once(trader, universe, kraken_ex)
+            trader, universe, kraken_ex, scan_thread = _worker_startup()
+            while not _stop.is_set():
+                try:
+                    if _halted.is_set():
+                        pass
+                    elif drawdown_guard.check_kill_switch(trader.equity_total()):
+                        _handle_kill_switch(trader, kraken_ex)
+                        _halted.set()
+                    else:
+                        run_trading_cycle_once(trader, universe, kraken_ex)
+                except Exception as e:
+                    logger.error("TRADING CYCLE CRASH: {}", e, exc_info=True)
+                    if alerts.telegram_alerts_configured():
+                        alerts.send_telegram(f"⚠️ Worker crash: {str(e)[:200]}")
+                finally:
+                    if not _stop.is_set():
+                        time.sleep(_trade_interval_sec())
         except Exception as e:
-            logger.error("TRADING CYCLE CRASH: {}", e)
-            logger.error(traceback.format_exc())
+            logger.error("WORKER THREAD DIED: {}", e, exc_info=True)
             if alerts.telegram_alerts_configured():
-                alerts.send_telegram(f"⚠️ Worker crash: {str(e)[:200]}")
-            time.sleep(10)
-            continue
-        if _stop.is_set():
-            break
-        time.sleep(_trade_interval_sec())
-
-    _shutdown_graceful(trader, kraken_ex)
-    scan_thread.join(timeout=5.0)
+                alerts.send_telegram(f"⚠️ Worker thread died, restarting in 30s: {str(e)[:200]}")
+            if not _stop.is_set():
+                time.sleep(30)
+        finally:
+            if trader is not None:
+                try:
+                    _shutdown_graceful(trader, kraken_ex)
+                except Exception:
+                    logger.exception("Shutdown after worker failure crashed")
+            if scan_thread is not None:
+                try:
+                    scan_thread.join(timeout=5.0)
+                except Exception:
+                    logger.exception("Scanner thread join failed")
 
 
 def cmd_test_universe() -> None:
