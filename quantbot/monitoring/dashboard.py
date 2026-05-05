@@ -318,13 +318,12 @@ _PAGE = """
     }
     function equityY(row) {
       if (!row) return 0;
-      const v = row.equity != null ? row.equity : row.equity_total;
-      const n = Number(v);
+      const n = Number(row.equity_total);
       return Number.isFinite(n) ? n : 0;
     }
     function equityLabel(row) {
       if (!row) return "";
-      return String(row.ts != null ? row.ts : (row.snapshot_at != null ? row.snapshot_at : ""));
+      return String(row.snapshot_at != null ? row.snapshot_at : "");
     }
     function applyLiveTiles(data) {
       const pnl = data.pnl_vs_start_pct;
@@ -348,12 +347,28 @@ _PAGE = """
       if (te) te.textContent = (eq != null && !Number.isNaN(eq)) ? eq.toFixed(2) : "—";
       const tm = document.getElementById("tileMode");
       if (tm) tm.textContent = data.mode != null ? String(data.mode) : "—";
-      if (typeof data.market_open === "boolean") __lastDashMarketOpen = data.market_open;
+      if (typeof data.market_open === "boolean") {
+        __lastDashMarketOpen = data.market_open;
+      }
     }
     function fmtNum(v, d) {
       const n = Number(v);
       if (!Number.isFinite(n)) return "—";
       return n.toFixed(d);
+    }
+    function signalMeta(s) {
+      let m = s.meta;
+      if (m == null) return {};
+      if (typeof m === "string") {
+        try { m = JSON.parse(m); } catch (e) { return {}; }
+      }
+      return typeof m === "object" && m !== null ? m : {};
+    }
+    function signalDirection(s) {
+      const d = s.direction;
+      if (d === 1 || d === "1") return 1;
+      if (d === -1 || d === "-1") return -1;
+      return 0;
     }
     function renderSignalFeed(signals) {
       const tb = document.getElementById("sigFeedBody");
@@ -368,10 +383,11 @@ _PAGE = """
       if (empty) empty.style.display = "none";
       let html = "";
       for (const s of rows) {
-        const sym = (s.symbol || "").toString();
-        const isCrypto = sym.indexOf("/") >= 0;
-        const typ = isCrypto ? "CRYPTO" : "STOCK";
-        const dir = Number(s.direction) || 0;
+        const sym = (s.symbol != null ? String(s.symbol) : "");
+        const typeName = (s.signal_name != null ? String(s.signal_name) : "—");
+        const meta = signalMeta(s);
+        const action = meta.action != null ? String(meta.action) : "—";
+        const dir = signalDirection(s);
         const arr = dir > 0 ? "▲" : (dir < 0 ? "▼" : "—");
         const dcls = dir > 0 ? "dir-up" : (dir < 0 ? "dir-down" : "dir-flat");
         let sc = 0;
@@ -382,17 +398,16 @@ _PAGE = """
         let rowCls = "sig-neutral";
         if (sc > 0.3) rowCls = "sig-buy";
         else if (sc < -0.3) rowCls = "sig-sell";
-        const pill = dir > 0 ? "<span class=\"action-pill pill-buy\">BUY</span>" : (dir < 0 ? "<span class=\"action-pill pill-sell\">SELL</span>" : "<span class=\"action-pill pill-hold\">HOLD</span>");
-        const scoreTxt = s.combined_score != null && Number.isFinite(Number(s.combined_score)) ? Number(s.combined_score).toFixed(3) : "—";
+        const scoreTxt = Number.isFinite(Number(s.combined_score)) ? Number(s.combined_score).toFixed(3) : "—";
         html += "<tr class=\"sig-feed-row " + rowCls + "\" data-sig-id=\"" + esc(s.id) + "\">";
         html += "<td class=\"mono " + dcls + "\">" + arr + "</td>";
         html += "<td class=\"mono\" style=\"font-size:0.72rem;color:var(--text-secondary);\">" + esc(s.created_at) + "</td>";
         html += "<td class=\"mono has-symbol\" style=\"font-weight:700;\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td>";
-        html += "<td class=\"mono\" style=\"font-size:0.68rem;color:var(--text-secondary);\">" + typ + "</td>";
-        html += "<td>" + esc(s.signal_name) + "</td>";
+        html += "<td>" + esc(typeName) + "</td>";
+        html += "<td><span class=\"mono\">" + esc(action) + "</span></td>";
         html += "<td class=\"score-cell\"><span class=\"score-txt mono\">" + scoreTxt + "</span>";
         html += "<div class=\"score-bar-bg\"><div class=\"score-bar-fill\" style=\"width:" + barPct + "%;\"></div></div></td>";
-        html += "<td>" + pill + "</td></tr>";
+        html += "<td></td></tr>";
       }
       tb.innerHTML = html;
     }
@@ -409,12 +424,16 @@ _PAGE = """
       if (empty) empty.style.display = "none";
       let html = "";
       for (const p of rows) {
-        const sym = (p.symbol || "").toString();
-        let net = p.net_qty_fmt;
-        if (net == null && p.net_qty != null) {
-          try { net = Number(p.net_qty).toFixed(6); } catch (e) { net = String(p.net_qty); }
+        const sym = p.symbol != null ? String(p.symbol) : "";
+        const ac = p.asset_class != null ? String(p.asset_class) : "";
+        let netStr = "—";
+        if (p.net_qty != null && p.net_qty !== "") {
+          const nq = Number(p.net_qty);
+          netStr = Number.isFinite(nq) ? nq.toFixed(6) : String(p.net_qty);
+        } else if (p.net_qty_fmt != null) {
+          netStr = String(p.net_qty_fmt);
         }
-        html += "<tr><td>" + esc(p.asset_class) + "</td><td class=\"mono has-symbol\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td><td class=\"mono\">" + esc(net) + "</td></tr>";
+        html += "<tr><td>" + esc(ac) + "</td><td class=\"mono has-symbol\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td><td class=\"mono\">" + esc(netStr) + "</td></tr>";
       }
       tb.innerHTML = html;
     }
@@ -431,26 +450,30 @@ _PAGE = """
       if (empty) empty.style.display = "none";
       let html = "";
       for (const t of rows) {
-        const sym = (t.symbol || "").toString();
-        const side = (t.side || "").toString().toLowerCase();
+        const sym = t.symbol != null ? String(t.symbol) : "";
+        const sideRaw = t.side != null ? String(t.side) : "";
+        const side = sideRaw.toLowerCase();
         const scls = side === "buy" ? "side-buy" : (side === "sell" ? "side-sell" : "");
-        const st = (t.status || "").toString() + (t.reason_code ? " (" + t.reason_code + ")" : "");
+        let st = t.status != null ? String(t.status) : "";
+        if (t.reason_code != null && t.reason_code !== "") st += " (" + String(t.reason_code) + ")";
+        const qty = t.quantity;
         html += "<tr><td class=\"mono\" style=\"font-size:0.72rem;\">" + esc(t.created_at) + "</td>";
         html += "<td class=\"mono has-symbol\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td>";
-        html += "<td class=\"mono " + scls + "\">" + esc(t.side) + "</td>";
-        html += "<td class=\"mono\">" + fmtNum(t.price, 4) + "</td><td class=\"mono\">" + fmtNum(t.quantity, 6) + "</td>";
+        html += "<td class=\"mono " + scls + "\">" + esc(sideRaw) + "</td>";
+        html += "<td class=\"mono\">" + fmtNum(t.price, 4) + "</td><td class=\"mono\">" + fmtNum(qty, 6) + "</td>";
         html += "<td class=\"mono\">" + fmtNum(t.notional, 2) + "</td><td>" + esc(st) + "</td></tr>";
       }
       tb.innerHTML = html;
     }
     function applyLiveDashboard(data) {
+      if (!data || typeof data !== "object") return;
       applyLiveTiles(data);
-      const ser = data.equity_series || [];
-      buildChart(ser);
-      buildSpark(ser);
-      renderSignalFeed(data.recent_signals);
-      renderPositions(data.open_positions);
-      renderTrades(data.recent_trades);
+      const ser = Array.isArray(data.equity_series) ? data.equity_series : [];
+      try { buildChart(ser); } catch (e) { console.error("buildChart", e); }
+      try { buildSpark(ser); } catch (e) { console.error("buildSpark", e); }
+      try { renderSignalFeed(data.recent_signals); } catch (e) { console.error("renderSignalFeed", e); }
+      try { renderPositions(data.open_positions); } catch (e) { console.error("renderPositions", e); }
+      try { renderTrades(data.recent_trades); } catch (e) { console.error("renderTrades", e); }
       const el = document.getElementById("dash-payload");
       if (el) el.textContent = JSON.stringify(data);
     }
@@ -525,32 +548,47 @@ _PAGE = """
       const root = document.getElementById("socialMoRoot");
       if (!root) return;
       if (!Array.isArray(rows) || !rows.length) {
-        root.innerHTML = "<p class=\"muted\">Scanner updates every 5 min</p>";
+        root.innerHTML = "<p class=\"muted\">No Reddit data</p>";
         return;
       }
-      let html = "<table class=\"social-table\"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>Source</th></tr></thead><tbody>";
+      let html = "<table class=\"social-table\"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>%Δ mentions</th><th>Source</th></tr></thead><tbody>";
       for (const r of rows) {
-        const t = (r.ticker || "").toString();
-        const br = !!r.is_breakout;
+        const t = r.ticker != null ? String(r.ticker) : "";
+        const br = r.is_breakout === true || r.is_breakout === 1 || r.is_breakout === "1";
         const tcls = br ? "mono breakout-name has-symbol" : "mono has-symbol";
-        const rc = Number(r.rank_change) || 0;
-        const rcls = rc > 0 ? "rc-up" : (rc < 0 ? "rc-down" : "muted");
-        const arr = rc > 0 ? "▲ " : (rc < 0 ? "▼ " : "— ");
-        const src = (r.source || "").toString();
-        html += "<tr><td class=\"" + tcls + "\" data-symbol=\"" + esc(t) + "\">" + esc(t) + "</td><td class=\"mono\">" + esc(r.mentions ?? "—") + "</td>";
-        html += "<td class=\"mono " + rcls + "\">" + arr + rc + "</td><td style=\"font-size:0.72rem;\">" + esc(src) + "</td></tr>";
+        const rcRaw = r.rank_change;
+        const rc = rcRaw === null || rcRaw === undefined || rcRaw === "" ? 0 : Number(rcRaw);
+        const rcSafe = Number.isFinite(rc) ? rc : 0;
+        const rcls = rcSafe > 0 ? "rc-up" : (rcSafe < 0 ? "rc-down" : "muted");
+        const arr = rcSafe > 0 ? "▲ " : (rcSafe < 0 ? "▼ " : "— ");
+        const src = r.source != null ? String(r.source) : "";
+        let mp = "—";
+        if (r.mentions_change_pct != null && r.mentions_change_pct !== "") {
+          const mpn = Number(r.mentions_change_pct);
+          mp = Number.isFinite(mpn) ? mpn.toFixed(1) + "%" : esc(String(r.mentions_change_pct));
+        }
+        const men = r.mentions != null && r.mentions !== "" ? String(r.mentions) : "—";
+        html += "<tr><td class=\"" + tcls + "\" data-symbol=\"" + esc(t) + "\">" + esc(t) + "</td><td class=\"mono\">" + esc(men) + "</td>";
+        html += "<td class=\"mono " + rcls + "\">" + arr + rcSafe + "</td><td class=\"mono\">" + mp + "</td><td style=\"font-size:0.72rem;\">" + esc(src) + "</td></tr>";
       }
       html += "</tbody></table>";
       root.innerHTML = html;
     }
     async function pollSocial() {
+      const root = document.getElementById("socialMoRoot");
       try {
         const res = await fetch("/api/social", { cache: "no-store" });
-        if (!res.ok) throw new Error("bad status");
+        if (!res.ok) throw new Error("social HTTP " + res.status);
         const data = await res.json();
-        renderSocial(Array.isArray(data) ? data : []);
+        const rows = Array.isArray(data) ? data : [];
+        try {
+          renderSocial(rows);
+        } catch (e) {
+          console.error("renderSocial", e);
+          if (root) root.innerHTML = "<p class=\"muted\">Social render error (see console).</p>";
+        }
       } catch (e) {
-        const root = document.getElementById("socialMoRoot");
+        console.error("pollSocial", e);
         if (root) root.innerHTML = "<p class=\"muted\">Social feed unavailable.</p>";
       }
     }
@@ -612,12 +650,8 @@ _PAGE = """
     }
     const boot = readPayload();
     if (typeof boot.market_open === "boolean") __lastDashMarketOpen = boot.market_open;
-    applyLiveTiles(boot);
-    buildChart(boot.equity_series || []);
-    buildSpark(boot.equity_series || []);
-    renderSignalFeed(boot.recent_signals);
-    renderPositions(boot.open_positions);
-    renderTrades(boot.recent_trades);
+    tickClock();
+    try { applyLiveDashboard(boot); } catch (e) { console.error("initial dashboard render", e); }
 
     function positionTooltip(ev, tip) {
       const pad = 15;
