@@ -840,6 +840,27 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         logger.debug("Social momentum scanner thread failed", exc_info=True)
 
     try:
+        from social import kraken_listings
+        from training import universe_scanner
+
+        def _on_kraken_new_listing(sym: str) -> None:
+            universe_scanner.inject_priority_symbol(sym)
+            if alerts.telegram_alerts_configured():
+                alerts.send_telegram(f"🚀 NEW KRAKEN LISTING: {sym} — analyzing now")
+
+        kraken_listings.register_callback(_on_kraken_new_listing)
+        _listings_interval = max(30, _int_env("KRAKEN_LISTINGS_INTERVAL_SEC", 60, minimum=15))
+        threading.Thread(
+            target=kraken_listings.run_listings_monitor,
+            kwargs={"interval_seconds": _listings_interval, "stop": _stop},
+            name="kraken_listings",
+            daemon=True,
+        ).start()
+        logger.info("Kraken new listings monitor started (interval={}s)", _listings_interval)
+    except Exception:
+        logger.debug("Kraken listings monitor failed to start", exc_info=True)
+
+    try:
         from risk.pump_detector import PumpDetector
 
         _pump_detector = PumpDetector()

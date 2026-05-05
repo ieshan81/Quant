@@ -120,6 +120,18 @@ def test_api_symbol_crypto_fallback(dash_app) -> None:
     assert data["symbol"] == "BTC/USD"
 
 
+def test_api_new_listings(dash_app) -> None:
+    from social import kraken_listings
+
+    kraken_listings.reset_state_for_tests()
+    client = dash_app.test_client()
+    r = client.get("/api/new-listings")
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    assert "seen_pairs_count" in body
+    assert body["seen_pairs_count"] == 0
+
+
 def test_api_social_reads_sqlite(dash_app) -> None:
     from data import data_store
 

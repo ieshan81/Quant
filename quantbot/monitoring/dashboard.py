@@ -212,13 +212,33 @@ _PAGE = """
     .side-buy { color: var(--accent-green); font-weight: 700; }
     .side-sell { color: var(--accent-red); font-weight: 700; }
     .has-symbol { cursor: help; border-bottom: 1px dashed rgba(0, 212, 255, 0.35); }
+
+    .sym-legend { display: flex; align-items: center; justify-content: center; gap: 1.25rem; flex-wrap: wrap; margin-top: 0.35rem; font-size: 0.72rem; font-family: "JetBrains Mono", monospace; }
+    .legend-stock { color: #00d4ff; font-weight: 600; }
+    .legend-crypto { color: #f7931a; font-weight: 600; }
+
+    .data-table tbody tr.row-stock { border-left: 3px solid #00d4ff; }
+    .data-table tbody tr.row-crypto { border-left: 3px solid #f7931a; }
+
+    .sym-badge { display: inline-block; margin-right: 0.28rem; font-weight: 700; vertical-align: middle; line-height: 1; }
+    .sym-badge-c { color: #f7931a; font-size: 0.72rem; }
+    .sym-badge-s { color: #00d4ff; font-size: 0.65rem; }
+    .sig-sym-crypto .sym-txt { color: #f7931a; font-weight: 700; }
+    .sig-sym-stock .sym-txt { color: #00d4ff; font-weight: 700; }
   </style>
 </head>
 <body data-terminal="1">
   <span class="quantbot-terminal"></span>
   <header class="term-header">
     <div class="brand"><span class="live-dot" title="live"></span><span class="mono">⚡ QUANTBOT</span></div>
-    <div class="header-center"><div class="clock-et" id="clockEt">—</div><div class="muted" id="lastUpd" style="font-size:0.68rem;margin-top:0.2rem;">Last sync: —</div></div>
+    <div class="header-center">
+      <div class="clock-et" id="clockEt">—</div>
+      <div class="muted" id="lastUpd" style="font-size:0.68rem;margin-top:0.2rem;">Last sync: —</div>
+      <div class="sym-legend muted" title="Symbol coloring in tables below">
+        <span class="legend-stock">● STOCK</span>
+        <span class="legend-crypto">● CRYPTO</span>
+      </div>
+    </div>
     <div class="badge-paper">PAPER TRADING</div>
   </header>
   <div class="wrap">
@@ -370,6 +390,12 @@ _PAGE = """
       if (d === -1 || d === "-1") return -1;
       return 0;
     }
+    function isCryptoSymbol(sym) {
+      return String(sym).indexOf("/") >= 0;
+    }
+    function assetRowClass(sym) {
+      return isCryptoSymbol(sym) ? "row-crypto" : "row-stock";
+    }
     function renderSignalFeed(signals) {
       const tb = document.getElementById("sigFeedBody");
       const empty = document.getElementById("sigFeedEmpty");
@@ -399,10 +425,14 @@ _PAGE = """
         if (sc > 0.3) rowCls = "sig-buy";
         else if (sc < -0.3) rowCls = "sig-sell";
         const scoreTxt = Number.isFinite(Number(s.combined_score)) ? Number(s.combined_score).toFixed(3) : "—";
+        const symCellCls = isCryptoSymbol(sym) ? "sig-sym-crypto" : "sig-sym-stock";
+        const symPre = isCryptoSymbol(sym)
+          ? '<span class="sym-badge sym-badge-c" aria-hidden="true">₿</span>'
+          : '<span class="sym-badge sym-badge-s" aria-hidden="true">S</span>';
         html += '<tr class="sig-feed-row ' + rowCls + '" data-sig-id="' + esc(s.id) + '">';
         html += '<td class="mono ' + dcls + '">' + arr + '</td>';
         html += '<td class="mono" style="font-size:0.72rem;color:var(--text-secondary);">' + esc(s.created_at) + '</td>';
-        html += '<td class="mono has-symbol" style="font-weight:700;" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
+        html += '<td class="mono has-symbol ' + symCellCls + '" style="font-weight:700;" data-symbol="' + esc(sym) + '">' + symPre + '<span class="sym-txt">' + esc(sym) + '</span></td>';
         html += '<td>' + esc(typeName) + '</td>';
         html += '<td><span class="mono">' + esc(action) + '</span></td>';
         html += '<td class="score-cell"><span class="score-txt mono">' + scoreTxt + '</span>';
@@ -433,7 +463,7 @@ _PAGE = """
         } else if (p.net_qty_fmt != null) {
           netStr = String(p.net_qty_fmt);
         }
-        html += '<tr><td>' + esc(ac) + '</td><td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td><td class="mono">' + esc(netStr) + '</td></tr>';
+        html += '<tr class="' + assetRowClass(sym) + '"><td>' + esc(ac) + '</td><td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td><td class="mono">' + esc(netStr) + '</td></tr>';
       }
       tb.innerHTML = html;
     }
@@ -457,7 +487,7 @@ _PAGE = """
         let st = t.status != null ? String(t.status) : "";
         if (t.reason_code != null && t.reason_code !== "") st += " (" + String(t.reason_code) + ")";
         const qty = t.quantity;
-        html += '<tr><td class="mono" style="font-size:0.72rem;">' + esc(t.created_at) + '</td>';
+        html += '<tr class="' + assetRowClass(sym) + '"><td class="mono" style="font-size:0.72rem;">' + esc(t.created_at) + '</td>';
         html += '<td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
         html += '<td class="mono ' + scls + '">' + esc(sideRaw) + '</td>';
         html += '<td class="mono">' + fmtNum(t.price, 4) + '</td><td class="mono">' + fmtNum(qty, 6) + '</td>';
@@ -964,6 +994,12 @@ def create_app() -> Flask:
             logger.exception("api/social: failed to read reddit_signals from SQLite")
             rows = []
         return Response(json.dumps(rows, default=str), mimetype="application/json")
+
+    @app.get("/api/new-listings")
+    def api_new_listings() -> Any:
+        from social import kraken_listings
+
+        return jsonify(kraken_listings.get_listings_status())
 
     @app.route("/api/symbol/<path:symbol>")
     def symbol_info(symbol: str) -> Any:

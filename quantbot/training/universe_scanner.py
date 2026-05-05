@@ -51,6 +51,10 @@ FALLBACK_STOCKS = [
 
 FALLBACK_CRYPTO = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
 
+# Kraken new-listings sniper: symbol -> unix time injected (24h TTL).
+_priority_injections: dict[str, float] = {}
+_PRIORITY_TTL_SEC = 86400.0
+
 UNIVERSE_TOTAL_CAP = 90
 ALPACA_MOST_ACTIVES_URL = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
 COINGECKO_TRENDING_URL = "https://api.coingecko.com/api/v3/search/trending"
@@ -216,6 +220,43 @@ def _kraken_merge_trending_movers(
     return out[:20], n_trending_included
 
 
+def inject_priority_symbol(symbol: str) -> None:
+    """High-priority crypto symbol (e.g. new Kraken listing); merged into universe for 24h."""
+    sym = str(symbol).strip()
+    if not sym:
+        return
+    _priority_injections[sym] = time.time()
+    logger.info("[universe] priority inject: {}", sym)
+
+
+def _purge_expired_priority_injections() -> None:
+    now = time.time()
+    dead = [s for s, t in _priority_injections.items() if now - t > _PRIORITY_TTL_SEC]
+    for s in dead:
+        del _priority_injections[s]
+
+
+def _merge_priority_crypto(crypto: list[str]) -> list[str]:
+    """Prepend active priority symbols (deduped), then remaining crypto."""
+    _purge_expired_priority_injections()
+    seen: set[str] = set()
+    out: list[str] = []
+    for sym in list(_priority_injections.keys()):
+        if sym not in seen:
+            seen.add(sym)
+            out.append(sym)
+    for c in crypto:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def reset_priority_injections_for_tests() -> None:
+    """Test helper — clear priority queue."""
+    _priority_injections.clear()
+
+
 def build_dynamic_universe(exchange: Any | None) -> tuple[list[str], list[str], dict[str, int]]:
     """
     Tier1 Alpaca actives, Tier2 Reddit breakouts (+20 max), Tier3+4 CoinGecko on Kraken.
@@ -241,6 +282,7 @@ def build_dynamic_universe(exchange: Any | None) -> tuple[list[str], list[str], 
     mover_bases = fetch_coingecko_top_mover_base_symbols(top=10)
     crypto, n_trend = _kraken_merge_trending_movers(ex, trending_bases, mover_bases)
     meta["n_trending"] = n_trend
+    crypto = _merge_priority_crypto(crypto)
 
     while len(stocks) + len(crypto) > UNIVERSE_TOTAL_CAP and crypto:
         crypto.pop()
