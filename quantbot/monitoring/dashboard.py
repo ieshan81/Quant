@@ -399,15 +399,15 @@ _PAGE = """
         if (sc > 0.3) rowCls = "sig-buy";
         else if (sc < -0.3) rowCls = "sig-sell";
         const scoreTxt = Number.isFinite(Number(s.combined_score)) ? Number(s.combined_score).toFixed(3) : "—";
-        html += "<tr class=\"sig-feed-row " + rowCls + "\" data-sig-id=\"" + esc(s.id) + "\">";
-        html += "<td class=\"mono " + dcls + "\">" + arr + "</td>";
-        html += "<td class=\"mono\" style=\"font-size:0.72rem;color:var(--text-secondary);\">" + esc(s.created_at) + "</td>";
-        html += "<td class=\"mono has-symbol\" style=\"font-weight:700;\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td>";
-        html += "<td>" + esc(typeName) + "</td>";
-        html += "<td><span class=\"mono\">" + esc(action) + "</span></td>";
-        html += "<td class=\"score-cell\"><span class=\"score-txt mono\">" + scoreTxt + "</span>";
-        html += "<div class=\"score-bar-bg\"><div class=\"score-bar-fill\" style=\"width:" + barPct + "%;\"></div></div></td>";
-        html += "<td></td></tr>";
+        html += '<tr class="sig-feed-row ' + rowCls + '" data-sig-id="' + esc(s.id) + '">';
+        html += '<td class="mono ' + dcls + '">' + arr + '</td>';
+        html += '<td class="mono" style="font-size:0.72rem;color:var(--text-secondary);">' + esc(s.created_at) + '</td>';
+        html += '<td class="mono has-symbol" style="font-weight:700;" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
+        html += '<td>' + esc(typeName) + '</td>';
+        html += '<td><span class="mono">' + esc(action) + '</span></td>';
+        html += '<td class="score-cell"><span class="score-txt mono">' + scoreTxt + '</span>';
+        html += '<div class="score-bar-bg"><div class="score-bar-fill" style="width:' + barPct + '%;"></div></div></td>';
+        html += '<td></td></tr>';
       }
       tb.innerHTML = html;
     }
@@ -433,7 +433,7 @@ _PAGE = """
         } else if (p.net_qty_fmt != null) {
           netStr = String(p.net_qty_fmt);
         }
-        html += "<tr><td>" + esc(ac) + "</td><td class=\"mono has-symbol\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td><td class=\"mono\">" + esc(netStr) + "</td></tr>";
+        html += '<tr><td>' + esc(ac) + '</td><td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td><td class="mono">' + esc(netStr) + '</td></tr>';
       }
       tb.innerHTML = html;
     }
@@ -457,11 +457,11 @@ _PAGE = """
         let st = t.status != null ? String(t.status) : "";
         if (t.reason_code != null && t.reason_code !== "") st += " (" + String(t.reason_code) + ")";
         const qty = t.quantity;
-        html += "<tr><td class=\"mono\" style=\"font-size:0.72rem;\">" + esc(t.created_at) + "</td>";
-        html += "<td class=\"mono has-symbol\" data-symbol=\"" + esc(sym) + "\">" + esc(sym) + "</td>";
-        html += "<td class=\"mono " + scls + "\">" + esc(sideRaw) + "</td>";
-        html += "<td class=\"mono\">" + fmtNum(t.price, 4) + "</td><td class=\"mono\">" + fmtNum(qty, 6) + "</td>";
-        html += "<td class=\"mono\">" + fmtNum(t.notional, 2) + "</td><td>" + esc(st) + "</td></tr>";
+        html += '<tr><td class="mono" style="font-size:0.72rem;">' + esc(t.created_at) + '</td>';
+        html += '<td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
+        html += '<td class="mono ' + scls + '">' + esc(sideRaw) + '</td>';
+        html += '<td class="mono">' + fmtNum(t.price, 4) + '</td><td class="mono">' + fmtNum(qty, 6) + '</td>';
+        html += '<td class="mono">' + fmtNum(t.notional, 2) + '</td><td>' + esc(st) + '</td></tr>';
       }
       tb.innerHTML = html;
     }
@@ -548,10 +548,10 @@ _PAGE = """
       const root = document.getElementById("socialMoRoot");
       if (!root) return;
       if (!Array.isArray(rows) || !rows.length) {
-        root.innerHTML = "<p class=\"muted\">No Reddit data</p>";
+        root.innerHTML = '<p class="muted">No Reddit data</p>';
         return;
       }
-      let html = "<table class=\"social-table\"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>%Δ mentions</th><th>Source</th></tr></thead><tbody>";
+      let html = '<table class="social-table"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>%Δ mentions</th><th>Source</th></tr></thead><tbody>';
       for (const r of rows) {
         const t = r.ticker != null ? String(r.ticker) : "";
         const br = r.is_breakout === true || r.is_breakout === 1 || r.is_breakout === "1";
@@ -568,8 +568,8 @@ _PAGE = """
           mp = Number.isFinite(mpn) ? mpn.toFixed(1) + "%" : esc(String(r.mentions_change_pct));
         }
         const men = r.mentions != null && r.mentions !== "" ? String(r.mentions) : "—";
-        html += "<tr><td class=\"" + tcls + "\" data-symbol=\"" + esc(t) + "\">" + esc(t) + "</td><td class=\"mono\">" + esc(men) + "</td>";
-        html += "<td class=\"mono " + rcls + "\">" + arr + rcSafe + "</td><td class=\"mono\">" + mp + "</td><td style=\"font-size:0.72rem;\">" + esc(src) + "</td></tr>";
+        html += '<tr><td class="' + tcls + '" data-symbol="' + esc(t) + '">' + esc(t) + '</td><td class="mono">' + esc(men) + '</td>';
+        html += '<td class="mono ' + rcls + '">' + arr + rcSafe + '</td><td class="mono">' + mp + '</td><td style="font-size:0.72rem;">' + esc(src) + '</td></tr>';
       }
       html += "</tbody></table>";
       root.innerHTML = html;
@@ -585,11 +585,11 @@ _PAGE = """
           renderSocial(rows);
         } catch (e) {
           console.error("renderSocial", e);
-          if (root) root.innerHTML = "<p class=\"muted\">Social render error (see console).</p>";
+          if (root) root.innerHTML = '<p class="muted">Social render error (see console).</p>';
         }
       } catch (e) {
         console.error("pollSocial", e);
-        if (root) root.innerHTML = "<p class=\"muted\">Social feed unavailable.</p>";
+        if (root) root.innerHTML = '<p class="muted">Social feed unavailable.</p>';
       }
     }
     pollSocial();
@@ -666,7 +666,7 @@ _PAGE = """
     function renderTooltipHtml(info) {
       const typ = (info.type || "").toLowerCase();
       const badge = typ === "crypto"
-        ? "<span class=\"tt-type-c\">CRYPTO</span>" : "<span class=\"tt-type-s\">STOCK</span>";
+        ? '<span class="tt-type-c">CRYPTO</span>' : '<span class="tt-type-s">STOCK</span>';
       let line2 = "";
       if (typ === "crypto") {
         const rk = info.market_cap_rank;
@@ -676,16 +676,16 @@ _PAGE = """
       }
       let line3 = "";
       if (info.current_price != null && Number.isFinite(Number(info.current_price))) {
-        line3 = "<div class=\"tt-price\">" + fmtNum(info.current_price, 4);
+        line3 = '<div class="tt-price">' + fmtNum(info.current_price, 4);
         if (info.previous_close != null && Number.isFinite(Number(info.previous_close))) {
-          line3 += " <span style=\"color:var(--text-secondary);\">prev " + fmtNum(info.previous_close, 4) + "</span>";
+          line3 += ' <span style="color:var(--text-secondary);">prev ' + fmtNum(info.previous_close, 4) + '</span>';
         }
-        line3 += "</div>";
+        line3 += '</div>';
       }
-      const thumb = (typ === "crypto" && info.thumb) ? "<img src=\"" + esc(info.thumb) + "\" width=\"20\" height=\"20\" style=\"vertical-align:middle;border-radius:4px;margin-right:6px;\" alt=\"\"/>" : "";
-      return thumb + "<div><span class=\"tt-name\">" + esc(info.name || info.symbol) + "</span>" + badge + "</div>"
-        + "<div class=\"tt-line2\">" + line2 + "</div>" + line3
-        + "<div class=\"tt-desc\">" + esc(info.description || "") + "</div>";
+      const thumb = (typ === "crypto" && info.thumb) ? '<img src="' + esc(info.thumb) + '" width="20" height="20" style="vertical-align:middle;border-radius:4px;margin-right:6px;" alt=""/>' : "";
+      return thumb + '<div><span class="tt-name">' + esc(info.name || info.symbol) + '</span>' + badge + '</div>'
+        + '<div class="tt-line2">' + line2 + '</div>' + line3
+        + '<div class="tt-desc">' + esc(info.description || "") + '</div>';
     }
     function setupSymbolTooltips() {
       const tip = document.getElementById("sym-tooltip");
@@ -706,11 +706,11 @@ _PAGE = """
         if (sym !== __symHoverLast) {
           __symHoverLast = sym;
           tip.style.display = "block";
-          tip.innerHTML = "<div class=\"tt-desc\">Loading symbol data…</div>";
+          tip.innerHTML = '<div class="tt-desc">Loading symbol data…</div>';
           positionTooltip(ev, tip);
           if (__tooltipFetchTimer) clearTimeout(__tooltipFetchTimer);
           __tooltipFetchTimer = setTimeout(() => {
-            if (__symHoverLast === sym) tip.innerHTML = "<div class=\"tt-desc\">Loading symbol data…</div>";
+            if (__symHoverLast === sym) tip.innerHTML = '<div class="tt-desc">Loading symbol data…</div>';
           }, 3000);
           const cache = window._symbolCache;
           if (cache[sym]) {
@@ -733,7 +733,7 @@ _PAGE = """
           }).catch(() => {
             clearTimeout(to);
             clearTimeout(__tooltipFetchTimer);
-            if (__symHoverLast === sym) tip.innerHTML = "<div class=\"tt-desc\">Live data unavailable.</div>";
+            if (__symHoverLast === sym) tip.innerHTML = '<div class="tt-desc">Live data unavailable.</div>';
           });
         } else {
           positionTooltip(ev, tip);
