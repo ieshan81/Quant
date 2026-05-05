@@ -41,6 +41,24 @@ def test_can_buy_crypto_not_blocked_by_stock_market_hours() -> None:
     assert reason != "market_closed"
 
 
+def test_dynamic_risk_params_small_equity() -> None:
+    p = mw.dynamic_risk_params(100.0)
+    assert p["take_profit_pct"] == pytest.approx(0.05)
+    assert p["stop_loss_pct"] == pytest.approx(0.025)
+
+
+def test_dynamic_risk_params_clamps_high() -> None:
+    p = mw.dynamic_risk_params(500_000.0)
+    assert p["take_profit_pct"] == pytest.approx(0.10)
+    assert p["stop_loss_pct"] == pytest.approx(0.05)
+
+
+def test_dynamic_risk_params_clamps_low() -> None:
+    p = mw.dynamic_risk_params(0.0)
+    assert p["take_profit_pct"] == pytest.approx(0.03)
+    assert p["stop_loss_pct"] == pytest.approx(0.015)
+
+
 def test_can_buy_rejects_notional_below_min_usd() -> None:
     t = create_paper_trader(persist_sqlite=False)
     with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=True):

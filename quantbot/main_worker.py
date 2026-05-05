@@ -323,6 +323,44 @@ def analyze_symbol(
     )
 
 
+def dynamic_risk_params(equity: float) -> dict[str, float]:
+    """
+    Scale aggression based on live equity.
+    Small capital = quick profits, tight stops.
+    Large capital = more patience, wider stops.
+    Formula is continuous so it works for any real-money amount.
+    """
+    take_profit = max(0.03, min(0.10, equity / 2000.0))
+    stop_loss = take_profit / 2.0
+    return {
+        "take_profit_pct": round(take_profit, 4),
+        "stop_loss_pct": round(stop_loss, 4),
+    }
+
+
+def _latest_portfolio_equity_for_cycle(trader: PaperTrader) -> float:
+    """Latest ``equity_total`` from ``portfolio_state`` for this mode; fallback to trader."""
+    path = trader.persistence_path
+    if path is None:
+        return max(0.0, float(trader.equity_total()))
+    try:
+        with get_connection(path) as conn:
+            row = conn.execute(
+                """
+                SELECT equity_total FROM portfolio_state
+                WHERE mode = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (config.MODE,),
+            ).fetchone()
+        if row is not None and row[0] is not None:
+            return max(0.0, float(row[0]))
+    except Exception:
+        logger.debug("latest portfolio equity read failed", exc_info=True)
+    return max(0.0, float(trader.equity_total()))
+
+
 def _buy_notional(trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]) -> float:
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
     max_pct = float(rt["max_position_pct"])
@@ -574,7 +612,17 @@ def run_trading_cycle_once(
 ) -> dict[str, Any]:
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
-    rt = load_runtime_config_dict()
+    rt = dict(load_runtime_config_dict())
+    equity = _latest_portfolio_equity_for_cycle(trader)
+    dr = dynamic_risk_params(equity)
+    rt["take_profit_pct"] = float(dr["take_profit_pct"])
+    rt["stop_loss_pct"] = float(dr["stop_loss_pct"])
+    logger.info(
+        "[risk] equity={:.2f} take_profit={} stop_loss={}",
+        equity,
+        dr["take_profit_pct"],
+        dr["stop_loss_pct"],
+    )
     logger.info(
         f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "
         f"stock_symbols={len(stock_symbols)} | crypto_symbols={len(crypto_symbols)}"
