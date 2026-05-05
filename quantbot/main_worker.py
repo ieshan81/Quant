@@ -129,13 +129,13 @@ def load_stock_bars(symbol: str, bars: int = 60) -> pd.DataFrame | None:
         return None
 
 
-def load_crypto_bars(ex: Any, symbol: str, bars: int = 60) -> pd.DataFrame | None:
+def load_crypto_bars(ex: Any, symbol: str, bars: int = 60, *, min_rows: int = 28) -> pd.DataFrame | None:
     try:
         raw = ex.fetch_ohlcv(symbol, "1d", limit=max(bars + 5, 65))
     except Exception as exc:
         logger.warning("Kraken OHLCV {}: {}", symbol, exc)
         return None
-    if not raw or len(raw) < 28:
+    if not raw or len(raw) < min_rows:
         return None
     df = pd.DataFrame(raw, columns=["ts", "Open", "High", "Low", "Close", "Volume"])
     return df.tail(bars) if len(df) >= bars else df
@@ -149,6 +149,36 @@ def _mid_from_stock_df(df: pd.DataFrame | None) -> float | None:
 
 def _mid_from_crypto_df(df: pd.DataFrame | None) -> float | None:
     return _mid_from_stock_df(df)
+
+
+def _exit_mark_price(kraken_ex: Any, pos: Any) -> float | None:
+    """
+    Mark for TP/SL: live quote when possible (stocks: Alpaca; crypto: Kraken ticker 24/7).
+    Falls back to daily OHLCV last close (crypto uses min_rows=1 for new listings).
+    """
+    sym = str(pos.symbol).strip()
+    if pos.asset_class == "stock":
+        from execution import stock_broker
+
+        if stock_broker.alpaca_credentials_configured():
+            px = stock_broker.fetch_equity_latest_price(sym)
+            if px is not None and float(px) > 0:
+                return float(px)
+        df = load_stock_bars(sym, bars=40)
+        return _mid_from_stock_df(df)
+
+    # Crypto — always evaluate exits (24/7); do not require 28 daily bars.
+    try:
+        t = kraken_ex.fetch_ticker(sym)
+        last = t.get("last") or t.get("close") or t.get("info", {}).get("c")
+        if last is not None:
+            v = float(last)
+            if v > 0:
+                return v
+    except Exception:
+        logger.debug("[exits] Kraken ticker failed for {}", sym, exc_info=True)
+    df = load_crypto_bars(kraken_ex, sym, bars=10, min_rows=1)
+    return _mid_from_crypto_df(df)
 
 
 def _sentiment_discrete(symbol: str, asset_class: AssetClass) -> float:
@@ -443,21 +473,43 @@ def apply_stops_and_targets(
     trader: PaperTrader,
     kraken_ex: Any,
     rt: dict[str, float],
-) -> list[str]:
-    """Stop loss / take profit from live ``bot_config`` (SQLite)."""
+) -> tuple[list[str], int, int]:
+    """
+    Every cycle: compare mark vs avg entry; sell on stop-loss or take-profit.
+    Stocks use Alpaca last trade when configured; crypto uses Kraken ticker (24/7).
+    Returns ``(log_lines, positions_checked, exits_filled_ok)``.
+    """
     stop_loss_frac = float(rt["stop_loss_pct"])
     take_profit_frac = float(rt["take_profit_pct"])
     lines: list[str] = []
-    for pos in list(trader._positions.values()):
-        if pos.asset_class == "stock":
-            df = load_stock_bars(pos.symbol, bars=5)
-        else:
-            df = load_crypto_bars(kraken_ex, pos.symbol, bars=5)
-        mid = _mid_from_stock_df(df)
+    positions = list(trader._positions.values())
+    checked = 0
+    exits_ok = 0
+    for pos in positions:
+        checked += 1
+        mid = _exit_mark_price(kraken_ex, pos)
         if mid is None or mid <= 0:
+            logger.warning(
+                "[exits] skip {} {} — no mark price (TP/SL not evaluated)",
+                pos.asset_class,
+                pos.symbol,
+            )
             continue
         entry = float(pos.avg_price)
-        if mid <= entry * (1.0 - stop_loss_frac):
+        if entry <= 0:
+            logger.warning("[exits] skip {} {} — invalid entry {}", pos.asset_class, pos.symbol, entry)
+            continue
+        pnl_pct = (mid - entry) / entry
+        if pnl_pct <= -stop_loss_frac:
+            logger.info(
+                "[exit] STOP_LOSS {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                pos.asset_class,
+                pos.symbol,
+                entry,
+                mid,
+                pnl_pct,
+                -stop_loss_frac,
+            )
             trader.set_telegram_on_fills(False)
             try:
                 r = order_manager.paper_market_sell(
@@ -471,9 +523,20 @@ def apply_stops_and_targets(
                 )
             finally:
                 trader.set_telegram_on_fills(True)
+            if r.ok:
+                exits_ok += 1
             pnl = (mid - entry) * pos.quantity
             lines.append(f"STOP_LOSS {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
-        elif mid >= entry * (1.0 + take_profit_frac):
+        elif pnl_pct >= take_profit_frac:
+            logger.info(
+                "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                pos.asset_class,
+                pos.symbol,
+                entry,
+                mid,
+                pnl_pct,
+                take_profit_frac,
+            )
             trader.set_telegram_on_fills(False)
             try:
                 r = order_manager.paper_market_sell(
@@ -487,9 +550,11 @@ def apply_stops_and_targets(
                 )
             finally:
                 trader.set_telegram_on_fills(True)
+            if r.ok:
+                exits_ok += 1
             pnl = (mid - entry) * pos.quantity
             lines.append(f"TAKE_PROFIT {pos.asset_class} {pos.symbol} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
-    return lines
+    return lines, checked, exits_ok
 
 
 def _telegram_buy(trader: PaperTrader, asset_class: AssetClass, symbol: str, price: float, score: float) -> None:
@@ -679,7 +744,8 @@ def run_trading_cycle_once(
         f"stock_symbols={len(stock_symbols)} | crypto_symbols={len(crypto_symbols)}"
     )
 
-    lines = apply_stops_and_targets(trader, kraken_ex, rt)
+    lines, n_exit_checked, n_exits_fired = apply_stops_and_targets(trader, kraken_ex, rt)
+    logger.info("[exits] checked {} positions: {} exits fired", n_exit_checked, n_exits_fired)
     for ln in lines:
         logger.info(ln)
 

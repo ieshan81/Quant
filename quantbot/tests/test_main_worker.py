@@ -77,6 +77,18 @@ def test_can_buy_rejects_notional_below_min_usd() -> None:
     assert reason == "notional_too_small"
 
 
+def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "TPZ", 1.0, 100.0).ok
+    monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 106.0)
+    lines, checked, fired = mw.apply_stops_and_targets(
+        t, None, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
+    )
+    assert checked >= 1
+    assert fired >= 1
+    assert any("TAKE_PROFIT" in ln for ln in lines)
+
+
 def test_execute_cycle_hold_only() -> None:
     t = create_paper_trader(persist_sqlite=False)
     sig = mw.CycleSignal("stock", "ZZZ", {"rsi": 0.0}, 0.0, "HOLD", 50.0, None)
