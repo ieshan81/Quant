@@ -342,7 +342,7 @@ def _can_buy(
 ) -> tuple[bool, str]:
     if drawdown_guard.check_kill_switch(trader.equity_total()):
         return False, "kill_switch"
-    if notional < mid * 0.01:
+    if notional < float(config.MIN_ORDER_NOTIONAL_USD):
         return False, "notional_too_small"
     # Crypto is 24/7 — only US equities are gated on regular session.
     if asset_class == "stock" and not portfolio_limiter.us_stock_market_open():
@@ -620,7 +620,57 @@ def run_trading_cycle_once(
             _calibrator.resolve_calibrations(conn)
     except Exception:
         logger.debug("Sprint11 resolve_calibrations skipped", exc_info=True)
+    _persist_portfolio_snapshot(trader, meta={"source": "run_trading_cycle_once"})
     return summary
+
+
+def _alpaca_startup_ping() -> bool:
+    """Best-effort REST handshake so startup snapshot runs after broker keys are exercised."""
+    try:
+        from execution import stock_broker
+
+        cli = stock_broker.get_rest_client()
+        if cli is None:
+            return False
+        cli.get_account()
+        return True
+    except Exception:
+        logger.debug("Alpaca account ping failed at startup", exc_info=True)
+        return False
+
+
+def _persist_portfolio_snapshot(trader: PaperTrader, *, meta: dict[str, Any] | None = None) -> None:
+    """Write ``portfolio_state`` from current PaperTrader balances (every cycle / startup)."""
+    path = trader.persistence_path
+    if path is None:
+        return
+    base: dict[str, Any] = {"source": "main_worker"}
+    if meta:
+        base.update(meta)
+    try:
+        eq_s = trader.equity_stocks()
+        eq_c = trader.equity_crypto()
+        s_mv, c_mv = trader.positions_market_value()
+        dep = s_mv + c_mv
+        eq_t = trader.equity_total()
+        dep_pct = (dep / eq_t * 100.0) if eq_t > 0.0 else 0.0
+        ks = drawdown_guard.check_kill_switch(eq_t)
+        with get_connection(path) as conn:
+            trade_logger.log_portfolio_snapshot(
+                conn,
+                mode=config.MODE,
+                cash_stocks=trader.cash_stocks,
+                cash_crypto=trader.cash_crypto,
+                equity_stocks=eq_s,
+                equity_crypto=eq_c,
+                equity_total=eq_t,
+                deployed_pct=dep_pct,
+                kill_switch_active=ks,
+                meta=base,
+            )
+        drawdown_guard.notify_kill_switch_if_tripped(eq_t)
+    except Exception:
+        logger.exception("Portfolio snapshot persist failed")
 
 
 def _handle_kill_switch(trader: PaperTrader, kraken_ex: Any) -> None:
@@ -697,28 +747,15 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     )
 
     trader = create_paper_trader(telegram_on_fills=False)
-    try:
-        with get_connection() as conn:
-            eq_s = trader.equity_stocks()
-            eq_c = trader.equity_crypto()
-            s_mv, c_mv = trader.positions_market_value()
-            dep = s_mv + c_mv
-            eq_t = trader.equity_total()
-            dep_pct = (dep / eq_t * 100.0) if eq_t > 0.0 else 0.0
-            trade_logger.log_portfolio_snapshot(
-                conn,
-                mode=config.MODE,
-                cash_stocks=trader.cash_stocks,
-                cash_crypto=trader.cash_crypto,
-                equity_stocks=eq_s,
-                equity_crypto=eq_c,
-                equity_total=eq_t,
-                deployed_pct=dep_pct,
-                kill_switch_active=False,
-                meta={"bootstrap": True, "source": "worker_startup"},
-            )
-    except Exception:
-        logger.exception("Startup portfolio snapshot failed")
+    alpaca_ok = _alpaca_startup_ping()
+    _persist_portfolio_snapshot(
+        trader,
+        meta={
+            "bootstrap": True,
+            "source": "worker_startup",
+            "alpaca_account_ok": alpaca_ok,
+        },
+    )
 
     signal.signal(signal.SIGTERM, _on_signal)
     if hasattr(signal, "SIGINT"):

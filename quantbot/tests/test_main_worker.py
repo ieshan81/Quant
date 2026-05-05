@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import config
 import main_worker as mw
-from data.data_store import BOT_CONFIG_DEFAULTS
+from data.data_store import BOT_CONFIG_DEFAULTS, init_schema
 from training.paper_trader import create_paper_trader
 from training.universe_scanner import UniverseState
 
@@ -38,6 +41,14 @@ def test_can_buy_crypto_not_blocked_by_stock_market_hours() -> None:
     assert reason != "market_closed"
 
 
+def test_can_buy_rejects_notional_below_min_usd() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=True):
+        ok, reason = mw._can_buy(t, "stock", "AAA", 50.0, 0.5, _rt())
+    assert ok is False
+    assert reason == "notional_too_small"
+
+
 def test_execute_cycle_hold_only() -> None:
     t = create_paper_trader(persist_sqlite=False)
     sig = mw.CycleSignal("stock", "ZZZ", {"rsi": 0.0}, 0.0, "HOLD", 50.0, None)
@@ -65,6 +76,35 @@ def test_run_trading_cycle_once_with_overrides() -> None:
             crypto_override=[],
         )
     assert summary["analyzed"] >= 1
+
+
+def test_run_trading_cycle_once_inserts_portfolio_snapshot(tmp_path: Path) -> None:
+    db = tmp_path / "cycle.sqlite3"
+    init_schema(db)
+    with patch.object(config, "DB_PATH", db):
+        t = create_paper_trader(persist_sqlite=True)
+        u = UniverseState()
+        ex = MagicMock()
+        ex.fetch_ohlcv = MagicMock(return_value=[])
+        with patch.object(mw, "analyze_symbol") as mock_a, patch.object(
+            mw, "load_runtime_config_dict", _rt
+        ), patch.object(mw, "maybe_nudge_thresholds", lambda *a, **k: None), patch(
+            "learning.calibrator.resolve_calibrations", lambda conn: None
+        ):
+            mock_a.return_value = mw.CycleSignal("stock", "FAKE", {}, 0.0, "HOLD", 10.0, "no_data")
+            mw.run_trading_cycle_once(
+                t,
+                u,
+                ex,
+                stocks_override=["FAKE"],
+                crypto_override=[],
+            )
+    conn = sqlite3.connect(db)
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM portfolio_state").fetchone()[0]
+    finally:
+        conn.close()
+    assert n >= 1
 
 
 def test_trade_interval_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

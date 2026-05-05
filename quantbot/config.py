@@ -112,6 +112,9 @@ BACKTEST_EXIT_LONG_SCORE = float(os.getenv("BACKTEST_EXIT_LONG_SCORE", "0.128"))
 PAPER_STOCKS_STARTING_CASH = float(os.getenv("PAPER_STOCKS_STARTING_CASH", "100"))
 PAPER_CRYPTO_STARTING_CASH = float(os.getenv("PAPER_CRYPTO_STARTING_CASH", "100"))
 
+# Minimum USD notional before `_can_buy` proceeds (Alpaca-friendly ~$1 floor)
+MIN_ORDER_NOTIONAL_USD = float(os.getenv("MIN_ORDER_NOTIONAL_USD", "1.0"))
+
 # SQLite ``bot_config`` seed + ``reset_trading_history`` ($100-scale; max_position_pct ≈ 0.5% sleeve)
 BOT_CONFIG_DEFAULTS = {
     "buy_threshold": 0.10,
