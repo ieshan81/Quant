@@ -63,6 +63,16 @@ def test_api_config_reset(dash_app) -> None:
     assert float(buy["value"]) == pytest.approx(0.10)
 
 
+def test_api_reset_db(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.post("/api/reset-db")
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    assert body["status"] == "ok"
+    assert "trades" in body["result"]["cleared"]
+    assert body["result"]["bot_config_reset"]["max_position_pct"] == pytest.approx(0.005)
+
+
 def test_index_renders(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")

@@ -89,8 +89,8 @@ FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
 # Paper trading worker (`main.py` default when mode is paper)
 PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))
 
-# Sprint 4 — risk (defaults from technical brief §6)
-STARTING_BALANCE = float(os.getenv("STARTING_BALANCE", "10000"))
+# Sprint 4 — risk (defaults from technical brief §6; paper defaults scaled to $100 base)
+STARTING_BALANCE = float(os.getenv("STARTING_BALANCE", "100"))
 KILL_SWITCH_PCT = float(os.getenv("KILL_SWITCH_PCT", "0.85"))  # halt if balance < 85% of start (-15%)
 MAX_PER_TRADE_RISK_PCT = float(os.getenv("MAX_PER_TRADE_RISK_PCT", "0.02"))
 MAX_SINGLE_ASSET_PCT = float(os.getenv("MAX_SINGLE_ASSET_PCT", "0.10"))
@@ -108,6 +108,17 @@ BACKTEST_SELL_THRESHOLD = float(os.getenv("BACKTEST_SELL_THRESHOLD", "-0.06"))
 # When long, exit if combined score falls below this (enables multiple round-trips)
 BACKTEST_EXIT_LONG_SCORE = float(os.getenv("BACKTEST_EXIT_LONG_SCORE", "0.128"))
 
-# Sprint 5 — paper trading (technical brief §7)
-PAPER_STOCKS_STARTING_CASH = float(os.getenv("PAPER_STOCKS_STARTING_CASH", "10000"))
-PAPER_CRYPTO_STARTING_CASH = float(os.getenv("PAPER_CRYPTO_STARTING_CASH", "10000"))
+# Sprint 5 — paper trading (technical brief §7; $100 Alpaca-scale defaults)
+PAPER_STOCKS_STARTING_CASH = float(os.getenv("PAPER_STOCKS_STARTING_CASH", "100"))
+PAPER_CRYPTO_STARTING_CASH = float(os.getenv("PAPER_CRYPTO_STARTING_CASH", "100"))
+
+# SQLite ``bot_config`` seed + ``reset_trading_history`` ($100-scale; max_position_pct ≈ 0.5% sleeve)
+BOT_CONFIG_DEFAULTS = {
+    "buy_threshold": 0.10,
+    "sell_threshold": -0.10,
+    "crypto_buy_threshold": 0.08,
+    "stop_loss_pct": 0.05,
+    "take_profit_pct": 0.10,
+    "kelly_fraction": 0.10,
+    "max_position_pct": 0.005,
+}

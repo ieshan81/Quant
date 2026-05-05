@@ -10,18 +10,33 @@ from typing import Any, Generator
 
 import config
 
-BOT_CONFIG_DEFAULTS: dict[str, tuple[float, str]] = {
-    "buy_threshold": (0.10, "Score to trigger BUY (stocks)"),
-    "sell_threshold": (-0.10, "Score to trigger SELL (stocks)"),
-    "crypto_buy_threshold": (0.08, "Score to trigger BUY (crypto)"),
+_EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "rsi_oversold": (35.0, "RSI level considered oversold → bullish signal"),
     "rsi_overbought": (65.0, "RSI level considered overbought → bearish signal"),
-    "kelly_fraction": (0.30, "Kelly fraction"),
-    "stop_loss_pct": (0.05, "Stop loss %"),
-    "take_profit_pct": (0.10, "Take profit %"),
-    "max_position_pct": (0.10, "Max portfolio % per position"),
     "rl_pair_checkpoint": (0.0, "internal: last closed-trade count after RL nudge"),
 }
+
+_BOT_KEY_DESCRIPTIONS: dict[str, str] = {
+    "buy_threshold": "Score to trigger BUY (stocks)",
+    "sell_threshold": "Score to trigger SELL (stocks)",
+    "crypto_buy_threshold": "Score to trigger BUY (crypto)",
+    "kelly_fraction": "Kelly fraction",
+    "stop_loss_pct": "Stop loss %",
+    "take_profit_pct": "Take profit %",
+    "max_position_pct": "Max portfolio % per position (~0.5% sleeve; $100-scale paper)",
+}
+
+
+def _merged_bot_config_defaults() -> dict[str, tuple[float, str]]:
+    out: dict[str, tuple[float, str]] = {}
+    for key, val in config.BOT_CONFIG_DEFAULTS.items():
+        out[key] = (float(val), _BOT_KEY_DESCRIPTIONS[key])
+    for key, (val, desc) in _EXTRA_BOT_DEFAULTS.items():
+        out[key] = (val, desc)
+    return out
+
+
+BOT_CONFIG_DEFAULTS: dict[str, tuple[float, str]] = _merged_bot_config_defaults()
 
 
 SCHEMA_SQL = """
@@ -316,3 +331,55 @@ def fetch_reddit_signals_public(limit: int = 10, db_path: Path | str | None = No
                 }
             )
     return out
+
+
+def reset_trading_history(db_path: Path | str | None = None) -> dict[str, Any]:
+    """
+    Wipe trade history and portfolio snapshots for a clean start.
+
+    Preserves: bot_config (non-reset keys), signal_calibration, rl_learning_log,
+    reddit_signals, performance_log.
+
+    Clears: trades, signals, portfolio_state, price_history.
+
+    Upserts ``bot_config`` rows from ``config.BOT_CONFIG_DEFAULTS`` (numeric keys only).
+    """
+    path = _resolved_db_path(db_path)
+    ensure_db_path(path)
+    defaults = {k: float(v) for k, v in config.BOT_CONFIG_DEFAULTS.items()}
+    conn = sqlite3.connect(str(path))
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM trades")
+        cur.execute("DELETE FROM signals")
+        cur.execute("DELETE FROM portfolio_state")
+        cur.execute("DELETE FROM price_history")
+
+        for key, val in defaults.items():
+            desc = BOT_CONFIG_DEFAULTS[key][1]
+            cur.execute(
+                """
+                INSERT INTO bot_config (key, value, description, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    description = excluded.description,
+                    updated_at = excluded.updated_at
+                """,
+                (key, float(val), desc),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "cleared": ["trades", "signals", "portfolio_state", "price_history"],
+        "preserved": [
+            "bot_config",
+            "signal_calibration",
+            "rl_learning_log",
+            "reddit_signals",
+            "performance_log",
+        ],
+        "bot_config_reset": defaults,
+    }

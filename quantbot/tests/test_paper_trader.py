@@ -55,7 +55,9 @@ def test_paper_sell_reduces_position(paper_db: Path) -> None:
 
 
 def test_persist_writes_trades_and_portfolio_rows(paper_db: Path) -> None:
-    t = PaperTrader(persist_sqlite=True, db_path=paper_db, mode="paper")
+    t = PaperTrader(
+        10_000.0, 10_000.0, persist_sqlite=True, db_path=paper_db, mode="paper"
+    )
     t.market_buy("stock", "AAPL", 1.0, 200.0)
     conn = sqlite3.connect(str(paper_db))
     try:
@@ -87,6 +89,6 @@ def test_log_signal_row(paper_db: Path) -> None:
 
 def test_create_paper_trader_memory_only() -> None:
     t = create_paper_trader(persist_sqlite=False)
-    r = t.market_buy("stock", "MSFT", 1.0, 300.0)
+    r = t.market_buy("stock", "MSFT", 1.0, 50.0)
     assert r.ok
     assert t.persistence_path is None

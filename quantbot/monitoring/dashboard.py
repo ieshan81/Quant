@@ -938,6 +938,16 @@ def create_app() -> Flask:
         data_store.reset_bot_config_to_defaults()
         return {"ok": True}, 200
 
+    @app.post("/api/reset-db")
+    def api_reset_db() -> Any:
+        """Admin: wipe trade history and rescale bot_config keys from defaults."""
+        try:
+            result = data_store.reset_trading_history(str(config.DB_PATH))
+            return jsonify({"status": "ok", "result": result})
+        except Exception as e:
+            logger.exception("api/reset-db failed")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @app.get("/api/calibration")
     def api_calibration() -> Response:
         from learning.calibrator import get_leg_accuracies
