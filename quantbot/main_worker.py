@@ -115,12 +115,9 @@ def setup_logging() -> None:
     )
 
 
-def _kraken_exchange() -> Any:
-    import ccxt  # type: ignore[import-untyped]
-
-    ex = ccxt.kraken({"enableRateLimit": True})
-    ex.load_markets()
-    return ex
+def _alpaca_market_context() -> None:
+    """Compatibility placeholder: market data now routes through Alpaca helpers."""
+    return None
 
 
 def load_stock_bars(symbol: str, bars: int = 60) -> pd.DataFrame | None:
@@ -132,15 +129,15 @@ def load_stock_bars(symbol: str, bars: int = 60) -> pd.DataFrame | None:
         return None
 
 
-def load_crypto_bars(ex: Any, symbol: str, bars: int = 60, *, min_rows: int = 28) -> pd.DataFrame | None:
+def load_crypto_bars(_market_ctx: Any, symbol: str, bars: int = 60, *, min_rows: int = 28) -> pd.DataFrame | None:
     try:
-        raw = ex.fetch_ohlcv(symbol, "1d", limit=max(bars + 5, 65))
+        yf_sym = symbol.replace("/", "-").upper()
+        df = load_yfinance_history(yf_sym, days=120)
     except Exception as exc:
-        logger.warning("Kraken OHLCV {}: {}", symbol, exc)
+        logger.warning("Alpaca/yfinance OHLCV {}: {}", symbol, exc)
         return None
-    if not raw or len(raw) < min_rows:
+    if df is None or len(df) < min_rows:
         return None
-    df = pd.DataFrame(raw, columns=["ts", "Open", "High", "Low", "Close", "Volume"])
     return df.tail(bars) if len(df) >= bars else df
 
 
@@ -327,7 +324,7 @@ def _exit_broker_for_position(
     return stock_trader
 
 
-def _mark_target_for_exit_dict(kraken_ex: Any, pos: dict[str, Any]) -> Any:
+def _mark_target_for_exit_dict(_market_ctx: Any, pos: dict[str, Any]) -> Any:
     """Build a minimal object for `_exit_mark_price` from a flat position dict."""
     sym = str(pos.get("symbol") or "").strip()
     ac: AssetClass = "crypto" if _is_crypto_position_symbol(sym, pos.get("asset_class")) else "stock"
@@ -337,11 +334,10 @@ def _mark_target_for_exit_dict(kraken_ex: Any, pos: dict[str, Any]) -> Any:
 class _StockExitBroker:
     """Alpaca stock exits (paper: `PaperTrader` stocks sleeve)."""
 
-    __slots__ = ("_trader", "_kraken_ex")
+    __slots__ = ("_trader",)
 
-    def __init__(self, trader: PaperTrader, kraken_ex: Any) -> None:
+    def __init__(self, trader: PaperTrader, _market_ctx: Any) -> None:
         self._trader = trader
-        self._kraken_ex = kraken_ex
 
     @property
     def ledger(self) -> PaperTrader:
@@ -381,11 +377,7 @@ class _StockExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
-        if str(config.MODE).strip().lower() == "live":
-            return stock_broker.submit_market_order("sell", symbol, qty)
-        return order_manager.paper_market_sell(
-            self._trader, "stock", symbol, qty, mid, reason_code=reason_code, meta=meta
-        )
+        return stock_broker.submit_market_order("sell", symbol, qty)
 
     def place_buy_order(
         self,
@@ -396,21 +388,16 @@ class _StockExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
-        if str(config.MODE).strip().lower() == "live":
-            return stock_broker.submit_market_order("buy", symbol, qty)
-        return order_manager.paper_market_buy(
-            self._trader, "stock", symbol, qty, mid, reason_code=reason_code, meta=meta
-        )
+        return stock_broker.submit_market_order("buy", symbol, qty)
 
 
 class _CryptoExitBroker:
-    """Kraken / CCXT crypto exits (paper: `PaperTrader` crypto sleeve)."""
+    """Alpaca crypto exits (paper: `PaperTrader` crypto sleeve)."""
 
-    __slots__ = ("_trader", "_kraken_ex")
+    __slots__ = ("_trader",)
 
-    def __init__(self, trader: PaperTrader, kraken_ex: Any) -> None:
+    def __init__(self, trader: PaperTrader, _market_ctx: Any) -> None:
         self._trader = trader
-        self._kraken_ex = kraken_ex
 
     @property
     def ledger(self) -> PaperTrader:
@@ -435,6 +422,12 @@ class _CryptoExitBroker:
                 key = str(row.get("symbol", "")).strip()
                 if key and key not in merged:
                     merged[key] = row
+        for row in stock_broker.fetch_alpaca_open_positions():
+            if str(row.get("asset_class") or "").strip().lower() != "crypto":
+                continue
+            key = str(row.get("symbol", "")).strip()
+            if key and key not in merged:
+                merged[key] = {**row, "source": "alpaca_rest"}
         return list(merged.values())
 
     def place_sell_order(
@@ -446,9 +439,7 @@ class _CryptoExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
-        return order_manager.paper_market_sell(
-            self._trader, "crypto", symbol, qty, mid, reason_code=reason_code, meta=meta
-        )
+        return stock_broker.submit_market_order("sell", symbol, qty)
 
     def place_buy_order(
         self,
@@ -459,36 +450,22 @@ class _CryptoExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
-        return order_manager.paper_market_buy(
-            self._trader, "crypto", symbol, qty, mid, reason_code=reason_code, meta=meta
-        )
+        return stock_broker.submit_market_order("buy", symbol, qty)
 
 
-def _exit_mark_price(kraken_ex: Any, pos: Any) -> float | None:
+def _exit_mark_price(_market_ctx: Any, pos: Any) -> float | None:
     """
-    Mark for TP/SL: live quote when possible (stocks: Alpaca; crypto: Kraken ticker 24/7).
-    Falls back to daily OHLCV last close (crypto uses min_rows=1 for new listings).
+    Mark for TP/SL: live quote via Alpaca, fallback to daily OHLCV close.
     """
     sym = str(pos.symbol).strip()
+    if stock_broker.alpaca_credentials_configured():
+        px = stock_broker.fetch_equity_latest_price(sym)
+        if px is not None and float(px) > 0:
+            return float(px)
     if pos.asset_class == "stock":
-        if stock_broker.alpaca_credentials_configured():
-            px = stock_broker.fetch_equity_latest_price(sym)
-            if px is not None and float(px) > 0:
-                return float(px)
         df = load_stock_bars(sym, bars=40)
         return _mid_from_stock_df(df)
-
-    # Crypto — always evaluate exits (24/7); do not require 28 daily bars.
-    try:
-        t = kraken_ex.fetch_ticker(sym)
-        last = t.get("last") or t.get("close") or t.get("info", {}).get("c")
-        if last is not None:
-            v = float(last)
-            if v > 0:
-                return v
-    except Exception:
-        logger.debug("[exits] Kraken ticker failed for {}", sym, exc_info=True)
-    df = load_crypto_bars(kraken_ex, sym, bars=10, min_rows=1)
+    df = load_crypto_bars(None, sym, bars=10, min_rows=1)
     return _mid_from_crypto_df(df)
 
 
@@ -534,14 +511,14 @@ class CycleSignal(NamedTuple):
 def analyze_symbol(
     asset_class: AssetClass,
     symbol: str,
-    kraken_ex: Any,
+    market_ctx: Any,
     rt: dict[str, float],
 ) -> CycleSignal:
     sym = symbol.strip()
     if asset_class == "stock":
         df = load_stock_bars(sym)
     else:
-        df = load_crypto_bars(kraken_ex, sym)
+        df = load_crypto_bars(market_ctx, sym)
     mid = _mid_from_stock_df(df) if asset_class == "stock" else _mid_from_crypto_df(df)
     if df is None or mid is None or mid <= 0:
         logger.warning("No OHLCV for {} {} — skipping signals", asset_class, sym)
@@ -942,6 +919,29 @@ def _can_open_short_stock(
     return True, "ok"
 
 
+def _get_real_position_qty(symbol: str, broker: Any) -> float:
+    """Get actual held qty from broker-side open positions."""
+    sym = str(symbol or "").strip().upper()
+    flat = sym.replace("/", "")
+    try:
+        positions = broker.get_open_positions()
+        for pos in positions:
+            pos_symbol = str(
+                getattr(pos, "symbol", None)
+                or (pos.get("symbol", "") if isinstance(pos, dict) else "")
+            ).strip().upper()
+            if pos_symbol == sym or pos_symbol.replace("/", "") == flat:
+                qty = getattr(pos, "qty", None)
+                if qty is None and isinstance(pos, dict):
+                    qty = pos.get("qty", pos.get("net_qty", 0))
+                if qty is None and not isinstance(pos, dict):
+                    qty = getattr(pos, "net_qty", 0)
+                return float(qty or 0)
+    except Exception:
+        logger.debug("[exits] broker real qty lookup failed for {}", sym, exc_info=True)
+    return 0.0
+
+
 def _check_and_execute_exits(
     stock_trader: _StockExitBroker,
     crypto_trader: _CryptoExitBroker,
@@ -950,7 +950,7 @@ def _check_and_execute_exits(
 ) -> tuple[list[str], int, int]:
     """
     Every cycle (before new signals): TP/SL vs mark for longs (sell) and shorts (buy to cover).
-    Positions are the union of Alpaca (stock), Kraken/crypto book, SQLite fills, and the paper ledger.
+    Positions are the union of Alpaca + SQLite fills + the paper ledger.
     Max-hold uses filled-trade timestamps from SQLite ``trades`` (crypto 4h, stocks 8h).
     Returns ``(log_lines, len(all_positions), exits_filled_ok)``.
     """
@@ -961,7 +961,7 @@ def _check_and_execute_exits(
     crypto_positions = crypto_pos or []
     all_positions = stock_positions + crypto_positions
 
-    kraken_ex = stock_trader._kraken_ex
+    market_ctx = None
     ledger = stock_trader.ledger
     stop_loss_frac = float(risk_params.get("stop_loss_pct", 0.015))
     take_profit_frac = float(risk_params.get("take_profit_pct", 0.03))
@@ -972,10 +972,10 @@ def _check_and_execute_exits(
         pos = _normalize_exit_row_to_dict(raw)
         if pos is None:
             continue
-        mark_ns = _mark_target_for_exit_dict(kraken_ex, pos)
+        mark_ns = _mark_target_for_exit_dict(market_ctx, pos)
         sym = str(pos.get("symbol") or "").strip()
         ac = mark_ns.asset_class
-        mid = _exit_mark_price(kraken_ex, mark_ns)
+        mid = _exit_mark_price(market_ctx, mark_ns)
         if mid is None or mid <= 0:
             logger.warning(
                 "[exits] skip {} {} — no mark price (TP/SL not evaluated)",
@@ -987,13 +987,17 @@ def _check_and_execute_exits(
         if entry <= 0:
             logger.warning("[exits] skip {} {} — invalid entry {}", ac, sym, entry)
             continue
-        qty = float(pos.get("net_qty") or pos.get("qty") or 0)
         broker = _exit_broker_for_position(stock_trader, crypto_trader, pos)
+        qty = float(pos.get("net_qty") or pos.get("qty") or 0)
         entry_dt = _position_entry_datetime_from_trades(sym, ac, qty, db_p)
         _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
         max_hold_h = _max_hold_hours_for_symbol(sym)
 
         if qty > 1e-12:
+            real_qty = _get_real_position_qty(sym, broker)
+            if real_qty <= 1e-12:
+                logger.info("[exits] skip {} {} — broker reports zero qty", ac, sym)
+                continue
             pnl_pct = (mid - entry) / entry
             if pnl_pct <= -stop_loss_frac:
                 logger.info(
@@ -1009,7 +1013,7 @@ def _check_and_execute_exits(
                 ledger.set_telegram_on_fills(False)
                 try:
                     r = broker.place_sell_order(
-                        sym, qty, mid, reason_code="STOP_LOSS", meta=None
+                        sym, real_qty, mid, reason_code="STOP_LOSS", meta=None
                     )
                 finally:
                     ledger.set_telegram_on_fills(True)
@@ -1021,14 +1025,14 @@ def _check_and_execute_exits(
                         asset_class=ac,
                         symbol=sym,
                         side="sell",
-                        quantity=qty,
+                        quantity=real_qty,
                         price=mid,
                         status="filled",
                         broker_order_id=r.broker_order_id,
                         reason_code="STOP_LOSS",
                         meta=None,
                     )
-                pnl = (mid - entry) * qty
+                pnl = (mid - entry) * real_qty
                 lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif pnl_pct >= take_profit_frac:
                 logger.info(
@@ -1044,7 +1048,7 @@ def _check_and_execute_exits(
                 ledger.set_telegram_on_fills(False)
                 try:
                     r = broker.place_sell_order(
-                        sym, qty, mid, reason_code="TAKE_PROFIT", meta=None
+                        sym, real_qty, mid, reason_code="TAKE_PROFIT", meta=None
                     )
                 finally:
                     ledger.set_telegram_on_fills(True)
@@ -1056,14 +1060,14 @@ def _check_and_execute_exits(
                         asset_class=ac,
                         symbol=sym,
                         side="sell",
-                        quantity=qty,
+                        quantity=real_qty,
                         price=mid,
                         status="filled",
                         broker_order_id=r.broker_order_id,
                         reason_code="TAKE_PROFIT",
                         meta=None,
                     )
-                pnl = (mid - entry) * qty
+                pnl = (mid - entry) * real_qty
                 lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
                 logger.info(
@@ -1076,7 +1080,7 @@ def _check_and_execute_exits(
                 ledger.set_telegram_on_fills(False)
                 try:
                     r = broker.place_sell_order(
-                        sym, qty, mid, reason_code="MAX_HOLD_TIME", meta=None
+                        sym, real_qty, mid, reason_code="MAX_HOLD_TIME", meta=None
                     )
                 finally:
                     ledger.set_telegram_on_fills(True)
@@ -1088,14 +1092,14 @@ def _check_and_execute_exits(
                         asset_class=ac,
                         symbol=sym,
                         side="sell",
-                        quantity=qty,
+                        quantity=real_qty,
                         price=mid,
                         status="filled",
                         broker_order_id=r.broker_order_id,
                         reason_code="MAX_HOLD_TIME",
                         meta=None,
                     )
-                pnl = (mid - entry) * qty
+                pnl = (mid - entry) * real_qty
                 lines.append(f"MAX_HOLD {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
         elif qty < -1e-12:
             pnl_pct = (entry - mid) / entry
@@ -1226,15 +1230,15 @@ def _check_and_execute_exits(
 
 def apply_stops_and_targets(
     trader: PaperTrader,
-    kraken_ex: Any,
+    market_ctx: Any,
     rt: dict[str, float],
 ) -> tuple[list[str], int, int]:
     risk_params = {
         "take_profit_pct": float(rt["take_profit_pct"]),
         "stop_loss_pct": float(rt["stop_loss_pct"]),
     }
-    stock_trader = _StockExitBroker(trader, kraken_ex)
-    crypto_trader = _CryptoExitBroker(trader, kraken_ex)
+    stock_trader = _StockExitBroker(trader, market_ctx)
+    crypto_trader = _CryptoExitBroker(trader, market_ctx)
     return _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
 
 
@@ -1261,14 +1265,14 @@ def _telegram_sell(
     )
 
 
-def liquidate_all(trader: PaperTrader, kraken_ex: Any) -> None:
+def liquidate_all(trader: PaperTrader, market_ctx: Any) -> None:
     trader.set_telegram_on_fills(False)
     try:
         for pos in list(trader._positions.values()):
             if pos.asset_class == "stock":
                 df = load_stock_bars(pos.symbol, bars=3)
             else:
-                df = load_crypto_bars(kraken_ex, pos.symbol, bars=3)
+                df = load_crypto_bars(market_ctx, pos.symbol, bars=3)
             mid = _mid_from_stock_df(df)
             if mid is None or mid <= 0:
                 continue
@@ -1354,36 +1358,24 @@ def execute_cycle_results(
             logger.info("[short] COVER {} qty={:.4f} action={} score={:.4f}", cs.symbol, sq, eff_action, eff_score)
             trader.set_telegram_on_fills(False)
             try:
-                if str(config.MODE).strip().lower() == "live":
-                    r = stock_broker.submit_market_order("buy", cs.symbol, sq)
-                else:
-                    r = order_manager.paper_market_buy(
-                        trader,
-                        "stock",
-                        cs.symbol,
-                        sq,
-                        mid,
-                        reason_code="short_cover",
-                        meta=None,
-                    )
+                r = stock_broker.submit_market_order("buy", cs.symbol, sq)
             finally:
                 trader.set_telegram_on_fills(True)
             if r.ok:
                 out["short_covers"] += 1
-                if str(config.MODE).strip().lower() == "live":
-                    _ensure_exit_trade_logged(
-                        db_path=config.DB_PATH,
-                        mode=str(config.MODE),
-                        asset_class="stock",
-                        symbol=cs.symbol,
-                        side="buy",
-                        quantity=sq,
-                        price=mid,
-                        status="filled",
-                        broker_order_id=r.broker_order_id,
-                        reason_code="short_cover",
-                        meta=None,
-                    )
+                _ensure_exit_trade_logged(
+                    db_path=config.DB_PATH,
+                    mode=str(config.MODE),
+                    asset_class="stock",
+                    symbol=cs.symbol,
+                    side="buy",
+                    quantity=sq,
+                    price=mid,
+                    status="filled",
+                    broker_order_id=r.broker_order_id,
+                    reason_code="short_cover",
+                    meta=None,
+                )
             else:
                 logger.warning("[short] COVER failed {} {}", cs.symbol, r.message)
             continue
@@ -1437,33 +1429,22 @@ def execute_cycle_results(
                     )
                     out["holds"] += 1
                     continue
-                if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
-                    r = stock_broker.submit_market_order("buy", cs.symbol, qty)
-                    if not r.ok:
-                        logger.error(
-                            "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
-                            "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway env vars."
-                        )
-                else:
-                    r = order_manager.paper_market_buy(trader, cs.asset_class, cs.symbol, qty, mid)
+                r = stock_broker.submit_market_order("buy", cs.symbol, qty)
                 if r.ok:
                     out["buys"] += 1
-                    if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
-                        _ensure_exit_trade_logged(
-                            db_path=config.DB_PATH,
-                            mode=str(config.MODE),
-                            asset_class="stock",
-                            symbol=cs.symbol,
-                            side="buy",
-                            quantity=qty,
-                            price=mid,
-                            status="filled",
-                            broker_order_id=r.broker_order_id,
-                            reason_code="SIGNAL_BUY",
-                            meta=None,
-                        )
-                    else:
-                        _telegram_buy(trader, cs.asset_class, cs.symbol, mid, eff_score)
+                    _ensure_exit_trade_logged(
+                        db_path=config.DB_PATH,
+                        mode=str(config.MODE),
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="buy",
+                        quantity=qty,
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="SIGNAL_BUY",
+                        meta=None,
+                    )
                 else:
                     logger.warning("BUY failed {} {}", cs.symbol, r.message)
                     out["holds"] += 1
@@ -1474,32 +1455,24 @@ def execute_cycle_results(
                     qty = float(pos.quantity)
                     trader.set_telegram_on_fills(False)
                     try:
-                        if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
-                            r = stock_broker.submit_market_order("sell", cs.symbol, qty)
-                        else:
-                            r = order_manager.paper_market_sell(
-                                trader, cs.asset_class, cs.symbol, qty, mid, reason_code=None, meta=None
-                            )
+                        r = stock_broker.submit_market_order("sell", cs.symbol, qty)
                     finally:
                         trader.set_telegram_on_fills(True)
                     if r.ok:
                         out["sells"] += 1
-                        if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
-                            _ensure_exit_trade_logged(
-                                db_path=config.DB_PATH,
-                                mode=str(config.MODE),
-                                asset_class="stock",
-                                symbol=cs.symbol,
-                                side="sell",
-                                quantity=qty,
-                                price=mid,
-                                status="filled",
-                                broker_order_id=r.broker_order_id,
-                                reason_code="SIGNAL_SELL",
-                                meta=None,
-                            )
-                        else:
-                            _telegram_sell(trader, cs.asset_class, cs.symbol, mid, entry, qty)
+                        _ensure_exit_trade_logged(
+                            db_path=config.DB_PATH,
+                            mode=str(config.MODE),
+                            asset_class=cs.asset_class,
+                            symbol=cs.symbol,
+                            side="sell",
+                            quantity=qty,
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="SIGNAL_SELL",
+                            meta=None,
+                        )
                     else:
                         logger.warning("SELL failed {} {}", cs.symbol, r.message)
                         out["holds"] += 1
@@ -1527,36 +1500,24 @@ def execute_cycle_results(
                         continue
                     trader.set_telegram_on_fills(False)
                     try:
-                        if str(config.MODE).strip().lower() == "live":
-                            r = stock_broker.submit_market_order("sell", cs.symbol, qty)
-                        else:
-                            r = order_manager.paper_market_sell(
-                                trader,
-                                "stock",
-                                cs.symbol,
-                                qty,
-                                mid,
-                                reason_code="short_entry",
-                                meta=None,
-                            )
+                        r = stock_broker.submit_market_order("sell", cs.symbol, qty)
                     finally:
                         trader.set_telegram_on_fills(True)
                     if r.ok:
                         out["short_entries"] += 1
-                        if str(config.MODE).strip().lower() == "live":
-                            _ensure_exit_trade_logged(
-                                db_path=config.DB_PATH,
-                                mode=str(config.MODE),
-                                asset_class="stock",
-                                symbol=cs.symbol,
-                                side="sell",
-                                quantity=qty,
-                                price=mid,
-                                status="filled",
-                                broker_order_id=r.broker_order_id,
-                                reason_code="short_entry",
-                                meta=None,
-                            )
+                        _ensure_exit_trade_logged(
+                            db_path=config.DB_PATH,
+                            mode=str(config.MODE),
+                            asset_class="stock",
+                            symbol=cs.symbol,
+                            side="sell",
+                            quantity=qty,
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="short_entry",
+                            meta=None,
+                        )
                     else:
                         logger.warning("[short] ENTER failed {} {}", cs.symbol, r.message)
                         out["holds"] += 1
@@ -1568,7 +1529,7 @@ def execute_cycle_results(
 def run_trading_cycle_once(
     trader: PaperTrader,
     universe: UniverseState,
-    kraken_ex: Any,
+    market_ctx: Any,
     *,
     stocks_override: list[str] | None = None,
     crypto_override: list[str] | None = None,
@@ -1579,8 +1540,8 @@ def run_trading_cycle_once(
     rt["take_profit_pct"] = float(p["take_profit_pct"])
     rt["stop_loss_pct"] = float(p["stop_loss_pct"])
     risk_params = {"take_profit_pct": rt["take_profit_pct"], "stop_loss_pct": rt["stop_loss_pct"]}
-    stock_trader = _StockExitBroker(trader, kraken_ex)
-    crypto_trader = _CryptoExitBroker(trader, kraken_ex)
+    stock_trader = _StockExitBroker(trader, market_ctx)
+    crypto_trader = _CryptoExitBroker(trader, market_ctx)
     lines, _, _ = _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
     for ln in lines:
         logger.info(ln)
@@ -1605,7 +1566,7 @@ def run_trading_cycle_once(
 
     results: list[CycleSignal] = []
     with ThreadPoolExecutor(max_workers=CYCLE_WORKERS) as pool:
-        futs = {pool.submit(analyze_symbol, ac, sym, kraken_ex, rt): (ac, sym) for ac, sym in tasks}
+        futs = {pool.submit(analyze_symbol, ac, sym, market_ctx, rt): (ac, sym) for ac, sym in tasks}
         for fut in as_completed(futs):
             try:
                 results.append(fut.result())
@@ -1714,18 +1675,18 @@ def _persist_portfolio_snapshot(
         logger.exception("Portfolio snapshot persist failed")
 
 
-def _handle_kill_switch(trader: PaperTrader, kraken_ex: Any) -> None:
+def _handle_kill_switch(trader: PaperTrader, market_ctx: Any) -> None:
     alerts.send_telegram("⚠️ KILL SWITCH TRIGGERED — bot halted")
     drawdown_guard.mark_kill_switch_alert_sent()
     trader.set_telegram_on_fills(False)
-    liquidate_all(trader, kraken_ex)
+    liquidate_all(trader, market_ctx)
     trader.set_telegram_on_fills(True)
 
 
-def _shutdown_graceful(trader: PaperTrader, kraken_ex: Any) -> None:
+def _shutdown_graceful(trader: PaperTrader, market_ctx: Any) -> None:
     logger.info("Graceful shutdown: flattening positions")
     trader.set_telegram_on_fills(False)
-    liquidate_all(trader, kraken_ex)
+    liquidate_all(trader, market_ctx)
     trader.set_telegram_on_fills(True)
     alerts.send_telegram("🛑 QuantBot shutting down")
 
@@ -1736,7 +1697,7 @@ def _on_signal(signum: int, frame: Any) -> None:
 
 
 def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread]:
-    """Initialize DB, Kraken, universe scanner thread, FinBERT (best-effort), and paper trader."""
+    """Initialize DB, Alpaca universe scanner thread, FinBERT (best-effort), and paper trader."""
     global _pump_detector
     setup_logging()
     init_schema()
@@ -1753,13 +1714,13 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     if alerts.telegram_alerts_configured():
         alerts.send_telegram(
             f"🤖 QuantBot started | Mode: {config.MODE} | "
-            f"Universe: Alpaca most actives + Reddit breakouts + CoinGecko (Kraken USDT)"
+            f"Universe: Alpaca most actives + Alpaca crypto set"
         )
 
-    kraken_ex = _kraken_exchange()
+    market_ctx = _alpaca_market_context()
     universe = UniverseState()
     try:
-        universe.refresh(exchange=kraken_ex)
+        universe.refresh(exchange=market_ctx)
     except Exception:
         logger.exception("Initial universe refresh failed (scanner thread will retry)")
 
@@ -1774,27 +1735,6 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         logger.info("Social momentum scanner started")
     except Exception:
         logger.debug("Social momentum scanner thread failed", exc_info=True)
-
-    try:
-        from social import kraken_listings
-        from training import universe_scanner
-
-        def _on_kraken_new_listing(sym: str) -> None:
-            universe_scanner.inject_priority_symbol(sym)
-            if alerts.telegram_alerts_configured():
-                alerts.send_telegram(f"🚀 NEW KRAKEN LISTING: {sym} — analyzing now")
-
-        kraken_listings.register_callback(_on_kraken_new_listing)
-        _listings_interval = max(30, _int_env("KRAKEN_LISTINGS_INTERVAL_SEC", 60, minimum=15))
-        threading.Thread(
-            target=kraken_listings.run_listings_monitor,
-            kwargs={"interval_seconds": _listings_interval, "stop": _stop},
-            name="kraken_listings",
-            daemon=True,
-        ).start()
-        logger.info("Kraken new listings monitor started (interval={}s)", _listings_interval)
-    except Exception:
-        logger.debug("Kraken listings monitor failed to start", exc_info=True)
 
     try:
         from risk.pump_detector import PumpDetector
@@ -1814,7 +1754,13 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         cli = stock_broker.get_rest_client()
         if cli is not None:
             try:
+                with get_connection(config.DB_PATH) as conn:
+                    conn.execute(
+                        "DELETE FROM trades WHERE asset_class = 'crypto' AND status = 'rejected'"
+                    )
+                    conn.execute("DELETE FROM trades WHERE broker_order_id LIKE 'paper-%'")
                 sync_from_alpaca(config.DB_PATH, cli)
+                logger.info("[startup] Ghost trades wiped, synced from Alpaca")
             except Exception:
                 logger.exception("Alpaca DB sync failed")
     _persist_portfolio_snapshot(
@@ -1831,7 +1777,7 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     if hasattr(signal, "SIGINT"):
         signal.signal(signal.SIGINT, _on_signal)
 
-    return trader, universe, kraken_ex, scan_thread
+    return trader, universe, market_ctx, scan_thread
 
 
 def run_worker_forever() -> None:
@@ -1839,16 +1785,16 @@ def run_worker_forever() -> None:
         trader: PaperTrader | None = None
         scan_thread: threading.Thread | None = None
         try:
-            trader, universe, kraken_ex, scan_thread = _worker_startup()
+            trader, universe, market_ctx, scan_thread = _worker_startup()
             while not _stop.is_set():
                 try:
                     if _halted.is_set():
                         pass
                     elif drawdown_guard.check_kill_switch(trader.equity_total()):
-                        _handle_kill_switch(trader, kraken_ex)
+                        _handle_kill_switch(trader, market_ctx)
                         _halted.set()
                     else:
-                        run_trading_cycle_once(trader, universe, kraken_ex)
+                        run_trading_cycle_once(trader, universe, market_ctx)
                 except Exception as e:
                     logger.error("TRADING CYCLE CRASH: {}", e, exc_info=True)
                     if alerts.telegram_alerts_configured():
@@ -1865,7 +1811,7 @@ def run_worker_forever() -> None:
         finally:
             if trader is not None:
                 try:
-                    _shutdown_graceful(trader, kraken_ex)
+                    _shutdown_graceful(trader, market_ctx)
                 except Exception:
                     logger.exception("Shutdown after worker failure crashed")
             if scan_thread is not None:
@@ -1878,8 +1824,8 @@ def run_worker_forever() -> None:
 def cmd_test_universe() -> None:
     setup_logging()
     u = UniverseState()
-    logger.info("Running one universe scan (S&P 500 + Kraken); may take several minutes…")
-    u.refresh(exchange=_kraken_exchange())
+    logger.info("Running one universe scan (S&P 500 + Alpaca crypto set); may take several minutes…")
+    u.refresh(exchange=_alpaca_market_context())
     st, cr = u.snapshot()
     print("=== TOP STOCKS (up to 20) ===")
     for s in st:
@@ -1892,15 +1838,15 @@ def cmd_test_universe() -> None:
 def cmd_test_cycle() -> None:
     setup_logging()
     init_schema()
-    kraken_ex = _kraken_exchange()
+    market_ctx = _alpaca_market_context()
     u = UniverseState()
     logger.info("Refreshing universe for test cycle…")
-    u.refresh(exchange=kraken_ex)
+    u.refresh(exchange=market_ctx)
     trader = create_paper_trader(telegram_on_fills=False)
     if drawdown_guard.check_kill_switch(trader.equity_total()):
         print("Kill switch already tripped — aborting test cycle")
         return
-    summary = run_trading_cycle_once(trader, u, kraken_ex)
+    summary = run_trading_cycle_once(trader, u, market_ctx)
     print("=== ONE CYCLE SUMMARY ===")
     print(summary)
 

@@ -63,35 +63,40 @@ def test_fetch_alpaca_open_positions_empty_without_client() -> None:
         assert stock_broker.fetch_alpaca_open_positions() == []
 
 
-def test_fetch_equity_latest_price_skips_crypto_pair_symbol() -> None:
+def test_fetch_equity_latest_price_routes_crypto_pair_symbol() -> None:
     client = MagicMock()
+    client.get_latest_trade.return_value = SimpleNamespace(p=42000.0)
     with patch.object(stock_broker, "get_rest_client", return_value=client):
-        assert stock_broker.fetch_equity_latest_price("BTC/USD") is None
-    client.get_latest_trade.assert_not_called()
+        assert stock_broker.fetch_equity_latest_price("BTC/USD") == pytest.approx(42000.0)
+    client.get_latest_trade.assert_called_once_with("BTCUSD")
 
 
-def test_fetch_equity_latest_prices_skips_crypto_symbols() -> None:
+def test_fetch_equity_latest_prices_includes_crypto_symbols() -> None:
     client = MagicMock()
     client.get_latest_trade.return_value = SimpleNamespace(p=10.0)
     with patch.object(stock_broker, "get_rest_client", return_value=client):
         out = stock_broker.fetch_equity_latest_prices(["BTC/USD", "IBM"])
     assert "IBM" in out
+    assert "BTC/USD" in out
     assert out["IBM"] == pytest.approx(10.0)
-    assert "BTC/USD" not in out
 
 
-def test_submit_market_order_skips_crypto_symbol() -> None:
+def test_submit_market_order_routes_crypto_symbol_with_gtc() -> None:
     client = MagicMock()
+    client.submit_order.return_value = {"id": "order-1"}
     with patch.object(stock_broker, "get_rest_client", return_value=client):
-        res = stock_broker.submit_market_order("buy", "ETH/USDT", 1.0)
+        res = stock_broker.submit_market_order("buy", "ETH/USD", 1.0)
     assert res is not None
-    assert res.ok is False
-    client.submit_order.assert_not_called()
+    assert res.ok is True
+    client.submit_order.assert_called_once_with(
+        symbol="ETHUSD", qty=1.0, side="buy", type="market", time_in_force="gtc"
+    )
 
 
-def test_fetch_alpaca_open_positions_skips_crypto_symbol() -> None:
+def test_fetch_alpaca_open_positions_includes_crypto_symbol() -> None:
     bad = MagicMock()
-    bad.symbol = "BTC/USD"
+    bad.symbol = "BTCUSD"
+    bad.asset_class = "crypto"
     bad.qty = "1"
     bad.avg_entry_price = "1"
     good = MagicMock()
@@ -102,8 +107,9 @@ def test_fetch_alpaca_open_positions_skips_crypto_symbol() -> None:
     client.list_positions.return_value = [bad, good]
     with patch.object(stock_broker, "get_rest_client", return_value=client):
         rows = stock_broker.fetch_alpaca_open_positions()
-    assert len(rows) == 1
-    assert rows[0]["symbol"] == "XOM"
+    assert len(rows) == 2
+    btc = next(r for r in rows if r["asset_class"] == "crypto")
+    assert btc["symbol"] == "BTC/USD"
 
 
 def test_fetch_alpaca_open_positions_maps_sdk_rows() -> None:

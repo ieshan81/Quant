@@ -1,4 +1,4 @@
-"""Alpaca US stocks — REST client, positions, and market order helpers."""
+"""Alpaca broker helpers for both stocks and crypto symbols."""
 
 from __future__ import annotations
 
@@ -57,15 +57,32 @@ def _trade_price(trade: Any) -> float:
     return float(getattr(trade, "price"))
 
 
+def _alpaca_order_symbol(symbol: str) -> str:
+    """Alpaca order symbols: stocks unchanged, crypto pair slashes removed."""
+    sym = str(symbol or "").strip().upper()
+    if "/" in sym:
+        return sym.replace("/", "")
+    return sym
+
+
+def _normalize_alpaca_position_symbol(raw_symbol: str, asset_class: str) -> str:
+    """Normalize Alpaca position symbols to dashboard format."""
+    sym = str(raw_symbol or "").strip().upper()
+    ac = str(asset_class or "").strip().lower()
+    if ac == "crypto":
+        if "/" in sym:
+            return sym
+        if sym.endswith("USD") and len(sym) > 3:
+            return f"{sym[:-3]}/USD"
+    return sym
+
+
 def fetch_equity_latest_price(symbol: str) -> float | None:
     """Latest consolidated trade price for one US equity symbol, or None on skip/failure."""
     client = get_rest_client()
     if client is None:
         return None
-    sym = symbol.strip().upper()
-    if "/" in sym:
-        logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", sym)
-        return None
+    sym = _alpaca_order_symbol(symbol)
     try:
         trade = client.get_latest_trade(sym)
         return _trade_price(trade)
@@ -85,11 +102,8 @@ def fetch_equity_latest_price(symbol: str) -> float | None:
 def fetch_equity_latest_prices(symbols: list[str]) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for s in symbols:
-        key = s.strip().upper()
+        key = str(s or "").strip().upper()
         if not key:
-            continue
-        if "/" in key:
-            logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", key)
             continue
         out[key] = fetch_equity_latest_price(key)
     return out
@@ -97,7 +111,7 @@ def fetch_equity_latest_prices(symbols: list[str]) -> dict[str, float | None]:
 
 def fetch_alpaca_open_positions() -> list[dict[str, Any]]:
     """
-    Open US equity positions from Alpaca (paper or live REST).
+    Open stock + crypto positions from Alpaca (paper or live REST).
     Returns dict rows compatible with exit checker: symbol, net_qty, avg_entry_price, asset_class.
     """
     client = get_rest_client()
@@ -114,9 +128,13 @@ def fetch_alpaca_open_positions() -> list[dict[str, Any]]:
             sym = str(getattr(p, "symbol", None) or (p.get("symbol") if isinstance(p, dict) else "") or "").strip()
             if not sym:
                 continue
-            if "/" in sym:
-                logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", sym)
-                continue
+            ac_raw = getattr(p, "asset_class", None)
+            if ac_raw is None and isinstance(p, dict):
+                ac_raw = p.get("asset_class")
+            asset_class = str(ac_raw or "").strip().lower()
+            if asset_class not in ("stock", "crypto"):
+                asset_class = "crypto" if "/" in sym else "stock"
+            norm_sym = _normalize_alpaca_position_symbol(sym, asset_class)
             qty_raw = getattr(p, "qty", None)
             if qty_raw is None and isinstance(p, dict):
                 qty_raw = p.get("qty") or p.get("quantity")
@@ -129,10 +147,10 @@ def fetch_alpaca_open_positions() -> list[dict[str, Any]]:
             entry = float(apx or 0)
             out.append(
                 {
-                    "symbol": sym,
+                    "symbol": norm_sym,
                     "net_qty": qty,
                     "avg_entry_price": entry,
-                    "asset_class": "stock",
+                    "asset_class": asset_class,
                 }
             )
         except (TypeError, ValueError, AttributeError):
@@ -146,15 +164,13 @@ def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
     Returns a small object with ``ok``, ``broker_order_id``, ``message``, ``raw``.
     """
     sym = str(symbol or "").strip().upper()
+    order_sym = _alpaca_order_symbol(sym)
     s = str(side or "").strip().lower()
     q = float(qty or 0.0)
     if s not in ("buy", "sell"):
         return SimpleNamespace(ok=False, broker_order_id=None, message=f"invalid side={side!r}", raw=None)
     if not sym or q <= 0:
         return SimpleNamespace(ok=False, broker_order_id=None, message="invalid symbol/qty", raw=None)
-    if "/" in sym:
-        logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", sym)
-        return SimpleNamespace(ok=False, broker_order_id=None, message="crypto symbol skipped — use Kraken", raw=None)
     client = get_rest_client()
     if client is None:
         return SimpleNamespace(
@@ -167,8 +183,9 @@ def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
             raw=None,
         )
     try:
-        logger.info("[alpaca_order] Placing {} {} {} @ market", s, q, sym)
-        order = client.submit_order(symbol=sym, qty=q, side=s, type="market", time_in_force="day")
+        tif = "gtc" if "/" in sym else "day"
+        logger.info("[alpaca_order] Placing {} {} {} @ market tif={}", s, q, order_sym, tif)
+        order = client.submit_order(symbol=order_sym, qty=q, side=s, type="market", time_in_force=tif)
         oid = str(getattr(order, "id", None) or (order.get("id") if isinstance(order, dict) else "") or "")
         logger.info("[alpaca_order] Filled: order_id={}", oid or "(unknown)")
         return SimpleNamespace(ok=True, broker_order_id=(oid or None), message="filled", raw=order)

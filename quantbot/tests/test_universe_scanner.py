@@ -1,4 +1,4 @@
-"""Sprint 9 — universe scanner unit tests (no live Wikipedia/CCXT)."""
+"""Sprint 9 — universe scanner unit tests (no live Wikipedia/API)."""
 
 from __future__ import annotations
 
@@ -32,11 +32,11 @@ def test_fetch_sp500_falls_back_on_read_html_failure(_mock_read_html) -> None:
     assert out == list(us.FALLBACK_STOCKS)
 
 
-@patch("training.universe_scanner.kraken_usdt_pairs_over_volume", return_value=[])
-def test_scan_kraken_top_falls_back_when_no_candidates(_mock_pairs) -> None:
+@patch("training.universe_scanner.alpaca_supported_crypto_pairs", return_value=[])
+def test_scan_alpaca_top_falls_back_when_no_candidates(_mock_pairs) -> None:
     ex = MagicMock()
-    ex.markets = {"BTC/USDT": {}}
-    out = us.scan_kraken_top_crypto(top_n=15, max_workers=2, exchange=ex, candidates=None)
+    ex.markets = {"BTC/USD": {}}
+    out = us.scan_alpaca_top_crypto(top_n=15, max_workers=2, exchange=ex, candidates=None)
     assert out == list(us.FALLBACK_CRYPTO)
 
 
@@ -57,15 +57,9 @@ def test_scan_sp500_top_uses_parallel_scores(mock_read_html, mock_yf) -> None:
     assert all(isinstance(s, str) for s in out)
 
 
-@patch("training.universe_scanner._score_one_crypto")
-@patch("training.universe_scanner.kraken_usdt_pairs_over_volume")
-def test_scan_kraken_top(mock_pairs, mock_score) -> None:
-    mock_pairs.return_value = ["X/USDT", "Y/USDT"]
-
-    def _fake_score(_ex: MagicMock, sym: str) -> tuple[str, float]:
-        return sym, 0.9 if sym == "X/USDT" else 0.5
-
-    mock_score.side_effect = _fake_score
+@patch("training.universe_scanner.alpaca_supported_crypto_pairs")
+def test_scan_alpaca_top(mock_pairs) -> None:
+    mock_pairs.return_value = ["BTC/USD", "ETH/USD"]
     ex = MagicMock()
-    out = us.scan_kraken_top_crypto(top_n=1, max_workers=2, exchange=ex, candidates=["X/USDT", "Y/USDT"])
-    assert out == ["X/USDT"]
+    out = us.scan_alpaca_top_crypto(top_n=1, max_workers=2, exchange=ex, candidates=["BTC/USD", "ETH/USD"])
+    assert out == ["BTC/USD"]

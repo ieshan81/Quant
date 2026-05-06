@@ -352,12 +352,8 @@ _PAGE = """
       const d = new Date(ts.replace(" ", "T") + "Z");
       const months = ["Jan","Feb","Mar","Apr","May","Jun",
                       "Jul","Aug","Sep","Oct","Nov","Dec"];
-      const day = d.getDate();
-      const mon = months[d.getMonth()];
-      const yr = d.getFullYear();
-      const h = String(d.getHours()).padStart(2, "0");
-      const m = String(d.getMinutes()).padStart(2, "0");
-      return `${day} ${mon} ${yr} ${h}:${m}`;
+      return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()} `
+           + `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
     }
     function equityLabel(row) {
       if (!row) return "";

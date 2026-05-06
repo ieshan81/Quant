@@ -403,11 +403,11 @@ def _alpaca_ts_to_sqlite(ts: Any) -> str:
 
 def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, Any]:
     """
-    Wipe stock-side audit rows (preserve crypto trades), clear signals / portfolio snapshots /
-    price bars, then repopulate stock trades and one portfolio snapshot from Alpaca REST.
+    Wipe audit rows, clear signals / portfolio snapshots / price bars, then repopulate
+    stock + crypto trades and one portfolio snapshot from Alpaca REST.
 
     Open positions are logged as synthetic fills (reason ``alpaca_sync_open``); closed
-    orders use ``alpaca_real``. Crypto symbols (``/``) are never synced from Alpaca.
+    orders use ``alpaca_real``.
     """
     from monitoring import trade_logger
 
@@ -423,10 +423,9 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
     equity = float(getattr(account, "equity", 0) or 0)
 
     positions_raw = rest_client.list_positions() or []
-    positions_stock = [p for p in positions_raw if "/" not in str(getattr(p, "symbol", "") or "")]
 
     deployed_mv = 0.0
-    for pos in positions_stock:
+    for pos in positions_raw:
         mv = getattr(pos, "market_value", None)
         if mv is None and isinstance(pos, dict):
             mv = pos.get("market_value")
@@ -449,7 +448,7 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
     n_ord_skip = 0
 
     with get_connection(path) as conn:
-        conn.execute("DELETE FROM trades WHERE asset_class = ?", ("stock",))
+        conn.execute("DELETE FROM trades")
         conn.execute("DELETE FROM signals")
         conn.execute("DELETE FROM portfolio_state")
         conn.execute("DELETE FROM price_history")
@@ -467,10 +466,16 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
             meta={"source": "alpaca_sync"},
         )
 
-        for pos in positions_stock:
+        for pos in positions_raw:
             sym = str(getattr(pos, "symbol", "") or "").strip().upper()
             if not sym:
                 continue
+            ac_raw = getattr(pos, "asset_class", None)
+            if ac_raw is None and isinstance(pos, dict):
+                ac_raw = pos.get("asset_class")
+            asset_class = str(ac_raw or "").strip().lower()
+            if asset_class not in ("stock", "crypto"):
+                asset_class = "crypto" if "/" in sym else "stock"
             qty_raw = getattr(pos, "qty", None)
             if qty_raw is None and isinstance(pos, dict):
                 qty_raw = pos.get("qty") or pos.get("quantity")
@@ -494,7 +499,7 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
             trade_logger.log_trade(
                 conn,
                 mode=mode,
-                asset_class="stock",
+                asset_class=asset_class,
                 symbol=sym,
                 side=side,
                 quantity=q_abs,
@@ -513,9 +518,15 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
             if sym_raw is None and isinstance(order, dict):
                 sym_raw = order.get("symbol")
             sym = str(sym_raw or "").strip().upper()
-            if not sym or "/" in sym:
+            if not sym:
                 n_ord_skip += 1
                 continue
+            ac_raw = getattr(order, "asset_class", None)
+            if ac_raw is None and isinstance(order, dict):
+                ac_raw = order.get("asset_class")
+            asset_class = str(ac_raw or "").strip().lower()
+            if asset_class not in ("stock", "crypto"):
+                asset_class = "crypto" if "/" in sym else "stock"
 
             filled_at = getattr(order, "filled_at", None)
             if filled_at is None and isinstance(order, dict):
@@ -566,7 +577,7 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
             trade_logger.log_trade(
                 conn,
                 mode=mode,
-                asset_class="stock",
+                asset_class=asset_class,
                 symbol=sym,
                 side=side,
                 quantity=filled_qty,

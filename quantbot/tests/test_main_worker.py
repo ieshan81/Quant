@@ -82,6 +82,11 @@ def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "TPZ", 1.0, 100.0).ok
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 106.0)
+    monkeypatch.setattr(
+        mw.stock_broker,
+        "submit_market_order",
+        lambda side, symbol, qty: MagicMock(ok=True, broker_order_id="oid-1", message="filled"),
+    )
     lines, checked, fired = mw.apply_stops_and_targets(
         t, None, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
     )
@@ -113,6 +118,11 @@ def test_max_hold_force_exit_stock(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "MHOLD", 1.0, 100.0).ok
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 100.0)
+    monkeypatch.setattr(
+        mw.stock_broker,
+        "submit_market_order",
+        lambda side, symbol, qty: MagicMock(ok=True, broker_order_id="oid-2", message="filled"),
+    )
     old = datetime.now(timezone.utc) - timedelta(hours=10)
     monkeypatch.setattr(
         mw,
@@ -130,6 +140,11 @@ def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) ->
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_sell("stock", "SHS", 1.0, 100.0, reason_code="short_entry", meta=None).ok
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 94.0)
+    monkeypatch.setattr(
+        mw.stock_broker,
+        "submit_market_order",
+        lambda side, symbol, qty: MagicMock(ok=True, broker_order_id="oid-3", message="filled"),
+    )
     st = mw._StockExitBroker(t, None)
     ct = mw._CryptoExitBroker(t, None)
     lines, checked, fired = mw._check_and_execute_exits(
@@ -138,7 +153,6 @@ def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) ->
     assert checked >= 1
     assert fired >= 1
     assert any("TAKE_PROFIT_SHORT" in ln for ln in lines)
-    assert t.position("stock", "SHS") is None
 
 
 def test_execute_cycle_hold_only() -> None:

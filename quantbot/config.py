@@ -40,23 +40,14 @@ def _comma_separated_symbols(env_name: str, default: str) -> list[str]:
 # Sprint 2 — symbols for `python main.py --quotes`
 ALPACA_QUOTE_SYMBOLS = _comma_separated_symbols("ALPACA_QUOTE_SYMBOLS", "AAPL")
 CRYPTO_QUOTE_SYMBOLS = _comma_separated_symbols(
-    "CRYPTO_QUOTE_SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT"
+    "CRYPTO_QUOTE_SYMBOLS", "BTC/USD,ETH/USD,SOL/USD"
 )
-
-# CCXT exchange id for crypto quotes (default binance). Use e.g. kraken, binanceus if Binance.com is blocked.
-CRYPTO_CCXT_EXCHANGE = os.getenv("CRYPTO_CCXT_EXCHANGE", "binance").strip().lower()
+CRYPTO_EXCHANGE = "alpaca"
 
 # Alpaca
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-
-# Binance / Coinbase (CCXT)
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
-BINANCE_SECRET = os.getenv("BINANCE_SECRET", "")
-COINBASE_API_KEY = os.getenv("COINBASE_API_KEY", "")
-COINBASE_API_SECRET = os.getenv("COINBASE_API_SECRET", "")
-COINBASE_API_PASSPHRASE = os.getenv("COINBASE_API_PASSPHRASE", "")
 
 # Sentiment / macro / alerts
 # Twitter stream: reserved for future sprint — requires paid API v2

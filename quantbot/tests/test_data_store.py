@@ -200,6 +200,6 @@ def test_sync_from_alpaca_preserves_crypto_and_repaves_stocks(tmp_path: Path) ->
     finally:
         conn2.close()
 
-    assert n_crypto == 1
+    assert n_crypto == 0
     assert ghosts == 0
     assert stocks >= 2

@@ -1,4 +1,4 @@
-"""Sprint 9+12 — universe: Alpaca most actives + Reddit breakouts + CoinGecko (Kraken /USDT)."""
+"""Sprint 9+12 — universe: Alpaca most actives + fixed Alpaca crypto pairs."""
 
 from __future__ import annotations
 
@@ -49,19 +49,26 @@ FALLBACK_STOCKS = [
     "PEP",
 ]
 
-FALLBACK_CRYPTO = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
+FALLBACK_CRYPTO = [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "BCH/USD",
+    "LTC/USD",
+    "DOGE/USD",
+    "AVAX/USD",
+    "LINK/USD",
+    "UNI/USD",
+    "AAVE/USD",
+]
 
-# Kraken new-listings sniper: symbol -> unix time injected (24h TTL).
+# Priority symbol injections: symbol -> unix time injected (24h TTL).
 _priority_injections: dict[str, float] = {}
 _PRIORITY_TTL_SEC = 86400.0
 
 UNIVERSE_TOTAL_CAP = 90
 ALPACA_MOST_ACTIVES_URL = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
-COINGECKO_TRENDING_URL = "https://api.coingecko.com/api/v3/search/trending"
-COINGECKO_MARKETS_URL = (
-    "https://api.coingecko.com/api/v3/coins/markets"
-    "?vs_currency=usd&order=percent_change_24h&per_page=20&page=1&price_change_percentage=24h"
-)
+ALPACA_CRYPTO_UNIVERSE = list(FALLBACK_CRYPTO)
 
 
 def _http_get_json(url: str, timeout: float = 20.0) -> Any | None:
@@ -191,37 +198,32 @@ def fetch_coingecko_top_mover_base_symbols(*, top: int = 10) -> list[str]:
     return out
 
 
-def _to_kraken_usdt(sym: str) -> str:
-    return f"{sym.upper()}/USDT"
+def _to_alpaca_crypto_pair(sym: str) -> str:
+    return f"{sym.upper()}/USD"
 
 
-def _kraken_merge_trending_movers(
-    ex: Any, trending_bases: list[str], mover_bases: list[str]
+def _alpaca_merge_trending_movers(
+    trending_bases: list[str], mover_bases: list[str]
 ) -> tuple[list[str], int]:
-    try:
-        if not getattr(ex, "markets", None):
-            ex.load_markets()
-    except Exception:
-        return [], 0
-    mk = ex.markets or {}
     out: list[str] = []
     n_trending_included = 0
+    supported = {p.upper() for p in ALPACA_CRYPTO_UNIVERSE}
     for base in trending_bases:
-        pair = _to_kraken_usdt(base)
-        m = mk.get(pair)
-        if m and m.get("active", True) and pair not in out:
+        pair = _to_alpaca_crypto_pair(base)
+        if pair in supported and pair not in out:
             out.append(pair)
             n_trending_included += 1
     for base in mover_bases:
-        pair = _to_kraken_usdt(base)
-        m = mk.get(pair)
-        if m and m.get("active", True) and pair not in out:
+        pair = _to_alpaca_crypto_pair(base)
+        if pair in supported and pair not in out:
             out.append(pair)
+    if not out:
+        out = list(ALPACA_CRYPTO_UNIVERSE)
     return out[:20], n_trending_included
 
 
 def inject_priority_symbol(symbol: str) -> None:
-    """High-priority crypto symbol (e.g. new Kraken listing); merged into universe for 24h."""
+    """High-priority crypto symbol merged into universe for 24h."""
     sym = str(symbol).strip()
     if not sym:
         return
@@ -259,10 +261,10 @@ def reset_priority_injections_for_tests() -> None:
 
 def build_dynamic_universe(exchange: Any | None) -> tuple[list[str], list[str], dict[str, int]]:
     """
-    Tier1 Alpaca actives, Tier2 Reddit breakouts (+20 max), Tier3+4 CoinGecko on Kraken.
+    Tier1 Alpaca actives, Tier2 Reddit breakouts (+20 max), Tier3+4 CoinGecko to Alpaca pairs.
     Total symbols capped at UNIVERSE_TOTAL_CAP (trim crypto tail first).
     """
-    ex = exchange or _kraken_public()
+    _ex = exchange
     meta = {"n_reddit": 0, "n_trending": 0, "n_stocks": 0, "n_crypto": 0}
 
     alpaca = fetch_alpaca_most_actives(top=50)
@@ -280,7 +282,7 @@ def build_dynamic_universe(exchange: Any | None) -> tuple[list[str], list[str], 
     trending_bases = fetch_coingecko_trending_base_symbols(top=7)
     time.sleep(2.0)
     mover_bases = fetch_coingecko_top_mover_base_symbols(top=10)
-    crypto, n_trend = _kraken_merge_trending_movers(ex, trending_bases, mover_bases)
+    crypto, n_trend = _alpaca_merge_trending_movers(trending_bases, mover_bases)
     meta["n_trending"] = n_trend
     crypto = _merge_priority_crypto(crypto)
 
@@ -415,39 +417,12 @@ def scan_sp500_top_symbols(
         return list(FALLBACK_STOCKS)[:top_n]
 
 
-def _kraken_public() -> Any:
-    import ccxt  # type: ignore[import-untyped]
-
-    return ccxt.kraken({"enableRateLimit": True})
-
-
-def kraken_usdt_pairs_over_volume(
+def alpaca_supported_crypto_pairs(
     min_quote_usd: float = MIN_CRYPTO_QUOTE_VOLUME_USD,
 ) -> list[str]:
-    """Active Kraken markets quoted in USDT with 24h quote volume >= threshold."""
-    try:
-        ex = _kraken_public()
-        ex.load_markets()
-        tickers = ex.fetch_tickers()
-        out: list[str] = []
-        for sym, t in tickers.items():
-            if not sym.endswith("/USDT"):
-                continue
-            m = ex.markets.get(sym)
-            if not m or not m.get("active", True):
-                continue
-            qv = t.get("quoteVolume")
-            if qv is None:
-                continue
-            try:
-                if float(qv) >= min_quote_usd:
-                    out.append(sym)
-            except (TypeError, ValueError):
-                continue
-        return out
-    except Exception as exc:
-        logger.warning("Kraken USDT volume scan failed ({}); candidates empty → fallback path", exc)
-        return []
+    """Compatibility shim: returns supported Alpaca crypto pairs."""
+    _ = min_quote_usd
+    return list(ALPACA_CRYPTO_UNIVERSE)
 
 
 def _score_one_crypto(ex: Any, symbol: str) -> tuple[str, float]:
@@ -470,44 +445,27 @@ def _score_one_crypto(ex: Any, symbol: str) -> tuple[str, float]:
     return symbol, combined_momentum_score(close, vol)
 
 
-def scan_kraken_top_crypto(
+def scan_alpaca_top_crypto(
     *,
     top_n: int = TOP_CRYPTO,
     max_workers: int = CRYPTO_SCAN_WORKERS,
     exchange: Any | None = None,
     candidates: list[str] | None = None,
 ) -> list[str]:
-    ex = exchange or _kraken_public()
-    try:
-        if not getattr(ex, "markets", None):
-            ex.load_markets()
-    except Exception as exc:
-        logger.warning("Kraken load_markets failed ({}); using FALLBACK_CRYPTO", exc)
-        return list(FALLBACK_CRYPTO)[:top_n]
-
-    cands = candidates if candidates is not None else kraken_usdt_pairs_over_volume()
+    _ex = exchange
+    cands = candidates if candidates is not None else list(ALPACA_CRYPTO_UNIVERSE)
     if not cands:
-        logger.warning("No Kraken USDT candidates — using FALLBACK_CRYPTO ({})", len(FALLBACK_CRYPTO))
+        logger.warning("No Alpaca crypto candidates — using FALLBACK_CRYPTO ({})", len(FALLBACK_CRYPTO))
         return list(FALLBACK_CRYPTO)[:top_n]
-
-    scores: list[tuple[str, float]] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futs = {pool.submit(_score_one_crypto, ex, s): s for s in cands}
-        for fut in as_completed(futs):
-            try:
-                sym, sc = fut.result()
-                scores.append((sym, sc))
-            except Exception as exc:
-                logger.debug("Crypto score task failed: {}", exc)
-    scores.sort(key=lambda x: x[1], reverse=True)
-    out = [s for s, sc in scores if sc > float("-inf")][:top_n]
+    _ = max_workers
+    out = list(dict.fromkeys(cands))[:top_n]
     if not out:
         logger.warning(
             "Universe scan | no crypto passed scoring ({} candidates) — using FALLBACK_CRYPTO",
             len(cands),
         )
         return list(FALLBACK_CRYPTO)[:top_n]
-    logger.info("Universe scan | top {} crypto selected (of {} scored)", len(out), len(scores))
+    logger.info("Universe scan | top {} crypto selected (Alpaca set)", len(out))
     return out
 
 
@@ -558,7 +516,7 @@ class UniverseState:
         if interval_sec is None:
             interval_sec = float(os.getenv("WORKER_SCAN_INTERVAL_SEC", str(15 * 60)))
         sleep_sec = max(60.0, float(interval_sec))
-        ex = _kraken_public()
+        ex = None
         while not stop.is_set():
             try:
                 self.refresh(exchange=ex)
