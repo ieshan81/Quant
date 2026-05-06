@@ -13,6 +13,7 @@ from data.data_store import (
     init_schema,
     replace_reddit_signals,
     reset_trading_history,
+    sync_from_alpaca,
 )
 
 
@@ -135,3 +136,70 @@ def test_reddit_signals_roundtrip(tmp_path: Path) -> None:
     assert rows[1]["mentions_change_pct"] == pytest.approx(12.5)
     replace_reddit_signals([], db_path=db)
     assert fetch_reddit_signals_public(10, db_path=db) == []
+
+
+def test_sync_from_alpaca_preserves_crypto_and_repaves_stocks(tmp_path: Path) -> None:
+    db = tmp_path / "alpaca.sqlite3"
+    init_schema(db)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional, status)
+            VALUES ('paper', 'crypto', 'BTC/USD', 'buy', 0.01, 50000, 500, 'filled'),
+                   ('paper', 'stock', 'GHOST', 'buy', 1, 10, 10, 'filled')
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    class _Acct:
+        cash = "1000"
+        equity = "1500"
+
+    class _Pos:
+        symbol = "AAPL"
+        qty = "2"
+        avg_entry_price = "100"
+        market_value = "200"
+
+    class _Ord:
+        filled_at = "2026-01-02T10:00:00Z"
+        symbol = "AAPL"
+        side = "buy"
+        filled_qty = "1"
+        filled_avg_price = "90"
+        id = "ord-sync-test-1"
+
+    class _Cli:
+        def get_account(self) -> _Acct:
+            return _Acct()
+
+        def list_positions(self) -> list[_Pos]:
+            return [_Pos()]
+
+        def list_orders(self, **_: object) -> list[_Ord]:
+            return [_Ord()]
+
+    summary = sync_from_alpaca(db, _Cli())
+    assert summary["positions_written"] == 1
+    assert summary["closed_orders_written"] == 1
+
+    conn2 = sqlite3.connect(db)
+    try:
+        n_crypto = conn2.execute(
+            "SELECT COUNT(*) FROM trades WHERE asset_class = 'crypto'"
+        ).fetchone()[0]
+        ghosts = conn2.execute(
+            "SELECT COUNT(*) FROM trades WHERE symbol = 'GHOST'"
+        ).fetchone()[0]
+        stocks = conn2.execute(
+            "SELECT COUNT(*) FROM trades WHERE asset_class = 'stock' AND status = 'filled'"
+        ).fetchone()[0]
+    finally:
+        conn2.close()
+
+    assert n_crypto == 1
+    assert ghosts == 0
+    assert stocks >= 2

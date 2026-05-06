@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import config
-from data.data_store import get_connection, init_schema, load_runtime_config_dict
+from data.data_store import get_connection, init_schema, load_runtime_config_dict, sync_from_alpaca
 from learning.rl_nudge import maybe_nudge_thresholds
 from execution import order_manager, stock_broker
 from monitoring import alerts, trade_logger
@@ -1641,8 +1641,8 @@ def run_trading_cycle_once(
     return summary
 
 
-def _alpaca_startup_ping() -> bool:
-    """Best-effort REST handshake so startup snapshot runs after broker keys are exercised."""
+def _alpaca_startup_ping() -> tuple[bool, Any]:
+    """Best-effort REST handshake; returns ``(ok, account_or_none)`` for sync + merged snapshots."""
     try:
         cli = stock_broker.get_rest_client()
         if cli is None:
@@ -1650,7 +1650,7 @@ def _alpaca_startup_ping() -> bool:
                 "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
                 "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway env vars."
             )
-            return False
+            return False, None
         account = cli.get_account()
         logger.info(
             "[alpaca] Connected! Account: {} cash=${} equity=${} status={}",
@@ -1659,14 +1659,19 @@ def _alpaca_startup_ping() -> bool:
             getattr(account, "equity", "?"),
             getattr(account, "status", "?"),
         )
-        return True
+        return True, account
     except Exception as e:
         logger.error("[alpaca] startup ping failed: {}", e, exc_info=True)
-        return False
+        return False, None
 
 
-def _persist_portfolio_snapshot(trader: PaperTrader, *, meta: dict[str, Any] | None = None) -> None:
-    """Write ``portfolio_state`` from current PaperTrader balances (every cycle / startup)."""
+def _persist_portfolio_snapshot(
+    trader: PaperTrader,
+    *,
+    meta: dict[str, Any] | None = None,
+    alpaca_account: Any | None = None,
+) -> None:
+    """Write ``portfolio_state`` from PaperTrader; optional Alpaca account merges real stock sleeve."""
     path = trader.persistence_path
     if path is None:
         return
@@ -1674,18 +1679,28 @@ def _persist_portfolio_snapshot(trader: PaperTrader, *, meta: dict[str, Any] | N
     if meta:
         base.update(meta)
     try:
-        eq_s = trader.equity_stocks()
         eq_c = trader.equity_crypto()
-        g_s, g_c = trader.positions_gross_notional()
-        dep = g_s + g_c
-        eq_t = trader.equity_total()
-        dep_pct = (dep / eq_t * 100.0) if eq_t > 0.0 else 0.0
+        _g_s, g_c = trader.positions_gross_notional()
+        if alpaca_account is not None:
+            eq_alp = float(getattr(alpaca_account, "equity", 0) or 0)
+            cash_alp = float(getattr(alpaca_account, "cash", 0) or 0)
+            eq_s = eq_alp
+            eq_t = eq_s + eq_c
+            s_deployed = max(0.0, eq_alp - cash_alp)
+            dep_pct = ((s_deployed + g_c) / eq_t * 100.0) if eq_t > 0.0 else 0.0
+            cash_s = cash_alp
+        else:
+            eq_s = trader.equity_stocks()
+            dep = _g_s + g_c
+            eq_t = trader.equity_total()
+            dep_pct = (dep / eq_t * 100.0) if eq_t > 0.0 else 0.0
+            cash_s = trader.cash_stocks
         ks = drawdown_guard.check_kill_switch(eq_t)
         with get_connection(path) as conn:
             trade_logger.log_portfolio_snapshot(
                 conn,
                 mode=config.MODE,
-                cash_stocks=trader.cash_stocks,
+                cash_stocks=cash_s,
                 cash_crypto=trader.cash_crypto,
                 equity_stocks=eq_s,
                 equity_crypto=eq_c,
@@ -1794,7 +1809,14 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     )
 
     trader = create_paper_trader(telegram_on_fills=False)
-    alpaca_ok = _alpaca_startup_ping()
+    alpaca_ok, alpaca_account = _alpaca_startup_ping()
+    if alpaca_ok:
+        cli = stock_broker.get_rest_client()
+        if cli is not None:
+            try:
+                sync_from_alpaca(config.DB_PATH, cli)
+            except Exception:
+                logger.exception("Alpaca DB sync failed")
     _persist_portfolio_snapshot(
         trader,
         meta={
@@ -1802,6 +1824,7 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
             "source": "worker_startup",
             "alpaca_account_ok": alpaca_ok,
         },
+        alpaca_account=alpaca_account if alpaca_ok else None,
     )
 
     signal.signal(signal.SIGTERM, _on_signal)

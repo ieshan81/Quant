@@ -5,8 +5,11 @@ from __future__ import annotations
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator
+
+from loguru import logger
 
 import config
 
@@ -383,3 +386,214 @@ def reset_trading_history(db_path: Path | str | None = None) -> dict[str, Any]:
         ],
         "bot_config_reset": defaults,
     }
+
+
+def _alpaca_ts_to_sqlite(ts: Any) -> str:
+    """Normalize Alpaca filled_at / timestamps to 'YYYY-MM-DD HH:MM:SS' (UTC wall clock)."""
+    if ts is None:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    s = str(ts).strip()
+    if not s:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if s.endswith("Z"):
+        s = s[:-1].strip()
+    s = s.replace("T", " ", 1)
+    return s[:19]
+
+
+def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, Any]:
+    """
+    Wipe stock-side audit rows (preserve crypto trades), clear signals / portfolio snapshots /
+    price bars, then repopulate stock trades and one portfolio snapshot from Alpaca REST.
+
+    Open positions are logged as synthetic fills (reason ``alpaca_sync_open``); closed
+    orders use ``alpaca_real``. Crypto symbols (``/``) are never synced from Alpaca.
+    """
+    from monitoring import trade_logger
+
+    mode = (config.MODE or "paper").strip().lower()
+    if mode not in ("paper", "live"):
+        mode = "paper"
+
+    path = _resolved_db_path(db_path)
+    ensure_db_path(path)
+
+    account = rest_client.get_account()
+    cash = float(getattr(account, "cash", 0) or 0)
+    equity = float(getattr(account, "equity", 0) or 0)
+
+    positions_raw = rest_client.list_positions() or []
+    positions_stock = [p for p in positions_raw if "/" not in str(getattr(p, "symbol", "") or "")]
+
+    deployed_mv = 0.0
+    for pos in positions_stock:
+        mv = getattr(pos, "market_value", None)
+        if mv is None and isinstance(pos, dict):
+            mv = pos.get("market_value")
+        try:
+            deployed_mv += abs(float(mv or 0))
+        except (TypeError, ValueError):
+            pass
+    dep_pct = (deployed_mv / equity * 100.0) if equity > 0 else 0.0
+
+    after_dt = datetime.now(timezone.utc) - timedelta(days=30)
+    after_str = after_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    orders: list[Any] = []
+    try:
+        orders = list(rest_client.list_orders(status="closed", limit=500, after=after_str) or [])
+    except Exception:
+        logger.warning("[sync] list_orders failed; continuing with positions only", exc_info=True)
+
+    n_pos_ins = 0
+    n_ord_ins = 0
+    n_ord_skip = 0
+
+    with get_connection(path) as conn:
+        conn.execute("DELETE FROM trades WHERE asset_class = ?", ("stock",))
+        conn.execute("DELETE FROM signals")
+        conn.execute("DELETE FROM portfolio_state")
+        conn.execute("DELETE FROM price_history")
+
+        trade_logger.log_portfolio_snapshot(
+            conn,
+            mode=mode,
+            cash_stocks=cash,
+            cash_crypto=0.0,
+            equity_stocks=equity,
+            equity_crypto=0.0,
+            equity_total=equity,
+            deployed_pct=dep_pct,
+            kill_switch_active=False,
+            meta={"source": "alpaca_sync"},
+        )
+
+        for pos in positions_stock:
+            sym = str(getattr(pos, "symbol", "") or "").strip().upper()
+            if not sym:
+                continue
+            qty_raw = getattr(pos, "qty", None)
+            if qty_raw is None and isinstance(pos, dict):
+                qty_raw = pos.get("qty") or pos.get("quantity")
+            try:
+                qty = float(qty_raw or 0)
+            except (TypeError, ValueError):
+                continue
+            if abs(qty) < 1e-12:
+                continue
+            apx = getattr(pos, "avg_entry_price", None)
+            if apx is None and isinstance(pos, dict):
+                apx = pos.get("avg_entry_price") or pos.get("avg_entry")
+            try:
+                avg = float(apx or 0)
+            except (TypeError, ValueError):
+                avg = 0.0
+            side = "buy" if qty > 0 else "sell"
+            q_abs = abs(qty)
+            notional = q_abs * avg
+            oid = f"alpaca-sync-open-{sym}"
+            trade_logger.log_trade(
+                conn,
+                mode=mode,
+                asset_class="stock",
+                symbol=sym,
+                side=side,
+                quantity=q_abs,
+                price=avg,
+                notional=notional,
+                status="filled",
+                broker_order_id=oid,
+                reason_code="alpaca_sync_open",
+                meta={"source": "alpaca_sync"},
+            )
+            n_pos_ins += 1
+
+        seen_broker_ids: set[str] = set()
+        for order in orders:
+            sym_raw = getattr(order, "symbol", None)
+            if sym_raw is None and isinstance(order, dict):
+                sym_raw = order.get("symbol")
+            sym = str(sym_raw or "").strip().upper()
+            if not sym or "/" in sym:
+                n_ord_skip += 1
+                continue
+
+            filled_at = getattr(order, "filled_at", None)
+            if filled_at is None and isinstance(order, dict):
+                filled_at = order.get("filled_at")
+
+            fq = getattr(order, "filled_qty", None)
+            if fq is None and isinstance(order, dict):
+                fq = order.get("filled_qty") or order.get("qty")
+            try:
+                filled_qty = float(fq or 0)
+            except (TypeError, ValueError):
+                filled_qty = 0.0
+            if not filled_at or filled_qty <= 0:
+                n_ord_skip += 1
+                continue
+
+            fap = getattr(order, "filled_avg_price", None)
+            if fap is None and isinstance(order, dict):
+                fap = order.get("filled_avg_price") or order.get("avg_fill_price")
+            try:
+                avg_px = float(fap or 0)
+            except (TypeError, ValueError):
+                avg_px = 0.0
+
+            side_raw = getattr(order, "side", None)
+            if side_raw is None and isinstance(order, dict):
+                side_raw = order.get("side")
+            side = str(side_raw or "").strip().lower()
+            if side not in ("buy", "sell"):
+                n_ord_skip += 1
+                continue
+
+            oid = getattr(order, "id", None)
+            if oid is None and isinstance(order, dict):
+                oid = order.get("id")
+            broker_id = str(oid or "").strip()
+            if broker_id:
+                existing = conn.execute(
+                    "SELECT 1 FROM trades WHERE broker_order_id = ? LIMIT 1",
+                    (broker_id,),
+                ).fetchone()
+                if existing or broker_id in seen_broker_ids:
+                    n_ord_skip += 1
+                    continue
+                seen_broker_ids.add(broker_id)
+
+            created = _alpaca_ts_to_sqlite(filled_at)
+            trade_logger.log_trade(
+                conn,
+                mode=mode,
+                asset_class="stock",
+                symbol=sym,
+                side=side,
+                quantity=filled_qty,
+                price=avg_px,
+                notional=filled_qty * avg_px,
+                status="filled",
+                broker_order_id=broker_id or None,
+                reason_code="alpaca_real",
+                meta={"source": "alpaca_sync"},
+            )
+            rid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute("UPDATE trades SET created_at = ? WHERE id = ?", (created, int(rid)))
+            n_ord_ins += 1
+
+    summary = {
+        "cash": cash,
+        "equity": equity,
+        "positions_written": n_pos_ins,
+        "closed_orders_written": n_ord_ins,
+        "closed_orders_skipped": n_ord_skip,
+    }
+    logger.info(
+        "[sync] Alpaca sync complete: cash={} equity={} positions={} orders={} skipped={}",
+        cash,
+        equity,
+        n_pos_ins,
+        n_ord_ins,
+        n_ord_skip,
+    )
+    return summary

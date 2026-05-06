@@ -316,7 +316,7 @@ _PAGE = """
       </div>
     </div>
 
-    <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a></p>
+    <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
     <p class="last-upd" id="metaNote">Live dashboard via WebSocket (fallback poll {{ refresh_sec }}s) · clock ET</p>
   </div>
 
@@ -347,9 +347,21 @@ _PAGE = """
       const n = Number(row.equity_total);
       return Number.isFinite(n) ? n : 0;
     }
+    function fmtDate(ts) {
+      if (!ts) return "—";
+      const d = new Date(ts.replace(" ", "T") + "Z");
+      const months = ["Jan","Feb","Mar","Apr","May","Jun",
+                      "Jul","Aug","Sep","Oct","Nov","Dec"];
+      const day = d.getDate();
+      const mon = months[d.getMonth()];
+      const yr = d.getFullYear();
+      const h = String(d.getHours()).padStart(2, "0");
+      const m = String(d.getMinutes()).padStart(2, "0");
+      return `${day} ${mon} ${yr} ${h}:${m}`;
+    }
     function equityLabel(row) {
       if (!row) return "";
-      return String(row.snapshot_at != null ? row.snapshot_at : "");
+      return fmtDate(row.snapshot_at != null ? row.snapshot_at : "");
     }
     function applyLiveTiles(data) {
       const pnl = data.pnl_vs_start_pct;
@@ -437,7 +449,7 @@ _PAGE = """
           : '<span class="sym-badge sym-badge-s" aria-hidden="true">S</span>';
         html += '<tr class="sig-feed-row ' + rowCls + '" data-sig-id="' + esc(s.id) + '">';
         html += '<td class="mono ' + dcls + '">' + arr + '</td>';
-        html += '<td class="mono" style="font-size:0.72rem;color:var(--text-secondary);">' + esc(s.created_at) + '</td>';
+        html += '<td class="mono" style="font-size:0.72rem;color:var(--text-secondary);">' + esc(fmtDate(s.created_at)) + '</td>';
         html += '<td class="mono has-symbol ' + symCellCls + '" style="font-weight:700;" data-symbol="' + esc(sym) + '">' + symPre + '<span class="sym-txt">' + esc(sym) + '</span></td>';
         html += '<td>' + esc(typeName) + '</td>';
         html += '<td><span class="mono">' + esc(action) + '</span></td>';
@@ -493,7 +505,7 @@ _PAGE = """
         let st = t.status != null ? String(t.status) : "";
         if (t.reason_code != null && t.reason_code !== "") st += " (" + String(t.reason_code) + ")";
         const qty = t.quantity;
-        html += '<tr class="' + assetRowClass(sym) + '"><td class="mono" style="font-size:0.72rem;">' + esc(t.created_at) + '</td>';
+        html += '<tr class="' + assetRowClass(sym) + '"><td class="mono" style="font-size:0.72rem;">' + esc(fmtDate(t.created_at)) + '</td>';
         html += '<td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
         html += '<td class="mono ' + scls + '">' + esc(sideRaw) + '</td>';
         html += '<td class="mono">' + fmtNum(t.price, 4) + '</td><td class="mono">' + fmtNum(qty, 6) + '</td>';
@@ -1064,6 +1076,20 @@ def create_app() -> Flask:
             return jsonify({"status": "ok", "result": result})
         except Exception as e:
             logger.exception("api/reset-db failed")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.post("/api/sync-alpaca")
+    def api_sync_alpaca() -> Any:
+        from execution import stock_broker
+
+        cli = stock_broker.get_rest_client()
+        if cli is None:
+            return jsonify({"status": "error", "message": "Alpaca client unavailable"}), 400
+        try:
+            summary = data_store.sync_from_alpaca(config.DB_PATH, cli)
+            return jsonify({"status": "ok", **summary})
+        except Exception as e:
+            logger.exception("api/sync-alpaca failed")
             return jsonify({"status": "error", "message": str(e)}), 500
 
     @app.get("/api/calibration")

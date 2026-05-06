@@ -63,6 +63,9 @@ def fetch_equity_latest_price(symbol: str) -> float | None:
     if client is None:
         return None
     sym = symbol.strip().upper()
+    if "/" in sym:
+        logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", sym)
+        return None
     try:
         trade = client.get_latest_trade(sym)
         return _trade_price(trade)
@@ -84,6 +87,9 @@ def fetch_equity_latest_prices(symbols: list[str]) -> dict[str, float | None]:
     for s in symbols:
         key = s.strip().upper()
         if not key:
+            continue
+        if "/" in key:
+            logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", key)
             continue
         out[key] = fetch_equity_latest_price(key)
     return out
@@ -107,6 +113,9 @@ def fetch_alpaca_open_positions() -> list[dict[str, Any]]:
         try:
             sym = str(getattr(p, "symbol", None) or (p.get("symbol") if isinstance(p, dict) else "") or "").strip()
             if not sym:
+                continue
+            if "/" in sym:
+                logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", sym)
                 continue
             qty_raw = getattr(p, "qty", None)
             if qty_raw is None and isinstance(p, dict):
@@ -143,6 +152,9 @@ def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
         return SimpleNamespace(ok=False, broker_order_id=None, message=f"invalid side={side!r}", raw=None)
     if not sym or q <= 0:
         return SimpleNamespace(ok=False, broker_order_id=None, message="invalid symbol/qty", raw=None)
+    if "/" in sym:
+        logger.warning("[alpaca] Skipping crypto symbol {} — use Kraken", sym)
+        return SimpleNamespace(ok=False, broker_order_id=None, message="crypto symbol skipped — use Kraken", raw=None)
     client = get_rest_client()
     if client is None:
         return SimpleNamespace(

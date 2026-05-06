@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -71,6 +71,34 @@ def test_api_reset_db(dash_app) -> None:
     assert body["status"] == "ok"
     assert "trades" in body["result"]["cleared"]
     assert body["result"]["bot_config_reset"]["max_position_pct"] == pytest.approx(0.005)
+
+
+def test_api_sync_alpaca_errors_when_no_client(dash_app) -> None:
+    client = dash_app.test_client()
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        r = client.post("/api/sync-alpaca")
+    assert r.status_code == 400
+    body = json.loads(r.data)
+    assert body["status"] == "error"
+
+
+def test_api_sync_alpaca_ok(dash_app) -> None:
+    fake_cli = MagicMock()
+    summary = {
+        "cash": 1.0,
+        "equity": 2.0,
+        "positions_written": 0,
+        "closed_orders_written": 0,
+        "closed_orders_skipped": 0,
+    }
+    client = dash_app.test_client()
+    with patch("execution.stock_broker.get_rest_client", return_value=fake_cli):
+        with patch("data.data_store.sync_from_alpaca", return_value=summary):
+            r = client.post("/api/sync-alpaca")
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    assert body["status"] == "ok"
+    assert body["equity"] == pytest.approx(2.0)
 
 
 def test_index_renders(dash_app) -> None:
