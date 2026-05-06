@@ -396,7 +396,7 @@ _PAGE = """
         if (last) eq = equityY(last);
       }
       const te = document.getElementById("tileEq");
-      if (te) te.textContent = (eq != null && !Number.isNaN(eq)) ? eq.toFixed(2) : "—";
+      if (te) te.textContent = (eq != null && !Number.isNaN(eq)) ? ("$" + eq.toFixed(2)) : "—";
       const tm = document.getElementById("tileMode");
       if (tm) tm.textContent = data.mode != null ? String(data.mode) : "—";
       if (typeof data.market_open === "boolean") {
@@ -407,6 +407,11 @@ _PAGE = """
       const n = Number(v);
       if (!Number.isFinite(n)) return "—";
       return n.toFixed(d);
+    }
+    function fmtMoney(v, d) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "—";
+      return "$" + n.toFixed(d);
     }
     function signalMeta(s) {
       let m = s.meta;
@@ -477,7 +482,17 @@ _PAGE = """
       const tb = document.getElementById("posTableBody");
       const empty = document.getElementById("posEmpty");
       if (!tb) return;
-      const rows = Array.isArray(pos) ? pos : [];
+      const rowsIn = Array.isArray(pos) ? pos : [];
+      const seen = new Set();
+      const rows = [];
+      for (const p of rowsIn) {
+        const symRaw = p && p.symbol != null ? String(p.symbol) : "";
+        const key = symRaw.replace("/", "").toUpperCase();
+        if (!key) continue;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push(p);
+      }
       if (!rows.length) {
         tb.innerHTML = "";
         if (empty) empty.style.display = "block";
@@ -522,8 +537,8 @@ _PAGE = """
         html += '<tr class="' + assetRowClass(sym) + '"><td class="mono" style="font-size:0.72rem;">' + esc(fmtDate(t.created_at)) + '</td>';
         html += '<td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
         html += '<td class="mono ' + scls + '">' + esc(sideRaw) + '</td>';
-        html += '<td class="mono">' + fmtNum(t.price, 4) + '</td><td class="mono">' + fmtNum(qty, 6) + '</td>';
-        html += '<td class="mono">' + fmtNum(t.notional, 2) + '</td><td>' + esc(st) + '</td></tr>';
+        html += '<td class="mono">' + fmtMoney(t.price, 4) + '</td><td class="mono">' + fmtNum(qty, 6) + '</td>';
+        html += '<td class="mono">' + fmtMoney(t.notional, 2) + '</td><td>' + esc(st) + '</td></tr>';
       }
       tb.innerHTML = html;
     }
