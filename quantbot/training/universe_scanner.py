@@ -68,7 +68,7 @@ _PRIORITY_TTL_SEC = 86400.0
 
 UNIVERSE_TOTAL_CAP = 90
 ALPACA_MOST_ACTIVES_URL = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
-ALPACA_CRYPTO_UNIVERSE = list(FALLBACK_CRYPTO)
+ALPACA_CRYPTO_UNIVERSE: list[str] = []
 
 
 def _sanitize_alpaca_stock_symbol(sym: str) -> str:
@@ -176,7 +176,11 @@ def fetch_coingecko_trending_base_symbols(*, top: int = 7) -> list[str]:
     return out[:top]
 
 
-def fetch_coingecko_top_mover_base_symbols(*, top: int = 10) -> list[str]:
+def fetch_coingecko_top_mover_base_symbols(
+    *,
+    top: int = 10,
+    min_quote_volume_usd: float = MIN_CRYPTO_QUOTE_VOLUME_USD,
+) -> list[str]:
     data = _http_get_json(COINGECKO_MARKETS_URL, 25.0)
     if not isinstance(data, list):
         return []
@@ -188,10 +192,17 @@ def fetch_coingecko_top_mover_base_symbols(*, top: int = 10) -> list[str]:
         if not sym:
             continue
         pct = row.get("price_change_percentage_24h")
+        qv = row.get("total_volume")
         try:
             pv = float(pct) if pct is not None else float("-inf")
         except (TypeError, ValueError):
             pv = float("-inf")
+        try:
+            qvf = float(qv or 0)
+        except (TypeError, ValueError):
+            qvf = 0.0
+        if qvf < float(min_quote_volume_usd):
+            continue
         scored.append((sym, pv))
     scored.sort(key=lambda x: x[1], reverse=True)
     out: list[str] = []
@@ -210,6 +221,17 @@ def fetch_coingecko_top_mover_base_symbols(*, top: int = 10) -> list[str]:
 
 def _to_alpaca_crypto_pair(sym: str) -> str:
     return f"{sym.upper()}/USD"
+
+
+def _normalize_alpaca_crypto_symbol(raw: str) -> str:
+    s = str(raw or "").strip().upper()
+    if not s:
+        return ""
+    if "/" in s:
+        return s
+    if s.endswith("USD") and len(s) > 3:
+        return f"{s[:-3]}/USD"
+    return ""
 
 
 def _alpaca_merge_trending_movers(
@@ -292,9 +314,15 @@ def build_dynamic_universe(exchange: Any | None) -> tuple[list[str], list[str], 
     ]
     meta["n_reddit"] = len(extras)
 
-    trending_bases = fetch_coingecko_trending_base_symbols(top=7)
+    trending_bases = fetch_coingecko_trending_base_symbols(top=10)
     time.sleep(2.0)
-    mover_bases = fetch_coingecko_top_mover_base_symbols(top=10)
+    # Relax quote-volume cutoff by 20% so more crypto candidates qualify.
+    relaxed_min_quote = MIN_CRYPTO_QUOTE_VOLUME_USD * 0.8
+    mover_bases = fetch_coingecko_top_mover_base_symbols(
+        top=20, min_quote_volume_usd=relaxed_min_quote
+    )
+    global ALPACA_CRYPTO_UNIVERSE
+    ALPACA_CRYPTO_UNIVERSE = alpaca_supported_crypto_pairs(min_quote_usd=relaxed_min_quote)
     crypto, n_trend = _alpaca_merge_trending_movers(trending_bases, mover_bases)
     meta["n_trending"] = n_trend
     crypto = _merge_priority_crypto(crypto)
@@ -433,9 +461,33 @@ def scan_sp500_top_symbols(
 def alpaca_supported_crypto_pairs(
     min_quote_usd: float = MIN_CRYPTO_QUOTE_VOLUME_USD,
 ) -> list[str]:
-    """Compatibility shim: returns supported Alpaca crypto pairs."""
+    """Load supported Alpaca crypto pairs dynamically from Alpaca assets."""
     _ = min_quote_usd
-    return list(ALPACA_CRYPTO_UNIVERSE)
+    try:
+        from execution import stock_broker
+
+        cli = stock_broker.get_rest_client()
+        if cli is None:
+            return list(FALLBACK_CRYPTO)
+        assets = cli.list_assets(asset_class="crypto") or []
+        out: list[str] = []
+        seen: set[str] = set()
+        for a in assets:
+            raw = getattr(a, "symbol", None)
+            if raw is None and isinstance(a, dict):
+                raw = a.get("symbol")
+            sym = _normalize_alpaca_crypto_symbol(str(raw or ""))
+            if not sym or not sym.endswith("/USD"):
+                continue
+            if sym in seen:
+                continue
+            seen.add(sym)
+            out.append(sym)
+        if out:
+            return out
+    except Exception as exc:
+        logger.debug("[universe] alpaca_supported_crypto_pairs failed: {}", exc)
+    return list(FALLBACK_CRYPTO)
 
 
 def _score_one_crypto(ex: Any, symbol: str) -> tuple[str, float]:

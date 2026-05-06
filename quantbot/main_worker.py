@@ -828,7 +828,8 @@ def _held_hours_and_suffix(entry_dt: dt_et | None) -> tuple[float | None, str]:
 
 def _max_hold_hours_for_symbol(sym: str) -> float:
     """Crypto recycles faster than stocks."""
-    return 4.0 if "/" in sym else 8.0
+    s = str(sym or "").upper()
+    return 2.0 if ("/" in s or "USD" in s) else 8.0
 
 
 def _ensure_exit_trade_logged(
