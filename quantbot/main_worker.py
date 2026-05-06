@@ -381,6 +381,8 @@ class _StockExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
+        if str(config.MODE).strip().lower() == "live":
+            return stock_broker.submit_market_order("sell", symbol, qty)
         return order_manager.paper_market_sell(
             self._trader, "stock", symbol, qty, mid, reason_code=reason_code, meta=meta
         )
@@ -394,6 +396,8 @@ class _StockExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
+        if str(config.MODE).strip().lower() == "live":
+            return stock_broker.submit_market_order("buy", symbol, qty)
         return order_manager.paper_market_buy(
             self._trader, "stock", symbol, qty, mid, reason_code=reason_code, meta=meta
         )
@@ -1350,19 +1354,36 @@ def execute_cycle_results(
             logger.info("[short] COVER {} qty={:.4f} action={} score={:.4f}", cs.symbol, sq, eff_action, eff_score)
             trader.set_telegram_on_fills(False)
             try:
-                r = order_manager.paper_market_buy(
-                    trader,
-                    "stock",
-                    cs.symbol,
-                    sq,
-                    mid,
-                    reason_code="short_cover",
-                    meta=None,
-                )
+                if str(config.MODE).strip().lower() == "live":
+                    r = stock_broker.submit_market_order("buy", cs.symbol, sq)
+                else:
+                    r = order_manager.paper_market_buy(
+                        trader,
+                        "stock",
+                        cs.symbol,
+                        sq,
+                        mid,
+                        reason_code="short_cover",
+                        meta=None,
+                    )
             finally:
                 trader.set_telegram_on_fills(True)
             if r.ok:
                 out["short_covers"] += 1
+                if str(config.MODE).strip().lower() == "live":
+                    _ensure_exit_trade_logged(
+                        db_path=config.DB_PATH,
+                        mode=str(config.MODE),
+                        asset_class="stock",
+                        symbol=cs.symbol,
+                        side="buy",
+                        quantity=sq,
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="short_cover",
+                        meta=None,
+                    )
             else:
                 logger.warning("[short] COVER failed {} {}", cs.symbol, r.message)
             continue
@@ -1416,10 +1437,33 @@ def execute_cycle_results(
                     )
                     out["holds"] += 1
                     continue
-                r = order_manager.paper_market_buy(trader, cs.asset_class, cs.symbol, qty, mid)
+                if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
+                    r = stock_broker.submit_market_order("buy", cs.symbol, qty)
+                    if not r.ok:
+                        logger.error(
+                            "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
+                            "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway env vars."
+                        )
+                else:
+                    r = order_manager.paper_market_buy(trader, cs.asset_class, cs.symbol, qty, mid)
                 if r.ok:
                     out["buys"] += 1
-                    _telegram_buy(trader, cs.asset_class, cs.symbol, mid, eff_score)
+                    if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
+                        _ensure_exit_trade_logged(
+                            db_path=config.DB_PATH,
+                            mode=str(config.MODE),
+                            asset_class="stock",
+                            symbol=cs.symbol,
+                            side="buy",
+                            quantity=qty,
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="SIGNAL_BUY",
+                            meta=None,
+                        )
+                    else:
+                        _telegram_buy(trader, cs.asset_class, cs.symbol, mid, eff_score)
                 else:
                     logger.warning("BUY failed {} {}", cs.symbol, r.message)
                     out["holds"] += 1
@@ -1430,14 +1474,32 @@ def execute_cycle_results(
                     qty = float(pos.quantity)
                     trader.set_telegram_on_fills(False)
                     try:
-                        r = order_manager.paper_market_sell(
-                            trader, cs.asset_class, cs.symbol, qty, mid, reason_code=None, meta=None
-                        )
+                        if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
+                            r = stock_broker.submit_market_order("sell", cs.symbol, qty)
+                        else:
+                            r = order_manager.paper_market_sell(
+                                trader, cs.asset_class, cs.symbol, qty, mid, reason_code=None, meta=None
+                            )
                     finally:
                         trader.set_telegram_on_fills(True)
                     if r.ok:
                         out["sells"] += 1
-                        _telegram_sell(trader, cs.asset_class, cs.symbol, mid, entry, qty)
+                        if cs.asset_class == "stock" and str(config.MODE).strip().lower() == "live":
+                            _ensure_exit_trade_logged(
+                                db_path=config.DB_PATH,
+                                mode=str(config.MODE),
+                                asset_class="stock",
+                                symbol=cs.symbol,
+                                side="sell",
+                                quantity=qty,
+                                price=mid,
+                                status="filled",
+                                broker_order_id=r.broker_order_id,
+                                reason_code="SIGNAL_SELL",
+                                meta=None,
+                            )
+                        else:
+                            _telegram_sell(trader, cs.asset_class, cs.symbol, mid, entry, qty)
                     else:
                         logger.warning("SELL failed {} {}", cs.symbol, r.message)
                         out["holds"] += 1
@@ -1465,19 +1527,36 @@ def execute_cycle_results(
                         continue
                     trader.set_telegram_on_fills(False)
                     try:
-                        r = order_manager.paper_market_sell(
-                            trader,
-                            "stock",
-                            cs.symbol,
-                            qty,
-                            mid,
-                            reason_code="short_entry",
-                            meta=None,
-                        )
+                        if str(config.MODE).strip().lower() == "live":
+                            r = stock_broker.submit_market_order("sell", cs.symbol, qty)
+                        else:
+                            r = order_manager.paper_market_sell(
+                                trader,
+                                "stock",
+                                cs.symbol,
+                                qty,
+                                mid,
+                                reason_code="short_entry",
+                                meta=None,
+                            )
                     finally:
                         trader.set_telegram_on_fills(True)
                     if r.ok:
                         out["short_entries"] += 1
+                        if str(config.MODE).strip().lower() == "live":
+                            _ensure_exit_trade_logged(
+                                db_path=config.DB_PATH,
+                                mode=str(config.MODE),
+                                asset_class="stock",
+                                symbol=cs.symbol,
+                                side="sell",
+                                quantity=qty,
+                                price=mid,
+                                status="filled",
+                                broker_order_id=r.broker_order_id,
+                                reason_code="short_entry",
+                                meta=None,
+                            )
                     else:
                         logger.warning("[short] ENTER failed {} {}", cs.symbol, r.message)
                         out["holds"] += 1
@@ -1565,15 +1644,24 @@ def run_trading_cycle_once(
 def _alpaca_startup_ping() -> bool:
     """Best-effort REST handshake so startup snapshot runs after broker keys are exercised."""
     try:
-        from execution import stock_broker
-
         cli = stock_broker.get_rest_client()
         if cli is None:
+            logger.error(
+                "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
+                "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway env vars."
+            )
             return False
-        cli.get_account()
+        account = cli.get_account()
+        logger.info(
+            "[alpaca] Connected! Account: {} cash=${} equity=${} status={}",
+            getattr(account, "id", "?"),
+            getattr(account, "cash", "?"),
+            getattr(account, "equity", "?"),
+            getattr(account, "status", "?"),
+        )
         return True
-    except Exception:
-        logger.debug("Alpaca account ping failed at startup", exc_info=True)
+    except Exception as e:
+        logger.error("[alpaca] startup ping failed: {}", e, exc_info=True)
         return False
 
 
