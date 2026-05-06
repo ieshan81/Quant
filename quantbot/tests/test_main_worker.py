@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -108,6 +109,23 @@ def test_stock_exit_broker_merges_sqlite_when_paper_ledger_flat(tmp_path: Path) 
     assert any(r.get("symbol") == "ZZQ" for r in rows)
 
 
+def test_max_hold_force_exit_stock(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "MHOLD", 1.0, 100.0).ok
+    monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 100.0)
+    old = datetime.now(timezone.utc) - timedelta(hours=10)
+    monkeypatch.setattr(
+        mw,
+        "_position_entry_datetime_from_trades",
+        lambda symbol, asset_class, qty_signed, db_path: old,
+    )
+    lines, _, fired = mw.apply_stops_and_targets(
+        t, None, {"take_profit_pct": 0.99, "stop_loss_pct": 0.99}
+    )
+    assert fired >= 1
+    assert any("MAX_HOLD" in ln for ln in lines)
+
+
 def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_sell("stock", "SHS", 1.0, 100.0, reason_code="short_entry", meta=None).ok
@@ -115,7 +133,7 @@ def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) ->
     st = mw._StockExitBroker(t, None)
     ct = mw._CryptoExitBroker(t, None)
     lines, checked, fired = mw._check_and_execute_exits(
-        st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
+        st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH
     )
     assert checked >= 1
     assert fired >= 1

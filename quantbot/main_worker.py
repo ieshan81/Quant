@@ -16,6 +16,7 @@ import traceback
 
 import pytz
 from datetime import datetime as dt_et
+from datetime import timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
@@ -776,6 +777,82 @@ def _can_buy(
     return True, "ok"
 
 
+def _parse_trade_created_at(value: Any) -> dt_et | None:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        if " " in s and "T" not in s.split(" ", 1)[0]:
+            s = s.replace(" ", "T", 1)
+        return dt_et.fromisoformat(s)
+    except ValueError:
+        pass
+    try:
+        return dt_et.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        logger.debug("[exits] could not parse created_at {!r}", value)
+        return None
+
+
+def _position_entry_datetime_from_trades(
+    symbol: str,
+    asset_class: str,
+    qty_signed: float,
+    db_path: str | Path,
+) -> dt_et | None:
+    """
+    Opening leg timestamp from SQLite ``trades`` table (not ``trade_log``).
+    Long positions → latest filled BUY; short positions → latest filled SELL.
+    """
+    p = Path(db_path)
+    if not p.exists():
+        return None
+    side = "buy" if qty_signed > 1e-12 else "sell"
+    sym_key = symbol.strip()
+    try:
+        with sqlite3.connect(str(p)) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                """
+                SELECT created_at FROM trades
+                WHERE symbol = ? AND asset_class = ? AND status = 'filled'
+                  AND LOWER(side) = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sym_key, asset_class, side.lower()),
+            )
+            row = cur.fetchone()
+    except Exception:
+        logger.debug("[exits] entry time lookup failed for {}", sym_key, exc_info=True)
+        return None
+    if not row:
+        return None
+    return _parse_trade_created_at(row[0])
+
+
+def _held_hours_since_entry(entry: dt_et) -> float:
+    now = dt_et.now(timezone.utc)
+    e = entry.replace(tzinfo=timezone.utc) if entry.tzinfo is None else entry.astimezone(timezone.utc)
+    return max(0.0, (now - e).total_seconds() / 3600.0)
+
+
+def _held_hours_and_suffix(entry_dt: dt_et | None) -> tuple[float | None, str]:
+    if entry_dt is None:
+        return None, " held=n/a"
+    h = _held_hours_since_entry(entry_dt)
+    return h, f" held={h:.1f}h"
+
+
+def _max_hold_hours_for_symbol(sym: str) -> float:
+    """Crypto recycles faster than stocks."""
+    return 4.0 if "/" in sym else 8.0
+
+
 def _can_open_short_stock(
     trader: PaperTrader,
     symbol: str,
@@ -815,10 +892,12 @@ def _check_and_execute_exits(
     stock_trader: _StockExitBroker,
     crypto_trader: _CryptoExitBroker,
     risk_params: dict[str, float],
+    db_path: str | Path,
 ) -> tuple[list[str], int, int]:
     """
     Every cycle (before new signals): TP/SL vs mark for longs (sell) and shorts (buy to cover).
     Positions are the union of Alpaca (stock), Kraken/crypto book, SQLite fills, and the paper ledger.
+    Max-hold uses filled-trade timestamps from SQLite ``trades`` (crypto 4h, stocks 8h).
     Returns ``(log_lines, len(all_positions), exits_filled_ok)``.
     """
     stock_pos = stock_trader.get_open_positions()
@@ -834,6 +913,7 @@ def _check_and_execute_exits(
     take_profit_frac = float(risk_params.get("take_profit_pct", 0.03))
     lines: list[str] = []
     exits_ok = 0
+    db_p = Path(db_path)
     for raw in all_positions:
         pos = _normalize_exit_row_to_dict(raw)
         if pos is None:
@@ -855,17 +935,22 @@ def _check_and_execute_exits(
             continue
         qty = float(pos.get("net_qty") or pos.get("qty") or 0)
         broker = _exit_broker_for_position(stock_trader, crypto_trader, pos)
+        entry_dt = _position_entry_datetime_from_trades(sym, ac, qty, db_p)
+        _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
+        max_hold_h = _max_hold_hours_for_symbol(sym)
+
         if qty > 1e-12:
             pnl_pct = (mid - entry) / entry
             if pnl_pct <= -stop_loss_frac:
                 logger.info(
-                    "[exit] STOP_LOSS {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                    "[exit] STOP_LOSS {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
                     ac,
                     sym,
                     entry,
                     mid,
                     pnl_pct,
                     -stop_loss_frac,
+                    held_sfx,
                 )
                 ledger.set_telegram_on_fills(False)
                 try:
@@ -877,16 +962,17 @@ def _check_and_execute_exits(
                 if r.ok:
                     exits_ok += 1
                 pnl = (mid - entry) * qty
-                lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+                lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif pnl_pct >= take_profit_frac:
                 logger.info(
-                    "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                    "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
                     ac,
                     sym,
                     entry,
                     mid,
                     pnl_pct,
                     take_profit_frac,
+                    held_sfx,
                 )
                 ledger.set_telegram_on_fills(False)
                 try:
@@ -898,18 +984,38 @@ def _check_and_execute_exits(
                 if r.ok:
                     exits_ok += 1
                 pnl = (mid - entry) * qty
-                lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+                lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+            elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
+                logger.info(
+                    "[exit] MAX_HOLD {} {} held={:.1f}h max_hold={:.0f}h — force selling",
+                    ac,
+                    sym,
+                    _held_h,
+                    max_hold_h,
+                )
+                ledger.set_telegram_on_fills(False)
+                try:
+                    r = broker.place_sell_order(
+                        sym, qty, mid, reason_code="MAX_HOLD_TIME", meta=None
+                    )
+                finally:
+                    ledger.set_telegram_on_fills(True)
+                if r.ok:
+                    exits_ok += 1
+                pnl = (mid - entry) * qty
+                lines.append(f"MAX_HOLD {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
         elif qty < -1e-12:
             pnl_pct = (entry - mid) / entry
             if pnl_pct <= -stop_loss_frac:
                 logger.info(
-                    "[exit] STOP_LOSS_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                    "[exit] STOP_LOSS_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
                     ac,
                     sym,
                     entry,
                     mid,
                     pnl_pct,
                     -stop_loss_frac,
+                    held_sfx,
                 )
                 ledger.set_telegram_on_fills(False)
                 try:
@@ -925,16 +1031,17 @@ def _check_and_execute_exits(
                 if r.ok:
                     exits_ok += 1
                 pnl = (entry - mid) * abs(qty)
-                lines.append(f"STOP_LOSS_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+                lines.append(f"STOP_LOSS_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif pnl_pct >= take_profit_frac:
                 logger.info(
-                    "[exit] TAKE_PROFIT_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}",
+                    "[exit] TAKE_PROFIT_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
                     ac,
                     sym,
                     entry,
                     mid,
                     pnl_pct,
                     take_profit_frac,
+                    held_sfx,
                 )
                 ledger.set_telegram_on_fills(False)
                 try:
@@ -950,7 +1057,30 @@ def _check_and_execute_exits(
                 if r.ok:
                     exits_ok += 1
                 pnl = (entry - mid) * abs(qty)
-                lines.append(f"TAKE_PROFIT_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}")
+                lines.append(f"TAKE_PROFIT_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+            elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
+                logger.info(
+                    "[exit] MAX_HOLD_SHORT {} {} held={:.1f}h max_hold={:.0f}h — force buy to cover",
+                    ac,
+                    sym,
+                    _held_h,
+                    max_hold_h,
+                )
+                ledger.set_telegram_on_fills(False)
+                try:
+                    r = broker.place_buy_order(
+                        sym,
+                        abs(qty),
+                        mid,
+                        reason_code="MAX_HOLD_TIME",
+                        meta={"short": True},
+                    )
+                finally:
+                    ledger.set_telegram_on_fills(True)
+                if r.ok:
+                    exits_ok += 1
+                pnl = (entry - mid) * abs(qty)
+                lines.append(f"MAX_HOLD_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
     n_all = len(all_positions)
     logger.info(
         "[exits] checked={} stock={} crypto={} fired={}",
@@ -973,7 +1103,7 @@ def apply_stops_and_targets(
     }
     stock_trader = _StockExitBroker(trader, kraken_ex)
     crypto_trader = _CryptoExitBroker(trader, kraken_ex)
-    return _check_and_execute_exits(stock_trader, crypto_trader, risk_params)
+    return _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
 
 
 def _telegram_buy(trader: PaperTrader, asset_class: AssetClass, symbol: str, price: float, score: float) -> None:
@@ -1244,7 +1374,7 @@ def run_trading_cycle_once(
     risk_params = {"take_profit_pct": rt["take_profit_pct"], "stop_loss_pct": rt["stop_loss_pct"]}
     stock_trader = _StockExitBroker(trader, kraken_ex)
     crypto_trader = _CryptoExitBroker(trader, kraken_ex)
-    lines, _, _ = _check_and_execute_exits(stock_trader, crypto_trader, risk_params)
+    lines, _, _ = _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
     for ln in lines:
         logger.info(ln)
 
