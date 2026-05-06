@@ -920,11 +920,14 @@ def _can_open_short_stock(
 
 
 def _get_real_position_qty(symbol: str, broker: Any) -> float:
-    """Get actual held qty from broker-side open positions."""
+    """Get exact held qty from Alpaca position objects."""
     sym = str(symbol or "").strip().upper()
     flat = sym.replace("/", "")
     try:
-        positions = broker.get_open_positions()
+        client = stock_broker.get_rest_client()
+        if client is None:
+            return 0.0
+        positions = client.list_positions() or []
         for pos in positions:
             pos_symbol = str(
                 getattr(pos, "symbol", None)
@@ -933,12 +936,10 @@ def _get_real_position_qty(symbol: str, broker: Any) -> float:
             if pos_symbol == sym or pos_symbol.replace("/", "") == flat:
                 qty = getattr(pos, "qty", None)
                 if qty is None and isinstance(pos, dict):
-                    qty = pos.get("qty", pos.get("net_qty", 0))
-                if qty is None and not isinstance(pos, dict):
-                    qty = getattr(pos, "net_qty", 0)
+                    qty = pos.get("qty")
                 return float(qty or 0)
     except Exception:
-        logger.debug("[exits] broker real qty lookup failed for {}", sym, exc_info=True)
+        logger.debug("[exits] alpaca real qty lookup failed for {}", sym, exc_info=True)
     return 0.0
 
 
@@ -998,11 +999,6 @@ def _check_and_execute_exits(
 
         if qty > 1e-12:
             sell_qty = qty
-            if ac == "crypto":
-                sell_qty = round(qty * 0.999, 8)
-                if sell_qty <= 1e-12:
-                    logger.info("[exits] skip {} {} — crypto sell qty too small after buffer", ac, sym)
-                    continue
             pnl_pct = (mid - entry) / entry
             if pnl_pct <= -stop_loss_frac:
                 logger.info(

@@ -82,6 +82,7 @@ def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "TPZ", 1.0, 100.0).ok
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 106.0)
+    monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, trader: 1.0)
     monkeypatch.setattr(
         mw.stock_broker,
         "submit_market_order",
@@ -118,6 +119,7 @@ def test_max_hold_force_exit_stock(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "MHOLD", 1.0, 100.0).ok
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 100.0)
+    monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, trader: 1.0)
     monkeypatch.setattr(
         mw.stock_broker,
         "submit_market_order",
