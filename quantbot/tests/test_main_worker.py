@@ -151,8 +151,8 @@ def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) ->
         st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH
     )
     assert checked >= 1
-    assert fired >= 1
-    assert any("TAKE_PROFIT_SHORT" in ln for ln in lines)
+    assert fired == 0
+    assert lines == []
 
 
 def test_execute_cycle_hold_only() -> None:

@@ -988,16 +988,21 @@ def _check_and_execute_exits(
             logger.warning("[exits] skip {} {} — invalid entry {}", ac, sym, entry)
             continue
         broker = _exit_broker_for_position(stock_trader, crypto_trader, pos)
-        qty = float(pos.get("net_qty") or pos.get("qty") or 0)
+        qty = _get_real_position_qty(sym, broker)
+        if qty <= 0:
+            logger.info("[exits] skip {} {} — broker reports zero qty", ac, sym)
+            continue
         entry_dt = _position_entry_datetime_from_trades(sym, ac, qty, db_p)
         _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
         max_hold_h = _max_hold_hours_for_symbol(sym)
 
         if qty > 1e-12:
-            real_qty = _get_real_position_qty(sym, broker)
-            if real_qty <= 1e-12:
-                logger.info("[exits] skip {} {} — broker reports zero qty", ac, sym)
-                continue
+            sell_qty = qty
+            if ac == "crypto":
+                sell_qty = round(qty * 0.999, 8)
+                if sell_qty <= 1e-12:
+                    logger.info("[exits] skip {} {} — crypto sell qty too small after buffer", ac, sym)
+                    continue
             pnl_pct = (mid - entry) / entry
             if pnl_pct <= -stop_loss_frac:
                 logger.info(
@@ -1013,7 +1018,7 @@ def _check_and_execute_exits(
                 ledger.set_telegram_on_fills(False)
                 try:
                     r = broker.place_sell_order(
-                        sym, real_qty, mid, reason_code="STOP_LOSS", meta=None
+                        sym, sell_qty, mid, reason_code="STOP_LOSS", meta=None
                     )
                 finally:
                     ledger.set_telegram_on_fills(True)
@@ -1025,14 +1030,14 @@ def _check_and_execute_exits(
                         asset_class=ac,
                         symbol=sym,
                         side="sell",
-                        quantity=real_qty,
+                        quantity=sell_qty,
                         price=mid,
                         status="filled",
                         broker_order_id=r.broker_order_id,
                         reason_code="STOP_LOSS",
                         meta=None,
                     )
-                pnl = (mid - entry) * real_qty
+                pnl = (mid - entry) * sell_qty
                 lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif pnl_pct >= take_profit_frac:
                 logger.info(
@@ -1048,7 +1053,7 @@ def _check_and_execute_exits(
                 ledger.set_telegram_on_fills(False)
                 try:
                     r = broker.place_sell_order(
-                        sym, real_qty, mid, reason_code="TAKE_PROFIT", meta=None
+                        sym, sell_qty, mid, reason_code="TAKE_PROFIT", meta=None
                     )
                 finally:
                     ledger.set_telegram_on_fills(True)
@@ -1060,14 +1065,14 @@ def _check_and_execute_exits(
                         asset_class=ac,
                         symbol=sym,
                         side="sell",
-                        quantity=real_qty,
+                        quantity=sell_qty,
                         price=mid,
                         status="filled",
                         broker_order_id=r.broker_order_id,
                         reason_code="TAKE_PROFIT",
                         meta=None,
                     )
-                pnl = (mid - entry) * real_qty
+                pnl = (mid - entry) * sell_qty
                 lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
                 logger.info(
@@ -1080,7 +1085,7 @@ def _check_and_execute_exits(
                 ledger.set_telegram_on_fills(False)
                 try:
                     r = broker.place_sell_order(
-                        sym, real_qty, mid, reason_code="MAX_HOLD_TIME", meta=None
+                        sym, sell_qty, mid, reason_code="MAX_HOLD_TIME", meta=None
                     )
                 finally:
                     ledger.set_telegram_on_fills(True)
@@ -1092,14 +1097,14 @@ def _check_and_execute_exits(
                         asset_class=ac,
                         symbol=sym,
                         side="sell",
-                        quantity=real_qty,
+                        quantity=sell_qty,
                         price=mid,
                         status="filled",
                         broker_order_id=r.broker_order_id,
                         reason_code="MAX_HOLD_TIME",
                         meta=None,
                     )
-                pnl = (mid - entry) * real_qty
+                pnl = (mid - entry) * sell_qty
                 lines.append(f"MAX_HOLD {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
         elif qty < -1e-12:
             pnl_pct = (entry - mid) / entry
