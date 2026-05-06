@@ -1747,6 +1747,9 @@ def run_worker_forever() -> None:
     while True:
         if _stop.is_set():
             break
+        # Ensure a prior halted state does not block fresh startup after restart.
+        if _halted.is_set():
+            _halted.clear()
         trader: PaperTrader | None = None
         scan_thread: threading.Thread | None = None
         try:
