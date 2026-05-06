@@ -69,3 +69,45 @@ def fetch_equity_latest_prices(symbols: list[str]) -> dict[str, float | None]:
             continue
         out[key] = fetch_equity_latest_price(key)
     return out
+
+
+def fetch_alpaca_open_positions() -> list[dict[str, Any]]:
+    """
+    Open US equity positions from Alpaca (paper or live REST).
+    Returns dict rows compatible with exit checker: symbol, net_qty, avg_entry_price, asset_class.
+    """
+    client = get_rest_client()
+    if client is None:
+        return []
+    try:
+        raw = client.list_positions()
+    except Exception:
+        logger.debug("[stock_broker] list_positions failed", exc_info=True)
+        return []
+    out: list[dict[str, Any]] = []
+    for p in raw or []:
+        try:
+            sym = str(getattr(p, "symbol", None) or (p.get("symbol") if isinstance(p, dict) else "") or "").strip()
+            if not sym:
+                continue
+            qty_raw = getattr(p, "qty", None)
+            if qty_raw is None and isinstance(p, dict):
+                qty_raw = p.get("qty") or p.get("quantity")
+            qty = float(qty_raw or 0)
+            if abs(qty) < 1e-12:
+                continue
+            apx = getattr(p, "avg_entry_price", None)
+            if apx is None and isinstance(p, dict):
+                apx = p.get("avg_entry_price") or p.get("avg_entry")
+            entry = float(apx or 0)
+            out.append(
+                {
+                    "symbol": sym,
+                    "net_qty": qty,
+                    "avg_entry_price": entry,
+                    "asset_class": "stock",
+                }
+            )
+        except (TypeError, ValueError, AttributeError):
+            logger.debug("[stock_broker] skip malformed position row: {}", p, exc_info=True)
+    return out

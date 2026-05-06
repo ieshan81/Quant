@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sqlite3
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 import signal
@@ -30,7 +31,7 @@ if str(ROOT) not in sys.path:
 import config
 from data.data_store import get_connection, init_schema, load_runtime_config_dict
 from learning.rl_nudge import maybe_nudge_thresholds
-from execution import order_manager
+from execution import order_manager, stock_broker
 from monitoring import alerts, trade_logger
 from risk import drawdown_guard
 from risk import portfolio_limiter
@@ -152,6 +153,161 @@ def _mid_from_crypto_df(df: pd.DataFrame | None) -> float | None:
     return _mid_from_stock_df(df)
 
 
+def _position_db_path(trader: PaperTrader) -> Path | None:
+    p = trader.persistence_path
+    if p is not None:
+        pp = Path(p)
+        if pp.exists():
+            return pp
+    try:
+        cp = Path(config.DB_PATH)
+        if cp.exists():
+            return cp
+    except Exception:
+        pass
+    return None
+
+
+def _replay_qty_avg_from_trades(conn: sqlite3.Connection, asset_class: str, symbol: str) -> tuple[float, float] | None:
+    """Rebuild signed quantity and average entry from filled trades (mirrors PaperTrader fills)."""
+    cur = conn.execute(
+        """
+        SELECT side, quantity, COALESCE(price, 0) AS px
+        FROM trades
+        WHERE status = 'filled' AND asset_class = ? AND symbol = ?
+        ORDER BY id ASC
+        """,
+        (asset_class, symbol),
+    )
+    qty = 0.0
+    avg = 0.0
+    for row in cur:
+        side = str(row[0] or "").lower()
+        q = float(row[1] or 0)
+        p = float(row[2] or 0)
+        if q <= 0 or p <= 0:
+            continue
+        if side == "buy":
+            rem = q
+            if qty < -1e-12:
+                cover = min(rem, abs(qty))
+                qty += cover
+                rem -= cover
+                if abs(qty) < 1e-12:
+                    qty = 0.0
+                    avg = 0.0
+            if rem > 1e-12:
+                if abs(qty) < 1e-12:
+                    qty = rem
+                    avg = p
+                else:
+                    nq = qty + rem
+                    avg = (qty * avg + rem * p) / nq
+                    qty = nq
+        else:
+            rem = q
+            if qty > 1e-12:
+                sq = min(rem, qty)
+                qty -= sq
+                rem -= sq
+                if qty <= 1e-12:
+                    qty = 0.0
+                    avg = 0.0
+            if rem > 1e-12:
+                if abs(qty) < 1e-12:
+                    qty = -rem
+                    avg = p
+                else:
+                    abs_old = abs(qty)
+                    abs_new = abs_old + rem
+                    avg = (abs_old * avg + rem * p) / abs_new
+                    qty = -abs_new
+    if abs(qty) < 1e-12:
+        return None
+    return qty, avg
+
+
+def _sqlite_exit_rows_for_asset(db_path: Path, asset_class: AssetClass) -> list[dict[str, Any]]:
+    from monitoring.dashboard_data import fetch_open_positions_from_trades
+
+    out: list[dict[str, Any]] = []
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = fetch_open_positions_from_trades(conn)
+            for r in rows:
+                if str(r.get("asset_class") or "") != asset_class:
+                    continue
+                sym = str(r.get("symbol") or "").strip()
+                if not sym:
+                    continue
+                rep = _replay_qty_avg_from_trades(conn, asset_class, sym)
+                if rep is None:
+                    continue
+                rq, ra = rep
+                if abs(rq) < 1e-12:
+                    continue
+                if ra <= 0:
+                    continue
+                out.append(
+                    {
+                        "symbol": sym,
+                        "net_qty": rq,
+                        "avg_entry_price": ra,
+                        "asset_class": asset_class,
+                        "source": "sqlite_trades",
+                    }
+                )
+    except Exception:
+        logger.debug("[exits] sqlite exit rows failed for {}", db_path, exc_info=True)
+    return out
+
+
+def _normalize_exit_row_to_dict(pos: Any) -> dict[str, Any] | None:
+    """Normalize Alpaca objects, dicts, or Position-like rows for exit processing."""
+    if pos is None:
+        return None
+    if isinstance(pos, dict):
+        sym = str(pos.get("symbol") or "").strip()
+        qty = pos.get("net_qty", pos.get("qty", pos.get("quantity")))
+        entry = pos.get("avg_entry_price", pos.get("cost_basis", pos.get("avg_price")))
+        ac = pos.get("asset_class")
+    else:
+        sym = str(getattr(pos, "symbol", None) or "").strip()
+        qty = getattr(pos, "qty", None)
+        if qty is None:
+            qty = getattr(pos, "quantity", None)
+        if qty is None:
+            qty = getattr(pos, "net_qty", None)
+        entry = getattr(pos, "avg_entry_price", None)
+        if entry is None:
+            entry = getattr(pos, "cost_basis", None)
+        if entry is None:
+            entry = getattr(pos, "avg_price", None)
+        ac = getattr(pos, "asset_class", None)
+    try:
+        qf = float(qty or 0)
+    except (TypeError, ValueError):
+        qf = 0.0
+    try:
+        ef = float(entry or 0)
+    except (TypeError, ValueError):
+        ef = 0.0
+    if abs(qf) < 1e-12:
+        return None
+    if not sym:
+        return None
+    ac_s = str(ac or "").strip().lower()
+    if ac_s not in ("stock", "crypto"):
+        ac_s = "crypto" if "/" in sym else "stock"
+    return {
+        "symbol": sym,
+        "net_qty": qf,
+        "avg_entry_price": ef,
+        "asset_class": ac_s,
+    }
+
+
 def _is_crypto_position_symbol(symbol: str, asset_class: Any) -> bool:
     sym = str(symbol or "").strip()
     if str(asset_class or "").strip().lower() == "crypto":
@@ -191,19 +347,29 @@ class _StockExitBroker:
         return self._trader
 
     def get_open_positions(self) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
+        merged: dict[str, dict[str, Any]] = {}
         for p in self._trader._positions.values():
             if p.asset_class != "stock":
                 continue
-            out.append(
-                {
-                    "symbol": p.symbol,
-                    "net_qty": p.quantity,
-                    "avg_entry_price": p.avg_price,
-                    "asset_class": "stock",
-                }
-            )
-        return out
+            k = p.symbol.strip().upper()
+            merged[k] = {
+                "symbol": p.symbol,
+                "net_qty": p.quantity,
+                "avg_entry_price": p.avg_price,
+                "asset_class": "stock",
+                "source": "paper_ledger",
+            }
+        dbp = _position_db_path(self._trader)
+        if dbp is not None:
+            for row in _sqlite_exit_rows_for_asset(dbp, "stock"):
+                k = str(row.get("symbol", "")).strip().upper()
+                if k and k not in merged:
+                    merged[k] = row
+        for row in stock_broker.fetch_alpaca_open_positions():
+            k = str(row.get("symbol", "")).strip().upper()
+            if k and k not in merged:
+                merged[k] = {**row, "source": "alpaca_rest"}
+        return list(merged.values())
 
     def place_sell_order(
         self,
@@ -246,19 +412,25 @@ class _CryptoExitBroker:
         return self._trader
 
     def get_open_positions(self) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
+        merged: dict[str, dict[str, Any]] = {}
         for p in self._trader._positions.values():
             if p.asset_class != "crypto":
                 continue
-            out.append(
-                {
-                    "symbol": p.symbol,
-                    "net_qty": p.quantity,
-                    "avg_entry_price": p.avg_price,
-                    "asset_class": "crypto",
-                }
-            )
-        return out
+            k = p.symbol.strip()
+            merged[k] = {
+                "symbol": p.symbol,
+                "net_qty": p.quantity,
+                "avg_entry_price": p.avg_price,
+                "asset_class": "crypto",
+                "source": "paper_ledger",
+            }
+        dbp = _position_db_path(self._trader)
+        if dbp is not None:
+            for row in _sqlite_exit_rows_for_asset(dbp, "crypto"):
+                key = str(row.get("symbol", "")).strip()
+                if key and key not in merged:
+                    merged[key] = row
+        return list(merged.values())
 
     def place_sell_order(
         self,
@@ -294,8 +466,6 @@ def _exit_mark_price(kraken_ex: Any, pos: Any) -> float | None:
     """
     sym = str(pos.symbol).strip()
     if pos.asset_class == "stock":
-        from execution import stock_broker
-
         if stock_broker.alpaca_credentials_configured():
             px = stock_broker.fetch_equity_latest_price(sym)
             if px is not None and float(px) > 0:
@@ -642,25 +812,32 @@ def _can_open_short_stock(
 
 
 def _check_and_execute_exits(
-    all_positions: list[dict[str, Any]],
     stock_trader: _StockExitBroker,
     crypto_trader: _CryptoExitBroker,
     risk_params: dict[str, float],
 ) -> tuple[list[str], int, int]:
     """
     Every cycle (before new signals): TP/SL vs mark for longs (sell) and shorts (buy to cover).
-    Positions are the union of Alpaca (stock) and Kraken (crypto) books; orders route per symbol.
+    Positions are the union of Alpaca (stock), Kraken/crypto book, SQLite fills, and the paper ledger.
     Returns ``(log_lines, len(all_positions), exits_filled_ok)``.
     """
+    stock_pos = stock_trader.get_open_positions()
+    crypto_pos = crypto_trader.get_open_positions()
+    logger.info("[exits_debug] raw stock_pos={} crypto_pos={}", stock_pos, crypto_pos)
+    stock_positions = stock_pos or []
+    crypto_positions = crypto_pos or []
+    all_positions = stock_positions + crypto_positions
+
     kraken_ex = stock_trader._kraken_ex
     ledger = stock_trader.ledger
     stop_loss_frac = float(risk_params.get("stop_loss_pct", 0.015))
     take_profit_frac = float(risk_params.get("take_profit_pct", 0.03))
     lines: list[str] = []
     exits_ok = 0
-    stock_positions = stock_trader.get_open_positions() or []
-    crypto_positions = crypto_trader.get_open_positions() or []
-    for pos in all_positions:
+    for raw in all_positions:
+        pos = _normalize_exit_row_to_dict(raw)
+        if pos is None:
+            continue
         mark_ns = _mark_target_for_exit_dict(kraken_ex, pos)
         sym = str(pos.get("symbol") or "").strip()
         ac = mark_ns.asset_class
@@ -796,10 +973,7 @@ def apply_stops_and_targets(
     }
     stock_trader = _StockExitBroker(trader, kraken_ex)
     crypto_trader = _CryptoExitBroker(trader, kraken_ex)
-    stock_positions = stock_trader.get_open_positions() or []
-    crypto_positions = crypto_trader.get_open_positions() or []
-    all_positions = stock_positions + crypto_positions
-    return _check_and_execute_exits(all_positions, stock_trader, crypto_trader, risk_params)
+    return _check_and_execute_exits(stock_trader, crypto_trader, risk_params)
 
 
 def _telegram_buy(trader: PaperTrader, asset_class: AssetClass, symbol: str, price: float, score: float) -> None:
@@ -1070,12 +1244,7 @@ def run_trading_cycle_once(
     risk_params = {"take_profit_pct": rt["take_profit_pct"], "stop_loss_pct": rt["stop_loss_pct"]}
     stock_trader = _StockExitBroker(trader, kraken_ex)
     crypto_trader = _CryptoExitBroker(trader, kraken_ex)
-    stock_positions = stock_trader.get_open_positions() or []
-    crypto_positions = crypto_trader.get_open_positions() or []
-    all_positions = stock_positions + crypto_positions
-    lines, _, _ = _check_and_execute_exits(
-        all_positions, stock_trader, crypto_trader, risk_params
-    )
+    lines, _, _ = _check_and_execute_exits(stock_trader, crypto_trader, risk_params)
     for ln in lines:
         logger.info(ln)
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import execution.crypto_broker as crypto_broker
 import execution.stock_broker as stock_broker
 
@@ -54,3 +56,24 @@ def test_fetch_crypto_latest_price_coinbase_fallback() -> None:
         with patch.object(crypto_broker, "get_coinbase", return_value=coinbase):
             assert crypto_broker.fetch_crypto_latest_price("ETH/USDT") == 1.5
     coinbase.fetch_ticker.assert_called_once_with("ETH/USDT")
+
+
+def test_fetch_alpaca_open_positions_empty_without_client() -> None:
+    with patch.object(stock_broker, "get_rest_client", return_value=None):
+        assert stock_broker.fetch_alpaca_open_positions() == []
+
+
+def test_fetch_alpaca_open_positions_maps_sdk_rows() -> None:
+    pos = MagicMock()
+    pos.symbol = "XOM"
+    pos.qty = "3"
+    pos.avg_entry_price = "60"
+    client = MagicMock()
+    client.list_positions.return_value = [pos]
+    with patch.object(stock_broker, "get_rest_client", return_value=client):
+        rows = stock_broker.fetch_alpaca_open_positions()
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "XOM"
+    assert rows[0]["net_qty"] == pytest.approx(3.0)
+    assert rows[0]["avg_entry_price"] == pytest.approx(60.0)
+    assert rows[0]["asset_class"] == "stock"

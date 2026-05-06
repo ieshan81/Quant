@@ -11,7 +11,7 @@ import pytest
 import config
 import main_worker as mw
 from data.data_store import BOT_CONFIG_DEFAULTS, init_schema
-from training.paper_trader import create_paper_trader
+from training.paper_trader import PaperTrader, create_paper_trader
 from training.universe_scanner import UniverseState
 
 
@@ -89,15 +89,33 @@ def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     assert any("TAKE_PROFIT" in ln for ln in lines)
 
 
+def test_stock_exit_broker_merges_sqlite_when_paper_ledger_flat(tmp_path: Path) -> None:
+    db = tmp_path / "exit_merge.sqlite3"
+    init_schema(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional, status) "
+        "VALUES ('paper','stock','ZZQ','buy',2,50,100,'filled')"
+    )
+    conn.commit()
+    conn.close()
+    with patch.object(config, "DB_PATH", db):
+        t = PaperTrader(10_000.0, 10_000.0, persist_sqlite=True, db_path=db, mode="paper")
+        assert t.position("stock", "ZZQ") is None
+        st = mw._StockExitBroker(t, None)
+        with patch.object(mw.stock_broker, "fetch_alpaca_open_positions", return_value=[]):
+            rows = st.get_open_positions()
+    assert any(r.get("symbol") == "ZZQ" for r in rows)
+
+
 def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_sell("stock", "SHS", 1.0, 100.0, reason_code="short_entry", meta=None).ok
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 94.0)
     st = mw._StockExitBroker(t, None)
     ct = mw._CryptoExitBroker(t, None)
-    all_p = (st.get_open_positions() or []) + (ct.get_open_positions() or [])
     lines, checked, fired = mw._check_and_execute_exits(
-        all_p, st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
+        st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
     )
     assert checked >= 1
     assert fired >= 1
