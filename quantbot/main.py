@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 
 import config
 from data.data_store import init_schema
-from execution import crypto_broker, stock_broker
+from execution import stock_broker
 
 
 def setup_logging() -> None:
@@ -32,23 +32,32 @@ def setup_logging() -> None:
 
 
 def print_live_quotes() -> None:
-    """Sprint 2: fetch live stock + crypto prices and print to stdout."""
-    print("\n=== Alpaca (US equities) ===")
+    """
+    Live quote dump (Alpaca only).
+
+    Quant routing has moved to Alpaca for both equities and crypto. The legacy
+    CCXT/Kraken path was removed; both quote groups now flow through Alpaca.
+    """
     if not stock_broker.alpaca_credentials_configured():
         print("(skipped: set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env)")
-    else:
-        for sym, price in stock_broker.fetch_equity_latest_prices(
-            config.ALPACA_QUOTE_SYMBOLS
-        ).items():
-            if price is None:
-                print(f"  {sym}: (unavailable)")
-            else:
-                print(f"  {sym}: {price:.4f}")
+        return
 
-    print(f"\n=== CCXT crypto ({config.CRYPTO_CCXT_EXCHANGE}) ===")
-    for sym, price in crypto_broker.fetch_crypto_latest_prices(
-        config.CRYPTO_QUOTE_SYMBOLS
+    print("\n=== Alpaca (US equities) ===")
+    for sym, price in stock_broker.fetch_equity_latest_prices(
+        config.ALPACA_QUOTE_SYMBOLS
     ).items():
+        if price is None:
+            print(f"  {sym}: (unavailable)")
+        else:
+            print(f"  {sym}: {price:.4f}")
+
+    print("\n=== Alpaca (crypto) ===")
+    for sym in config.CRYPTO_QUOTE_SYMBOLS:
+        try:
+            price = stock_broker.fetch_equity_latest_price(sym)
+        except Exception as exc:
+            logger.warning("crypto quote failed for {}: {}", sym, exc)
+            price = None
         if price is None:
             print(f"  {sym}: (unavailable)")
         else:
@@ -67,7 +76,7 @@ def main() -> None:
     parser.add_argument(
         "--quotes",
         action="store_true",
-        help="Fetch live stock (Alpaca) + crypto (CCXT) prices and print to console",
+        help="Fetch live Alpaca quotes (stocks + crypto) and print to console",
     )
     parser.add_argument(
         "--sentiment",

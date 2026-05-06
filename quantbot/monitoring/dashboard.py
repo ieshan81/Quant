@@ -1228,7 +1228,59 @@ def create_app() -> Flask:
 
     @app.route("/health")
     def health():
-        return {"status": "ok"}, 200
+        """
+        Real readiness check for Railway: verify the SQLite DB is reachable and the
+        most recent ``portfolio_state`` snapshot is not stale. The worker writes a
+        snapshot every cycle, so an old snapshot signals a dead worker even when
+        Flask is alive.
+        """
+        import time as _time
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
+        max_age_sec = int(os.environ.get("HEALTH_MAX_SNAPSHOT_AGE_SEC", "1800"))
+        status: dict[str, Any] = {"status": "ok", "checks": {}}
+        http_code = 200
+
+        try:
+            with get_connection() as conn:
+                row = conn.execute("SELECT 1").fetchone()
+                status["checks"]["db"] = "ok" if row else "degraded"
+                row2 = conn.execute(
+                    "SELECT snapshot_at FROM portfolio_state ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            if row2 is None or row2[0] is None:
+                # Soft state: dashboard may be running before worker writes its first
+                # snapshot. Report it but keep Railway healthcheck green.
+                status["checks"]["snapshot"] = "missing"
+            else:
+                raw_ts = str(row2[0])
+                snap_dt: _dt | None = None
+                try:
+                    s = raw_ts.replace("T", " ").rstrip("Z")
+                    snap_dt = _dt.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    snap_dt = None
+                if snap_dt is None:
+                    status["checks"]["snapshot"] = "unparseable"
+                else:
+                    age = (
+                        _dt.now(_tz.utc).replace(tzinfo=None) - snap_dt
+                    ).total_seconds()
+                    status["checks"]["snapshot_age_sec"] = int(age)
+                    if age > max_age_sec:
+                        status["checks"]["snapshot"] = "stale"
+                        status["status"] = "degraded"
+                        http_code = 503
+                    else:
+                        status["checks"]["snapshot"] = "fresh"
+        except Exception as exc:
+            status["status"] = "error"
+            status["checks"]["db"] = f"error: {exc!s}"
+            http_code = 503
+
+        status["checked_at"] = int(_time.time())
+        return status, http_code
 
     @app.get("/api/dashboard")
     def api_dashboard() -> Response:

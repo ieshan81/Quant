@@ -124,7 +124,12 @@ def test_health(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/health")
     assert r.status_code == 200
-    assert json.loads(r.data) == {"status": "ok"}
+    data = json.loads(r.data)
+    assert data.get("status") == "ok"
+    checks = data.get("checks") or {}
+    assert checks.get("db") == "ok"
+    # Empty test DB has no snapshot row yet — health stays soft-green.
+    assert checks.get("snapshot") in ("missing", "fresh")
 
 
 def test_api_symbol_stock_fallback(dash_app) -> None:

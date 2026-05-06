@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable, TypeVar
+
+from loguru import logger
 
 import config
 
@@ -16,15 +20,66 @@ _SYNC_REASON_CODES_FOR_MATCHING = ("alpaca_sync", "alpaca_sync_open", "alpaca_re
 _SYNC_REASON_CODES_FOR_STATS = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
 _PAPER_BASELINE_EQUITY = 100.0
 
+# Cache durations for heavy Alpaca calls. WS pushes every 2s; portfolio account
+# heartbeat is fast enough to refresh each tick, but order/history fetches are
+# expensive and rate-limited.
+_CACHE_TTL_PORTFOLIO_SEC = 5.0
+_CACHE_TTL_TRADES_SEC = 30.0
+_CACHE_TTL_POSITIONS_SEC = 5.0
+_CACHE_TTL_PERFORMANCE_SEC = 60.0
+_CACHE_TTL_EQUITY_CURVE_SEC = 60.0
+
+_T = TypeVar("_T")
+_cache_lock = threading.Lock()
+_cache_store: dict[str, tuple[float, Any]] = {}
+
+
+def _cached(key: str, ttl: float, fn: Callable[[], _T]) -> _T:
+    """Memoize an Alpaca call by ``key`` with TTL. Stale value is returned on failure."""
+    now = time.monotonic()
+    with _cache_lock:
+        entry = _cache_store.get(key)
+    if entry is not None and (now - entry[0]) < ttl:
+        return entry[1]  # type: ignore[no-any-return]
+    try:
+        value = fn()
+    except Exception:
+        logger.warning("[dashboard] cached fetch '{}' failed; serving stale", key, exc_info=True)
+        if entry is not None:
+            return entry[1]  # type: ignore[no-any-return]
+        raise
+    with _cache_lock:
+        _cache_store[key] = (now, value)
+    return value
+
+
+def _safe_section(label: str, fallback: _T, fn: Callable[[], _T]) -> _T:
+    """Wrap an Alpaca section call so a single failure cannot 500 the whole payload."""
+    try:
+        return fn()
+    except Exception:
+        logger.warning("[dashboard] section '{}' failed", label, exc_info=True)
+        return fallback
+
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {k: row[k] for k in row.keys()}
 
 
+def _open_dashboard_sqlite() -> sqlite3.Connection:
+    """Local SQLite connection that mirrors data_store timeout/busy_timeout settings."""
+    conn = sqlite3.connect(str(config.DB_PATH), timeout=30.0)
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+    except sqlite3.Error:
+        pass
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def fetch_latest_portfolio(conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return fetch_latest_portfolio(local_conn)
     cur = conn.execute(
         "SELECT * FROM portfolio_state ORDER BY id DESC LIMIT 1"
@@ -37,8 +92,7 @@ def fetch_portfolio_equity_series(
     conn: sqlite3.Connection | None = None, limit: int = 120
 ) -> list[dict[str, Any]]:
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return fetch_portfolio_equity_series(local_conn, limit)
     cur = conn.execute(
         """
@@ -56,8 +110,7 @@ def fetch_portfolio_equity_series(
 
 def fetch_recent_trades(conn: sqlite3.Connection | None = None, limit: int = 30) -> list[dict[str, Any]]:
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return fetch_recent_trades(local_conn, limit)
     cur = conn.execute(
         """
@@ -86,8 +139,7 @@ def fetch_recent_trades(conn: sqlite3.Connection | None = None, limit: int = 30)
 
 def fetch_recent_signals(conn: sqlite3.Connection | None = None, limit: int = 40) -> list[dict[str, Any]]:
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return fetch_recent_signals(local_conn, limit)
     cur = conn.execute(
         """
@@ -117,8 +169,7 @@ def fetch_recent_signals(conn: sqlite3.Connection | None = None, limit: int = 40
 def fetch_open_positions_from_trades(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
     """Net quantity from filled buy/sell rows (paper + live in same DB)."""
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return fetch_open_positions_from_trades(local_conn)
     cur = conn.execute(
         """
@@ -136,8 +187,7 @@ def fetch_open_positions_from_trades(conn: sqlite3.Connection | None = None) -> 
 
 def fetch_rl_learning_recent(conn: sqlite3.Connection | None = None, limit: int = 10) -> list[dict[str, Any]]:
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return fetch_rl_learning_recent(local_conn, limit)
     cur = conn.execute(
         """
@@ -167,8 +217,7 @@ def fetch_rl_learning_recent(conn: sqlite3.Connection | None = None, limit: int 
 def _closed_round_trip_pairs(conn: sqlite3.Connection | None = None) -> list[tuple[float, float]]:
     """(buy_price, sell_price) per FIFO closed lot — same semantics as RL nudge."""
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return _closed_round_trip_pairs(local_conn)
     from collections import deque
 
@@ -198,8 +247,7 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection | None = None) -> list[tup
 
 def fetch_performance_summary(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return fetch_performance_summary(local_conn)
     cur = conn.execute(
         """
@@ -379,44 +427,116 @@ def build_dashboard_payload(
     equity_period: str = "1D",
 ) -> dict[str, Any]:
     if conn is None:
-        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
-            local_conn.row_factory = sqlite3.Row
+        with _open_dashboard_sqlite() as local_conn:
             return build_dashboard_payload(
                 local_conn,
                 rest_client=rest_client,
                 equity_period=equity_period,
             )
 
-    latest = fetch_latest_portfolio(conn)
-    series = fetch_portfolio_equity_series(conn)
-    trades = fetch_recent_trades(conn)
-    signals = fetch_recent_signals(conn)
-    positions = fetch_open_positions_from_trades(conn)
-    rl_history = fetch_rl_learning_recent(conn, 10)
-    performance = fetch_performance_summary(conn)
-    calibration = get_leg_accuracies(conn)
+    section_status: dict[str, str] = {}
+
+    def _record(name: str, ok: bool) -> None:
+        section_status[name] = "ok" if ok else "degraded"
+
+    def _section_db(label: str, fallback: _T, fn: Callable[[], _T]) -> _T:
+        try:
+            v = fn()
+            _record(label, True)
+            return v
+        except Exception:
+            logger.warning("[dashboard] db section '{}' failed", label, exc_info=True)
+            _record(label, False)
+            return fallback
+
+    latest = _section_db("portfolio_db", None, lambda: fetch_latest_portfolio(conn))
+    series = _section_db("equity_series_db", [], lambda: fetch_portfolio_equity_series(conn))
+    trades = _section_db("trades_db", [], lambda: fetch_recent_trades(conn))
+    signals = _section_db("signals_db", [], lambda: fetch_recent_signals(conn))
+    positions = _section_db("positions_db", [], lambda: fetch_open_positions_from_trades(conn))
+    rl_history = _section_db("rl_history", [], lambda: fetch_rl_learning_recent(conn, 10))
+    performance = _section_db("performance_db", {}, lambda: fetch_performance_summary(conn))
+    calibration = _section_db("calibration", {}, lambda: get_leg_accuracies(conn))
 
     pnl_pct = None
     pnl_dollars = None
     if rest_client is not None:
-        real_pf = get_real_portfolio(rest_client)
-        latest = {
-            **(latest or {}),
-            "equity_total": real_pf["equity_total"],
-            "deployed_pct": real_pf["deployed_pct"],
-            "cash_stocks": real_pf["cash"],
-            "cash_crypto": 0.0,
-            "equity_stocks": real_pf["equity_total"],
-            "equity_crypto": 0.0,
-            "mode": config.MODE,
-        }
-        pnl_pct = real_pf["pnl_pct"]
-        pnl_dollars = real_pf["pnl_dollars"]
-        trades = get_real_trades(rest_client, limit=20)
-        positions = get_real_positions(rest_client)
-        performance = get_real_performance(rest_client)
+        # Each Alpaca section is independently guarded: a single failing endpoint
+        # produces a degraded section, never a 500 for the whole dashboard.
+        real_pf = _safe_section(
+            "alpaca_portfolio",
+            None,
+            lambda: _cached(
+                "alpaca_portfolio", _CACHE_TTL_PORTFOLIO_SEC, lambda: get_real_portfolio(rest_client)
+            ),
+        )
+        _record("alpaca_portfolio", real_pf is not None)
+        if real_pf is not None:
+            latest = {
+                **(latest or {}),
+                "equity_total": real_pf["equity_total"],
+                "deployed_pct": real_pf["deployed_pct"],
+                "cash_stocks": real_pf["cash"],
+                "cash_crypto": 0.0,
+                "equity_stocks": real_pf["equity_total"],
+                "equity_crypto": 0.0,
+                "mode": config.MODE,
+            }
+            pnl_pct = real_pf["pnl_pct"]
+            pnl_dollars = real_pf["pnl_dollars"]
+
+        alpaca_trades = _safe_section(
+            "alpaca_trades",
+            None,
+            lambda: _cached(
+                "alpaca_trades",
+                _CACHE_TTL_TRADES_SEC,
+                lambda: get_real_trades(rest_client, limit=20),
+            ),
+        )
+        _record("alpaca_trades", alpaca_trades is not None)
+        if alpaca_trades is not None:
+            trades = alpaca_trades
+
+        alpaca_positions = _safe_section(
+            "alpaca_positions",
+            None,
+            lambda: _cached(
+                "alpaca_positions",
+                _CACHE_TTL_POSITIONS_SEC,
+                lambda: get_real_positions(rest_client),
+            ),
+        )
+        _record("alpaca_positions", alpaca_positions is not None)
+        if alpaca_positions is not None:
+            positions = alpaca_positions
+
+        alpaca_perf = _safe_section(
+            "alpaca_performance",
+            None,
+            lambda: _cached(
+                "alpaca_performance",
+                _CACHE_TTL_PERFORMANCE_SEC,
+                lambda: get_real_performance(rest_client),
+            ),
+        )
+        _record("alpaca_performance", alpaca_perf is not None)
+        if alpaca_perf is not None:
+            performance = alpaca_perf
+
         period = equity_period if equity_period in ("1D", "1W", "1M", "3M") else "1D"
-        series = get_equity_curve(rest_client, period=period)
+        alpaca_curve = _safe_section(
+            "alpaca_equity_curve",
+            None,
+            lambda: _cached(
+                f"alpaca_equity_curve:{period}",
+                _CACHE_TTL_EQUITY_CURVE_SEC,
+                lambda: get_equity_curve(rest_client, period=period),
+            ),
+        )
+        _record("alpaca_equity_curve", alpaca_curve is not None)
+        if alpaca_curve is not None:
+            series = alpaca_curve
     elif latest:
         try:
             current_equity = float(latest["equity_total"])
@@ -425,6 +545,9 @@ def build_dashboard_payload(
         except (TypeError, ValueError, KeyError):
             pnl_pct = None
             pnl_dollars = None
+
+    degraded = any(v == "degraded" for v in section_status.values())
+    market_open = _safe_section("market_hours", False, nyse_regular_session_open)
 
     return {
         "mode": latest.get("mode") if latest else None,
@@ -438,5 +561,7 @@ def build_dashboard_payload(
         "rl_learning_history": rl_history,
         "performance": performance,
         "calibration": calibration,
-        "market_open": nyse_regular_session_open(),
+        "market_open": market_open,
+        "section_status": section_status,
+        "degraded": degraded,
     }

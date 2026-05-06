@@ -70,6 +70,12 @@ UNIVERSE_TOTAL_CAP = 90
 ALPACA_MOST_ACTIVES_URL = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
 ALPACA_CRYPTO_UNIVERSE: list[str] = []
 
+COINGECKO_TRENDING_URL = "https://api.coingecko.com/api/v3/search/trending"
+COINGECKO_MARKETS_URL = (
+    "https://api.coingecko.com/api/v3/coins/markets"
+    "?vs_currency=usd&order=volume_desc&per_page=100&page=1&price_change_percentage=24h"
+)
+
 
 def _sanitize_alpaca_stock_symbol(sym: str) -> str:
     """

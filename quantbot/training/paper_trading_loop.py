@@ -48,16 +48,19 @@ def discrete_signal_bundle(
     *,
     rsi_oversold: float = 35.0,
     rsi_overbought: float = 70.0,
+    symbol: str | None = None,
 ) -> dict[str, float]:
     """Tri-state inputs for `signal_combiner` (live stack)."""
     c = close.astype(float)
     m_line, s_line, _ = momentum.compute_macd(c)
     v = vol if vol is not None else c
     return {
-        "rsi": momentum.rsi_signal(c, oversold=rsi_oversold, overbought=rsi_overbought),
-        "macd": momentum.macd_signal(c),
-        "bollinger": mean_reversion.bollinger_signal(c),
-        "z_score": mean_reversion.z_score_signal(c),
+        "rsi": momentum.rsi_signal(
+            c, oversold=rsi_oversold, overbought=rsi_overbought, symbol=symbol
+        ),
+        "macd": momentum.macd_signal(c, symbol=symbol),
+        "bollinger": mean_reversion.bollinger_signal(c, symbol=symbol),
+        "z_score": mean_reversion.z_score_signal(c, symbol=symbol),
         "sentiment": 0.0,
         "volume": _volume_discrete(v),
     }

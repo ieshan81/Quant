@@ -542,6 +542,7 @@ def analyze_symbol(
         vol,
         rsi_oversold=float(rt["rsi_oversold"]),
         rsi_overbought=float(rt["rsi_overbought"]),
+        symbol=sym,
     )
     sigs["sentiment"] = _sentiment_discrete(sym, asset_class)
     try:
@@ -699,8 +700,14 @@ def _buy_notional_breakdown(
     kelly_frac = float(rt["kelly_fraction"])
     cap10 = max(0.0, sleeve * eff_pct)
     k_notional = max(0.0, sleeve * kelly_frac)
-    # Single Alpaca account sizing: notional follows total_equity * max_position_pct.
-    n = max(0.0, min(cap10, sleeve * 0.99))
+    sleeve_safety = max(0.0, sleeve * 0.99)
+    # Final sizing respects the position cap, Kelly fraction, and a 99% sleeve guard.
+    # Kelly is honored only when it produces a strictly positive notional; otherwise
+    # we fall back to the cap so we don't accidentally zero out every order.
+    candidates = [cap10, sleeve_safety]
+    if k_notional > 0.0:
+        candidates.append(k_notional)
+    n = max(0.0, min(*candidates))
     detail = {
         "sleeve": sleeve,
         "rt_max_position_pct": rt_max_pct,
@@ -827,9 +834,9 @@ def _held_hours_and_suffix(entry_dt: dt_et | None) -> tuple[float | None, str]:
 
 
 def _max_hold_hours_for_symbol(sym: str) -> float:
-    """Crypto recycles faster than stocks."""
+    """Crypto recycles faster than stocks (production rule: crypto 4h, stocks 8h)."""
     s = str(sym or "").upper()
-    return 2.0 if ("/" in s or "USD" in s) else 8.0
+    return 4.0 if ("/" in s or "USD" in s) else 8.0
 
 
 def _ensure_exit_trade_logged(
@@ -1448,13 +1455,15 @@ def execute_cycle_results(
                     logger.warning("BUY failed {} {}", cs.symbol, r.message)
                     out["holds"] += 1
             elif eff_action == "SELL":
+                # Resolve qty from Alpaca's live position (paper ledger qty drifts
+                # from broker due to fractional rounding, partial fills, sync gaps).
+                live_qty = _get_real_position_qty(cs.symbol, trader)
                 pos = trader.position(cs.asset_class, cs.symbol)
-                if pos is not None and pos.quantity > 1e-8:
-                    entry = float(pos.avg_price)
-                    qty = float(pos.quantity)
+                if live_qty > 1e-8:
+                    entry = float(pos.avg_price) if pos is not None else float(mid)
                     trader.set_telegram_on_fills(False)
                     try:
-                        r = stock_broker.submit_market_order("sell", cs.symbol, qty)
+                        r = stock_broker.submit_market_order("sell", cs.symbol, live_qty)
                     finally:
                         trader.set_telegram_on_fills(True)
                     if r.ok:
@@ -1465,7 +1474,7 @@ def execute_cycle_results(
                             asset_class=cs.asset_class,
                             symbol=cs.symbol,
                             side="sell",
-                            quantity=qty,
+                            quantity=live_qty,
                             price=mid,
                             status="filled",
                             broker_order_id=r.broker_order_id,
@@ -1782,14 +1791,21 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
 
 
 def run_worker_forever() -> None:
+    """
+    Outer restart loop. Liquidation only happens on explicit shutdown signals
+    (SIGTERM/SIGINT → ``_stop`` set) or when the kill switch trips. Crash/restart
+    paths intentionally leave positions intact; flattening on transient errors
+    can flush real capital after a momentary network hiccup.
+    """
     while True:
         if _stop.is_set():
             break
-        # Ensure a prior halted state does not block fresh startup after restart.
         if _halted.is_set():
             _halted.clear()
         trader: PaperTrader | None = None
         scan_thread: threading.Thread | None = None
+        market_ctx: Any = None
+        crashed = False
         try:
             trader, universe, market_ctx, scan_thread = _worker_startup()
             while not _stop.is_set():
@@ -1803,18 +1819,21 @@ def run_worker_forever() -> None:
                 if not _stop.is_set():
                     time.sleep(_trade_interval_sec())
         except Exception as e:
+            crashed = True
             logger.error("[worker] CRASHED: {}", e, exc_info=True)
-            logger.error("[worker] Restarting in 10 seconds...")
+            logger.error("[worker] Restarting in 10 seconds (positions preserved)...")
             if alerts.telegram_alerts_configured():
                 alerts.send_telegram(f"⚠️ Worker crashed, restarting in 10s: {str(e)[:200]}")
             if not _stop.is_set():
                 time.sleep(10)
         finally:
-            if trader is not None:
+            # Liquidate ONLY on explicit shutdown (_stop set via SIGTERM/SIGINT).
+            # Crash/restart cycles must NOT auto-flatten positions.
+            if trader is not None and _stop.is_set() and not crashed:
                 try:
                     _shutdown_graceful(trader, market_ctx)
                 except Exception:
-                    logger.exception("Shutdown after worker failure crashed")
+                    logger.exception("Graceful shutdown failed")
             if scan_thread is not None:
                 try:
                     scan_thread.join(timeout=5.0)

@@ -42,6 +42,8 @@ def rsi_signal(
     period: int = 14,
     oversold: float = 35.0,
     overbought: float = 70.0,
+    *,
+    symbol: str | None = None,
 ) -> float:
     """
     Buy if RSI < oversold (+1), sell if RSI > overbought (-1), else 0.
@@ -49,7 +51,8 @@ def rsi_signal(
     """
     c = close.astype(float)
     if len(c) < 20:
-        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        sym_label = symbol if symbol else "unknown"
+        logger.warning("[signal:rsi] {} insufficient bars: {} (need 20)", sym_label, len(c))
         return 0.0
     rsi = compute_rsi(c, period=period)
     last = rsi.dropna()
@@ -108,6 +111,8 @@ def macd_signal(
     fast: int = 12,
     slow: int = 26,
     signal: int = 9,
+    *,
+    symbol: str | None = None,
 ) -> float:
     """
     Buy on bullish cross (+1): MACD crosses above signal.
@@ -116,7 +121,8 @@ def macd_signal(
     """
     c = close.astype(float)
     if len(c) < 20:
-        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        sym_label = symbol if symbol else "unknown"
+        logger.warning("[signal:macd] {} insufficient bars: {} (need 20)", sym_label, len(c))
         return 0.0
     macd_line, signal_line, _ = compute_macd(c, fast=fast, slow=slow, signal=signal)
     return macd_cross_signal(macd_line, signal_line)

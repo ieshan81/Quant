@@ -193,11 +193,25 @@ def _seed_bot_config_if_empty(conn: sqlite3.Connection) -> None:
         )
 
 
+_SQLITE_CONNECT_TIMEOUT_SEC = 30.0
+_SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+def _open_sqlite(path: Path) -> sqlite3.Connection:
+    """Open SQLite with WAL-friendly timeout and a global busy_timeout pragma."""
+    conn = sqlite3.connect(str(path), timeout=_SQLITE_CONNECT_TIMEOUT_SEC)
+    try:
+        conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+    except sqlite3.Error:
+        logger.debug("[sqlite] busy_timeout pragma failed", exc_info=True)
+    return conn
+
+
 def init_schema(db_path: Path | str | None = None) -> None:
     """Create database file and all tables if they do not exist."""
     path = _resolved_db_path(db_path)
     ensure_db_path(path)
-    conn = sqlite3.connect(str(path))
+    conn = _open_sqlite(path)
     try:
         conn.executescript(SCHEMA_SQL)
         _seed_bot_config_if_empty(conn)
@@ -265,7 +279,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 def get_connection(db_path: Path | str | None = None) -> Generator[sqlite3.Connection, None, None]:
     path = _resolved_db_path(db_path)
     ensure_db_path(path)
-    conn = sqlite3.connect(str(path))
+    conn = _open_sqlite(path)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -351,7 +365,7 @@ def reset_trading_history(db_path: Path | str | None = None) -> dict[str, Any]:
     path = _resolved_db_path(db_path)
     ensure_db_path(path)
     defaults = {k: float(v) for k, v in config.BOT_CONFIG_DEFAULTS.items()}
-    conn = sqlite3.connect(str(path))
+    conn = _open_sqlite(path)
     try:
         cur = conn.cursor()
         cur.execute("DELETE FROM trades")
@@ -449,6 +463,9 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
     n_ord_skip = 0
 
     with get_connection(path) as conn:
+        # Only wipe synthetic Alpaca-mirrored stock rows. Crypto trades, real signal
+        # trades, and historical signals are preserved so calibration continuity is
+        # not destroyed on every worker startup.
         conn.execute(
             """
             DELETE FROM trades
@@ -456,7 +473,6 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
               AND reason_code IN ('alpaca_sync', 'alpaca_sync_open', 'alpaca_real')
             """
         )
-        conn.execute("DELETE FROM signals")
         conn.execute("DELETE FROM portfolio_state")
         conn.execute("DELETE FROM price_history")
 

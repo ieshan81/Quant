@@ -24,6 +24,8 @@ def bollinger_signal(
     close: pd.Series,
     period: int = 20,
     num_std: float = 2.0,
+    *,
+    symbol: str | None = None,
 ) -> float:
     """
     Buy at lower band (+1): last close <= lower band.
@@ -32,7 +34,8 @@ def bollinger_signal(
     """
     c = close.astype(float)
     if len(c) < 20:
-        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        sym_label = symbol if symbol else "unknown"
+        logger.warning("[signal:bb] {} insufficient bars: {} (need 20)", sym_label, len(c))
         return 0.0
     mid, upper, lower = compute_bollinger(c, period=period, num_std=num_std)
     last_idx = c.last_valid_index()
@@ -50,14 +53,22 @@ def bollinger_signal(
     return 0.0
 
 
-def z_score_signal(close: pd.Series, period: int = 20, buy_z: float = -2.0, sell_z: float = 2.0) -> float:
+def z_score_signal(
+    close: pd.Series,
+    period: int = 20,
+    buy_z: float = -2.0,
+    sell_z: float = 2.0,
+    *,
+    symbol: str | None = None,
+) -> float:
     """
     Z-score vs rolling mean / std of close.
     Buy if Z < buy_z (+1), sell if Z > sell_z (-1), else 0 (technical brief §5.1).
     """
     c = close.astype(float)
     if len(c) < 20:
-        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        sym_label = symbol if symbol else "unknown"
+        logger.warning("[signal:zscore] {} insufficient bars: {} (need 20)", sym_label, len(c))
         return 0.0
     mean = c.rolling(window=period, min_periods=period).mean()
     std = c.rolling(window=period, min_periods=period).std(ddof=0)
