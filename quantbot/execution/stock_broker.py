@@ -185,11 +185,25 @@ def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
         )
     try:
         tif = "gtc" if "/" in sym else "day"
-        logger.info("[alpaca_order] Placing {} {} {} @ market tif={}", s, q, order_sym, tif)
-        order = client.submit_order(symbol=order_sym, qty=q, side=s, type="market", time_in_force=tif)
+        qty_payload: float | str = q
+        # Alpaca short sell submit is sensitive: stock symbol + string qty + day TIF.
+        if s == "sell" and "/" not in sym:
+            qty_payload = str(round(q, 6))
+            tif = "day"
+        logger.info("[alpaca_order] Placing {} {} {} @ market tif={}", s, qty_payload, order_sym, tif)
+        order = client.submit_order(
+            symbol=order_sym,
+            qty=qty_payload,
+            side=s,
+            type="market",
+            time_in_force=tif,
+        )
         oid = str(getattr(order, "id", None) or (order.get("id") if isinstance(order, dict) else "") or "")
         logger.info("[alpaca_order] Filled: order_id={}", oid or "(unknown)")
         return SimpleNamespace(ok=True, broker_order_id=(oid or None), message="filled", raw=order)
     except Exception as e:
+        if s == "sell" and "/" not in sym:
+            full_err = e.response.text if hasattr(e, "response") and getattr(e, "response", None) is not None else e
+            logger.error("[alpaca_short] Full error: {}", full_err)
         logger.error("[alpaca_order] FAILED: {}", e, exc_info=True)
         return SimpleNamespace(ok=False, broker_order_id=None, message=str(e), raw=None)
