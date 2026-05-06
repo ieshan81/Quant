@@ -1570,7 +1570,18 @@ def run_trading_cycle_once(
             _calibrator.resolve_calibrations(conn)
     except Exception:
         logger.debug("Sprint11 resolve_calibrations skipped", exc_info=True)
-    _persist_portfolio_snapshot(trader, meta={"source": "run_trading_cycle_once"})
+    cycle_alpaca_account = None
+    try:
+        cli = stock_broker.get_rest_client()
+        if cli is not None:
+            cycle_alpaca_account = cli.get_account()
+    except Exception:
+        logger.debug("cycle alpaca account read failed", exc_info=True)
+    _persist_portfolio_snapshot(
+        trader,
+        meta={"source": "run_trading_cycle_once"},
+        alpaca_account=cycle_alpaca_account,
+    )
     return summary
 
 
@@ -1618,23 +1629,26 @@ def _persist_portfolio_snapshot(
             eq_alp = float(getattr(alpaca_account, "equity", 0) or 0)
             cash_alp = float(getattr(alpaca_account, "cash", 0) or 0)
             eq_s = eq_alp
-            eq_t = eq_s + eq_c
+            eq_c = 0.0
+            eq_t = eq_s
             s_deployed = max(0.0, eq_alp - cash_alp)
-            dep_pct = ((s_deployed + g_c) / eq_t * 100.0) if eq_t > 0.0 else 0.0
+            dep_pct = (s_deployed / eq_t * 100.0) if eq_t > 0.0 else 0.0
             cash_s = cash_alp
+            cash_c = 0.0
         else:
             eq_s = trader.equity_stocks()
             dep = _g_s + g_c
             eq_t = trader.equity_total()
             dep_pct = (dep / eq_t * 100.0) if eq_t > 0.0 else 0.0
             cash_s = trader.cash_stocks
+            cash_c = trader.cash_crypto
         ks = drawdown_guard.check_kill_switch(eq_t)
         with get_connection(path) as conn:
             trade_logger.log_portfolio_snapshot(
                 conn,
                 mode=config.MODE,
                 cash_stocks=cash_s,
-                cash_crypto=trader.cash_crypto,
+                cash_crypto=cash_c,
                 equity_stocks=eq_s,
                 equity_crypto=eq_c,
                 equity_total=eq_t,
