@@ -185,3 +185,68 @@ def test_api_social_reads_sqlite(dash_app) -> None:
     assert len(rows) == 1
     assert rows[0]["ticker"] == "GME"
     assert rows[0]["mentions"] == 99
+
+
+def test_api_dashboard_excludes_sync_trades_from_performance(dash_app) -> None:
+    from data.data_store import get_connection
+    from monitoring import trade_logger
+
+    with get_connection(config.DB_PATH) as conn:
+        # Real trade pair (counted)
+        trade_logger.log_trade(
+            conn,
+            mode="paper",
+            asset_class="stock",
+            symbol="AAPL",
+            side="buy",
+            quantity=1.0,
+            price=100.0,
+            notional=100.0,
+            status="filled",
+            reason_code=None,
+        )
+        trade_logger.log_trade(
+            conn,
+            mode="paper",
+            asset_class="stock",
+            symbol="AAPL",
+            side="sell",
+            quantity=1.0,
+            price=110.0,
+            notional=110.0,
+            status="filled",
+            reason_code=None,
+        )
+        # Sync/synthetic rows (excluded)
+        trade_logger.log_trade(
+            conn,
+            mode="paper",
+            asset_class="stock",
+            symbol="MSFT",
+            side="buy",
+            quantity=1.0,
+            price=200.0,
+            notional=200.0,
+            status="filled",
+            reason_code="alpaca_sync_open",
+        )
+        trade_logger.log_trade(
+            conn,
+            mode="paper",
+            asset_class="stock",
+            symbol="MSFT",
+            side="sell",
+            quantity=1.0,
+            price=210.0,
+            notional=210.0,
+            status="filled",
+            reason_code="alpaca_real",
+        )
+
+    client = dash_app.test_client()
+    r = client.get("/api/dashboard")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    perf = data["performance"]
+    assert perf["total_trades"] == 3
+    assert perf["closed_round_trips"] == 1

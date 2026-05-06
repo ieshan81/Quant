@@ -11,6 +11,9 @@ import config
 from learning.calibrator import get_leg_accuracies
 from market_hours import nyse_regular_session_open
 
+_SYNC_REASON_CODES_FOR_MATCHING = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
+_SYNC_REASON_CODES_FOR_STATS = ("alpaca_sync", "alpaca_sync_open")
+
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {k: row[k] for k in row.keys()}
@@ -139,15 +142,17 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection) -> list[tuple[float, floa
 
     cur = conn.execute(
         """
-        SELECT mode, asset_class, symbol, side, price, status
+        SELECT mode, asset_class, symbol, side, price, status, reason_code
         FROM trades
         WHERE status = 'filled' AND price IS NOT NULL
+          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?))
         ORDER BY id ASC
-        """
+        """,
+        _SYNC_REASON_CODES_FOR_MATCHING,
     )
     stacks: dict[tuple[str, str], deque[float]] = {}
     closed: list[tuple[float, float]] = []
-    for mode, ac, sym, side, price, _st in cur.fetchall():
+    for mode, ac, sym, side, price, _st, _reason_code in cur.fetchall():
         key = (str(mode), str(ac), str(sym))
         px = float(price)
         if side == "buy":
@@ -160,7 +165,14 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection) -> list[tuple[float, floa
 
 
 def fetch_performance_summary(conn: sqlite3.Connection) -> dict[str, Any]:
-    cur = conn.execute("SELECT COUNT(*) FROM trades WHERE status = 'filled'")
+    cur = conn.execute(
+        """
+        SELECT COUNT(*) FROM trades
+        WHERE status = 'filled'
+          AND (reason_code IS NULL OR reason_code NOT IN (?, ?))
+        """,
+        _SYNC_REASON_CODES_FOR_STATS,
+    )
     total_trades = int(cur.fetchone()[0])
     pairs = _closed_round_trip_pairs(conn)
     pnls = [s - b for b, s in pairs]
