@@ -139,7 +139,7 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection) -> list[tuple[float, floa
 
     cur = conn.execute(
         """
-        SELECT asset_class, symbol, side, price, status
+        SELECT mode, asset_class, symbol, side, price, status
         FROM trades
         WHERE status = 'filled' AND price IS NOT NULL
         ORDER BY id ASC
@@ -147,8 +147,8 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection) -> list[tuple[float, floa
     )
     stacks: dict[tuple[str, str], deque[float]] = {}
     closed: list[tuple[float, float]] = []
-    for ac, sym, side, price, _st in cur.fetchall():
-        key = (str(ac), str(sym))
+    for mode, ac, sym, side, price, _st in cur.fetchall():
+        key = (str(mode), str(ac), str(sym))
         px = float(price)
         if side == "buy":
             stacks.setdefault(key, deque()).append(px)

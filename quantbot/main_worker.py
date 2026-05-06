@@ -853,6 +853,56 @@ def _max_hold_hours_for_symbol(sym: str) -> float:
     return 4.0 if "/" in sym else 8.0
 
 
+def _ensure_exit_trade_logged(
+    *,
+    db_path: str | Path,
+    mode: str,
+    asset_class: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    status: str,
+    broker_order_id: str | None,
+    reason_code: str | None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """
+    Ensure successful exit fills are present in SQLite even if broker path bypasses PaperTrader logging.
+    """
+    if quantity <= 0 or price <= 0:
+        return
+    try:
+        with get_connection(db_path) as conn:
+            if broker_order_id:
+                row = conn.execute(
+                    """
+                    SELECT 1 FROM trades
+                    WHERE broker_order_id = ? AND symbol = ? AND side = ? AND status = ?
+                    LIMIT 1
+                    """,
+                    (broker_order_id, symbol, side, status),
+                ).fetchone()
+                if row is not None:
+                    return
+            trade_logger.log_trade(
+                conn,
+                mode=mode,
+                asset_class=asset_class,
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=price,
+                notional=quantity * price,
+                status=status,
+                broker_order_id=broker_order_id,
+                reason_code=reason_code,
+                meta=meta,
+            )
+    except Exception:
+        logger.exception("[exits] failed to persist exit trade {} {} {}", side, asset_class, symbol)
+
+
 def _can_open_short_stock(
     trader: PaperTrader,
     symbol: str,
@@ -961,6 +1011,19 @@ def _check_and_execute_exits(
                     ledger.set_telegram_on_fills(True)
                 if r.ok:
                     exits_ok += 1
+                    _ensure_exit_trade_logged(
+                        db_path=db_path,
+                        mode=ledger.mode,
+                        asset_class=ac,
+                        symbol=sym,
+                        side="sell",
+                        quantity=qty,
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="STOP_LOSS",
+                        meta=None,
+                    )
                 pnl = (mid - entry) * qty
                 lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif pnl_pct >= take_profit_frac:
@@ -983,6 +1046,19 @@ def _check_and_execute_exits(
                     ledger.set_telegram_on_fills(True)
                 if r.ok:
                     exits_ok += 1
+                    _ensure_exit_trade_logged(
+                        db_path=db_path,
+                        mode=ledger.mode,
+                        asset_class=ac,
+                        symbol=sym,
+                        side="sell",
+                        quantity=qty,
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="TAKE_PROFIT",
+                        meta=None,
+                    )
                 pnl = (mid - entry) * qty
                 lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
@@ -1002,6 +1078,19 @@ def _check_and_execute_exits(
                     ledger.set_telegram_on_fills(True)
                 if r.ok:
                     exits_ok += 1
+                    _ensure_exit_trade_logged(
+                        db_path=db_path,
+                        mode=ledger.mode,
+                        asset_class=ac,
+                        symbol=sym,
+                        side="sell",
+                        quantity=qty,
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="MAX_HOLD_TIME",
+                        meta=None,
+                    )
                 pnl = (mid - entry) * qty
                 lines.append(f"MAX_HOLD {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
         elif qty < -1e-12:
@@ -1030,6 +1119,19 @@ def _check_and_execute_exits(
                     ledger.set_telegram_on_fills(True)
                 if r.ok:
                     exits_ok += 1
+                    _ensure_exit_trade_logged(
+                        db_path=db_path,
+                        mode=ledger.mode,
+                        asset_class=ac,
+                        symbol=sym,
+                        side="buy",
+                        quantity=abs(qty),
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="STOP_LOSS",
+                        meta={"short": True},
+                    )
                 pnl = (entry - mid) * abs(qty)
                 lines.append(f"STOP_LOSS_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif pnl_pct >= take_profit_frac:
@@ -1056,6 +1158,19 @@ def _check_and_execute_exits(
                     ledger.set_telegram_on_fills(True)
                 if r.ok:
                     exits_ok += 1
+                    _ensure_exit_trade_logged(
+                        db_path=db_path,
+                        mode=ledger.mode,
+                        asset_class=ac,
+                        symbol=sym,
+                        side="buy",
+                        quantity=abs(qty),
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="TAKE_PROFIT",
+                        meta={"short": True},
+                    )
                 pnl = (entry - mid) * abs(qty)
                 lines.append(f"TAKE_PROFIT_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
@@ -1079,6 +1194,19 @@ def _check_and_execute_exits(
                     ledger.set_telegram_on_fills(True)
                 if r.ok:
                     exits_ok += 1
+                    _ensure_exit_trade_logged(
+                        db_path=db_path,
+                        mode=ledger.mode,
+                        asset_class=ac,
+                        symbol=sym,
+                        side="buy",
+                        quantity=abs(qty),
+                        price=mid,
+                        status="filled",
+                        broker_order_id=r.broker_order_id,
+                        reason_code="MAX_HOLD_TIME",
+                        meta={"short": True},
+                    )
                 pnl = (entry - mid) * abs(qty)
                 lines.append(f"MAX_HOLD_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
     n_all = len(all_positions)
