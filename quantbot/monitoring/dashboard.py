@@ -30,23 +30,23 @@ _PAGE = """
   <title>QuantBot — Terminal</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
   <style>
     :root {
-      --bg-primary: #0a0e1a;
-      --bg-secondary: #0f1629;
-      --bg-card: rgba(255, 255, 255, 0.03);
-      --border: rgba(255, 255, 255, 0.08);
-      --border-bright: rgba(0, 212, 255, 0.3);
-      --accent-blue: #00d4ff;
+      --bg-primary: #050508;
+      --bg-secondary: #050508;
+      --bg-card: #0d1117;
+      --border: #1e293b;
+      --border-bright: #1e293b;
+      --accent-blue: #0ea5e9;
       --accent-green: #00ff88;
-      --accent-red: #ff4466;
-      --accent-gold: #ffd700;
-      --text-primary: #e8eaf6;
-      --text-secondary: #7986cb;
-      --text-muted: #3d4a6b;
+      --accent-red: #ff3b5c;
+      --accent-gold: #f7931a;
+      --text-primary: #e2e8f0;
+      --text-secondary: #64748b;
+      --text-muted: #64748b;
     }
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -59,7 +59,7 @@ _PAGE = """
       background-image: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0, 212, 255, 0.08), transparent 55%),
         radial-gradient(ellipse 80% 50% at 100% 100%, rgba(0, 255, 136, 0.04), transparent 45%);
     }
-    .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-track { background: var(--bg-secondary); }
     ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 4px; }
@@ -82,7 +82,7 @@ _PAGE = """
     }
     @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
     .header-center { text-align: center; flex: 1; }
-    .clock-et { font-family: "JetBrains Mono", monospace; font-size: 1.1rem; color: var(--accent-blue); }
+    .clock-et { font-family: "IBM Plex Mono", monospace; font-size: 1.1rem; color: var(--accent-blue); }
     .badge-paper {
       padding: 0.35rem 0.75rem; border-radius: 8px;
       border: 1px solid var(--accent-gold); color: var(--accent-gold);
@@ -111,7 +111,7 @@ _PAGE = """
       margin: 0 0 0.5rem; font-size: 0.72rem; font-weight: 600;
       color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em;
     }
-    .big { font-size: 1.65rem; font-weight: 700; font-family: "JetBrains Mono", monospace; }
+    .big { font-size: 1.65rem; font-weight: 700; font-family: "IBM Plex Mono", monospace; }
     .pos { color: var(--accent-green); }
     .neg { color: var(--accent-red); }
     .muted { color: var(--text-muted); font-size: 0.78rem; }
@@ -119,9 +119,9 @@ _PAGE = """
     .sync-reconnect { color: #ffb020 !important; font-weight: 600; }
     .spark-wrap { height: 48px; margin-top: 0.35rem; }
 
-    .market-open { color: var(--accent-green); font-weight: 700; font-family: "JetBrains Mono", monospace; }
-    .market-closed { color: var(--accent-red); font-weight: 700; font-family: "JetBrains Mono", monospace; }
-    .countdown { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; font-family: "JetBrains Mono", monospace; }
+    .market-open { color: var(--accent-green); font-weight: 700; font-family: "IBM Plex Mono", monospace; }
+    .market-closed { color: var(--accent-red); font-weight: 700; font-family: "IBM Plex Mono", monospace; }
+    .countdown { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; font-family: "IBM Plex Mono", monospace; }
 
     .mid-grid {
       display: grid; grid-template-columns: 1.5fr 1fr; gap: 1rem; margin-top: 1rem; align-items: start;
@@ -160,7 +160,7 @@ _PAGE = """
     .sig-neutral .score-bar-fill { background: var(--text-muted); }
     .action-pill {
       display: inline-block; padding: 0.15rem 0.45rem; border-radius: 6px; font-size: 0.65rem; font-weight: 700;
-      font-family: "JetBrains Mono", monospace;
+      font-family: "IBM Plex Mono", monospace;
     }
     .pill-buy { background: rgba(0, 255, 136, 0.15); color: var(--accent-green); }
     .pill-sell { background: rgba(255, 68, 102, 0.15); color: var(--accent-red); }
@@ -216,7 +216,7 @@ _PAGE = """
     .side-sell { color: var(--accent-red); font-weight: 700; }
     .has-symbol { cursor: help; border-bottom: 1px dashed rgba(0, 212, 255, 0.35); }
 
-    .sym-legend { display: flex; align-items: center; justify-content: center; gap: 1.25rem; flex-wrap: wrap; margin-top: 0.35rem; font-size: 0.72rem; font-family: "JetBrains Mono", monospace; }
+    .sym-legend { display: flex; align-items: center; justify-content: center; gap: 1.25rem; flex-wrap: wrap; margin-top: 0.35rem; font-size: 0.72rem; font-family: "IBM Plex Mono", monospace; }
     .legend-stock { color: #00d4ff; font-weight: 600; }
     .legend-crypto { color: #f7931a; font-weight: 600; }
 
@@ -228,6 +228,25 @@ _PAGE = """
     .sym-badge-s { color: #00d4ff; font-size: 0.65rem; }
     .sig-sym-crypto .sym-txt { color: #f7931a; font-weight: 700; }
     .sig-sym-stock .sym-txt { color: #00d4ff; font-weight: 700; }
+
+    /* Institutional grid override */
+    .wrap { max-width: 1700px; padding: 1rem 1.1rem 1.4rem; display: grid; gap: 1rem; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; box-shadow: none; }
+    .stats-row { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1rem; margin-top: 0; }
+    .stats-row > .card { grid-column: span 3; }
+    .chart-main { grid-column: 1 / span 8; margin-top: 0 !important; }
+    .social-panel { grid-column: 9 / -1; }
+    .signal-feed { grid-column: 1 / span 8; }
+    .subrow { grid-column: 9 / -1; margin-top: 0; display: grid; grid-template-columns: 1fr; gap: 1rem; }
+    .bottom-grid { grid-column: 1 / -1; margin-top: 0; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1rem; }
+    .bottom-grid > .card:nth-child(1) { grid-column: span 6; }
+    .bottom-grid > .card:nth-child(2) { grid-column: span 6; }
+    .bottom-grid > .card:nth-child(3) { grid-column: 1 / -1; }
+    .api-links, .last-upd { grid-column: 1 / -1; margin-top: 0; }
+    @media (max-width: 1100px) {
+      .stats-row > .card { grid-column: span 6; }
+      .chart-main, .social-panel, .signal-feed, .subrow, .bottom-grid > .card:nth-child(1), .bottom-grid > .card:nth-child(2), .bottom-grid > .card:nth-child(3) { grid-column: 1 / -1; }
+    }
   </style>
 </head>
 <body data-terminal="1">
@@ -252,21 +271,20 @@ _PAGE = """
       <div class="card"><h2>Market (NYSE)</h2><div id="mktLine" class="market-closed">…</div><div class="countdown" id="mktCd"></div></div>
     </div>
 
-    <div class="card" style="margin-top:1rem;"><h2>Equity curve</h2><div class="chart-wrap"><canvas id="eqChart"></canvas></div></div>
+    <div class="card chart-main"><h2>Equity curve</h2><div class="chart-wrap"><canvas id="eqChart"></canvas></div></div>
 
-    <div class="mid-grid">
-      <div class="card signal-feed">
-        <h2>Signal feed</h2>
-        <div style="overflow-x:auto;">
-        <table><thead><tr><th></th><th>Time</th><th>Symbol</th><th>Type</th><th>Signal</th><th>Score</th><th></th></tr></thead><tbody id="sigFeedBody"></tbody></table>
-        </div>
-        <p class="muted" id="sigFeedEmpty" style="display:none;margin-top:0.5rem;">No signals logged.</p>
+    <div class="card social-panel">
+      <h2><span>🔥</span> Social momentum</h2>
+      <p class="muted" style="margin-top:0;">Top 10 · <a href="/api/social">/api/social</a></p>
+      <div id="socialMoRoot" style="margin-top:0.5rem;"><p class="muted">Loading…</p></div>
+    </div>
+
+    <div class="card signal-feed">
+      <h2>Signal feed</h2>
+      <div style="overflow-x:auto;">
+      <table><thead><tr><th></th><th>Time</th><th>Symbol</th><th>Type</th><th>Signal</th><th>Score</th><th></th></tr></thead><tbody id="sigFeedBody"></tbody></table>
       </div>
-      <div class="card social-panel">
-        <h2><span>🔥</span> Social momentum</h2>
-        <p class="muted" style="margin-top:0;">Top 10 · <a href="/api/social">/api/social</a></p>
-        <div id="socialMoRoot" style="margin-top:0.5rem;"><p class="muted">Loading…</p></div>
-      </div>
+      <p class="muted" id="sigFeedEmpty" style="display:none;margin-top:0.5rem;">No signals logged.</p>
     </div>
 
     <div class="subrow">
