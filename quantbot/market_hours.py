@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytz
 from datetime import datetime, time as dtime
+from loguru import logger
 
 
 def nyse_regular_session_open() -> bool:
@@ -16,5 +17,6 @@ def nyse_regular_session_open() -> bool:
         market_close = dtime(16, 0)
         current_time = now_et.time()
         return market_open <= current_time < market_close
-    except Exception:
-        return True  # fail open — never block trading on timezone error
+    except Exception as e:
+        logger.error("[market_hours] Timezone error: {}", e)
+        return False  # fail closed — never trade on timezone errors

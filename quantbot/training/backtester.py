@@ -8,6 +8,7 @@ discrete ±1 per the brief; see `signals/signal_combiner.py`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Any
 
 import numpy as np
@@ -156,7 +157,7 @@ def _weighted_smooth(signals: dict[str, float]) -> float:
 
 def _evaluate_backtest(signals: dict[str, float]) -> tuple[float, str]:
     score = _weighted_smooth(signals)
-    bt = float(config.BACKTEST_BUY_THRESHOLD)
+    bt = float(os.getenv("BACKTEST_BUY_THRESHOLD", "0.035"))
     st = float(config.BACKTEST_SELL_THRESHOLD)
     if score > bt:
         return score, "BUY"
@@ -175,12 +176,12 @@ def run_backtest_ohlcv(
 ) -> BacktestResult:
     """
     Long-only, all-in: BUY uses full cash at close; SELL liquidates full position.
-    Uses continuous per-bar signals + BACKTEST_BUY_THRESHOLD / BACKTEST_SELL_THRESHOLD.
+    Uses continuous per-bar signals + BACKTEST buy/sell thresholds.
     """
     print(
         "[backtest] runtime thresholds -> "
-        f"live BUY/SELL: {config.BUY_THRESHOLD}/{config.SELL_THRESHOLD} | "
-        f"backtest BUY/SELL: {config.BACKTEST_BUY_THRESHOLD}/{config.BACKTEST_SELL_THRESHOLD} | "
+        f"live BUY/SELL: {config.BOT_CONFIG_DEFAULTS['buy_threshold']}/{config.BOT_CONFIG_DEFAULTS['sell_threshold']} | "
+        f"backtest BUY/SELL: {os.getenv('BACKTEST_BUY_THRESHOLD', '0.035')}/{config.BACKTEST_SELL_THRESHOLD} | "
         f"exit-long-if-score<: {config.BACKTEST_EXIT_LONG_SCORE}"
     )
 

@@ -11,6 +11,7 @@ import config
 from execution import order_manager
 from risk import drawdown_guard
 from signals import mean_reversion, momentum, signal_combiner
+from data.data_store import init_schema, load_runtime_config_dict
 from training.backtester import load_yfinance_history
 from training.paper_trader import AssetClass, PaperTrader, create_paper_trader
 
@@ -83,7 +84,13 @@ def _run_symbol_once(trader: PaperTrader, asset_class: AssetClass, symbol: str) 
     close = df["Close"]
     vol = df["Volume"] if "Volume" in df.columns else None
     sigs = discrete_signal_bundle(close, vol)
-    score, action = signal_combiner.evaluate(sigs, asset_class=asset_class)
+    cfg = load_runtime_config_dict(config.DB_PATH)
+    thresholds = {
+        "buy_threshold": float(cfg.get("buy_threshold", 0.10)),
+        "sell_threshold": float(cfg.get("sell_threshold", -0.10)),
+        "crypto_buy_threshold": float(cfg.get("crypto_buy_threshold", 0.05)),
+    }
+    score, action = signal_combiner.evaluate(sigs, asset_class=asset_class, thresholds=thresholds)
     mid = float(close.iloc[-1])
     if mid <= 0.0:
         return
@@ -130,6 +137,7 @@ def run_paper_trading_loop(*, max_iterations: int | None = None) -> None:
     Stops after `max_iterations` when set (tests only). Honors kill switch (no new buys while tripped).
     """
     interval = max(30, int(config.PAPER_LOOP_INTERVAL_SECONDS))
+    init_schema(config.DB_PATH)
     trader = create_paper_trader()
     logger.info(
         "Paper trading loop | interval={}s | stocks={} | crypto={}",
@@ -139,7 +147,7 @@ def run_paper_trading_loop(*, max_iterations: int | None = None) -> None:
     )
     it = 0
     while True:
-        if drawdown_guard.check_kill_switch(trader.equity_total()):
+        if drawdown_guard.check_kill_switch(trader.equity_total(), str(config.DB_PATH)):
             logger.error(
                 "Kill switch tripped (equity {:.2f} < {:.2f}) — sleeping",
                 trader.equity_total(),

@@ -19,6 +19,7 @@ from loguru import logger
 import config
 
 _REFRESH_SEC = 30
+DASHBOARD_SECRET = os.environ.get("DASHBOARD_SECRET", "")
 
 _PAGE = """
 <!DOCTYPE html>
@@ -329,6 +330,13 @@ _PAGE = """
       </div>
       <div class="card"><h2>⚙️ Bot parameters</h2>
         <p class="muted" style="margin-top:0;">SQLite — worker reads each cycle.</p>
+        <p class="muted" style="margin-top:0.4rem;">
+          Dynamic risk:
+          <label class="mono">
+            <input type="checkbox" id="cfg-dynamic-risk" {% if dynamic_risk_enabled %}checked{% endif %}/>
+            enabled
+          </label>
+        </p>
         <table class="data-table"><thead><tr><th>Parameter</th><th>Slider</th><th>Value</th><th></th></tr></thead><tbody>
           {% for row in bot_ui %}
           <tr data-key="{{ row.key }}">
@@ -360,6 +368,7 @@ _PAGE = """
   <script id="dash-payload" type="application/json">{{ dash_snapshot|tojson }}</script>
   <script>
     const REFRESH_MS = {{ refresh_sec }} * 1000;
+    const DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
     const TZ = "America/New_York";
     let spark;
     let lastPollMs = 0;
@@ -408,12 +417,15 @@ _PAGE = """
     }
     function applyLiveTiles(data) {
       const pnl = data.pnl_vs_start_pct;
+      const pnlDol = data.pnl_vs_start_dollars;
       if (pnl == null || pnl === "" || Number.isNaN(Number(pnl))) {
         updateTile("tilePnl", "—");
         updateTileClass("tilePnl", "big");
       } else {
         const n = Number(pnl);
-        updateTile("tilePnl", (n >= 0 ? "+" : "") + n.toFixed(2) + "%");
+        const d = Number(pnlDol);
+        const dTxt = Number.isFinite(d) ? ((d >= 0 ? "+$" : "-$") + Math.abs(d).toFixed(2)) : "—";
+        updateTile("tilePnl", dTxt + " / " + (n >= 0 ? "+" : "") + n.toFixed(2) + "%");
         updateTileClass("tilePnl", "big " + (n >= 0 ? "pos" : "neg"));
       }
       const pf = data.portfolio || {};
@@ -1028,7 +1040,7 @@ _PAGE = """
           const v = parseFloat(n.value);
           const res = await fetch("/api/config", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
             body: JSON.stringify({ key: k, value: v }),
           });
           if (res.ok) {
@@ -1041,8 +1053,25 @@ _PAGE = """
       if (rst) {
         rst.onclick = async () => {
           if (!confirm("Reset all bot parameters to defaults?")) return;
-          await fetch("/api/config/reset", { method: "POST" });
+          await fetch("/api/config/reset", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          });
           location.reload();
+        };
+      }
+      const dr = document.getElementById("cfg-dynamic-risk");
+      if (dr) {
+        dr.onchange = async () => {
+          const v = dr.checked ? 1 : 0;
+          const res = await fetch("/api/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+            body: JSON.stringify({ key: "dynamic_risk_enabled", value: v }),
+          });
+          if (!res.ok) {
+            dr.checked = !dr.checked;
+          }
         };
       }
     }
@@ -1095,7 +1124,7 @@ def _bot_ui_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in rows:
         key = str(r["key"])
-        if key.startswith("rl_"):
+        if key.startswith("rl_") or key == "dynamic_risk_enabled":
             continue
         lo, hi, st = _SLIDER_LIMITS.get(key, (0.0, 1.0, 0.01))
         d = dict(r)
@@ -1159,6 +1188,12 @@ def create_app() -> Flask:
         socketio = SocketIO(app, cors_allowed_origins="*", async_mode=preferred_async)
     app.config["SOCKETIO_ASYNC_MODE"] = preferred_async
 
+    def _check_auth() -> bool:
+        if not DASHBOARD_SECRET:
+            return True
+        supplied = request.headers.get("X-Dashboard-Secret", "") or request.args.get("secret", "")
+        return supplied == DASHBOARD_SECRET
+
     def _dashboard_ws_push() -> None:
         sio = app.extensions["socketio"]
         while True:
@@ -1196,6 +1231,8 @@ def create_app() -> Flask:
 
     @app.post("/api/config")
     def api_config_post() -> tuple[dict[str, Any], int]:
+        if not _check_auth():
+            return {"ok": False, "error": "unauthorized"}, 401
         body = request.get_json(force=True, silent=True) or {}
         key = str(body.get("key", "")).strip()
         if not key or key.startswith("rl_") or key not in data_store.BOT_CONFIG_DEFAULTS:
@@ -1209,12 +1246,16 @@ def create_app() -> Flask:
 
     @app.post("/api/config/reset")
     def api_config_reset() -> tuple[dict[str, Any], int]:
+        if not _check_auth():
+            return {"ok": False, "error": "unauthorized"}, 401
         data_store.reset_bot_config_to_defaults()
         return {"ok": True}, 200
 
     @app.post("/api/reset-db")
     def api_reset_db() -> Any:
         """Admin: wipe trade history and rescale bot_config keys from defaults."""
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
         try:
             result = data_store.reset_trading_history(str(config.DB_PATH))
             return jsonify({"status": "ok", "result": result})
@@ -1224,6 +1265,8 @@ def create_app() -> Flask:
 
     @app.post("/api/sync-alpaca")
     def api_sync_alpaca() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
         from execution import stock_broker
 
         cli = stock_broker.get_rest_client()
@@ -1335,10 +1378,16 @@ def create_app() -> Flask:
     def index() -> str:
         with get_connection() as conn:
             payload = build_dashboard_payload(conn)
-            bot_ui = _bot_ui_rows(data_store.fetch_all_bot_config_rows(conn))
+            cfg_rows = data_store.fetch_all_bot_config_rows(conn)
+            bot_ui = _bot_ui_rows(cfg_rows)
         latest = payload.get("portfolio") or {}
         pnl = payload.get("pnl_vs_start_pct")
-        pnl_str = f"{pnl:+.2f}%" if pnl is not None else "—"
+        pnl_d = payload.get("pnl_vs_start_dollars")
+        pnl_str = (
+            f"{pnl_d:+.2f}".replace("+", "+$").replace("-", "-$") + f" / {pnl:+.2f}%"
+            if pnl is not None and pnl_d is not None
+            else "—"
+        )
         pnl_class = ""
         if pnl is not None:
             pnl_class = "pos" if pnl >= 0 else "neg"
@@ -1374,6 +1423,10 @@ def create_app() -> Flask:
             perf=perf,
             rl_history=rl_history,
             calibration=calibration,
+            dynamic_risk_enabled=bool(
+                next((float(r.get("value", 1.0)) for r in cfg_rows if r.get("key") == "dynamic_risk_enabled"), 1.0)
+            ),
+            dashboard_secret=DASHBOARD_SECRET,
         )
 
     return app

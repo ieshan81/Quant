@@ -248,5 +248,5 @@ def test_api_dashboard_excludes_sync_trades_from_performance(dash_app) -> None:
     assert r.status_code == 200
     data = json.loads(r.data)
     perf = data["performance"]
-    assert perf["total_trades"] == 3
+    assert perf["total_trades"] == 2
     assert perf["closed_round_trips"] == 1

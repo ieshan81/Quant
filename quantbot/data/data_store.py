@@ -27,6 +27,7 @@ _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
     "stop_loss_pct": "Stop loss %",
     "take_profit_pct": "Take profit %",
     "max_position_pct": "Max portfolio % per position (~0.5% sleeve; $100-scale paper)",
+    "dynamic_risk_enabled": "1=enable dynamic TP/SL by equity, 0=use dashboard TP/SL values",
 }
 
 
@@ -448,7 +449,13 @@ def sync_from_alpaca(db_path: Path | str | None, rest_client: Any) -> dict[str, 
     n_ord_skip = 0
 
     with get_connection(path) as conn:
-        conn.execute("DELETE FROM trades")
+        conn.execute(
+            """
+            DELETE FROM trades
+            WHERE asset_class = 'stock'
+              AND reason_code IN ('alpaca_sync', 'alpaca_sync_open', 'alpaca_real')
+            """
+        )
         conn.execute("DELETE FROM signals")
         conn.execute("DELETE FROM portfolio_state")
         conn.execute("DELETE FROM price_history")

@@ -1508,9 +1508,17 @@ def run_trading_cycle_once(
 ) -> dict[str, Any]:
     rt = dict(load_runtime_config_dict())
     equity = _latest_portfolio_equity_for_cycle(trader)
-    p = dynamic_risk_params(equity)
-    rt["take_profit_pct"] = float(p["take_profit_pct"])
-    rt["stop_loss_pct"] = float(p["stop_loss_pct"])
+    if str(rt.get("dynamic_risk_enabled", 1.0)) in ("1", "1.0", "true", "True"):
+        p = dynamic_risk_params(equity)
+        rt["take_profit_pct"] = float(p["take_profit_pct"])
+        rt["stop_loss_pct"] = float(p["stop_loss_pct"])
+    else:
+        p = {
+            "take_profit_pct": float(rt.get("take_profit_pct", 0.015)),
+            "stop_loss_pct": float(rt.get("stop_loss_pct", 0.008)),
+        }
+        rt["take_profit_pct"] = p["take_profit_pct"]
+        rt["stop_loss_pct"] = p["stop_loss_pct"]
     risk_params = {"take_profit_pct": rt["take_profit_pct"], "stop_loss_pct": rt["stop_loss_pct"]}
     stock_trader = _StockExitBroker(trader, market_ctx)
     crypto_trader = _CryptoExitBroker(trader, market_ctx)
@@ -1544,6 +1552,12 @@ def run_trading_cycle_once(
                 results.append(fut.result())
             except Exception as exc:
                 logger.error("Analyze failed {}: {}", futs[fut], exc, exc_info=True)
+
+    prices_dict: dict[str, float] = {}
+    for r in results:
+        if r.mid is not None and float(r.mid) > 0:
+            prices_dict[str(r.symbol)] = float(r.mid)
+    trader.mark_to_market(prices_dict)
 
     summary = execute_cycle_results(trader, results, rt)
     summary["stop_events"] = lines
@@ -1735,7 +1749,18 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     )
 
     trader = create_paper_trader(telegram_on_fills=False)
-    alpaca_ok, alpaca_account = _alpaca_startup_ping()
+    alpaca_ok, alpaca_account = False, None
+    for attempt in range(3):
+        try:
+            alpaca_ok, alpaca_account = _alpaca_startup_ping()
+            if alpaca_ok:
+                break
+            raise RuntimeError("alpaca startup ping failed")
+        except Exception as e:
+            logger.warning("[startup] Broker init attempt {}/3 failed: {}", attempt + 1, e)
+            if attempt == 2:
+                raise
+            time.sleep(10)
     if alpaca_ok:
         cli = stock_broker.get_rest_client()
         if cli is not None:
@@ -1780,7 +1805,7 @@ def run_worker_forever() -> None:
             while not _stop.is_set():
                 if _halted.is_set():
                     raise RuntimeError("worker halted flag set; forcing restart")
-                if drawdown_guard.check_kill_switch(trader.equity_total()):
+                if drawdown_guard.check_kill_switch(trader.equity_total(), str(config.DB_PATH)):
                     _handle_kill_switch(trader, market_ctx)
                     _halted.set()
                     raise RuntimeError("kill switch triggered; worker restarting")

@@ -64,6 +64,7 @@ class PaperTrader:
             crypto_cash if crypto_cash is not None else config.PAPER_CRYPTO_STARTING_CASH
         )
         self._positions: dict[tuple[AssetClass, str], Position] = {}
+        self._current_prices: dict[str, float] = {}
         if persist_sqlite:
             self._db_path: Path | str | None = Path(db_path) if db_path is not None else config.DB_PATH
         else:
@@ -93,6 +94,21 @@ class PaperTrader:
 
     def position(self, asset_class: AssetClass, symbol: str) -> Position | None:
         return self._positions.get(_position_key(asset_class, symbol))
+
+    @property
+    def positions(self) -> dict[tuple[AssetClass, str], Position]:
+        return self._positions
+
+    def mark_to_market(self, prices: dict[str, float]) -> None:
+        out: dict[str, float] = {}
+        for sym, px in (prices or {}).items():
+            try:
+                pxf = float(px)
+            except (TypeError, ValueError):
+                continue
+            if pxf > 0:
+                out[str(sym).strip()] = pxf
+        self._current_prices = out
 
     def positions_market_value(self) -> tuple[float, float]:
         """Signed book contribution per sleeve (``qty * avg``; shorts are negative)."""
@@ -127,7 +143,12 @@ class PaperTrader:
         return self.cash_crypto + mv
 
     def equity_total(self) -> float:
-        return self.equity_stocks() + self.equity_crypto()
+        cash = self.cash_stocks + self.cash_crypto
+        market_value = 0.0
+        for pos in self._positions.values():
+            px = self._current_prices.get(pos.symbol, pos.avg_price)
+            market_value += pos.quantity * px
+        return cash + market_value
 
     def deployed_pct(self) -> float:
         eq = self.equity_total()

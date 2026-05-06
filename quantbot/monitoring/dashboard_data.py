@@ -12,14 +12,18 @@ from learning.calibrator import get_leg_accuracies
 from market_hours import nyse_regular_session_open
 
 _SYNC_REASON_CODES_FOR_MATCHING = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
-_SYNC_REASON_CODES_FOR_STATS = ("alpaca_sync", "alpaca_sync_open")
+_SYNC_REASON_CODES_FOR_STATS = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {k: row[k] for k in row.keys()}
 
 
-def fetch_latest_portfolio(conn: sqlite3.Connection) -> dict[str, Any] | None:
+def fetch_latest_portfolio(conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return fetch_latest_portfolio(local_conn)
     cur = conn.execute(
         "SELECT * FROM portfolio_state ORDER BY id DESC LIMIT 1"
     )
@@ -27,7 +31,13 @@ def fetch_latest_portfolio(conn: sqlite3.Connection) -> dict[str, Any] | None:
     return _row_to_dict(row) if row else None
 
 
-def fetch_portfolio_equity_series(conn: sqlite3.Connection, limit: int = 120) -> list[dict[str, Any]]:
+def fetch_portfolio_equity_series(
+    conn: sqlite3.Connection | None = None, limit: int = 120
+) -> list[dict[str, Any]]:
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return fetch_portfolio_equity_series(local_conn, limit)
     cur = conn.execute(
         """
         SELECT snapshot_at, equity_total, equity_stocks, equity_crypto, deployed_pct, kill_switch_active
@@ -42,7 +52,11 @@ def fetch_portfolio_equity_series(conn: sqlite3.Connection, limit: int = 120) ->
     return rows
 
 
-def fetch_recent_trades(conn: sqlite3.Connection, limit: int = 30) -> list[dict[str, Any]]:
+def fetch_recent_trades(conn: sqlite3.Connection | None = None, limit: int = 30) -> list[dict[str, Any]]:
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return fetch_recent_trades(local_conn, limit)
     cur = conn.execute(
         """
         SELECT id, created_at, mode, asset_class, symbol, side, quantity, price, notional,
@@ -68,7 +82,11 @@ def fetch_recent_trades(conn: sqlite3.Connection, limit: int = 30) -> list[dict[
     return out
 
 
-def fetch_recent_signals(conn: sqlite3.Connection, limit: int = 40) -> list[dict[str, Any]]:
+def fetch_recent_signals(conn: sqlite3.Connection | None = None, limit: int = 40) -> list[dict[str, Any]]:
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return fetch_recent_signals(local_conn, limit)
     cur = conn.execute(
         """
         SELECT id, created_at, mode, symbol, signal_name, raw_value, direction,
@@ -94,8 +112,12 @@ def fetch_recent_signals(conn: sqlite3.Connection, limit: int = 40) -> list[dict
     return out
 
 
-def fetch_open_positions_from_trades(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def fetch_open_positions_from_trades(conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
     """Net quantity from filled buy/sell rows (paper + live in same DB)."""
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return fetch_open_positions_from_trades(local_conn)
     cur = conn.execute(
         """
         SELECT asset_class, symbol,
@@ -110,7 +132,11 @@ def fetch_open_positions_from_trades(conn: sqlite3.Connection) -> list[dict[str,
     return [_row_to_dict(r) for r in cur.fetchall()]
 
 
-def fetch_rl_learning_recent(conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
+def fetch_rl_learning_recent(conn: sqlite3.Connection | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return fetch_rl_learning_recent(local_conn, limit)
     cur = conn.execute(
         """
         SELECT id, created_at, summary, trade_count, win_rate, changes_json
@@ -136,8 +162,12 @@ def fetch_rl_learning_recent(conn: sqlite3.Connection, limit: int = 10) -> list[
     return out
 
 
-def _closed_round_trip_pairs(conn: sqlite3.Connection) -> list[tuple[float, float]]:
+def _closed_round_trip_pairs(conn: sqlite3.Connection | None = None) -> list[tuple[float, float]]:
     """(buy_price, sell_price) per FIFO closed lot — same semantics as RL nudge."""
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return _closed_round_trip_pairs(local_conn)
     from collections import deque
 
     cur = conn.execute(
@@ -164,12 +194,16 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection) -> list[tuple[float, floa
     return closed
 
 
-def fetch_performance_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+def fetch_performance_summary(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return fetch_performance_summary(local_conn)
     cur = conn.execute(
         """
         SELECT COUNT(*) FROM trades
         WHERE status = 'filled'
-          AND (reason_code IS NULL OR reason_code NOT IN (?, ?))
+          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?))
         """,
         _SYNC_REASON_CODES_FOR_STATS,
     )
@@ -190,7 +224,12 @@ def fetch_performance_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+def build_dashboard_payload(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    if conn is None:
+        with sqlite3.connect(str(config.DB_PATH)) as local_conn:
+            local_conn.row_factory = sqlite3.Row
+            return build_dashboard_payload(local_conn)
+
     latest = fetch_latest_portfolio(conn)
     series = fetch_portfolio_equity_series(conn)
     trades = fetch_recent_trades(conn)
@@ -201,21 +240,25 @@ def build_dashboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     calibration = get_leg_accuracies(conn)
 
     pnl_pct = None
+    pnl_dollars = None
     if latest:
         try:
-            eq = float(latest["equity_total"])
-            pnl_pct = (
-                (eq / float(config.STARTING_BALANCE) - 1.0) * 100.0
-                if config.STARTING_BALANCE
-                else None
-            )
+            current_equity = float(latest["equity_total"])
+            first_snap = conn.execute(
+                "SELECT equity_total FROM portfolio_state ORDER BY snapshot_at ASC LIMIT 1"
+            ).fetchone()
+            baseline = float(first_snap[0]) if first_snap else 100.0
+            pnl_pct = (current_equity / baseline - 1.0) * 100.0 if baseline else None
+            pnl_dollars = current_equity - baseline
         except (TypeError, ValueError, KeyError):
             pnl_pct = None
+            pnl_dollars = None
 
     return {
         "mode": latest.get("mode") if latest else None,
         "portfolio": latest,
         "pnl_vs_start_pct": pnl_pct,
+        "pnl_vs_start_dollars": pnl_dollars,
         "equity_series": series,
         "open_positions": positions,
         "recent_trades": trades,

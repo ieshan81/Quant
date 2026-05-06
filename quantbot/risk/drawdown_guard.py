@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from loguru import logger
 
 import config
@@ -9,18 +11,36 @@ import config
 _kill_switch_telegram_sent = False
 
 
-def check_kill_switch(current_balance: float) -> bool:
+def _drawdown_fraction() -> float:
+    raw = float(config.KILL_SWITCH_PCT)
+    return raw if raw <= 0.5 else (1.0 - raw)
+
+
+def check_kill_switch(current_balance: float, db_path: str | None = None) -> bool:
     """
     Return True if trading must halt: current_balance < STARTING_BALANCE * KILL_SWITCH_PCT.
     Default: stop when balance drops more than ~15% from configured starting balance.
     """
-    threshold = config.STARTING_BALANCE * config.KILL_SWITCH_PCT
-    return current_balance < threshold
+    baseline = float(config.STARTING_BALANCE)
+    try:
+        conn = sqlite3.connect(str(db_path or config.DB_PATH))
+        try:
+            first = conn.execute(
+                "SELECT equity_total FROM portfolio_state ORDER BY snapshot_at ASC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if first is not None and first[0] is not None:
+            baseline = float(first[0])
+    except Exception:
+        logger.debug("Kill-switch baseline read failed; using current equity", exc_info=True)
+    threshold = baseline * (1.0 - _drawdown_fraction())
+    return float(current_balance) < threshold
 
 
 def kill_switch_threshold() -> float:
     """Absolute balance at/under which the kill switch trips."""
-    return config.STARTING_BALANCE * config.KILL_SWITCH_PCT
+    return config.STARTING_BALANCE * (1.0 - _drawdown_fraction())
 
 
 def reset_kill_switch_alert_flag() -> None:

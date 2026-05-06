@@ -54,6 +54,6 @@ def test_nyse_open_before_close() -> None:
         assert nyse_regular_session_open() is True
 
 
-def test_nyse_fail_open_on_broken_timezone() -> None:
+def test_nyse_fail_closed_on_broken_timezone() -> None:
     with patch("market_hours.pytz.timezone", side_effect=RuntimeError("no tz")):
-        assert nyse_regular_session_open() is True
+        assert nyse_regular_session_open() is False

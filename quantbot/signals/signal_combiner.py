@@ -6,8 +6,6 @@ from typing import Literal
 
 from loguru import logger
 
-import config
-
 # Each input signal is in {-1.0, 0.0, 1.0}. Weights sum to 1.0.
 WEIGHTS: dict[str, float] = {
     "rsi": 0.20,
@@ -23,11 +21,11 @@ TradeAction = Literal["BUY", "SELL", "HOLD"]
 
 
 def __getattr__(name: str) -> float:
-    """Expose BUY_THRESHOLD / SELL_THRESHOLD from config for backward compatibility."""
+    """Legacy thresholds kept for older tests/callers."""
     if name == "BUY_THRESHOLD":
-        return float(config.BUY_THRESHOLD)
+        return 0.35
     if name == "SELL_THRESHOLD":
-        return float(config.SELL_THRESHOLD)
+        return -0.35
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -52,9 +50,9 @@ def _thresholds_or_config(thresholds: dict[str, float] | None) -> dict[str, floa
     if thresholds is not None:
         return thresholds
     return {
-        "buy_threshold": float(config.BUY_THRESHOLD),
-        "sell_threshold": float(config.SELL_THRESHOLD),
-        "crypto_buy_threshold": 0.15,
+        "buy_threshold": 0.35,
+        "sell_threshold": -0.35,
+        "crypto_buy_threshold": 0.05,
     }
 
 

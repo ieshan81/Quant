@@ -82,19 +82,14 @@ PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"
 
 # Sprint 4 — risk (defaults from technical brief §6; paper defaults scaled to $100 base)
 STARTING_BALANCE = float(os.getenv("STARTING_BALANCE", "100"))
-KILL_SWITCH_PCT = float(os.getenv("KILL_SWITCH_PCT", "0.85"))  # halt if balance < 85% of start (-15%)
+KILL_SWITCH_PCT = float(os.getenv("KILL_SWITCH_PCT", "0.15"))  # halt if balance drops 15% from baseline
 MAX_PER_TRADE_RISK_PCT = float(os.getenv("MAX_PER_TRADE_RISK_PCT", "0.02"))
 MAX_SINGLE_ASSET_PCT = float(os.getenv("MAX_SINGLE_ASSET_PCT", "0.10"))
 MAX_PORTFOLIO_DEPLOYED_PCT = float(os.getenv("MAX_PORTFOLIO_DEPLOYED_PCT", "0.60"))
 TARGET_CRYPTO_ALLOCATION = float(os.getenv("TARGET_CRYPTO_ALLOCATION", "0.50"))
 COOLDOWN_MINUTES_AFTER_STOP = int(os.getenv("COOLDOWN_MINUTES_AFTER_STOP", "30"))
 
-# Signal combiner thresholds (Sprint 4+; relaxed from brief defaults for more trades in backtests)
-BUY_THRESHOLD = float(os.getenv("BUY_THRESHOLD", "0.35"))
-SELL_THRESHOLD = float(os.getenv("SELL_THRESHOLD", "-0.35"))
-
 # Backtest (`training/backtester`) uses smooth [-1,1] inputs + these thresholds
-BACKTEST_BUY_THRESHOLD = float(os.getenv("BACKTEST_BUY_THRESHOLD", "0.035"))
 BACKTEST_SELL_THRESHOLD = float(os.getenv("BACKTEST_SELL_THRESHOLD", "-0.06"))
 # When long, exit if combined score falls below this (enables multiple round-trips)
 BACKTEST_EXIT_LONG_SCORE = float(os.getenv("BACKTEST_EXIT_LONG_SCORE", "0.128"))
@@ -110,9 +105,10 @@ MIN_ORDER_NOTIONAL_USD = float(os.getenv("MIN_ORDER_NOTIONAL_USD", "1.0"))
 BOT_CONFIG_DEFAULTS = {
     "buy_threshold": 0.10,
     "sell_threshold": -0.10,
-    "crypto_buy_threshold": 0.08,
+    "crypto_buy_threshold": 0.05,
     "stop_loss_pct": 0.05,
     "take_profit_pct": 0.10,
     "kelly_fraction": 0.10,
     "max_position_pct": 0.005,
+    "dynamic_risk_enabled": 1.0,
 }
