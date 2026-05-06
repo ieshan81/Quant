@@ -86,7 +86,8 @@ def fetch_equity_latest_price(symbol: str) -> float | None:
     try:
         trade = client.get_latest_trade(sym)
         return _trade_price(trade)
-    except Exception:
+    except Exception as e:
+        logger.error("[price] Failed to fetch {} via latest_trade: {}", sym, e, exc_info=True)
         try:
             bar = client.get_latest_bar(sym)
             c = getattr(bar, "c", None)
@@ -95,7 +96,7 @@ def fetch_equity_latest_price(symbol: str) -> float | None:
             if isinstance(bar, dict) and bar.get("c") is not None:
                 return float(bar["c"])
         except Exception as e:
-            logger.debug("[stock_broker] price fetch failed for {}: {}", sym, e)
+            logger.error("[price] Failed to fetch {} via latest_bar: {}", sym, e, exc_info=True)
             return None
 
 

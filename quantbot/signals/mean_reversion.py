@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+from loguru import logger
 
 
 def compute_bollinger(
@@ -30,6 +31,9 @@ def bollinger_signal(
     Else 0.
     """
     c = close.astype(float)
+    if len(c) < 20:
+        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        return 0.0
     mid, upper, lower = compute_bollinger(c, period=period, num_std=num_std)
     last_idx = c.last_valid_index()
     if last_idx is None or pd.isna(lower.loc[last_idx]) or pd.isna(upper.loc[last_idx]):
@@ -52,6 +56,9 @@ def z_score_signal(close: pd.Series, period: int = 20, buy_z: float = -2.0, sell
     Buy if Z < buy_z (+1), sell if Z > sell_z (-1), else 0 (technical brief §5.1).
     """
     c = close.astype(float)
+    if len(c) < 20:
+        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        return 0.0
     mean = c.rolling(window=period, min_periods=period).mean()
     std = c.rolling(window=period, min_periods=period).std(ddof=0)
     last_idx = c.last_valid_index()

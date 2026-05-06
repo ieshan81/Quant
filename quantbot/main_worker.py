@@ -1781,33 +1781,30 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
 
 
 def run_worker_forever() -> None:
-    while not _stop.is_set():
+    while True:
+        if _stop.is_set():
+            break
         trader: PaperTrader | None = None
         scan_thread: threading.Thread | None = None
         try:
             trader, universe, market_ctx, scan_thread = _worker_startup()
             while not _stop.is_set():
-                try:
-                    if _halted.is_set():
-                        pass
-                    elif drawdown_guard.check_kill_switch(trader.equity_total()):
-                        _handle_kill_switch(trader, market_ctx)
-                        _halted.set()
-                    else:
-                        run_trading_cycle_once(trader, universe, market_ctx)
-                except Exception as e:
-                    logger.error("TRADING CYCLE CRASH: {}", e, exc_info=True)
-                    if alerts.telegram_alerts_configured():
-                        alerts.send_telegram(f"⚠️ Worker crash: {str(e)[:200]}")
-                finally:
-                    if not _stop.is_set():
-                        time.sleep(_trade_interval_sec())
+                if _halted.is_set():
+                    raise RuntimeError("worker halted flag set; forcing restart")
+                if drawdown_guard.check_kill_switch(trader.equity_total()):
+                    _handle_kill_switch(trader, market_ctx)
+                    _halted.set()
+                    raise RuntimeError("kill switch triggered; worker restarting")
+                run_trading_cycle_once(trader, universe, market_ctx)
+                if not _stop.is_set():
+                    time.sleep(_trade_interval_sec())
         except Exception as e:
-            logger.error("WORKER THREAD DIED: {}", e, exc_info=True)
+            logger.error("[worker] CRASHED: {}", e, exc_info=True)
+            logger.error("[worker] Restarting in 10 seconds...")
             if alerts.telegram_alerts_configured():
-                alerts.send_telegram(f"⚠️ Worker thread died, restarting in 30s: {str(e)[:200]}")
+                alerts.send_telegram(f"⚠️ Worker crashed, restarting in 10s: {str(e)[:200]}")
             if not _stop.is_set():
-                time.sleep(30)
+                time.sleep(10)
         finally:
             if trader is not None:
                 try:

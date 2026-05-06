@@ -47,7 +47,11 @@ def rsi_signal(
     Buy if RSI < oversold (+1), sell if RSI > overbought (-1), else 0.
     Uses the last bar with a defined RSI.
     """
-    rsi = compute_rsi(close, period=period)
+    c = close.astype(float)
+    if len(c) < 20:
+        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        return 0.0
+    rsi = compute_rsi(c, period=period)
     last = rsi.dropna()
     if last.empty:
         return 0.0
@@ -110,5 +114,9 @@ def macd_signal(
     Sell on bearish cross (-1): MACD crosses below signal.
     Otherwise 0.
     """
-    macd_line, signal_line, _ = compute_macd(close, fast=fast, slow=slow, signal=signal)
+    c = close.astype(float)
+    if len(c) < 20:
+        logger.warning("[signal] unknown insufficient bars: {}", len(c))
+        return 0.0
+    macd_line, signal_line, _ = compute_macd(c, fast=fast, slow=slow, signal=signal)
     return macd_cross_signal(macd_line, signal_line)
