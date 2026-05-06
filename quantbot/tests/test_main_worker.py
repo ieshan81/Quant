@@ -93,8 +93,11 @@ def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) ->
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_sell("stock", "SHS", 1.0, 100.0, reason_code="short_entry", meta=None).ok
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 94.0)
+    st = mw._StockExitBroker(t, None)
+    ct = mw._CryptoExitBroker(t, None)
+    all_p = (st.get_open_positions() or []) + (ct.get_open_positions() or [])
     lines, checked, fired = mw._check_and_execute_exits(
-        t, None, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
+        all_p, st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
     )
     assert checked >= 1
     assert fired >= 1
