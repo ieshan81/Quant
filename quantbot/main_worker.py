@@ -1480,48 +1480,11 @@ def execute_cycle_results(
                     out["holds"] += 1
                 elif cs.asset_class == "crypto":
                     out["holds"] += 1
-                elif eff_score <= -0.20:
-                    notional, _bd = _buy_notional_breakdown(trader, "stock", rt)
-                    stocks_open = portfolio_limiter.us_stock_market_open()
-                    logger.info(
-                        "[short] ENTER {} score={:.4f} mid={:.4f} notional={:.2f} stocks_open={}",
-                        cs.symbol,
-                        eff_score,
-                        mid,
-                        notional,
-                        stocks_open,
-                    )
-                    ok, reason = _can_open_short_stock(trader, cs.symbol, mid, notional, rt)
-                    qty = notional / mid
-                    qty = round(qty, 4)
-                    if not ok or qty <= 0:
-                        logger.info("[short] skip {} reason={} ok={} qty={}", cs.symbol, reason, ok, qty)
-                        out["holds"] += 1
-                        continue
-                    trader.set_telegram_on_fills(False)
-                    try:
-                        r = stock_broker.submit_market_order("sell", cs.symbol, qty)
-                    finally:
-                        trader.set_telegram_on_fills(True)
-                    if r.ok:
-                        out["short_entries"] += 1
-                        _ensure_exit_trade_logged(
-                            db_path=config.DB_PATH,
-                            mode=str(config.MODE),
-                            asset_class="stock",
-                            symbol=cs.symbol,
-                            side="sell",
-                            quantity=qty,
-                            price=mid,
-                            status="filled",
-                            broker_order_id=r.broker_order_id,
-                            reason_code="short_entry",
-                            meta=None,
-                        )
-                    else:
-                        logger.warning("[short] ENTER failed {} {}", cs.symbol, r.message)
-                        out["holds"] += 1
                 else:
+                    logger.info(
+                        "[skip] {} SELL signal, no position to sell, shorting disabled",
+                        cs.symbol,
+                    )
                     out["holds"] += 1
     return out
 

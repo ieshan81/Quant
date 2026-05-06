@@ -34,7 +34,7 @@ FALLBACK_STOCKS = [
     "AMZN",
     "META",
     "TSLA",
-    "BRK-B",
+    "BRK.B",
     "JPM",
     "JNJ",
     "V",
@@ -69,6 +69,16 @@ _PRIORITY_TTL_SEC = 86400.0
 UNIVERSE_TOTAL_CAP = 90
 ALPACA_MOST_ACTIVES_URL = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
 ALPACA_CRYPTO_UNIVERSE = list(FALLBACK_CRYPTO)
+
+
+def _sanitize_alpaca_stock_symbol(sym: str) -> str:
+    """
+    Alpaca uses dotted class shares (e.g. BRK.B), while some feeds use dashes.
+    """
+    s = str(sym or "").strip().upper()
+    if not s:
+        return s
+    return s.replace("-B", ".B")
 
 
 def _http_get_json(url: str, timeout: float = 20.0) -> Any | None:
@@ -110,9 +120,9 @@ def fetch_alpaca_most_actives(*, top: int = 50) -> list[str]:
                 if isinstance(row, dict):
                     s = row.get("symbol") or row.get("ticker")
                     if s:
-                        syms.append(str(s).strip().upper())
+                        syms.append(_sanitize_alpaca_stock_symbol(str(s)))
                 elif isinstance(row, str):
-                    syms.append(row.strip().upper())
+                    syms.append(_sanitize_alpaca_stock_symbol(row))
     out: list[str] = []
     seen: set[str] = set()
     for s in syms:
@@ -276,7 +286,10 @@ def build_dynamic_universe(exchange: Any | None) -> tuple[list[str], list[str], 
             extras.append(t)
         if len(extras) >= 20:
             break
-    stocks = list(dict.fromkeys([*alpaca[:50], *extras]))
+    stocks = [
+        _sanitize_alpaca_stock_symbol(s)
+        for s in dict.fromkeys([*alpaca[:50], *extras])
+    ]
     meta["n_reddit"] = len(extras)
 
     trending_bases = fetch_coingecko_trending_base_symbols(top=7)
