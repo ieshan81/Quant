@@ -195,6 +195,15 @@ _PAGE = """
     .api-links a { color: var(--accent-blue); text-decoration: none; }
     .api-links a:hover { text-decoration: underline; }
     .chart-wrap { height: 200px; margin-top: 0.5rem; }
+    .chart-controls { display: flex; gap: 8px; margin-bottom: 8px; }
+    .range-btn {
+      background: #1e293b; color: #64748b; border: 1px solid #1e293b;
+      padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    }
+    .range-btn.active {
+      background: rgba(0,255,136,0.1); color: #00ff88;
+      border-color: #00ff88;
+    }
     .last-upd { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.5rem; font-family: "JetBrains Mono", monospace; }
     .subrow { margin-top: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     @media (max-width: 800px) { .subrow { grid-template-columns: 1fr; } }
@@ -271,7 +280,16 @@ _PAGE = """
       <div class="card"><h2>Market (NYSE)</h2><div id="mktLine" class="market-closed">…</div><div class="countdown" id="mktCd"></div></div>
     </div>
 
-    <div class="card chart-main"><h2>Equity curve</h2><div class="chart-wrap"><canvas id="eqChart"></canvas></div></div>
+    <div class="card chart-main">
+      <h2>Equity curve</h2>
+      <div class="chart-controls">
+        <button class="range-btn active" data-range="1D">1D</button>
+        <button class="range-btn" data-range="1W">1W</button>
+        <button class="range-btn" data-range="1M">1M</button>
+        <button class="range-btn" data-range="ALL">ALL</button>
+      </div>
+      <div class="chart-wrap"><canvas id="eqChart"></canvas></div>
+    </div>
 
     <div class="card social-panel">
       <h2><span>🔥</span> Social momentum</h2>
@@ -541,20 +559,101 @@ _PAGE = """
       return out;
     }
 
+    const crosshairPlugin = {
+      id: "crosshair",
+      afterDraw(chart) {
+        if (chart.tooltip && chart.tooltip._active && chart.tooltip._active.length) {
+          const ctx = chart.ctx;
+          const x = chart.tooltip._active[0].element.x;
+          const top = chart.chartArea.top;
+          const bottom = chart.chartArea.bottom;
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(x, top);
+          ctx.lineTo(x, bottom);
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = "rgba(255,255,255,0.2)";
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    };
+    Chart.register(crosshairPlugin);
+
     let _chart = null;
+    let _equitySeries = [];
+    let _activeRange = "1D";
+    function _hexToRgba(hex, alpha) {
+      const h = String(hex || "").replace("#", "");
+      if (h.length !== 6) return "rgba(0,255,136," + alpha + ")";
+      const r = parseInt(h.slice(0, 2), 16);
+      const g = parseInt(h.slice(2, 4), 16);
+      const b = parseInt(h.slice(4, 6), 16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+    function getChartColor(series) {
+      if (!series.length) return "#00ff88";
+      const start = Number(series[0].equity_total);
+      const end = Number(series[series.length - 1].equity_total);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return "#00ff88";
+      return end >= start ? "#00ff88" : "#ff3b5c";
+    }
+    function filterSeries(series, range) {
+      const now = new Date();
+      const cutoff = {
+        "1D": new Date(now.getTime() - 24 * 60 * 60 * 1000),
+        "1W": new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
+        "1M": new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
+        "ALL": new Date(0)
+      }[range] || new Date(0);
+      return (Array.isArray(series) ? series : []).filter(d => {
+        const raw = d && d.snapshot_at != null ? String(d.snapshot_at) : "";
+        const dt = new Date(raw.replace(" ", "T") + "Z");
+        return Number.isFinite(dt.getTime()) && dt >= cutoff;
+      });
+    }
+    function updateRangeButtons(active) {
+      document.querySelectorAll(".range-btn").forEach((btn) => {
+        const on = btn.dataset.range === active;
+        btn.classList.toggle("active", on);
+      });
+    }
     function updateEquityChart(series) {
       const ser = Array.isArray(series) ? series : [];
-      const labels = ser.map(d => fmtDate(d.snapshot_at));
+      const labels = ser.map(d => String(d.snapshot_at || ""));
       const data = ser.map(d => equityY(d));
+      const color = getChartColor(ser);
       const canvas = document.getElementById("eqChart");
       if (!canvas) return;
       if (!_chart) {
         const ctx = canvas.getContext("2d");
         _chart = new Chart(ctx, {
           type: "line",
-          data: { labels, datasets: [{ data, borderColor: "#00ff88", backgroundColor: "rgba(0,255,136,0.08)", borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }] },
+          data: { labels, datasets: [{ data, borderColor: color, backgroundColor: _hexToRgba(color, 0.08), borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }] },
           options: { animation: false, responsive: true, maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                mode: "index",
+                intersect: false,
+                callbacks: {
+                  title: (items) => fmtDate(items[0].label),
+                  label: (item) => `Portfolio: $${Number(item.raw).toFixed(2)}`
+                },
+                backgroundColor: "rgba(0,0,0,0.8)",
+                borderColor: "#00ff88",
+                borderWidth: 1,
+                titleColor: "#64748b",
+                bodyColor: "#00ff88",
+                padding: 10
+              },
+              crosshair: false
+            },
+            interaction: {
+              mode: "index",
+              intersect: false
+            },
             scales: { x: { display: false },
               y: { grid: { color: "#1e293b" }, ticks: { color: "#64748b" } } } }
         });
@@ -562,6 +661,8 @@ _PAGE = """
       }
       _chart.data.labels = labels;
       _chart.data.datasets[0].data = data;
+      _chart.data.datasets[0].borderColor = color;
+      _chart.data.datasets[0].backgroundColor = _hexToRgba(color, 0.08);
       _chart.update("none");
     }
 
@@ -587,7 +688,8 @@ _PAGE = """
     function applyLiveDashboardSurgical(data) {
       if (!data || typeof data !== "object") return;
       applyLiveTiles(data);
-      const ser = Array.isArray(data.equity_series) ? data.equity_series : [];
+      _equitySeries = Array.isArray(data.equity_series) ? data.equity_series : [];
+      const ser = filterSeries(_equitySeries, _activeRange);
       updateEquityChart(ser);
       updateSpark(ser);
 
@@ -753,6 +855,20 @@ _PAGE = """
     setInterval(pollSocial, 60000);
 
     // buildSpark/buildChart replaced by updateSpark/updateEquityChart (no destroy).
+    function bindChartRangeButtons() {
+      document.querySelectorAll(".range-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const range = btn.dataset.range || "ALL";
+          _activeRange = range;
+          updateRangeButtons(_activeRange);
+          const filtered = filterSeries(_equitySeries, _activeRange);
+          updateEquityChart(filtered);
+          updateSpark(filtered);
+        });
+      });
+      updateRangeButtons(_activeRange);
+    }
+    bindChartRangeButtons();
     const boot = readPayload();
     if (typeof boot.market_open === "boolean") __lastDashMarketOpen = boot.market_open;
     tickClock();
