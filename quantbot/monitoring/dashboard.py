@@ -308,7 +308,7 @@ _PAGE = """
 
     <div class="subrow">
       <div class="card"><h2>Open positions</h2>
-        <table class="data-table"><thead><tr><th>Class</th><th>Symbol</th><th>Net</th></tr></thead><tbody id="posTableBody"></tbody></table>
+        <table class="data-table"><thead><tr><th>Class</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>Unrealized</th><th>Unrealized %</th></tr></thead><tbody id="posTableBody"></tbody></table>
         <p class="muted" id="posEmpty" style="display:none;">No open positions.</p>
       </div>
       <div class="card"><h2>Recent trades</h2>
@@ -349,8 +349,11 @@ _PAGE = """
         <p style="margin-top:0.75rem;"><button type="button" id="cfg-reset">Reset defaults</button></p>
       </div>
       <div class="card"><h2>📈 Performance &amp; learning</h2>
-        <p class="muted">Trades: <strong class="mono">{{ perf.total_trades }}</strong> · Round-trips: <strong class="mono">{{ perf.closed_round_trips }}</strong>
-          {% if perf.win_rate_pct is not none %} · Win: <strong class="mono">{{ (perf.win_rate_pct | round(1)) }}%</strong>{% endif %}</p>
+        {% if perf.closed_round_trips and perf.closed_round_trips > 0 %}
+        <p class="muted">Trades: <strong class="mono">{{ perf.total_trades }}</strong> · Round-trips: <strong class="mono">{{ perf.closed_round_trips }}</strong> · Win rate: <strong class="mono">{{ (perf.win_rate_pct | round(1)) if perf.win_rate_pct is not none else "—" }}%</strong> · Best: <strong class="mono">{{ "+" if perf.best_trade is not none and perf.best_trade >= 0 else "" }}${{ (perf.best_trade | round(2)) if perf.best_trade is not none else "—" }}</strong> · Worst: <strong class="mono">{{ "$" }}{{ (perf.worst_trade | round(2)) if perf.worst_trade is not none else "—" }}</strong></p>
+        {% else %}
+        <p class="muted">No completed round-trips yet</p>
+        {% endif %}
         {% if rl_history %}
         <table class="data-table"><thead><tr><th>Time</th><th>Summary</th><th>Pairs</th><th>Win%</th></tr></thead><tbody>
           {% for e in rl_history %}
@@ -537,7 +540,14 @@ _PAGE = """
       } else if (p.net_qty_fmt != null) {
         netStr = String(p.net_qty_fmt);
       }
-      return '<td>' + esc(ac) + '</td><td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td><td class="mono">' + esc(netStr) + '</td>';
+      const entry = fmtMoney(p.avg_entry_price, 4);
+      const cur = fmtMoney(p.current_price, 4);
+      const up = Number(p.unrealized_pnl);
+      const upp = Number(p.unrealized_pnl_pct);
+      const upCls = Number.isFinite(up) && up > 0 ? "pos" : (Number.isFinite(up) && up < 0 ? "neg" : "");
+      const upTxt = Number.isFinite(up) ? ((up >= 0 ? "+$" : "-$") + Math.abs(up).toFixed(2)) : "—";
+      const uppTxt = Number.isFinite(upp) ? ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%") : "—";
+      return '<td>' + esc(ac) + '</td><td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td><td class="mono">' + esc(netStr) + '</td><td class="mono">' + entry + '</td><td class="mono">' + cur + '</td><td class="mono ' + upCls + '">' + upTxt + '</td><td class="mono ' + upCls + '">' + uppTxt + '</td>';
     }
 
     function _renderTradeRow(t) {
@@ -873,9 +883,7 @@ _PAGE = """
           const range = btn.dataset.range || "ALL";
           _activeRange = range;
           updateRangeButtons(_activeRange);
-          const filtered = filterSeries(_equitySeries, _activeRange);
-          updateEquityChart(filtered);
-          updateSpark(filtered);
+          poll();
         });
       });
       updateRangeButtons(_activeRange);
@@ -981,7 +989,9 @@ _PAGE = """
 
     async function poll() {
       try {
-        const r = await fetch("/api/dashboard", { cache: "no-store" });
+        const periodMap = { "1D": "1D", "1W": "1W", "1M": "1M", "ALL": "3M" };
+        const eqPeriod = periodMap[_activeRange] || "1D";
+        const r = await fetch("/api/dashboard?equity_period=" + encodeURIComponent(eqPeriod), { cache: "no-store" });
         const j = await r.json();
         applyLiveDashboardSurgical(j);
         lastPollMs = Date.now();
@@ -1195,12 +1205,18 @@ def create_app() -> Flask:
         return supplied == DASHBOARD_SECRET
 
     def _dashboard_ws_push() -> None:
+        from execution import stock_broker
+
         sio = app.extensions["socketio"]
         while True:
             try:
                 with app.app_context():
                     with get_connection() as conn:
-                        payload = build_dashboard_payload(conn)
+                        payload = build_dashboard_payload(
+                            conn,
+                            rest_client=stock_broker.get_rest_client(),
+                            equity_period="1D",
+                        )
                 sio.emit("dashboard_update", payload)
             except Exception:
                 logger.exception("[ws] push error")
@@ -1216,8 +1232,14 @@ def create_app() -> Flask:
 
     @app.get("/api/dashboard")
     def api_dashboard() -> Response:
+        from execution import stock_broker
+
+        period = str(request.args.get("equity_period", "1D") or "1D")
+        if period not in ("1D", "1W", "1M", "3M"):
+            period = "1D"
+        cli = stock_broker.get_rest_client()
         with get_connection() as conn:
-            payload = build_dashboard_payload(conn)
+            payload = build_dashboard_payload(conn, rest_client=cli, equity_period=period)
         return Response(
             json.dumps(payload, default=str),
             mimetype="application/json",
@@ -1376,8 +1398,14 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index() -> str:
+        from execution import stock_broker
+
+        period = str(request.args.get("equity_period", "1D") or "1D")
+        if period not in ("1D", "1W", "1M", "3M"):
+            period = "1D"
+        cli = stock_broker.get_rest_client()
         with get_connection() as conn:
-            payload = build_dashboard_payload(conn)
+            payload = build_dashboard_payload(conn, rest_client=cli, equity_period=period)
             cfg_rows = data_store.fetch_all_bot_config_rows(conn)
             bot_ui = _bot_ui_rows(cfg_rows)
         latest = payload.get("portfolio") or {}

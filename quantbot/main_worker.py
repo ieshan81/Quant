@@ -659,25 +659,14 @@ def dynamic_risk_params(equity: float) -> dict[str, float]:
 
 
 def _latest_portfolio_equity_for_cycle(trader: PaperTrader) -> float:
-    """Latest ``equity_total`` from ``portfolio_state`` for this mode; fallback to trader."""
-    path = trader.persistence_path
-    if path is None:
-        return max(0.0, float(trader.equity_total()))
+    """Use Alpaca account equity as source of truth; fallback to trader mark-to-market."""
     try:
-        with get_connection(path) as conn:
-            row = conn.execute(
-                """
-                SELECT equity_total FROM portfolio_state
-                WHERE mode = ?
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (config.MODE,),
-            ).fetchone()
-        if row is not None and row[0] is not None:
-            return max(0.0, float(row[0]))
+        cli = stock_broker.get_rest_client()
+        if cli is not None:
+            acct = cli.get_account()
+            return max(0.0, float(getattr(acct, "equity", 0) or 0))
     except Exception:
-        logger.debug("latest portfolio equity read failed", exc_info=True)
+        logger.debug("latest alpaca equity read failed", exc_info=True)
     return max(0.0, float(trader.equity_total()))
 
 

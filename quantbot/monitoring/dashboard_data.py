@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 import config
@@ -13,6 +14,7 @@ from market_hours import nyse_regular_session_open
 
 _SYNC_REASON_CODES_FOR_MATCHING = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
 _SYNC_REASON_CODES_FOR_STATS = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
+_PAPER_BASELINE_EQUITY = 100.0
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -224,11 +226,166 @@ def fetch_performance_summary(conn: sqlite3.Connection | None = None) -> dict[st
     }
 
 
-def build_dashboard_payload(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_real_portfolio(rest_client: Any) -> dict[str, Any]:
+    account = rest_client.get_account()
+    positions = rest_client.list_positions() or []
+
+    equity = _safe_float(getattr(account, "equity", 0))
+    cash = _safe_float(getattr(account, "cash", 0))
+    starting_equity = _PAPER_BASELINE_EQUITY
+
+    pnl_dollars = equity - starting_equity
+    pnl_pct = (pnl_dollars / starting_equity) * 100.0 if starting_equity else 0.0
+
+    deployed = 0.0
+    for p in positions:
+        mv = getattr(p, "market_value", None)
+        if mv is None and isinstance(p, dict):
+            mv = p.get("market_value")
+        deployed += abs(_safe_float(mv, 0.0))
+    deployed_pct = (deployed / equity * 100.0) if equity > 0 else 0.0
+
+    return {
+        "equity_total": round(equity, 2),
+        "cash": round(cash, 2),
+        "pnl_dollars": round(pnl_dollars, 2),
+        "pnl_pct": round(pnl_pct, 2),
+        "deployed_pct": round(deployed_pct, 1),
+        "mode": config.MODE,
+    }
+
+
+def get_real_trades(rest_client: Any, limit: int = 50) -> list[dict[str, Any]]:
+    orders = rest_client.list_orders(status="closed", limit=limit, direction="desc") or []
+    trades: list[dict[str, Any]] = []
+    for o in orders:
+        filled_at = getattr(o, "filled_at", None)
+        filled_qty = _safe_float(getattr(o, "filled_qty", None), 0.0)
+        if not filled_at or filled_qty <= 0:
+            continue
+        avg = _safe_float(getattr(o, "filled_avg_price", None), 0.0)
+        created = str(filled_at).replace("T", " ")[:16]
+        trades.append(
+            {
+                "created_at": created,
+                "symbol": str(getattr(o, "symbol", "") or ""),
+                "side": str(getattr(o, "side", "") or ""),
+                "quantity": filled_qty,
+                "price": avg,
+                "notional": round(filled_qty * avg, 2),
+                "status": "filled",
+                "broker_order_id": str(getattr(o, "id", "") or ""),
+            }
+        )
+    return trades
+
+
+def get_real_positions(rest_client: Any) -> list[dict[str, Any]]:
+    positions = rest_client.list_positions() or []
+    out: list[dict[str, Any]] = []
+    for p in positions:
+        symbol = str(getattr(p, "symbol", "") or "")
+        ac = str(getattr(p, "asset_class", "") or "").lower()
+        out.append(
+            {
+                "symbol": symbol,
+                "asset_class": "crypto" if ("/" in symbol or ac == "crypto") else "stock",
+                "net_qty": _safe_float(getattr(p, "qty", None), 0.0),
+                "avg_entry_price": _safe_float(getattr(p, "avg_entry_price", None), 0.0),
+                "current_price": _safe_float(getattr(p, "current_price", None), 0.0),
+                "market_value": _safe_float(getattr(p, "market_value", None), 0.0),
+                "unrealized_pnl": _safe_float(getattr(p, "unrealized_pl", None), 0.0),
+                "unrealized_pnl_pct": _safe_float(getattr(p, "unrealized_plpc", None), 0.0) * 100.0,
+            }
+        )
+    return out
+
+
+def get_real_performance(rest_client: Any) -> dict[str, Any]:
+    orders = rest_client.list_orders(status="closed", limit=500, direction="desc") or []
+    filled = [o for o in orders if _safe_float(getattr(o, "filled_qty", None), 0.0) > 0]
+
+    buys: dict[str, Any] = {}
+    sells: list[Any] = []
+    for o in filled:
+        side = str(getattr(o, "side", "") or "").lower()
+        sym = str(getattr(o, "symbol", "") or "")
+        if side == "buy" and sym not in buys:
+            buys[sym] = o
+        elif side == "sell":
+            sells.append(o)
+
+    round_trips: list[float] = []
+    for sell in sells:
+        symbol = str(getattr(sell, "symbol", "") or "")
+        if symbol not in buys:
+            continue
+        buy = buys[symbol]
+        buy_price = _safe_float(getattr(buy, "filled_avg_price", None), 0.0)
+        sell_price = _safe_float(getattr(sell, "filled_avg_price", None), 0.0)
+        qty = _safe_float(getattr(sell, "filled_qty", None), 0.0)
+        round_trips.append((sell_price - buy_price) * qty)
+
+    total = len(round_trips)
+    wins = sum(1 for p in round_trips if p > 0)
+    win_rate = round(wins / total * 100.0, 1) if total > 0 else None
+    best = max(round_trips) if round_trips else None
+    worst = min(round_trips) if round_trips else None
+    return {
+        "total_trades": len(filled),
+        "closed_round_trips": total,
+        "win_rate_pct": win_rate,
+        "best_trade": round(best, 2) if best is not None else None,
+        "worst_trade": round(worst, 2) if worst is not None else None,
+    }
+
+
+def get_equity_curve(rest_client: Any, period: str = "1D") -> list[dict[str, Any]]:
+    try:
+        history = rest_client.get_portfolio_history(
+            period=period,
+            timeframe="5Min",
+            extended_hours=False,
+        )
+        timestamps = list(getattr(history, "timestamp", None) or [])
+        equity = list(getattr(history, "equity", None) or [])
+        out: list[dict[str, Any]] = []
+        for ts, eq in zip(timestamps, equity):
+            eqf = _safe_float(eq, 0.0)
+            if eqf <= 0:
+                continue
+            out.append(
+                {
+                    "snapshot_at": datetime.utcfromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "equity_total": round(eqf, 2),
+                }
+            )
+        return out
+    except Exception:
+        return []
+
+
+def build_dashboard_payload(
+    conn: sqlite3.Connection | None = None,
+    *,
+    rest_client: Any | None = None,
+    equity_period: str = "1D",
+) -> dict[str, Any]:
     if conn is None:
         with sqlite3.connect(str(config.DB_PATH)) as local_conn:
             local_conn.row_factory = sqlite3.Row
-            return build_dashboard_payload(local_conn)
+            return build_dashboard_payload(
+                local_conn,
+                rest_client=rest_client,
+                equity_period=equity_period,
+            )
 
     latest = fetch_latest_portfolio(conn)
     series = fetch_portfolio_equity_series(conn)
@@ -241,15 +398,30 @@ def build_dashboard_payload(conn: sqlite3.Connection | None = None) -> dict[str,
 
     pnl_pct = None
     pnl_dollars = None
-    if latest:
+    if rest_client is not None:
+        real_pf = get_real_portfolio(rest_client)
+        latest = {
+            **(latest or {}),
+            "equity_total": real_pf["equity_total"],
+            "deployed_pct": real_pf["deployed_pct"],
+            "cash_stocks": real_pf["cash"],
+            "cash_crypto": 0.0,
+            "equity_stocks": real_pf["equity_total"],
+            "equity_crypto": 0.0,
+            "mode": config.MODE,
+        }
+        pnl_pct = real_pf["pnl_pct"]
+        pnl_dollars = real_pf["pnl_dollars"]
+        trades = get_real_trades(rest_client, limit=20)
+        positions = get_real_positions(rest_client)
+        performance = get_real_performance(rest_client)
+        period = equity_period if equity_period in ("1D", "1W", "1M", "3M") else "1D"
+        series = get_equity_curve(rest_client, period=period)
+    elif latest:
         try:
             current_equity = float(latest["equity_total"])
-            first_snap = conn.execute(
-                "SELECT equity_total FROM portfolio_state ORDER BY snapshot_at ASC LIMIT 1"
-            ).fetchone()
-            baseline = float(first_snap[0]) if first_snap else 100.0
-            pnl_pct = (current_equity / baseline - 1.0) * 100.0 if baseline else None
-            pnl_dollars = current_equity - baseline
+            pnl_dollars = current_equity - _PAPER_BASELINE_EQUITY
+            pnl_pct = (pnl_dollars / _PAPER_BASELINE_EQUITY) * 100.0
         except (TypeError, ValueError, KeyError):
             pnl_pct = None
             pnl_dollars = None
