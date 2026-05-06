@@ -698,12 +698,20 @@ def _buy_notional_breakdown(
     trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]
 ) -> tuple[float, dict[str, float]]:
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
+    try:
+        cli = stock_broker.get_rest_client()
+        if cli is not None:
+            acct = cli.get_account()
+            sleeve = max(0.0, float(getattr(acct, "equity", 0) or 0))
+    except Exception:
+        logger.debug("alpaca equity sizing fallback to trader sleeve", exc_info=True)
     rt_max_pct = float(rt["max_position_pct"])
     eff_pct = _effective_max_position_pct_for_sizing(sleeve, rt_max_pct)
     kelly_frac = float(rt["kelly_fraction"])
     cap10 = max(0.0, sleeve * eff_pct)
     k_notional = max(0.0, sleeve * kelly_frac)
-    n = max(0.0, min(cap10, k_notional, sleeve * 0.99))
+    # Single Alpaca account sizing: notional follows total_equity * max_position_pct.
+    n = max(0.0, min(cap10, sleeve * 0.99))
     detail = {
         "sleeve": sleeve,
         "rt_max_position_pct": rt_max_pct,
