@@ -343,7 +343,7 @@ _PAGE = """
   <script>
     const REFRESH_MS = {{ refresh_sec }} * 1000;
     const TZ = "America/New_York";
-    let chart, spark;
+    let spark;
     let lastPollMs = 0;
     window.__dashWsConnected = false;
     window.__dashWsEnabled = typeof io !== "undefined";
@@ -377,16 +377,26 @@ _PAGE = """
       if (!row) return "";
       return fmtDate(row.snapshot_at != null ? row.snapshot_at : "");
     }
+    function updateTile(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const next = String(value);
+      if (el.textContent !== next) el.textContent = next;
+    }
+    function updateTileClass(id, className) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.className !== className) el.className = className;
+    }
     function applyLiveTiles(data) {
       const pnl = data.pnl_vs_start_pct;
-      const el = document.getElementById("tilePnl");
-      if (el) {
-        if (pnl == null || pnl === "" || Number.isNaN(Number(pnl))) { el.textContent = "—"; el.className = "big"; }
-        else {
-          const n = Number(pnl);
-          el.textContent = (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
-          el.className = "big " + (n >= 0 ? "pos" : "neg");
-        }
+      if (pnl == null || pnl === "" || Number.isNaN(Number(pnl))) {
+        updateTile("tilePnl", "—");
+        updateTileClass("tilePnl", "big");
+      } else {
+        const n = Number(pnl);
+        updateTile("tilePnl", (n >= 0 ? "+" : "") + n.toFixed(2) + "%");
+        updateTileClass("tilePnl", "big " + (n >= 0 ? "pos" : "neg"));
       }
       const pf = data.portfolio || {};
       let eq = pf.equity != null ? Number(pf.equity) : (pf.equity_total != null ? Number(pf.equity_total) : null);
@@ -395,10 +405,8 @@ _PAGE = """
         const last = ser.length ? ser[ser.length - 1] : null;
         if (last) eq = equityY(last);
       }
-      const te = document.getElementById("tileEq");
-      if (te) te.textContent = (eq != null && !Number.isNaN(eq)) ? ("$" + eq.toFixed(2)) : "—";
-      const tm = document.getElementById("tileMode");
-      if (tm) tm.textContent = data.mode != null ? String(data.mode) : "—";
+      updateTile("tileEq", (eq != null && !Number.isNaN(eq)) ? ("$" + eq.toFixed(2)) : "—");
+      updateTile("tileMode", data.mode != null ? String(data.mode) : "—");
       if (typeof data.market_open === "boolean") {
         __lastDashMarketOpen = data.market_open;
       }
@@ -433,124 +441,171 @@ _PAGE = """
     function assetRowClass(sym) {
       return isCryptoSymbol(sym) ? "row-crypto" : "row-stock";
     }
-    function renderSignalFeed(signals) {
-      const tb = document.getElementById("sigFeedBody");
-      const empty = document.getElementById("sigFeedEmpty");
-      if (!tb) return;
-      const rows = Array.isArray(signals) ? signals : [];
-      if (!rows.length) {
-        tb.innerHTML = "";
-        if (empty) empty.style.display = "block";
-        return;
+    function updateTable(tbodyId, newRows, renderRow, getId, opts) {
+      const maxRows = (opts && opts.maxRows != null) ? Number(opts.maxRows) : 50;
+      const tbody = document.getElementById(tbodyId);
+      if (!tbody) return;
+      const rows = Array.isArray(newRows) ? newRows : [];
+      const existingIds = new Set([...tbody.querySelectorAll("tr")].map(r => r.dataset.id));
+      for (const row of rows.slice().reverse()) {
+        const id = String(getId(row));
+        if (!id) continue;
+        if (existingIds.has(id)) continue;
+        const tr = document.createElement("tr");
+        tr.dataset.id = id;
+        tr.innerHTML = renderRow(row);
+        tr.style.opacity = "0";
+        tbody.prepend(tr);
+        requestAnimationFrame(() => {
+          tr.style.transition = "opacity 0.3s";
+          tr.style.opacity = "1";
+        });
       }
-      if (empty) empty.style.display = "none";
-      let html = "";
-      for (const s of rows) {
-        const sym = (s.symbol != null ? String(s.symbol) : "");
-        const typeName = (s.signal_name != null ? String(s.signal_name) : "—");
-        const meta = signalMeta(s);
-        const action = meta.action != null ? String(meta.action) : "—";
-        const dir = signalDirection(s);
-        const arr = dir > 0 ? "▲" : (dir < 0 ? "▼" : "—");
-        const dcls = dir > 0 ? "dir-up" : (dir < 0 ? "dir-down" : "dir-flat");
-        let sc = 0;
-        try { sc = s.combined_score != null ? Number(s.combined_score) : 0; } catch (e) { sc = 0; }
-        if (!Number.isFinite(sc)) sc = 0;
-        const scClamped = Math.max(-1, Math.min(1, sc));
-        const barPct = Math.round((scClamped + 1) / 2 * 100);
-        let rowCls = "sig-neutral";
-        if (sc > 0.3) rowCls = "sig-buy";
-        else if (sc < -0.3) rowCls = "sig-sell";
-        const scoreTxt = Number.isFinite(Number(s.combined_score)) ? Number(s.combined_score).toFixed(3) : "—";
-        const symCellCls = isCryptoSymbol(sym) ? "sig-sym-crypto" : "sig-sym-stock";
-        const symPre = isCryptoSymbol(sym)
-          ? '<span class="sym-badge sym-badge-c" aria-hidden="true">₿</span>'
-          : '<span class="sym-badge sym-badge-s" aria-hidden="true">S</span>';
-        html += '<tr class="sig-feed-row ' + rowCls + '" data-sig-id="' + esc(s.id) + '">';
-        html += '<td class="mono ' + dcls + '">' + arr + '</td>';
-        html += '<td class="mono" style="font-size:0.72rem;color:var(--text-secondary);">' + esc(fmtDate(s.created_at)) + '</td>';
-        html += '<td class="mono has-symbol ' + symCellCls + '" style="font-weight:700;" data-symbol="' + esc(sym) + '">' + symPre + '<span class="sym-txt">' + esc(sym) + '</span></td>';
-        html += '<td>' + esc(typeName) + '</td>';
-        html += '<td><span class="mono">' + esc(action) + '</span></td>';
-        html += '<td class="score-cell"><span class="score-txt mono">' + scoreTxt + '</span>';
-        html += '<div class="score-bar-bg"><div class="score-bar-fill" style="width:' + barPct + '%;"></div></div></td>';
-        html += '<td></td></tr>';
-      }
-      tb.innerHTML = html;
+      while (tbody.rows.length > maxRows) tbody.deleteRow(tbody.rows.length - 1);
     }
-    function renderPositions(pos) {
-      const tb = document.getElementById("posTableBody");
-      const empty = document.getElementById("posEmpty");
-      if (!tb) return;
-      const rowsIn = Array.isArray(pos) ? pos : [];
+
+    function _renderSignalRow(s) {
+      const sym = (s.symbol != null ? String(s.symbol) : "");
+      const typeName = (s.signal_name != null ? String(s.signal_name) : "—");
+      const meta = signalMeta(s);
+      const action = meta.action != null ? String(meta.action) : "—";
+      const dir = signalDirection(s);
+      const arr = dir > 0 ? "▲" : (dir < 0 ? "▼" : "—");
+      const dcls = dir > 0 ? "dir-up" : (dir < 0 ? "dir-down" : "dir-flat");
+      let sc = 0;
+      try { sc = s.combined_score != null ? Number(s.combined_score) : 0; } catch (e) { sc = 0; }
+      if (!Number.isFinite(sc)) sc = 0;
+      const scClamped = Math.max(-1, Math.min(1, sc));
+      const barPct = Math.round((scClamped + 1) / 2 * 100);
+      let rowCls = "sig-neutral";
+      if (sc > 0.3) rowCls = "sig-buy";
+      else if (sc < -0.3) rowCls = "sig-sell";
+      const scoreTxt = Number.isFinite(Number(s.combined_score)) ? Number(s.combined_score).toFixed(3) : "—";
+      const symCellCls = isCryptoSymbol(sym) ? "sig-sym-crypto" : "sig-sym-stock";
+      const symPre = isCryptoSymbol(sym)
+        ? '<span class="sym-badge sym-badge-c" aria-hidden="true">₿</span>'
+        : '<span class="sym-badge sym-badge-s" aria-hidden="true">S</span>';
+      let html = "";
+      html += '<td class="mono ' + dcls + '">' + arr + '</td>';
+      html += '<td class="mono" style="font-size:0.72rem;color:var(--text-secondary);">' + esc(fmtDate(s.created_at)) + '</td>';
+      html += '<td class="mono has-symbol ' + symCellCls + '" style="font-weight:700;" data-symbol="' + esc(sym) + '">' + symPre + '<span class="sym-txt">' + esc(sym) + '</span></td>';
+      html += '<td>' + esc(typeName) + '</td>';
+      html += '<td><span class="mono">' + esc(action) + '</span></td>';
+      html += '<td class="score-cell"><span class="score-txt mono">' + scoreTxt + '</span>';
+      html += '<div class="score-bar-bg"><div class="score-bar-fill" style="width:' + barPct + '%;"></div></div></td>';
+      html += '<td></td>';
+      return html;
+    }
+
+    function _renderPositionRow(p) {
+      const sym = p.symbol != null ? String(p.symbol) : "";
+      const ac = p.asset_class != null ? String(p.asset_class) : "";
+      let netStr = "—";
+      if (p.net_qty != null && p.net_qty !== "") {
+        const nq = Number(p.net_qty);
+        netStr = Number.isFinite(nq) ? nq.toFixed(6) : String(p.net_qty);
+      } else if (p.net_qty_fmt != null) {
+        netStr = String(p.net_qty_fmt);
+      }
+      return '<td>' + esc(ac) + '</td><td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td><td class="mono">' + esc(netStr) + '</td>';
+    }
+
+    function _renderTradeRow(t) {
+      const sym = t.symbol != null ? String(t.symbol) : "";
+      const sideRaw = t.side != null ? String(t.side) : "";
+      const side = sideRaw.toLowerCase();
+      const scls = side === "buy" ? "side-buy" : (side === "sell" ? "side-sell" : "");
+      let st = t.status != null ? String(t.status) : "";
+      if (t.reason_code != null && t.reason_code !== "") st += " (" + String(t.reason_code) + ")";
+      const qty = t.quantity;
+      let html = "";
+      html += '<td class="mono" style="font-size:0.72rem;">' + esc(fmtDate(t.created_at)) + '</td>';
+      html += '<td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
+      html += '<td class="mono ' + scls + '">' + esc(sideRaw) + '</td>';
+      html += '<td class="mono">' + fmtMoney(t.price, 4) + '</td><td class="mono">' + fmtNum(qty, 6) + '</td>';
+      html += '<td class="mono">' + fmtMoney(t.notional, 2) + '</td><td>' + esc(st) + '</td>';
+      return html;
+    }
+
+    function _dedupPositionsRows(rowsIn) {
       const seen = new Set();
-      const rows = [];
-      for (const p of rowsIn) {
+      const out = [];
+      for (const p of (Array.isArray(rowsIn) ? rowsIn : [])) {
         const symRaw = p && p.symbol != null ? String(p.symbol) : "";
         const key = symRaw.replace("/", "").toUpperCase();
         if (!key) continue;
         if (seen.has(key)) continue;
         seen.add(key);
-        rows.push(p);
+        out.push(p);
       }
-      if (!rows.length) {
-        tb.innerHTML = "";
-        if (empty) empty.style.display = "block";
+      return out;
+    }
+
+    let _chart = null;
+    function updateEquityChart(series) {
+      const ser = Array.isArray(series) ? series : [];
+      const labels = ser.map(d => fmtDate(d.snapshot_at));
+      const data = ser.map(d => equityY(d));
+      const canvas = document.getElementById("eqChart");
+      if (!canvas) return;
+      if (!_chart) {
+        const ctx = canvas.getContext("2d");
+        _chart = new Chart(ctx, {
+          type: "line",
+          data: { labels, datasets: [{ data, borderColor: "#00ff88", backgroundColor: "rgba(0,255,136,0.08)", borderWidth: 1.5, pointRadius: 0, fill: true, tension: 0.3 }] },
+          options: { animation: false, responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { x: { display: false },
+              y: { grid: { color: "#1e293b" }, ticks: { color: "#64748b" } } } }
+        });
         return;
       }
-      if (empty) empty.style.display = "none";
-      let html = "";
-      for (const p of rows) {
-        const sym = p.symbol != null ? String(p.symbol) : "";
-        const ac = p.asset_class != null ? String(p.asset_class) : "";
-        let netStr = "—";
-        if (p.net_qty != null && p.net_qty !== "") {
-          const nq = Number(p.net_qty);
-          netStr = Number.isFinite(nq) ? nq.toFixed(6) : String(p.net_qty);
-        } else if (p.net_qty_fmt != null) {
-          netStr = String(p.net_qty_fmt);
-        }
-        html += '<tr class="' + assetRowClass(sym) + '"><td>' + esc(ac) + '</td><td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td><td class="mono">' + esc(netStr) + '</td></tr>';
-      }
-      tb.innerHTML = html;
+      _chart.data.labels = labels;
+      _chart.data.datasets[0].data = data;
+      _chart.update("none");
     }
-    function renderTrades(trades) {
-      const tb = document.getElementById("tradesTableBody");
-      const empty = document.getElementById("tradesEmpty");
-      if (!tb) return;
-      const rows = Array.isArray(trades) ? trades : [];
-      if (!rows.length) {
-        tb.innerHTML = "";
-        if (empty) empty.style.display = "block";
+
+    function updateSpark(series) {
+      const pts = (Array.isArray(series) ? series : []).slice(-32);
+      const labels = pts.map(() => "");
+      const data = pts.map((r) => equityY(r));
+      const ctx = document.getElementById("sparkEq");
+      if (!ctx) return;
+      if (!spark) {
+        spark = new Chart(ctx, {
+          type: "line",
+          data: { labels, datasets: [{ data, borderColor: "#00ff88", backgroundColor: "rgba(0,255,136,0.08)", fill: true, tension: 0.35, pointRadius: 0 }] },
+          options: { animation: false, responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } },
+        });
         return;
       }
-      if (empty) empty.style.display = "none";
-      let html = "";
-      for (const t of rows) {
-        const sym = t.symbol != null ? String(t.symbol) : "";
-        const sideRaw = t.side != null ? String(t.side) : "";
-        const side = sideRaw.toLowerCase();
-        const scls = side === "buy" ? "side-buy" : (side === "sell" ? "side-sell" : "");
-        let st = t.status != null ? String(t.status) : "";
-        if (t.reason_code != null && t.reason_code !== "") st += " (" + String(t.reason_code) + ")";
-        const qty = t.quantity;
-        html += '<tr class="' + assetRowClass(sym) + '"><td class="mono" style="font-size:0.72rem;">' + esc(fmtDate(t.created_at)) + '</td>';
-        html += '<td class="mono has-symbol" data-symbol="' + esc(sym) + '">' + esc(sym) + '</td>';
-        html += '<td class="mono ' + scls + '">' + esc(sideRaw) + '</td>';
-        html += '<td class="mono">' + fmtMoney(t.price, 4) + '</td><td class="mono">' + fmtNum(qty, 6) + '</td>';
-        html += '<td class="mono">' + fmtMoney(t.notional, 2) + '</td><td>' + esc(st) + '</td></tr>';
-      }
-      tb.innerHTML = html;
+      spark.data.labels = labels;
+      spark.data.datasets[0].data = data;
+      spark.update("none");
     }
-    function applyLiveDashboard(data) {
+
+    function applyLiveDashboardSurgical(data) {
       if (!data || typeof data !== "object") return;
       applyLiveTiles(data);
       const ser = Array.isArray(data.equity_series) ? data.equity_series : [];
-      try { buildChart(ser); } catch (e) { console.error("buildChart", e); }
-      try { buildSpark(ser); } catch (e) { console.error("buildSpark", e); }
-      try { renderSignalFeed(data.recent_signals); } catch (e) { console.error("renderSignalFeed", e); }
-      try { renderPositions(data.open_positions); } catch (e) { console.error("renderPositions", e); }
-      try { renderTrades(data.recent_trades); } catch (e) { console.error("renderTrades", e); }
+      updateEquityChart(ser);
+      updateSpark(ser);
+
+      const sigRows = Array.isArray(data.recent_signals) ? data.recent_signals : [];
+      const tradeRows = Array.isArray(data.recent_trades) ? data.recent_trades : [];
+      const posRows = _dedupPositionsRows(data.open_positions);
+
+      const sigEmpty = document.getElementById("sigFeedEmpty");
+      if (sigEmpty) sigEmpty.style.display = sigRows.length ? "none" : "block";
+      const trEmpty = document.getElementById("tradesEmpty");
+      if (trEmpty) trEmpty.style.display = tradeRows.length ? "none" : "block";
+      const posEmpty = document.getElementById("posEmpty");
+      if (posEmpty) posEmpty.style.display = posRows.length ? "none" : "block";
+
+      updateTable("sigFeedBody", sigRows, _renderSignalRow, (r) => r.id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.signal_name || "")), { maxRows: 50 });
+      updateTable("tradesTableBody", tradeRows, _renderTradeRow, (r) => r.id ?? (r.broker_order_id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.side || ""))), { maxRows: 50 });
+      updateTable("posTableBody", posRows, _renderPositionRow, (r) => (String(r.symbol || "").replace("/", "").toUpperCase()), { maxRows: 50 });
+
       const el = document.getElementById("dash-payload");
       if (el) el.textContent = JSON.stringify(data);
     }
@@ -697,63 +752,11 @@ _PAGE = """
     pollSocial();
     setInterval(pollSocial, 60000);
 
-    function buildSpark(series) {
-      const pts = (series || []).slice(-32);
-      const labels = pts.map((r) => "");
-      const data = pts.map((r) => equityY(r));
-      const ctx = document.getElementById("sparkEq");
-      if (!ctx) return;
-      if (spark) spark.destroy();
-      spark = new Chart(ctx, {
-        type: "line",
-        data: { labels, datasets: [{ data, borderColor: "#00d4ff", backgroundColor: "rgba(0,212,255,0.12)", fill: true, tension: 0.35, pointRadius: 0 }] },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
-          scales: { x: { display: false }, y: { display: false } },
-        },
-      });
-    }
-    function buildChart(series) {
-      let ser = Array.isArray(series) ? series.slice() : [];
-      let labels = ser.map((r) => equityLabel(r));
-      let data = ser.map((r) => equityY(r));
-      if (!data.length) {
-        labels = ["", ""];
-        data = [20000, 20000];
-      }
-      const ctx = document.getElementById("eqChart");
-      if (chart) chart.destroy();
-      chart = new Chart(ctx, {
-        type: "line",
-        data: {
-          labels,
-          datasets: [{
-            label: "Equity",
-            data,
-            borderColor: "#00d4ff",
-            backgroundColor: "rgba(0, 212, 255, 0.08)",
-            fill: true,
-            tension: 0.35,
-            pointRadius: 0,
-            pointHoverRadius: 0,
-          }],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { maxTicksLimit: 8, color: "#7986cb" } },
-            y: { ticks: { color: "#7986cb" } },
-          },
-        },
-      });
-    }
+    // buildSpark/buildChart replaced by updateSpark/updateEquityChart (no destroy).
     const boot = readPayload();
     if (typeof boot.market_open === "boolean") __lastDashMarketOpen = boot.market_open;
     tickClock();
-    try { applyLiveDashboard(boot); } catch (e) { console.error("initial dashboard render", e); }
+    try { applyLiveDashboardSurgical(boot); } catch (e) { console.error("initial dashboard render", e); }
 
     function positionTooltip(ev, tip) {
       const pad = 15;
@@ -852,11 +855,9 @@ _PAGE = """
       try {
         const r = await fetch("/api/dashboard", { cache: "no-store" });
         const j = await r.json();
-        applyLiveDashboard(j);
+        applyLiveDashboardSurgical(j);
         lastPollMs = Date.now();
         if (!window.__dashWsConnected) updateDashSyncStatus();
-        document.querySelectorAll(".sig-feed-row").forEach((row) => { row.classList.add("row-flash"); });
-        setTimeout(() => document.querySelectorAll(".sig-feed-row").forEach((row) => row.classList.remove("row-flash")), 650);
       } catch (e) { console.warn(e); }
     }
     if (window.__dashWsEnabled) {
@@ -873,14 +874,12 @@ _PAGE = """
       });
       dashSocket.on("dashboard_update", function (data) {
         try {
-          applyLiveDashboard(data);
+          applyLiveDashboardSurgical(data);
         } catch (e) {
           console.error("dashboard_update", e);
         }
         lastPollMs = Date.now();
         updateDashSyncStatus();
-        document.querySelectorAll(".sig-feed-row").forEach((row) => { row.classList.add("row-flash"); });
-        setTimeout(() => document.querySelectorAll(".sig-feed-row").forEach((row) => row.classList.remove("row-flash")), 650);
       });
     } else {
       console.warn("Socket.IO client not loaded; using HTTP poll only");
