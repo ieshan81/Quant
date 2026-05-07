@@ -1337,6 +1337,45 @@ def create_app() -> Flask:
             logger.exception("api/reset-db failed")
             return jsonify({"status": "error", "message": str(e)}), 500
 
+    @app.post("/api/reset-paper")
+    def api_reset_paper() -> Any:
+        """Hard reset paper-mode rows + scalp / decision tables."""
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        try:
+            result = data_store.reset_paper_trading_state(str(config.DB_PATH))
+            return jsonify({"status": "ok", "result": result})
+        except Exception as e:
+            logger.exception("api/reset-paper failed")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.get("/api/promotion-gates")
+    def api_promotion_gates() -> Response:
+        from risk import promotion_gates as _pg
+
+        try:
+            data = _pg.evaluate_all(str(config.DB_PATH))
+        except Exception as e:
+            logger.exception("api/promotion-gates failed")
+            data = {"passed": False, "gates": [], "error": str(e)}
+        return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.get("/api/safety-status")
+    def api_safety_status() -> Response:
+        return Response(
+            json.dumps(
+                {
+                    "live_safety": config.live_safety_status(),
+                    "is_live": config.trading_is_live(),
+                    "scalper_paper_enabled": config.scalper_paper_enabled(),
+                    "scalper_live_allowed": config.scalper_live_allowed(),
+                    "mode": config.MODE,
+                },
+                default=str,
+            ),
+            mimetype="application/json",
+        )
+
     @app.post("/api/sync-alpaca")
     def api_sync_alpaca() -> Any:
         if not _check_auth():

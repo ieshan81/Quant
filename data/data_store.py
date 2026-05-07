@@ -167,6 +167,101 @@ CREATE TABLE IF NOT EXISTS reddit_signals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_reddit_signals_mentions ON reddit_signals(mentions DESC);
+
+-- Per-cycle execution decision audit. Used by dashboard "Last 20 decisions"
+-- and rejection-reason counters.
+CREATE TABLE IF NOT EXISTS execution_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cycle_id TEXT,
+    asset_class TEXT,
+    symbol TEXT,
+    side TEXT,
+    decision TEXT NOT NULL,           -- 'taken' | 'rejected' | 'hold'
+    reason_code TEXT,
+    score REAL,
+    notional REAL,
+    quantity REAL,
+    price REAL,
+    strategy_name TEXT,
+    strategy_version TEXT,
+    meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_exec_decisions_created ON execution_decisions(created_at);
+CREATE INDEX IF NOT EXISTS idx_exec_decisions_reason ON execution_decisions(reason_code);
+
+-- Crypto micro-scalper event log (every entry attempt + every fill).
+CREATE TABLE IF NOT EXISTS crypto_scalp_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    symbol TEXT NOT NULL,
+    price REAL,
+    action TEXT,                      -- 'buy' | 'sell' | 'evaluate'
+    pump_score REAL,
+    velocity_10s REAL,
+    velocity_30s REAL,
+    velocity_60s REAL,
+    volume_spike REAL,
+    spread_pct REAL,
+    estimated_fee_pct REAL,
+    estimated_slippage_pct REAL,
+    expected_edge_pct REAL,
+    decision TEXT,                    -- 'taken' | 'rejected' | 'exit'
+    reason_code TEXT,
+    meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scalp_created ON crypto_scalp_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_scalp_symbol ON crypto_scalp_events(symbol);
+
+-- Mistake / lesson memory for closed trades.
+CREATE TABLE IF NOT EXISTS mistake_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    trade_id INTEGER,
+    symbol TEXT,
+    asset_class TEXT,
+    strategy_name TEXT,
+    strategy_version TEXT,
+    pnl_abs REAL,
+    pnl_pct REAL,
+    holding_seconds REAL,
+    mistake_type TEXT,
+    lesson TEXT,
+    parameter_suggestion_json TEXT,
+    meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_mistake_created ON mistake_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_mistake_type ON mistake_events(mistake_type);
+
+-- Strategy version registry. New trades record (strategy_name, version) in meta.
+CREATE TABLE IF NOT EXISTS strategy_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    strategy_name TEXT NOT NULL,
+    version_label TEXT NOT NULL,
+    parameters_json TEXT,
+    source TEXT,
+    active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+    UNIQUE(strategy_name, version_label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_active ON strategy_versions(strategy_name, active);
+
+-- Lightweight ops metrics (counter-style). Used for SQLite lock tracking and
+-- price-error counts. ``window_label`` is the bucket key ('total', 'cycle', etc).
+CREATE TABLE IF NOT EXISTS ops_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    metric_name TEXT NOT NULL,
+    window_label TEXT,
+    value REAL NOT NULL,
+    meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ops_metric_name ON ops_metrics(metric_name, created_at);
 """
 
 
@@ -195,16 +290,58 @@ def _seed_bot_config_if_empty(conn: sqlite3.Connection) -> None:
 
 _SQLITE_CONNECT_TIMEOUT_SEC = 30.0
 _SQLITE_BUSY_TIMEOUT_MS = 30000
+_SQLITE_LOCK_RETRIES = 5
+_SQLITE_LOCK_BASE_DELAY = 0.15  # seconds; doubled each retry
+
+# Lock counter (process-local). Worker dumps it into ops_metrics for the dashboard.
+_db_lock_counter: dict[str, int] = {"locks": 0}
 
 
 def _open_sqlite(path: Path) -> sqlite3.Connection:
-    """Open SQLite with WAL-friendly timeout and a global busy_timeout pragma."""
+    """Open SQLite with WAL + synchronous=NORMAL pragmas and busy_timeout."""
     conn = sqlite3.connect(str(path), timeout=_SQLITE_CONNECT_TIMEOUT_SEC)
     try:
         conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+        # WAL is set in SCHEMA_SQL; pragmas below tighten concurrency further.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
     except sqlite3.Error:
-        logger.debug("[sqlite] busy_timeout pragma failed", exc_info=True)
+        logger.debug("[sqlite] open pragmas failed", exc_info=True)
     return conn
+
+
+def get_db_lock_count() -> int:
+    """Read-only counter of how many ``database is locked`` retries we hit."""
+    return int(_db_lock_counter.get("locks", 0))
+
+
+def reset_db_lock_count() -> None:
+    """Reset the in-process lock counter (tests)."""
+    _db_lock_counter["locks"] = 0
+
+
+def with_sqlite_retry(fn, *args, retries: int = _SQLITE_LOCK_RETRIES, **kwargs):
+    """Run ``fn(*args, **kwargs)`` retrying transient ``database is locked``.
+
+    Each retry sleeps ``base * 2**i`` seconds. After exhausting retries the
+    last :class:`sqlite3.OperationalError` is re-raised.
+    """
+    import time as _time
+
+    last: Exception | None = None
+    for i in range(max(1, int(retries))):
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "database is locked" not in msg and "database is busy" not in msg:
+                raise
+            _db_lock_counter["locks"] = _db_lock_counter.get("locks", 0) + 1
+            last = exc
+            _time.sleep(_SQLITE_LOCK_BASE_DELAY * (2 ** i))
+    assert last is not None
+    raise last
 
 
 def init_schema(db_path: Path | str | None = None) -> None:
@@ -289,35 +426,43 @@ def get_connection(db_path: Path | str | None = None) -> Generator[sqlite3.Conne
 
 
 def replace_reddit_signals(rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
-    """Full snapshot replace: worker writes after each Reddit scan (cross-process dashboard reads)."""
-    if not rows:
+    """Full snapshot replace: worker writes after each Reddit scan (cross-process dashboard reads).
+
+    Uses :func:`with_sqlite_retry` because the social scanner is a primary
+    source of transient ``database is locked`` errors when the worker is
+    writing portfolio snapshots in parallel.
+    """
+    def _do_replace() -> None:
+        if not rows:
+            with get_connection(db_path) as conn:
+                conn.execute("DELETE FROM reddit_signals")
+            return
+        tuples = [
+            (
+                str(r["ticker"]),
+                int(r["mentions"]),
+                int(r["rank"]),
+                int(r["rank_24h_ago"]),
+                int(r["rank_change"]),
+                float(r["mentions_change_pct"]),
+                str(r["source"]),
+                1 if r.get("is_breakout") else 0,
+            )
+            for r in rows
+        ]
         with get_connection(db_path) as conn:
             conn.execute("DELETE FROM reddit_signals")
-        return
-    tuples = [
-        (
-            str(r["ticker"]),
-            int(r["mentions"]),
-            int(r["rank"]),
-            int(r["rank_24h_ago"]),
-            int(r["rank_change"]),
-            float(r["mentions_change_pct"]),
-            str(r["source"]),
-            1 if r.get("is_breakout") else 0,
-        )
-        for r in rows
-    ]
-    with get_connection(db_path) as conn:
-        conn.execute("DELETE FROM reddit_signals")
-        conn.executemany(
-            """
-            INSERT INTO reddit_signals (
-                ticker, mentions, rank, rank_24h_ago, rank_change,
-                mentions_change_pct, source, is_breakout, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            """,
-            tuples,
-        )
+            conn.executemany(
+                """
+                INSERT INTO reddit_signals (
+                    ticker, mentions, rank, rank_24h_ago, rank_change,
+                    mentions_change_pct, source, is_breakout, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                tuples,
+            )
+
+    with_sqlite_retry(_do_replace)
 
 
 def fetch_reddit_signals_public(limit: int = 10, db_path: Path | str | None = None) -> list[dict[str, Any]]:
@@ -349,6 +494,125 @@ def fetch_reddit_signals_public(limit: int = 10, db_path: Path | str | None = No
                 }
             )
     return out
+
+
+def normalize_legacy_symbols(db_path: Path | str | None = None) -> dict[str, int]:
+    """Rewrite SQLite ``trades`` / ``signals`` rows to canonical symbol form.
+
+    Folds duplicates like ``BCHUSD`` and ``BCH/USD`` into a single row pattern,
+    so the open-position calculation no longer counts them as different.
+    Returns a small summary suitable for logging.
+    """
+    from utils.symbols import normalize_asset_class, normalize_symbol_for_db
+
+    path = _resolved_db_path(db_path)
+    ensure_db_path(path)
+    n_trades = 0
+    n_signals = 0
+
+    with get_connection(path) as conn:
+        cur = conn.execute("SELECT id, asset_class, symbol FROM trades")
+        for row_id, ac_raw, sym_raw in cur.fetchall():
+            sym = str(sym_raw or "").strip()
+            if not sym:
+                continue
+            ac_db = str(ac_raw or "").strip().lower()
+            ac = normalize_asset_class(sym, hint=ac_db if ac_db in ("stock", "crypto") else None)
+            new_sym = normalize_symbol_for_db(ac, sym)
+            if new_sym and (new_sym != sym or ac != ac_db):
+                conn.execute(
+                    "UPDATE trades SET asset_class = ?, symbol = ? WHERE id = ?",
+                    (ac, new_sym, int(row_id)),
+                )
+                n_trades += 1
+
+        cur2 = conn.execute("SELECT id, symbol FROM signals")
+        for row_id, sym_raw in cur2.fetchall():
+            sym = str(sym_raw or "").strip()
+            if not sym:
+                continue
+            ac = normalize_asset_class(sym)
+            new_sym = normalize_symbol_for_db(ac, sym)
+            if new_sym and new_sym != sym:
+                conn.execute(
+                    "UPDATE signals SET symbol = ? WHERE id = ?",
+                    (new_sym, int(row_id)),
+                )
+                n_signals += 1
+
+    return {"trades_renamed": n_trades, "signals_renamed": n_signals}
+
+
+def reset_paper_trading_state(db_path: Path | str | None = None) -> dict[str, Any]:
+    """Hard reset paper-mode rows for a clean dashboard.
+
+    Wipes ``trades``, ``signals``, ``portfolio_state``, ``price_history``,
+    ``execution_decisions``, and ``crypto_scalp_events``; preserves config
+    and learning history. Used by ``RESET_PAPER_ON_STARTUP`` on Railway.
+    """
+    base = reset_trading_history(db_path)
+    path = _resolved_db_path(db_path)
+    ensure_db_path(path)
+    with get_connection(path) as conn:
+        for table in ("execution_decisions", "crypto_scalp_events"):
+            try:
+                conn.execute(f"DELETE FROM {table}")
+            except sqlite3.OperationalError:
+                # Table may not exist on older schema.
+                pass
+    base.setdefault("cleared", []).extend(["execution_decisions", "crypto_scalp_events"])
+    return base
+
+
+def wipe_ghost_positions(
+    db_path: Path | str | None,
+    real_alpaca_symbols_db: set[str],
+) -> dict[str, Any]:
+    """Clear DB-only positions that broker says don't exist.
+
+    For every ``(asset_class, symbol)`` pair in ``trades`` whose net position
+    is non-zero but whose canonical-form symbol is not in
+    ``real_alpaca_symbols_db``, we delete those rows so the SQLite ledger
+    stops pretending it owns ghost coins.
+
+    ``real_alpaca_symbols_db`` must contain symbols already passed through
+    :func:`utils.symbols.normalize_symbol_for_db`.
+    """
+    from utils.symbols import normalize_asset_class, normalize_symbol_for_db
+
+    path = _resolved_db_path(db_path)
+    ensure_db_path(path)
+    removed: list[dict[str, Any]] = []
+    with get_connection(path) as conn:
+        cur = conn.execute(
+            """
+            SELECT asset_class, symbol,
+                   SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
+            FROM trades
+            WHERE status = 'filled'
+            GROUP BY asset_class, symbol
+            HAVING ABS(net_qty) > 1e-8
+            """
+        )
+        rows = cur.fetchall()
+        for ac_raw, sym_raw, _net in rows:
+            sym = str(sym_raw or "").strip()
+            ac = normalize_asset_class(sym, hint=str(ac_raw or "").strip().lower())
+            canonical = normalize_symbol_for_db(ac, sym)
+            if canonical in real_alpaca_symbols_db:
+                continue
+            cur2 = conn.execute(
+                "DELETE FROM trades WHERE asset_class = ? AND symbol = ?",
+                (ac_raw, sym_raw),
+            )
+            removed.append(
+                {
+                    "asset_class": ac_raw,
+                    "symbol": sym,
+                    "rows_deleted": int(cur2.rowcount or 0),
+                }
+            )
+    return {"removed": removed}
 
 
 def reset_trading_history(db_path: Path | str | None = None) -> dict[str, Any]:
@@ -401,6 +665,113 @@ def reset_trading_history(db_path: Path | str | None = None) -> dict[str, Any]:
         ],
         "bot_config_reset": defaults,
     }
+
+
+def reconcile_positions_on_startup(
+    db_path: Path | str | None,
+    rest_client: Any | None,
+    *,
+    mode: str | None = None,
+    reset_paper: bool | None = None,
+    wipe_ghosts: bool | None = None,
+) -> dict[str, Any]:
+    """Make SQLite agree with Alpaca on startup.
+
+    1. Optionally reset paper history (``RESET_PAPER_ON_STARTUP``).
+    2. Normalize legacy crypto symbols so ``BCHUSD``/``BCH/USD`` are merged.
+    3. Read live Alpaca positions; if ``WIPE_GHOST_POSITIONS`` is set,
+       delete SQLite positions Alpaca doesn't know about.
+    4. Always log a single-line summary.
+
+    ``reset_paper`` / ``wipe_ghosts`` defaults follow the env flags so the
+    function can also be called from tests with explicit values.
+    """
+    from utils.symbols import normalize_asset_class, normalize_symbol_for_db
+
+    eff_mode = (mode or config.MODE or "paper").strip().lower()
+    if eff_mode not in ("paper", "live"):
+        eff_mode = "paper"
+    do_reset = bool(config.RESET_PAPER_ON_STARTUP if reset_paper is None else reset_paper)
+    do_wipe = bool(config.WIPE_GHOST_POSITIONS if wipe_ghosts is None else wipe_ghosts)
+
+    summary: dict[str, Any] = {
+        "mode": eff_mode,
+        "reset_paper": False,
+        "alpaca_positions": 0,
+        "sqlite_open_positions": 0,
+        "ghost_positions_removed": 0,
+        "normalized_symbols": 0,
+        "errors": [],
+    }
+
+    if do_reset and eff_mode == "paper":
+        try:
+            reset_paper_trading_state(db_path)
+            summary["reset_paper"] = True
+        except Exception as exc:
+            summary["errors"].append(f"reset_paper: {exc}")
+
+    try:
+        norm = normalize_legacy_symbols(db_path)
+        summary["normalized_symbols"] = int(norm.get("trades_renamed", 0)) + int(
+            norm.get("signals_renamed", 0)
+        )
+    except Exception as exc:
+        summary["errors"].append(f"normalize: {exc}")
+
+    real_db_syms: set[str] = set()
+    if rest_client is not None:
+        try:
+            raw_positions = rest_client.list_positions() or []
+            summary["alpaca_positions"] = len(raw_positions)
+            for p in raw_positions:
+                sym = str(getattr(p, "symbol", None) or (p.get("symbol", "") if isinstance(p, dict) else ""))
+                if not sym:
+                    continue
+                ac_raw = getattr(p, "asset_class", None)
+                if ac_raw is None and isinstance(p, dict):
+                    ac_raw = p.get("asset_class")
+                ac = normalize_asset_class(sym, hint=str(ac_raw or "").strip().lower())
+                real_db_syms.add(normalize_symbol_for_db(ac, sym))
+        except Exception as exc:
+            summary["errors"].append(f"alpaca_positions: {exc}")
+
+    try:
+        with get_connection(db_path) as conn:
+            cur = conn.execute(
+                """
+                SELECT asset_class, symbol,
+                       SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
+                FROM trades
+                WHERE status = 'filled'
+                GROUP BY asset_class, symbol
+                HAVING ABS(net_qty) > 1e-8
+                """
+            )
+            summary["sqlite_open_positions"] = len(cur.fetchall())
+    except Exception as exc:
+        summary["errors"].append(f"open_positions_count: {exc}")
+
+    if do_wipe:
+        try:
+            wiped = wipe_ghost_positions(db_path, real_db_syms)
+            summary["ghost_positions_removed"] = sum(
+                int(r.get("rows_deleted", 0)) for r in wiped.get("removed", [])
+            )
+            summary["ghost_positions_detail"] = wiped.get("removed", [])
+        except Exception as exc:
+            summary["errors"].append(f"wipe: {exc}")
+
+    logger.info(
+        "[reconcile] alpaca_positions={} sqlite_open_positions={} "
+        "ghost_positions_removed={} normalized_symbols={} reset_paper={}",
+        summary["alpaca_positions"],
+        summary["sqlite_open_positions"],
+        summary["ghost_positions_removed"],
+        summary["normalized_symbols"],
+        summary["reset_paper"],
+    )
+    return summary
 
 
 def _alpaca_ts_to_sqlite(ts: Any) -> str:

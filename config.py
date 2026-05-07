@@ -29,6 +29,51 @@ MODE = os.getenv("QUANTBOT_MODE", "paper").strip().lower()
 if MODE not in ("paper", "live"):
     MODE = "paper"
 
+# --- Live trading safety lock (multi-flag, default DENY) ---------------------
+# Real money is OFF unless ALL of these hold simultaneously:
+#   1. QUANTBOT_MODE=live
+#   2. LIVE_TRADING_ARMED=I_UNDERSTAND_THIS_USES_REAL_MONEY  (exact value)
+#   3. PROMOTION_GATES_PASSED=1
+#   4. LIVE_MAX_NOTIONAL_PER_TRADE > 0
+# If any flag is missing/wrong, ``trading_is_live()`` returns False and the
+# worker stays in paper/shadow mode regardless of QUANTBOT_MODE.
+LIVE_TRADING_ARMED = os.getenv("LIVE_TRADING_ARMED", "").strip()
+LIVE_TRADING_ARMED_EXPECTED = "I_UNDERSTAND_THIS_USES_REAL_MONEY"
+PROMOTION_GATES_PASSED = os.getenv("PROMOTION_GATES_PASSED", "0").strip().lower() in ("1", "true", "yes")
+try:
+    LIVE_MAX_NOTIONAL_PER_TRADE = float(os.getenv("LIVE_MAX_NOTIONAL_PER_TRADE", "0") or "0")
+except (TypeError, ValueError):
+    LIVE_MAX_NOTIONAL_PER_TRADE = 0.0
+
+
+def trading_is_live() -> bool:
+    """Return True only when EVERY live-trading safety flag is satisfied."""
+    return (
+        MODE == "live"
+        and LIVE_TRADING_ARMED == LIVE_TRADING_ARMED_EXPECTED
+        and PROMOTION_GATES_PASSED
+        and LIVE_MAX_NOTIONAL_PER_TRADE > 0.0
+    )
+
+
+def live_safety_status() -> dict[str, bool | str]:
+    """Detail of which live-trading flags are present (for dashboard / logs)."""
+    return {
+        "mode_is_live": MODE == "live",
+        "armed_phrase_correct": LIVE_TRADING_ARMED == LIVE_TRADING_ARMED_EXPECTED,
+        "promotion_gates_passed": bool(PROMOTION_GATES_PASSED),
+        "live_max_notional_set": LIVE_MAX_NOTIONAL_PER_TRADE > 0.0,
+        "armed_value_present": bool(LIVE_TRADING_ARMED),
+        "is_live": trading_is_live(),
+    }
+
+
+# --- Startup cleanup toggles -------------------------------------------------
+# After deploying this patch the user may set both to 1 for one boot to wipe
+# stale paper state, then set them back to 0.
+RESET_PAPER_ON_STARTUP = os.getenv("RESET_PAPER_ON_STARTUP", "0").strip().lower() in ("1", "true", "yes")
+WIPE_GHOST_POSITIONS = os.getenv("WIPE_GHOST_POSITIONS", "0").strip().lower() in ("1", "true", "yes")
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
 
 
@@ -130,6 +175,49 @@ SMALL_ACCOUNT_POSITION_BOOST_MAX = float(os.getenv("SMALL_ACCOUNT_POSITION_BOOST
 
 # Minimum USD notional before `_can_buy` proceeds (Alpaca-friendly ~$1 floor)
 MIN_ORDER_NOTIONAL_USD = float(os.getenv("MIN_ORDER_NOTIONAL_USD", "1.0"))
+
+# --- Crypto micro-scalping (paper-first) -------------------------------------
+# All scalper risk knobs are env-driven so a tiny account ($100) can run a
+# bounded test. Scalper stays paper-only unless ``trading_is_live()`` AND
+# ``SCALP_ALLOW_LIVE`` are true.
+SCALP_MODE = os.getenv("SCALP_MODE", "paper_crypto").strip().lower()
+SCALP_ALLOW_LIVE = os.getenv("SCALP_ALLOW_LIVE", "0").strip().lower() in ("1", "true", "yes")
+SCALP_ENTRY_SCORE = float(os.getenv("SCALP_ENTRY_SCORE", "0.75"))
+SCALP_TAKE_PROFIT_PCT = float(os.getenv("SCALP_TAKE_PROFIT_PCT", "0.008"))
+SCALP_STOP_LOSS_PCT = float(os.getenv("SCALP_STOP_LOSS_PCT", "0.004"))
+SCALP_TRAILING_STOP_PCT = float(os.getenv("SCALP_TRAILING_STOP_PCT", "0.003"))
+SCALP_MAX_HOLD_SECONDS = int(os.getenv("SCALP_MAX_HOLD_SECONDS", "300"))
+SCALP_MAX_SPREAD_PCT = float(os.getenv("SCALP_MAX_SPREAD_PCT", "0.003"))
+SCALP_EST_FEE_ROUNDTRIP_PCT = float(os.getenv("SCALP_EST_FEE_ROUNDTRIP_PCT", "0.005"))
+SCALP_EST_SLIPPAGE_PCT = float(os.getenv("SCALP_EST_SLIPPAGE_PCT", "0.002"))
+SCALP_SAFETY_MARGIN_PCT = float(os.getenv("SCALP_SAFETY_MARGIN_PCT", "0.002"))
+SCALP_MAX_OPEN_POSITIONS = int(os.getenv("SCALP_MAX_OPEN_POSITIONS", "2"))
+SCALP_MAX_NOTIONAL_PER_TRADE = float(os.getenv("SCALP_MAX_NOTIONAL_PER_TRADE", "3.00"))
+SCALP_DAILY_MAX_LOSS = float(os.getenv("SCALP_DAILY_MAX_LOSS", "2.00"))
+SCALP_COOLDOWN_AFTER_LOSS_SECONDS = int(os.getenv("SCALP_COOLDOWN_AFTER_LOSS_SECONDS", "900"))
+
+
+def scalper_paper_enabled() -> bool:
+    """Scalper runs (paper) when ``SCALP_MODE`` selects paper or full enable."""
+    return SCALP_MODE in ("paper_crypto", "enabled")
+
+
+def scalper_live_allowed() -> bool:
+    """Scalper may submit live orders only when explicitly allowed AND live gates pass."""
+    return bool(SCALP_ALLOW_LIVE and trading_is_live())
+
+
+# --- Promotion gates ---------------------------------------------------------
+# Minimum bar each must clear before live trading can be considered. Tweakable
+# via env so the user can simulate / test.
+PROMOTION_MIN_PAPER_HOURS = float(os.getenv("PROMOTION_MIN_PAPER_HOURS", "168"))
+PROMOTION_MIN_CLOSED_TRADES = int(os.getenv("PROMOTION_MIN_CLOSED_TRADES", "30"))
+PROMOTION_MIN_EXPECTANCY = float(os.getenv("PROMOTION_MIN_EXPECTANCY", "0.0005"))
+PROMOTION_MAX_DRAWDOWN_PCT = float(os.getenv("PROMOTION_MAX_DRAWDOWN_PCT", "0.10"))
+PROMOTION_MAX_RECENT_PRICE_ERRORS = int(os.getenv("PROMOTION_MAX_RECENT_PRICE_ERRORS", "5"))
+PROMOTION_MAX_RECENT_DB_LOCKS = int(os.getenv("PROMOTION_MAX_RECENT_DB_LOCKS", "5"))
+PROMOTION_RECENT_WINDOW_HOURS = float(os.getenv("PROMOTION_RECENT_WINDOW_HOURS", "24"))
+
 
 # SQLite ``bot_config`` seed + ``reset_trading_history`` ($100-scale; max_position_pct ≈ 0.5% sleeve)
 BOT_CONFIG_DEFAULTS = {

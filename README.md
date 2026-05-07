@@ -40,6 +40,62 @@ Set `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` for stock quotes. Crypto uses CCXT wi
 
 Later sprints: `pip install -r requirements-all.txt` (TA-Lib on Windows may need a prebuilt wheel or conda).
 
+## Sprint 13 — Safety, scalper, and learning layer
+
+Default mode is paper. Real Alpaca orders are blocked unless **all four** of these flags are set in the environment:
+
+1. `QUANTBOT_MODE=live`
+2. `LIVE_TRADING_ARMED=I_UNDERSTAND_THIS_USES_REAL_MONEY` (exact phrase)
+3. `PROMOTION_GATES_PASSED=1`
+4. `LIVE_MAX_NOTIONAL_PER_TRADE=` greater than zero
+
+Each refused order is logged with reason code `SHADOW_LIVE_BLOCKED`.
+
+### Crypto micro-scalping (paper-first)
+
+`strategies/crypto_scalper.py` is a deterministic momentum scalper (no LLM). It only enters when the expected edge clears fees + slippage + safety, the spread is under `SCALP_MAX_SPREAD_PCT`, and the pump score is above `SCALP_ENTRY_SCORE`. Defaults size each entry at **$3** so a $100 paper account can run safely. Every entry / rejection is logged to the `crypto_scalp_events` SQLite table.
+
+### Capital stage manager
+
+`risk/capital_stage_manager.py` maps live equity to one of `MICRO` (<$500), `SMALL`, `GROWTH`, `MATURE`. The worker logs a single line per cycle:
+
+```
+[capital_stage] equity=98.39 stage=MICRO max_notional=3.00 scalp_allowed=True
+```
+
+### Mistake memory + strategy versions
+
+After every cycle, `learning/mistake_analyzer.py` walks newly-closed paper round-trips and writes one row per trade to `mistake_events` classifying `STOP_TOO_TIGHT`, `EXIT_TOO_EARLY`, `FEES_ATE_PROFIT`, etc. The dashboard surfaces the latest entries.
+
+### Promotion gates and CLI
+
+`risk/promotion_gates.py` exposes nine paper-to-live gates: minimum runtime, closed trades, expectancy, max drawdown, recent price errors, recent SQLite locks, kill-switch tested, daily-loss limiter tested, and the manual env flag set. To check status:
+
+```
+python main_worker.py --check-promotion-gates
+```
+
+The dashboard reads the same evaluator at `GET /api/promotion-gates` and `GET /api/safety-status`.
+
+### One-shot ghost cleanup (preserves Alpaca paper account state)
+
+Recommended first deploy after Sprint 13. Keeps your existing Alpaca paper equity (~$98) untouched and only removes stale SQLite ghost positions and legacy symbol forms (e.g. `BCHUSD` vs `BCH/USD` duplicates):
+
+```
+RESET_PAPER_ON_STARTUP=0
+WIPE_GHOST_POSITIONS=1
+```
+
+After one clean boot (logs show `[reconcile] ghost_positions_removed=N normalized_symbols=N`), set `WIPE_GHOST_POSITIONS=0` so subsequent restarts don't touch the SQLite ledger.
+
+`RESET_PAPER_ON_STARTUP=1` is a much heavier hammer — it wipes paper `trades`, `signals`, `portfolio_state`, `price_history`, `execution_decisions`, and `crypto_scalp_events`. Only use that flag on a brand-new deploy where you also intend to reset the Alpaca paper account itself.
+
+All future symbol writes route through `utils/symbols.py`, so legacy duplicates cannot recur even without a wipe.
+
+### SQLite hardening
+
+`data/data_store.py` enables WAL + `synchronous=NORMAL`, exposes a `with_sqlite_retry()` helper for transient `database is locked` errors, and tracks a process-local lock counter that the worker flushes into `ops_metrics` each cycle.
+
 ## Layout
 
-See technical brief: `data/`, `signals/`, `risk/`, `execution/`, `training/`, `monitoring/`, `tests/`.
+See technical brief: `data/`, `signals/`, `risk/`, `execution/`, `training/`, `monitoring/`, `tests/`. New folders: `utils/` (symbol normalization), `strategies/` (crypto scalper).

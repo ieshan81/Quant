@@ -8,6 +8,15 @@ from typing import Any
 from loguru import logger
 
 import config
+from execution import reason_codes
+from utils.symbols import (
+    alpaca_data_symbol,
+    alpaca_order_symbol,
+    normalize_asset_class,
+    normalize_crypto_pair,
+    normalize_symbol_for_db,
+    yfinance_crypto_symbol,
+)
 
 try:
     import alpaca_trade_api as tradeapi
@@ -58,45 +67,74 @@ def _trade_price(trade: Any) -> float:
 
 
 def _alpaca_order_symbol(symbol: str) -> str:
-    """Alpaca order symbols: stocks unchanged, crypto pair slashes removed."""
-    sym = str(symbol or "").strip().upper()
-    if "/" in sym:
-        return sym.replace("/", "")
-    return sym
+    """Backwards-compatible wrapper around :func:`utils.symbols.alpaca_order_symbol`."""
+    return alpaca_order_symbol(symbol)
 
 
 def _normalize_alpaca_position_symbol(raw_symbol: str, asset_class: str) -> str:
-    """Normalize Alpaca position symbols to dashboard format."""
-    sym = str(raw_symbol or "").strip().upper()
-    ac = str(asset_class or "").strip().lower()
-    if ac == "crypto":
-        if "/" in sym:
-            return sym
-        if sym.endswith("USD") and len(sym) > 3:
-            return f"{sym[:-3]}/USD"
-    return sym
+    """Convert Alpaca position symbol to canonical DB form (``BTC/USD`` for crypto)."""
+    return normalize_symbol_for_db(asset_class, raw_symbol)
 
 
 def fetch_equity_latest_price(symbol: str) -> float | None:
-    """Latest consolidated trade price for one US equity symbol, or None on skip/failure."""
+    """Latest consolidated trade price for one symbol, or None on skip/failure.
+
+    Routes crypto to Alpaca's crypto-aware ``get_latest_crypto_trade`` when
+    available so we never call equity endpoints with concatenated crypto
+    pairs (which raises ``not_subscribed`` errors and floods logs).
+    """
     client = get_rest_client()
     if client is None:
         return None
-    sym = _alpaca_order_symbol(symbol)
+    ac = normalize_asset_class(symbol)
+    data_sym = alpaca_data_symbol(symbol)
+    if ac == "crypto":
+        # Try crypto-specific endpoints first; some SDK versions expose them.
+        for getter in ("get_latest_crypto_trade", "get_latest_crypto_quote"):
+            fn = getattr(client, getter, None)
+            if fn is None:
+                continue
+            try:
+                snap = fn(data_sym)
+                if snap is None:
+                    continue
+                px = (
+                    getattr(snap, "p", None)
+                    or getattr(snap, "price", None)
+                    or getattr(snap, "ap", None)
+                )
+                if px is None and isinstance(snap, dict):
+                    px = snap.get("p") or snap.get("price") or snap.get("ap")
+                if px is not None:
+                    return float(px)
+            except Exception as e:
+                logger.debug("[price] {} via {}: {}", data_sym, getter, e)
+        # Last-ditch: yfinance.
+        try:
+            from training.backtester import load_yfinance_history
+
+            yf = yfinance_crypto_symbol(symbol)
+            if yf:
+                df = load_yfinance_history(yf, days=2)
+                if df is not None and len(df):
+                    return float(df["Close"].iloc[-1])
+        except Exception as e:
+            logger.debug("[price] yfinance fallback {}: {}", symbol, e)
+        return None
     try:
-        trade = client.get_latest_trade(sym)
+        trade = client.get_latest_trade(data_sym)
         return _trade_price(trade)
     except Exception as e:
-        logger.error("[price] Failed to fetch {} via latest_trade: {}", sym, e, exc_info=True)
+        logger.warning("[price] Failed to fetch {} via latest_trade: {}", data_sym, e)
         try:
-            bar = client.get_latest_bar(sym)
+            bar = client.get_latest_bar(data_sym)
             c = getattr(bar, "c", None)
             if c is not None:
                 return float(c)
             if isinstance(bar, dict) and bar.get("c") is not None:
                 return float(bar["c"])
         except Exception as e:
-            logger.error("[price] Failed to fetch {} via latest_bar: {}", sym, e, exc_info=True)
+            logger.warning("[price] Failed to fetch {} via latest_bar: {}", data_sym, e)
             return None
 
 
@@ -134,8 +172,8 @@ def fetch_alpaca_open_positions() -> list[dict[str, Any]]:
                 ac_raw = p.get("asset_class")
             asset_class = str(ac_raw or "").strip().lower()
             if asset_class not in ("stock", "crypto"):
-                asset_class = "crypto" if "/" in sym else "stock"
-            norm_sym = _normalize_alpaca_position_symbol(sym, asset_class)
+                asset_class = normalize_asset_class(sym)
+            norm_sym = normalize_symbol_for_db(asset_class, sym)
             qty_raw = getattr(p, "qty", None)
             if qty_raw is None and isinstance(p, dict):
                 qty_raw = p.get("qty") or p.get("quantity")
@@ -159,9 +197,12 @@ def fetch_alpaca_open_positions() -> list[dict[str, Any]]:
     return out
 
 
-def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
+def submit_market_order(side: str, symbol: str, qty: float, *, notional: float | None = None) -> Any | None:
     """
-    Place a real Alpaca market order.
+    Place a real Alpaca market order, BLOCKED unless the live safety gates
+    in :mod:`config` are all green. Otherwise returns a structured no-op
+    so the worker can route to the paper trader.
+
     Returns a small object with ``ok``, ``broker_order_id``, ``message``, ``raw``.
     """
     sym = str(symbol or "").strip().upper()
@@ -169,9 +210,37 @@ def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
     s = str(side or "").strip().lower()
     q = float(qty or 0.0)
     if s not in ("buy", "sell"):
-        return SimpleNamespace(ok=False, broker_order_id=None, message=f"invalid side={side!r}", raw=None)
+        return SimpleNamespace(ok=False, broker_order_id=None, message=f"invalid side={side!r}", raw=None, reason_code=reason_codes.SYMBOL_NOT_TRADEABLE)
     if not sym or q <= 0:
-        return SimpleNamespace(ok=False, broker_order_id=None, message="invalid symbol/qty", raw=None)
+        return SimpleNamespace(ok=False, broker_order_id=None, message="invalid symbol/qty", raw=None, reason_code=reason_codes.SYMBOL_NOT_TRADEABLE)
+
+    if not config.trading_is_live():
+        status = config.live_safety_status()
+        logger.warning(
+            "[live_lock] BLOCKED live order {} {} {} — safety flags: {}",
+            s, q, order_sym, status,
+        )
+        return SimpleNamespace(
+            ok=False,
+            broker_order_id=None,
+            message=f"live trading blocked: {status}",
+            raw=None,
+            reason_code=reason_codes.SHADOW_LIVE_BLOCKED,
+        )
+
+    if notional is not None and float(notional) > float(config.LIVE_MAX_NOTIONAL_PER_TRADE):
+        logger.warning(
+            "[live_lock] BLOCKED live order {} {} notional={:.2f} > LIVE_MAX_NOTIONAL_PER_TRADE={:.2f}",
+            s, order_sym, float(notional), float(config.LIVE_MAX_NOTIONAL_PER_TRADE),
+        )
+        return SimpleNamespace(
+            ok=False,
+            broker_order_id=None,
+            message="notional above LIVE_MAX_NOTIONAL_PER_TRADE",
+            raw=None,
+            reason_code=reason_codes.SHADOW_LIVE_BLOCKED,
+        )
+
     client = get_rest_client()
     if client is None:
         return SimpleNamespace(
@@ -182,6 +251,7 @@ def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
                 "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway env vars."
             ),
             raw=None,
+            reason_code=reason_codes.ALPACA_ORDER_REJECTED,
         )
     try:
         tif = "gtc" if "/" in sym else "day"
@@ -200,10 +270,22 @@ def submit_market_order(side: str, symbol: str, qty: float) -> Any | None:
         )
         oid = str(getattr(order, "id", None) or (order.get("id") if isinstance(order, dict) else "") or "")
         logger.info("[alpaca_order] Filled: order_id={}", oid or "(unknown)")
-        return SimpleNamespace(ok=True, broker_order_id=(oid or None), message="filled", raw=order)
+        return SimpleNamespace(
+            ok=True,
+            broker_order_id=(oid or None),
+            message="filled",
+            raw=order,
+            reason_code=reason_codes.ALPACA_ORDER_SUBMITTED,
+        )
     except Exception as e:
         if s == "sell" and "/" not in sym:
             full_err = e.response.text if hasattr(e, "response") and getattr(e, "response", None) is not None else e
             logger.error("[alpaca_short] Full error: {}", full_err)
         logger.error("[alpaca_order] FAILED: {}", e, exc_info=True)
-        return SimpleNamespace(ok=False, broker_order_id=None, message=str(e), raw=None)
+        return SimpleNamespace(
+            ok=False,
+            broker_order_id=None,
+            message=str(e),
+            raw=None,
+            reason_code=reason_codes.ALPACA_ORDER_REJECTED,
+        )

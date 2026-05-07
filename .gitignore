@@ -14,3 +14,5 @@ __pycache__/
 .DS_Store
 # Runtime / local volume mirror (e.g. cross_asset_edges.json); Railway uses mounted persist
 persist/
+# Added by code-review-graph
+.code-review-graph/

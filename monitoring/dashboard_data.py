@@ -548,6 +548,44 @@ def build_dashboard_payload(
     degraded = any(v == "degraded" for v in section_status.values())
     market_open = _safe_section("market_hours", False, nyse_regular_session_open)
 
+    capital_stage = _section_db(
+        "capital_stage",
+        {},
+        lambda: _capital_stage_block(latest),
+    )
+    decisions = _section_db(
+        "execution_decisions",
+        [],
+        lambda: fetch_recent_execution_decisions(conn, limit=20),
+    )
+    rejection_counts = _section_db(
+        "rejection_counts",
+        {},
+        lambda: fetch_rejection_reason_counts(conn, hours=24),
+    )
+    scalp_events = _section_db(
+        "scalp_events",
+        [],
+        lambda: fetch_recent_scalp_events(conn, limit=20),
+    )
+    mistakes = _section_db(
+        "mistakes",
+        [],
+        lambda: fetch_recent_mistakes_db(conn, limit=20),
+    )
+    ghost_count = _section_db("ghost_count", 0, lambda: count_ghost_positions(conn))
+    db_lock_count = _section_db("db_lock_count", 0, lambda: count_db_lock_metric(conn, hours=24))
+
+    try:
+        from risk import promotion_gates as _pg
+
+        promotion_status = _pg.evaluate_all(str(config.DB_PATH))
+    except Exception:
+        logger.debug("[dashboard] promotion gates unavailable", exc_info=True)
+        promotion_status = {"passed": False, "gates": []}
+
+    safety = config.live_safety_status()
+
     return {
         "mode": latest.get("mode") if latest else None,
         "portfolio": latest,
@@ -563,4 +601,189 @@ def build_dashboard_payload(
         "market_open": market_open,
         "section_status": section_status,
         "degraded": degraded,
+        "capital_stage": capital_stage,
+        "execution_decisions": decisions,
+        "rejection_reason_counts": rejection_counts,
+        "scalp_events": scalp_events,
+        "mistakes": mistakes,
+        "ghost_position_count": ghost_count,
+        "db_lock_count_24h": db_lock_count,
+        "promotion_gates": promotion_status,
+        "live_safety": safety,
+        "scalper_paper_enabled": config.scalper_paper_enabled(),
+        "scalper_live_allowed": config.scalper_live_allowed(),
+        "strategy_version": "signal_combiner_v1@2026.05",
     }
+
+
+def _capital_stage_block(latest_portfolio: dict[str, Any] | None) -> dict[str, Any]:
+    from risk import capital_stage_manager as _csm
+
+    eq = 0.0
+    if latest_portfolio:
+        try:
+            eq = float(latest_portfolio.get("equity_total") or 0.0)
+        except (TypeError, ValueError):
+            eq = 0.0
+    p = _csm.get_stage_profile(eq)
+    return {**p.as_dict(), "equity": eq}
+
+
+def fetch_recent_execution_decisions(
+    conn: sqlite3.Connection | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_recent_execution_decisions(local_conn, limit)
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, created_at, cycle_id, asset_class, symbol, side, decision,
+                   reason_code, score, notional, quantity, price, strategy_name,
+                   strategy_version, meta_json
+            FROM execution_decisions
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+    except sqlite3.OperationalError:
+        return []
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        d = _row_to_dict(r)
+        if d.get("meta_json"):
+            try:
+                d["meta"] = json.loads(str(d["meta_json"]))
+            except json.JSONDecodeError:
+                d["meta"] = None
+        else:
+            d["meta"] = None
+        d.pop("meta_json", None)
+        out.append(d)
+    return out
+
+
+def fetch_rejection_reason_counts(
+    conn: sqlite3.Connection | None = None, hours: int = 24
+) -> dict[str, int]:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_rejection_reason_counts(local_conn, hours)
+    try:
+        cur = conn.execute(
+            """
+            SELECT reason_code, COUNT(*)
+            FROM execution_decisions
+            WHERE decision = 'rejected'
+              AND datetime(created_at) >= datetime('now', ?)
+            GROUP BY reason_code
+            ORDER BY 2 DESC
+            """,
+            (f"-{int(hours)} hours",),
+        )
+    except sqlite3.OperationalError:
+        return {}
+    out: dict[str, int] = {}
+    for code, n in cur.fetchall():
+        out[str(code or "UNKNOWN")] = int(n or 0)
+    return out
+
+
+def fetch_recent_scalp_events(
+    conn: sqlite3.Connection | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_recent_scalp_events(local_conn, limit)
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, created_at, symbol, price, action, pump_score,
+                   spread_pct, expected_edge_pct, decision, reason_code
+            FROM crypto_scalp_events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+    except sqlite3.OperationalError:
+        return []
+    return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def fetch_recent_mistakes_db(
+    conn: sqlite3.Connection | None = None, limit: int = 20
+) -> list[dict[str, Any]]:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_recent_mistakes_db(local_conn, limit)
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, created_at, trade_id, symbol, asset_class,
+                   strategy_name, strategy_version, pnl_abs, pnl_pct,
+                   holding_seconds, mistake_type, lesson, parameter_suggestion_json
+            FROM mistake_events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+    except sqlite3.OperationalError:
+        return []
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        d = _row_to_dict(r)
+        if d.get("parameter_suggestion_json"):
+            try:
+                d["parameter_suggestion"] = json.loads(str(d["parameter_suggestion_json"]))
+            except json.JSONDecodeError:
+                d["parameter_suggestion"] = None
+        else:
+            d["parameter_suggestion"] = None
+        d.pop("parameter_suggestion_json", None)
+        out.append(d)
+    return out
+
+
+def count_ghost_positions(conn: sqlite3.Connection | None = None) -> int:
+    """Number of distinct (asset_class, symbol) open positions in SQLite trades."""
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return count_ghost_positions(local_conn)
+    try:
+        cur = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT asset_class, symbol,
+                       SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
+                FROM trades WHERE status = 'filled'
+                GROUP BY asset_class, symbol
+                HAVING ABS(net_qty) > 1e-8
+            )
+            """
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0)
+    except sqlite3.OperationalError:
+        return 0
+
+
+def count_db_lock_metric(conn: sqlite3.Connection | None = None, hours: int = 24) -> int:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return count_db_lock_metric(local_conn, hours)
+    try:
+        cur = conn.execute(
+            """
+            SELECT COALESCE(SUM(value), 0) FROM ops_metrics
+            WHERE metric_name = 'db_lock'
+              AND datetime(created_at) >= datetime('now', ?)
+            """,
+            (f"-{int(hours)} hours",),
+        )
+        row = cur.fetchone()
+        return int(row[0] or 0)
+    except sqlite3.OperationalError:
+        return 0

@@ -64,11 +64,13 @@ def test_fetch_alpaca_open_positions_empty_without_client() -> None:
 
 
 def test_fetch_equity_latest_price_routes_crypto_pair_symbol() -> None:
+    """Crypto pairs should use the crypto-aware Alpaca endpoint, not equities."""
     client = MagicMock()
-    client.get_latest_trade.return_value = SimpleNamespace(p=42000.0)
+    # Simulate a client that exposes ``get_latest_crypto_trade`` (modern SDK).
+    client.get_latest_crypto_trade.return_value = SimpleNamespace(p=42000.0)
     with patch.object(stock_broker, "get_rest_client", return_value=client):
         assert stock_broker.fetch_equity_latest_price("BTC/USD") == pytest.approx(42000.0)
-    client.get_latest_trade.assert_called_once_with("BTCUSD")
+    client.get_latest_crypto_trade.assert_called_with("BTCUSD")
 
 
 def test_fetch_equity_latest_prices_includes_crypto_symbols() -> None:
@@ -82,15 +84,37 @@ def test_fetch_equity_latest_prices_includes_crypto_symbols() -> None:
 
 
 def test_submit_market_order_routes_crypto_symbol_with_gtc() -> None:
+    """Crypto pairs route to the ``BTCUSD`` form with GTC, **and** require all live flags."""
+    import config
+
     client = MagicMock()
     client.submit_order.return_value = {"id": "order-1"}
-    with patch.object(stock_broker, "get_rest_client", return_value=client):
-        res = stock_broker.submit_market_order("buy", "ETH/USD", 1.0)
+    with patch.multiple(
+        config,
+        MODE="live",
+        LIVE_TRADING_ARMED=config.LIVE_TRADING_ARMED_EXPECTED,
+        PROMOTION_GATES_PASSED=True,
+        LIVE_MAX_NOTIONAL_PER_TRADE=1000.0,
+    ):
+        with patch.object(stock_broker, "get_rest_client", return_value=client):
+            res = stock_broker.submit_market_order("buy", "ETH/USD", 1.0)
     assert res is not None
     assert res.ok is True
     client.submit_order.assert_called_once_with(
         symbol="ETHUSD", qty=1.0, side="buy", type="market", time_in_force="gtc"
     )
+
+
+def test_submit_market_order_blocked_in_paper_mode() -> None:
+    """Default paper mode must REFUSE live orders even with valid Alpaca client."""
+    client = MagicMock()
+    client.submit_order.return_value = {"id": "order-2"}
+    with patch.object(stock_broker, "get_rest_client", return_value=client):
+        res = stock_broker.submit_market_order("buy", "AAPL", 1.0)
+    assert res is not None
+    assert res.ok is False
+    assert res.reason_code == "SHADOW_LIVE_BLOCKED"
+    client.submit_order.assert_not_called()
 
 
 def test_fetch_alpaca_open_positions_includes_crypto_symbol() -> None:

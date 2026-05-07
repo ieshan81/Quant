@@ -1360,12 +1360,56 @@ def liquidate_all(trader: PaperTrader, market_ctx: Any) -> None:
         trader.set_telegram_on_fills(True)
 
 
+def _persist_decision(
+    *,
+    cycle_id: str,
+    asset_class: str | None,
+    symbol: str | None,
+    side: str | None,
+    decision: str,
+    reason_code: str | None,
+    score: float | None = None,
+    notional: float | None = None,
+    quantity: float | None = None,
+    price: float | None = None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """Best-effort write of one decision to ``execution_decisions``."""
+    try:
+        from execution.reason_codes import normalize_reason
+
+        with get_connection(config.DB_PATH) as conn:
+            trade_logger.log_execution_decision(
+                conn,
+                cycle_id=cycle_id,
+                asset_class=asset_class,
+                symbol=symbol,
+                side=side,
+                decision=decision,
+                reason_code=normalize_reason(reason_code) if reason_code else None,
+                score=score,
+                notional=notional,
+                quantity=quantity,
+                price=price,
+                strategy_name="signal_combiner_v1",
+                strategy_version="2026.05",
+                meta=meta,
+            )
+    except Exception:
+        logger.debug("[decision_log] failed", exc_info=True)
+
+
 def execute_cycle_results(
     trader: PaperTrader,
     results: list[CycleSignal],
     rt: dict[str, float],
+    *,
+    cycle_id: str | None = None,
 ) -> dict[str, Any]:
     """Sequential execution after parallel analysis (PaperTrader is not thread-safe)."""
+    import uuid as _uuid
+
+    cid = cycle_id or _uuid.uuid4().hex[:10]
     out: dict[str, Any] = {
         "buys": 0,
         "sells": 0,
@@ -1373,7 +1417,17 @@ def execute_cycle_results(
         "errors": 0,
         "short_entries": 0,
         "short_covers": 0,
+        "cycle_id": cid,
     }
+    top10 = sorted(
+        ((r.symbol, r.asset_class, r.score, r.action) for r in results if not r.error),
+        key=lambda x: (-(x[2] or 0.0), x[0]),
+    )[:10]
+    logger.info(
+        "[exec_path] cycle_id={} top10_candidates={}",
+        cid,
+        [{"sym": s, "ac": ac, "score": round(sc, 4), "action": a} for s, ac, sc, a in top10],
+    )
     for cs in sorted(results, key=lambda x: (x.asset_class, x.symbol)):
         if cs.error:
             logger.error(
@@ -1486,9 +1540,35 @@ def execute_cycle_results(
                         config.MIN_ORDER_NOTIONAL_USD,
                         dt_et.now(pytz.timezone("America/New_York")).strftime("%H:%M"),
                     )
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="buy",
+                        decision="rejected",
+                        reason_code=reason,
+                        score=eff_score,
+                        notional=notional,
+                        quantity=qty,
+                        price=mid,
+                        meta={"sleeve": bd.get("sleeve"), "cap_notional": bd.get("cap_notional")},
+                    )
                     out["holds"] += 1
                     continue
-                r = stock_broker.submit_market_order("buy", cs.symbol, qty)
+                r = stock_broker.submit_market_order("buy", cs.symbol, qty, notional=notional)
+                _persist_decision(
+                    cycle_id=cid,
+                    asset_class=cs.asset_class,
+                    symbol=cs.symbol,
+                    side="buy",
+                    decision="taken" if r.ok else "rejected",
+                    reason_code=getattr(r, "reason_code", None) or ("ALPACA_ORDER_SUBMITTED" if r.ok else "ALPACA_ORDER_REJECTED"),
+                    score=eff_score,
+                    notional=notional,
+                    quantity=qty,
+                    price=mid,
+                    meta={"order_message": getattr(r, "message", None)},
+                )
                 if r.ok:
                     out["buys"] += 1
                     _ensure_exit_trade_logged(
@@ -1516,9 +1596,23 @@ def execute_cycle_results(
                     entry = float(pos.avg_price) if pos is not None else float(mid)
                     trader.set_telegram_on_fills(False)
                     try:
-                        r = stock_broker.submit_market_order("sell", cs.symbol, live_qty)
+                        sell_notional = float(live_qty) * float(mid)
+                        r = stock_broker.submit_market_order("sell", cs.symbol, live_qty, notional=sell_notional)
                     finally:
                         trader.set_telegram_on_fills(True)
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="sell",
+                        decision="taken" if r.ok else "rejected",
+                        reason_code=getattr(r, "reason_code", None) or ("ALPACA_ORDER_SUBMITTED" if r.ok else "ALPACA_ORDER_REJECTED"),
+                        score=eff_score,
+                        notional=live_qty * mid,
+                        quantity=live_qty,
+                        price=mid,
+                        meta={"entry_price": entry, "order_message": getattr(r, "message", None)},
+                    )
                     if r.ok:
                         out["sells"] += 1
                         _ensure_exit_trade_logged(
@@ -1596,6 +1690,19 @@ def run_trading_cycle_once(
         cap = int(max_sym)
         tasks = tasks[:cap]
 
+    try:
+        from risk import capital_stage_manager as _csm
+        logger.info(_csm.format_log_line(equity))
+    except Exception:
+        logger.debug("capital_stage_manager log skipped", exc_info=True)
+    logger.info(
+        "[exec_path] universe_count={} tasks={} mode={} live_armed={}",
+        len(tasks),
+        len(tasks),
+        config.MODE,
+        config.trading_is_live(),
+    )
+
     cross_deltas = _stock_cross_score_deltas(tasks)
     results: list[CycleSignal] = []
     with ThreadPoolExecutor(max_workers=CYCLE_WORKERS) as pool:
@@ -1622,7 +1729,10 @@ def run_trading_cycle_once(
             prices_dict[str(r.symbol)] = float(r.mid)
     trader.mark_to_market(prices_dict)
 
-    summary = execute_cycle_results(trader, results, rt)
+    import uuid as _uuid
+
+    cid = _uuid.uuid4().hex[:10]
+    summary = execute_cycle_results(trader, results, rt, cycle_id=cid)
     summary["stop_events"] = lines
     summary["analyzed"] = len(results)
     sorted_crypto_scores = sorted(
@@ -1647,6 +1757,26 @@ def run_trading_cycle_once(
             _calibrator.resolve_calibrations(conn)
     except Exception:
         logger.debug("Sprint11 resolve_calibrations skipped", exc_info=True)
+    try:
+        from learning import mistake_analyzer as _ma
+
+        n_mistakes = _ma.record_mistakes_for_recent_trades(config.DB_PATH)
+        if n_mistakes:
+            logger.info("[mistakes] recorded {} new lessons", n_mistakes)
+    except Exception:
+        logger.debug("mistake recording skipped", exc_info=True)
+    try:
+        from data import data_store as _ds
+
+        n_locks = _ds.get_db_lock_count()
+        if n_locks > 0:
+            with get_connection() as conn:
+                trade_logger.log_ops_metric(
+                    conn, metric_name="db_lock", value=float(n_locks), window_label="cycle"
+                )
+            _ds.reset_db_lock_count()
+    except Exception:
+        logger.debug("db_lock metric flush skipped", exc_info=True)
     cycle_alpaca_account = None
     try:
         cli = stock_broker.get_rest_client()
@@ -1837,6 +1967,17 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
                 logger.info("[startup] Ghost trades wiped, synced from Alpaca")
             except Exception:
                 logger.exception("Alpaca DB sync failed")
+        try:
+            from data.data_store import reconcile_positions_on_startup
+
+            reconcile_positions_on_startup(config.DB_PATH, cli, mode=config.MODE)
+        except Exception:
+            logger.exception("[startup] reconcile_positions_on_startup failed")
+    logger.info(
+        "[startup] live_safety={} scalper_enabled={}",
+        config.live_safety_status(),
+        config.scalper_paper_enabled(),
+    )
     _persist_portfolio_snapshot(
         trader,
         meta={
@@ -1939,6 +2080,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="QuantBot Sprint 9 worker")
     parser.add_argument("--test-universe", action="store_true", help="Print top universe symbols and exit")
     parser.add_argument("--test-cycle", action="store_true", help="Run one trading cycle and exit")
+    parser.add_argument(
+        "--check-promotion-gates",
+        action="store_true",
+        help="Print PASS/FAIL for paper-to-live promotion gates and exit",
+    )
     args = parser.parse_args()
     if args.test_universe:
         cmd_test_universe()
@@ -1946,6 +2092,12 @@ def main() -> None:
     if args.test_cycle:
         cmd_test_cycle()
         return
+    if args.check_promotion_gates:
+        setup_logging()
+        init_schema()
+        from risk import promotion_gates as _pg
+
+        sys.exit(_pg.print_cli_report())
     run_worker_forever()
 
 
