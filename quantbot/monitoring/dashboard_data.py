@@ -18,7 +18,6 @@ from market_hours import nyse_regular_session_open
 
 _SYNC_REASON_CODES_FOR_MATCHING = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
 _SYNC_REASON_CODES_FOR_STATS = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
-_PAPER_BASELINE_EQUITY = 100.0
 
 # Cache durations for heavy Alpaca calls. WS pushes every 2s; portfolio account
 # heartbeat is fast enough to refresh each tick, but order/history fetches are
@@ -287,7 +286,7 @@ def get_real_portfolio(rest_client: Any) -> dict[str, Any]:
 
     equity = _safe_float(getattr(account, "equity", 0))
     cash = _safe_float(getattr(account, "cash", 0))
-    starting_equity = _PAPER_BASELINE_EQUITY
+    starting_equity = float(config.STARTING_BALANCE)
 
     pnl_dollars = equity - starting_equity
     pnl_pct = (pnl_dollars / starting_equity) * 100.0 if starting_equity else 0.0
@@ -540,8 +539,8 @@ def build_dashboard_payload(
     elif latest:
         try:
             current_equity = float(latest["equity_total"])
-            pnl_dollars = current_equity - _PAPER_BASELINE_EQUITY
-            pnl_pct = (pnl_dollars / _PAPER_BASELINE_EQUITY) * 100.0
+            pnl_dollars = current_equity - float(config.STARTING_BALANCE)
+            pnl_pct = (pnl_dollars / float(config.STARTING_BALANCE)) * 100.0
         except (TypeError, ValueError, KeyError):
             pnl_pct = None
             pnl_dollars = None

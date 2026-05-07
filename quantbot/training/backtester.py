@@ -173,17 +173,19 @@ def run_backtest_ohlcv(
     start_cash: float = 10_000.0,
     lookback: int = 60,
     verbose: bool = False,
+    quiet: bool = False,
 ) -> BacktestResult:
     """
     Long-only, all-in: BUY uses full cash at close; SELL liquidates full position.
     Uses continuous per-bar signals + BACKTEST buy/sell thresholds.
     """
-    print(
-        "[backtest] runtime thresholds -> "
-        f"live BUY/SELL: {config.BOT_CONFIG_DEFAULTS['buy_threshold']}/{config.BOT_CONFIG_DEFAULTS['sell_threshold']} | "
-        f"backtest BUY/SELL: {os.getenv('BACKTEST_BUY_THRESHOLD', '0.035')}/{config.BACKTEST_SELL_THRESHOLD} | "
-        f"exit-long-if-score<: {config.BACKTEST_EXIT_LONG_SCORE}"
-    )
+    if not quiet:
+        print(
+            "[backtest] runtime thresholds -> "
+            f"live BUY/SELL: {config.BOT_CONFIG_DEFAULTS['buy_threshold']}/{config.BOT_CONFIG_DEFAULTS['sell_threshold']} | "
+            f"backtest BUY/SELL: {os.getenv('BACKTEST_BUY_THRESHOLD', '0.035')}/{config.BACKTEST_SELL_THRESHOLD} | "
+            f"exit-long-if-score<: {config.BACKTEST_EXIT_LONG_SCORE}"
+        )
 
     df = ohlcv.copy()
     if "Close" not in df.columns:
@@ -307,7 +309,7 @@ def run_backtest_ohlcv(
 def run_backtest_yfinance(symbol: str, days: int = 90, **kwargs: Any) -> BacktestResult:
     """Download ~`days` of daily data then run `run_backtest_ohlcv`."""
     df = load_yfinance_history(symbol, days=days)
-    return run_backtest_ohlcv(df, symbol=symbol.strip().upper(), **kwargs)
+    return run_backtest_ohlcv(df, symbol=str(symbol).strip().upper(), **kwargs)
 
 
 def run_backtest_default(**kwargs: Any) -> BacktestResult:

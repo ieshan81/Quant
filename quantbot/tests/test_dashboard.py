@@ -15,7 +15,10 @@ from monitoring.dashboard import create_app
 @pytest.fixture()
 def dash_app(tmp_path: Path):
     db = tmp_path / "t.sqlite3"
-    with patch.object(config, "DB_PATH", db):
+    # Force SQLite-only dashboard payload (no live Alpaca calls in CI / dev with keys).
+    with patch.object(config, "DB_PATH", db), patch(
+        "execution.stock_broker.get_rest_client", return_value=None
+    ):
         app = create_app()
         app.config["TESTING"] = True
         yield app

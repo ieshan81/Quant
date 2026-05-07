@@ -20,12 +20,15 @@ def _rt() -> dict[str, float]:
     return {k: float(v[0]) for k, v in BOT_CONFIG_DEFAULTS.items()}
 
 
-def test_buy_notional_respects_effective_sleeve_cap() -> None:
+def test_buy_notional_respects_effective_sleeve_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No small-account boost; sizing uses paper sleeve (no Alpaca override)."""
+    monkeypatch.setattr(config, "EQUITY_SCALE_REF_USD", 0.0)
+    monkeypatch.setattr(mw.stock_broker, "get_rest_client", lambda: None)
     t = create_paper_trader(persist_sqlite=False)
     rt = _rt()
-    n = mw._buy_notional(t, "stock", rt)
+    n, detail = mw._buy_notional_breakdown(t, "stock", rt)
     sleeve = t.equity_stocks()
-    eff = mw._effective_max_position_pct_for_sizing(sleeve, rt["max_position_pct"])
+    eff = float(detail["effective_max_position_pct"])
     assert n <= sleeve * eff + 1e-6
 
 
@@ -141,6 +144,8 @@ def test_max_hold_force_exit_stock(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_sell("stock", "SHS", 1.0, 100.0, reason_code="short_entry", meta=None).ok
+    monkeypatch.setattr(mw.stock_broker, "fetch_alpaca_open_positions", lambda: [])
+    monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, broker: 0.0)
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 94.0)
     monkeypatch.setattr(
         mw.stock_broker,

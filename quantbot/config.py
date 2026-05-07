@@ -80,7 +80,14 @@ FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
 # Paper trading worker (`main.py` default when mode is paper)
 PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))
 
-# Sprint 4 — risk (defaults from technical brief §6; paper defaults scaled to $100 base)
+# RL nudge: auto-adjust buy/sell/crypto_buy thresholds from recent closed-trade win rate
+# (``learning/rl_nudge.py``). Runs after each worker cycle and each ``main.py`` paper loop iteration.
+RL_NUDGE_ENABLED = os.getenv("RL_NUDGE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+RL_NUDGE_MIN_TRADES = int(os.getenv("RL_NUDGE_MIN_TRADES", "30"))
+
+# Sprint 4 — risk (defaults from technical brief §6)
+# STARTING_BALANCE: kill-switch baseline + dashboard PnL% denominator when not using Alpaca-only view.
+# Set this to your **initial** funded amount (e.g. 100) — never hard-coded in trading logic; worker reads live equity from Alpaca.
 STARTING_BALANCE = float(os.getenv("STARTING_BALANCE", "100"))
 KILL_SWITCH_PCT = float(os.getenv("KILL_SWITCH_PCT", "0.15"))  # halt if balance drops 15% from baseline
 MAX_PER_TRADE_RISK_PCT = float(os.getenv("MAX_PER_TRADE_RISK_PCT", "0.02"))
@@ -89,14 +96,37 @@ MAX_PORTFOLIO_DEPLOYED_PCT = float(os.getenv("MAX_PORTFOLIO_DEPLOYED_PCT", "0.60
 TARGET_CRYPTO_ALLOCATION = float(os.getenv("TARGET_CRYPTO_ALLOCATION", "0.50"))
 COOLDOWN_MINUTES_AFTER_STOP = int(os.getenv("COOLDOWN_MINUTES_AFTER_STOP", "30"))
 
+# Cross-asset spillover: ``training/cross_asset_tune.py`` writes JSON; worker adds score delta.
+CROSS_ASSET_ENABLED = os.getenv("CROSS_ASSET_ENABLED", "0").strip().lower() in ("1", "true", "yes")
+_cross_edges_env = os.getenv("CROSS_ASSET_EDGES_PATH", "").strip()
+if _cross_edges_env:
+    _cep = Path(_cross_edges_env).expanduser()
+    CROSS_ASSET_EDGES_PATH = (ROOT_DIR / _cep).resolve() if not _cep.is_absolute() else _cep.resolve()
+else:
+    CROSS_ASSET_EDGES_PATH = (PERSIST_DIR / "cross_asset_edges.json")
+CROSS_ASSET_SCORE_GAIN = float(os.getenv("CROSS_ASSET_SCORE_GAIN", "0.12"))
+CROSS_ASSET_RET_SCALE = float(os.getenv("CROSS_ASSET_RET_SCALE", "0.015"))
+CROSS_ASSET_DELTA_CLAMP = float(os.getenv("CROSS_ASSET_DELTA_CLAMP", "0.22"))
+
 # Backtest (`training/backtester`) uses smooth [-1,1] inputs + these thresholds
 BACKTEST_SELL_THRESHOLD = float(os.getenv("BACKTEST_SELL_THRESHOLD", "-0.06"))
 # When long, exit if combined score falls below this (enables multiple round-trips)
 BACKTEST_EXIT_LONG_SCORE = float(os.getenv("BACKTEST_EXIT_LONG_SCORE", "0.128"))
 
-# Sprint 5 — paper trading (technical brief §7; $100 Alpaca-scale defaults)
-PAPER_STOCKS_STARTING_CASH = float(os.getenv("PAPER_STOCKS_STARTING_CASH", "100"))
-PAPER_CRYPTO_STARTING_CASH = float(os.getenv("PAPER_CRYPTO_STARTING_CASH", "100"))
+# Sprint 5 — paper trading ledger (defaults follow STARTING_BALANCE unless overridden)
+PAPER_STOCKS_STARTING_CASH = float(
+    os.getenv("PAPER_STOCKS_STARTING_CASH", str(STARTING_BALANCE))
+)
+PAPER_CRYPTO_STARTING_CASH = float(
+    os.getenv("PAPER_CRYPTO_STARTING_CASH", str(STARTING_BALANCE))
+)
+
+# Dynamic sizing: when live Alpaca equity is *below* this USD reference, bump effective
+# max_position_pct up to SMALL_ACCOUNT_POSITION_BOOST_MAX× (still capped at 100% of sleeve).
+# Example: ref=1000, equity=100 → up to 2.5× larger per-trade cap (more aggressive on tiny accounts).
+# Set EQUITY_SCALE_REF_USD=0 to disable boosting (always 1×).
+EQUITY_SCALE_REF_USD = float(os.getenv("EQUITY_SCALE_REF_USD", "1000"))
+SMALL_ACCOUNT_POSITION_BOOST_MAX = float(os.getenv("SMALL_ACCOUNT_POSITION_BOOST_MAX", "2.5"))
 
 # Minimum USD notional before `_can_buy` proceeds (Alpaca-friendly ~$1 floor)
 MIN_ORDER_NOTIONAL_USD = float(os.getenv("MIN_ORDER_NOTIONAL_USD", "1.0"))

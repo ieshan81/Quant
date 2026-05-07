@@ -37,6 +37,11 @@ from monitoring import alerts, trade_logger
 from risk import drawdown_guard
 from risk import portfolio_limiter
 from signals import momentum, signal_combiner
+from signals.cross_asset_learn import (
+    follower_score_deltas,
+    leader_simple_returns,
+    load_edges_file,
+)
 from signals.sentiment_signal import sentiment_for_symbol
 from training.backtester import load_yfinance_history
 from training.paper_trader import AssetClass, PaperTrader, create_paper_trader
@@ -127,6 +132,34 @@ def load_stock_bars(symbol: str, bars: int = 60) -> pd.DataFrame | None:
     except Exception as exc:
         logger.warning("yfinance {}: {}", symbol, exc)
         return None
+
+
+def _stock_cross_score_deltas(tasks: list[tuple[AssetClass, str]]) -> dict[str, float]:
+    """Optional score bump from learned leader→follower edges (see training/cross_asset_tune.py)."""
+    if not bool(getattr(config, "CROSS_ASSET_ENABLED", False)):
+        return {}
+    edges = load_edges_file(Path(config.CROSS_ASSET_EDGES_PATH))
+    if not edges:
+        logger.debug("cross-asset enabled but no edges at {}", config.CROSS_ASSET_EDGES_PATH)
+        return {}
+    leaders = {e.leader.upper() for e in edges}
+
+    def _closes(sym: str) -> pd.Series | None:
+        df = load_stock_bars(sym.strip().upper(), bars=12)
+        if df is None or len(df) < 2:
+            return None
+        return df["Close"]
+
+    leader_rets = leader_simple_returns(leaders, close_loader=_closes)
+    stock_syms = {sym.strip().upper() for ac, sym in tasks if ac == "stock"}
+    return follower_score_deltas(
+        edges,
+        leader_rets,
+        stock_syms,
+        ret_scale=float(getattr(config, "CROSS_ASSET_RET_SCALE", 0.015)),
+        gain=float(getattr(config, "CROSS_ASSET_SCORE_GAIN", 0.12)),
+        clamp=float(getattr(config, "CROSS_ASSET_DELTA_CLAMP", 0.22)),
+    )
 
 
 def load_crypto_bars(_market_ctx: Any, symbol: str, bars: int = 60, *, min_rows: int = 28) -> pd.DataFrame | None:
@@ -513,6 +546,7 @@ def analyze_symbol(
     symbol: str,
     market_ctx: Any,
     rt: dict[str, float],
+    cross_score_delta: float = 0.0,
 ) -> CycleSignal:
     sym = symbol.strip()
     if asset_class == "stock":
@@ -597,6 +631,18 @@ def analyze_symbol(
     score, action = signal_combiner.evaluate(
         sigs_eval, symbol=label, asset_class=asset_class, thresholds=th
     )
+    if cross_score_delta and abs(float(cross_score_delta)) > 1e-12:
+        score = max(-1.0, min(1.0, float(score) + float(cross_score_delta)))
+        action = signal_combiner.trading_action(
+            score, asset_class=asset_class, thresholds=th
+        )
+        logger.debug(
+            "{} cross_asset delta={:.4f} -> score={:.4f} {}",
+            label,
+            float(cross_score_delta),
+            score,
+            action,
+        )
     rsi_raw = float("nan")
     if n_bars >= 14:
         rsi_ser = momentum.compute_rsi(close.astype(float), 14).dropna()
@@ -697,6 +743,12 @@ def _buy_notional_breakdown(
         logger.debug("alpaca equity sizing fallback to trader sleeve", exc_info=True)
     rt_max_pct = float(rt["max_position_pct"])
     eff_pct = _effective_max_position_pct_for_sizing(sleeve, rt_max_pct)
+    ref = float(getattr(config, "EQUITY_SCALE_REF_USD", 0.0) or 0.0)
+    boost_max = float(getattr(config, "SMALL_ACCOUNT_POSITION_BOOST_MAX", 2.5) or 2.5)
+    equity_boost = 1.0
+    if ref > 0.0 and sleeve > 0.0 and sleeve < ref:
+        equity_boost = min(boost_max, max(1.0, ref / sleeve))
+    eff_pct = min(1.0, eff_pct * equity_boost)
     kelly_frac = float(rt["kelly_fraction"])
     cap10 = max(0.0, sleeve * eff_pct)
     k_notional = max(0.0, sleeve * kelly_frac)
@@ -712,6 +764,7 @@ def _buy_notional_breakdown(
         "sleeve": sleeve,
         "rt_max_position_pct": rt_max_pct,
         "effective_max_position_pct": eff_pct,
+        "equity_scale_boost": equity_boost,
         "cap_notional": cap10,
         "kelly_notional": k_notional,
     }
@@ -1543,9 +1596,20 @@ def run_trading_cycle_once(
         cap = int(max_sym)
         tasks = tasks[:cap]
 
+    cross_deltas = _stock_cross_score_deltas(tasks)
     results: list[CycleSignal] = []
     with ThreadPoolExecutor(max_workers=CYCLE_WORKERS) as pool:
-        futs = {pool.submit(analyze_symbol, ac, sym, market_ctx, rt): (ac, sym) for ac, sym in tasks}
+        futs = {
+            pool.submit(
+                analyze_symbol,
+                ac,
+                sym,
+                market_ctx,
+                rt,
+                float(cross_deltas.get(sym.strip().upper(), 0.0)) if ac == "stock" else 0.0,
+            ): (ac, sym)
+            for ac, sym in tasks
+        }
         for fut in as_completed(futs):
             try:
                 results.append(fut.result())

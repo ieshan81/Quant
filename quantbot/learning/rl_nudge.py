@@ -9,6 +9,7 @@ from typing import Any
 
 from loguru import logger
 
+import config
 from data import data_store
 from monitoring import alerts
 
@@ -86,11 +87,18 @@ def _set_cfg(conn: sqlite3.Connection, key: str, value: float) -> None:
     )
 
 
-def maybe_nudge_thresholds(min_trades: int = 30) -> None:
+def maybe_nudge_thresholds(min_trades: int | None = None) -> None:
     """
     After every ``min_trades`` new closed round-trips since the last nudge, adjust
     buy/sell/crypto buy thresholds based on win rate of the most recent ``min_trades`` pairs.
+
+    ``min_trades`` defaults to ``config.RL_NUDGE_MIN_TRADES`` when omitted.
+    Set ``RL_NUDGE_ENABLED=0`` in env to disable.
     """
+    if not bool(getattr(config, "RL_NUDGE_ENABLED", True)):
+        return
+    mt = int(getattr(config, "RL_NUDGE_MIN_TRADES", 30)) if min_trades is None else int(min_trades)
+    mt = max(5, mt)
     try:
         with data_store.get_connection() as conn:
             pairs = _fifo_closed_pairs(conn)
@@ -100,10 +108,10 @@ def maybe_nudge_thresholds(min_trades: int = 30) -> None:
                 ("rl_pair_checkpoint",),
             ).fetchone()
             checkpoint = int(float(row[0])) if row else 0
-            if n < min_trades or (n - checkpoint) < min_trades:
+            if n < mt or (n - checkpoint) < mt:
                 return
 
-            window = pairs[-min_trades:]
+            window = pairs[-mt:]
             wins = sum(1 for b, s in window if s > b)
             win_rate = wins / float(len(window))
 

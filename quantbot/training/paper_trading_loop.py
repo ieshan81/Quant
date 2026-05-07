@@ -161,6 +161,12 @@ def run_paper_trading_loop(*, max_iterations: int | None = None) -> None:
                 _run_symbol_once(trader, "stock", sym)
             for sym in config.CRYPTO_QUOTE_SYMBOLS:
                 _run_symbol_once(trader, "crypto", sym)
+            try:
+                from learning.rl_nudge import maybe_nudge_thresholds
+
+                maybe_nudge_thresholds()
+            except Exception:
+                logger.debug("RL nudge after paper loop iteration failed", exc_info=True)
         it += 1
         if max_iterations is not None and it >= max_iterations:
             break
