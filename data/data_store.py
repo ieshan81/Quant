@@ -250,6 +250,48 @@ CREATE TABLE IF NOT EXISTS strategy_versions (
 
 CREATE INDEX IF NOT EXISTS idx_strategy_active ON strategy_versions(strategy_name, active);
 
+-- DB-backed strategy parameter store (normal tuning path).
+CREATE TABLE IF NOT EXISTS strategy_parameters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_name TEXT NOT NULL,
+    capital_stage TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    value_type TEXT NOT NULL DEFAULT 'float',
+    min_value REAL,
+    max_value REAL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    UNIQUE(strategy_name, capital_stage, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_parameters_lookup
+    ON strategy_parameters(strategy_name, capital_stage, active);
+
+CREATE TABLE IF NOT EXISTS strategy_runtime_state (
+    strategy_name TEXT NOT NULL,
+    capital_stage TEXT NOT NULL,
+    current_state_json TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(strategy_name, capital_stage)
+);
+
+CREATE TABLE IF NOT EXISTS adaptive_parameter_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    strategy_name TEXT NOT NULL,
+    capital_stage TEXT NOT NULL,
+    key TEXT NOT NULL,
+    old_value TEXT,
+    new_value TEXT,
+    reason TEXT,
+    meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_adaptive_changes_lookup
+    ON adaptive_parameter_changes(strategy_name, capital_stage, created_at DESC);
+
 -- Lightweight ops metrics (counter-style). Used for SQLite lock tracking and
 -- price-error counts. ``window_label`` is the bucket key ('total', 'cycle', etc).
 CREATE TABLE IF NOT EXISTS ops_metrics (
@@ -789,6 +831,231 @@ def reconcile_positions_on_startup(
         summary["reset_paper"],
     )
     return summary
+
+
+def _default_aggressive_micro_scalp_rows(equity: float) -> list[dict[str, Any]]:
+    eq = max(1.0, float(equity or config.STARTING_BALANCE or 100.0))
+    # Seed baseline values in DB; adaptive manager computes effective values each cycle.
+    return [
+        {"key": "max_notional_crypto", "value": min(3.00, eq * 0.03), "type": "float", "min": 0.5, "max": 5.0},
+        {"key": "max_notional_stock", "value": min(5.00, eq * 0.05), "type": "float", "min": 1.0, "max": 10.0},
+        {"key": "min_net_profit_pct", "value": 0.004, "type": "float", "min": 0.001, "max": 0.05},
+        {"key": "take_profit_pct", "value": 0.006, "type": "float", "min": 0.002, "max": 0.03},
+        {"key": "stop_loss_pct", "value": 0.003, "type": "float", "min": 0.001, "max": 0.02},
+        {"key": "trailing_stop_pct", "value": 0.002, "type": "float", "min": 0.0005, "max": 0.02},
+        {"key": "max_hold_seconds", "value": 180, "type": "int", "min": 30, "max": 1200},
+        {"key": "min_volume_spike", "value": 1.8, "type": "float", "min": 1.0, "max": 5.0},
+        {"key": "min_momentum_30s", "value": 0.0025, "type": "float", "min": 0.0005, "max": 0.05},
+        {"key": "min_momentum_60s", "value": 0.0040, "type": "float", "min": 0.0005, "max": 0.08},
+        {"key": "max_spread_pct", "value": 0.0030, "type": "float", "min": 0.0005, "max": 0.02},
+        {"key": "cooldown_after_loss_seconds", "value": 900, "type": "int", "min": 60, "max": 7200},
+        {"key": "max_trades_per_hour", "value": 6, "type": "int", "min": 1, "max": 60},
+        {"key": "max_daily_loss", "value": min(2.00, eq * 0.02), "type": "float", "min": 0.25, "max": 5.0},
+        {"key": "paused", "value": 0, "type": "bool", "min": 0, "max": 1},
+    ]
+
+
+def seed_default_strategy_parameters(
+    db_path: Path | str | None = None,
+    *,
+    strategy_name: str = "aggressive_micro_scalp",
+    capital_stage: str = "MICRO",
+    equity: float | None = None,
+) -> int:
+    """Insert DB-backed default rows if missing. Returns inserted row count."""
+    path = _resolved_db_path(db_path)
+    ensure_db_path(path)
+    rows = _default_aggressive_micro_scalp_rows(float(equity or config.STARTING_BALANCE))
+    inserted = 0
+    with get_connection(path) as conn:
+        for r in rows:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO strategy_parameters (
+                    strategy_name, capital_stage, key, value, value_type,
+                    min_value, max_value, updated_at, source, active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 1)
+                """,
+                (
+                    strategy_name,
+                    capital_stage,
+                    str(r["key"]),
+                    str(r["value"]),
+                    str(r["type"]),
+                    float(r["min"]),
+                    float(r["max"]),
+                    "seed_default",
+                ),
+            )
+            if int(cur.rowcount or 0) > 0:
+                inserted += 1
+    return inserted
+
+
+def fetch_strategy_parameters(
+    strategy_name: str,
+    capital_stage: str,
+    db_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT id, strategy_name, capital_stage, key, value, value_type, min_value,
+                   max_value, updated_at, source, active
+            FROM strategy_parameters
+            WHERE strategy_name = ? AND capital_stage = ? AND active = 1
+            ORDER BY key ASC
+            """,
+            (strategy_name, capital_stage),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def set_strategy_parameter(
+    strategy_name: str,
+    capital_stage: str,
+    key: str,
+    value: Any,
+    *,
+    value_type: str = "float",
+    min_value: float | None = None,
+    max_value: float | None = None,
+    source: str = "api",
+    db_path: Path | str | None = None,
+) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO strategy_parameters (
+                strategy_name, capital_stage, key, value, value_type, min_value, max_value, updated_at, source, active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 1)
+            ON CONFLICT(strategy_name, capital_stage, key) DO UPDATE SET
+                value = excluded.value,
+                value_type = excluded.value_type,
+                min_value = COALESCE(excluded.min_value, strategy_parameters.min_value),
+                max_value = COALESCE(excluded.max_value, strategy_parameters.max_value),
+                updated_at = excluded.updated_at,
+                source = excluded.source,
+                active = 1
+            """,
+            (
+                strategy_name,
+                capital_stage,
+                key,
+                str(value),
+                value_type,
+                min_value,
+                max_value,
+                source,
+            ),
+        )
+
+
+def reset_strategy_parameters_to_defaults(
+    strategy_name: str,
+    capital_stage: str,
+    *,
+    equity: float | None = None,
+    db_path: Path | str | None = None,
+) -> dict[str, Any]:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "DELETE FROM strategy_parameters WHERE strategy_name = ? AND capital_stage = ?",
+            (strategy_name, capital_stage),
+        )
+    n = seed_default_strategy_parameters(
+        db_path,
+        strategy_name=strategy_name,
+        capital_stage=capital_stage,
+        equity=equity,
+    )
+    return {"strategy_name": strategy_name, "capital_stage": capital_stage, "seeded_rows": n}
+
+
+def fetch_strategy_runtime_state(
+    strategy_name: str,
+    capital_stage: str,
+    db_path: Path | str | None = None,
+) -> dict[str, Any] | None:
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT strategy_name, capital_stage, current_state_json, updated_at
+            FROM strategy_runtime_state
+            WHERE strategy_name = ? AND capital_stage = ?
+            """,
+            (strategy_name, capital_stage),
+        ).fetchone()
+        return _row_to_dict(row) if row else None
+
+
+def upsert_strategy_runtime_state(
+    strategy_name: str,
+    capital_stage: str,
+    current_state_json: str,
+    db_path: Path | str | None = None,
+) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO strategy_runtime_state (strategy_name, capital_stage, current_state_json, updated_at)
+            VALUES (?, ?, ?, datetime('now'))
+            ON CONFLICT(strategy_name, capital_stage) DO UPDATE SET
+                current_state_json = excluded.current_state_json,
+                updated_at = excluded.updated_at
+            """,
+            (strategy_name, capital_stage, current_state_json),
+        )
+
+
+def log_adaptive_parameter_change(
+    strategy_name: str,
+    capital_stage: str,
+    key: str,
+    old_value: Any,
+    new_value: Any,
+    reason: str,
+    meta_json: str | None,
+    db_path: Path | str | None = None,
+) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO adaptive_parameter_changes (
+                strategy_name, capital_stage, key, old_value, new_value, reason, meta_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                strategy_name,
+                capital_stage,
+                key,
+                None if old_value is None else str(old_value),
+                None if new_value is None else str(new_value),
+                reason,
+                meta_json,
+            ),
+        )
+
+
+def fetch_adaptive_parameter_changes(
+    strategy_name: str,
+    capital_stage: str,
+    *,
+    limit: int = 20,
+    db_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT id, created_at, strategy_name, capital_stage, key, old_value, new_value, reason, meta_json
+            FROM adaptive_parameter_changes
+            WHERE strategy_name = ? AND capital_stage = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (strategy_name, capital_stage, int(limit)),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
 
 
 def _alpaca_ts_to_sqlite(ts: Any) -> str:

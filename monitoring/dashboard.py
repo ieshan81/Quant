@@ -1376,6 +1376,70 @@ def create_app() -> Flask:
             mimetype="application/json",
         )
 
+    @app.get("/api/strategy-parameters")
+    def api_strategy_parameters() -> Response:
+        strategy_name = str(request.args.get("strategy_name", "aggressive_micro_scalp") or "aggressive_micro_scalp")
+        capital_stage = str(request.args.get("capital_stage", "MICRO") or "MICRO").upper()
+        rows = data_store.fetch_strategy_parameters(strategy_name, capital_stage)
+        return Response(json.dumps(rows, default=str), mimetype="application/json")
+
+    @app.get("/api/strategy-effective-parameters")
+    def api_strategy_effective_parameters() -> Response:
+        strategy_name = str(request.args.get("strategy_name", "aggressive_micro_scalp") or "aggressive_micro_scalp")
+        capital_stage = str(request.args.get("capital_stage", "MICRO") or "MICRO").upper()
+        row = data_store.fetch_strategy_runtime_state(strategy_name, capital_stage) or {}
+        payload: dict[str, Any] = {}
+        raw = row.get("current_state_json")
+        if raw:
+            try:
+                payload = json.loads(str(raw))
+            except json.JSONDecodeError:
+                payload = {}
+        return Response(json.dumps(payload, default=str), mimetype="application/json")
+
+    @app.get("/api/adaptive-parameter-changes")
+    def api_adaptive_parameter_changes() -> Response:
+        strategy_name = str(request.args.get("strategy_name", "aggressive_micro_scalp") or "aggressive_micro_scalp")
+        capital_stage = str(request.args.get("capital_stage", "MICRO") or "MICRO").upper()
+        limit = int(request.args.get("limit", 20) or 20)
+        rows = data_store.fetch_adaptive_parameter_changes(strategy_name, capital_stage, limit=limit)
+        return Response(json.dumps(rows, default=str), mimetype="application/json")
+
+    @app.post("/api/strategy-parameters/reset")
+    def api_strategy_parameters_reset() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        strategy_name = str(body.get("strategy_name", "aggressive_micro_scalp") or "aggressive_micro_scalp")
+        capital_stage = str(body.get("capital_stage", "MICRO") or "MICRO").upper()
+        equity = body.get("equity")
+        result = data_store.reset_strategy_parameters_to_defaults(
+            strategy_name,
+            capital_stage,
+            equity=float(equity) if equity is not None else None,
+        )
+        return jsonify({"ok": True, "result": result})
+
+    @app.post("/api/strategy-parameters/pause")
+    def api_strategy_parameters_pause() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        strategy_name = str(body.get("strategy_name", "aggressive_micro_scalp") or "aggressive_micro_scalp")
+        capital_stage = str(body.get("capital_stage", "MICRO") or "MICRO").upper()
+        pause = bool(body.get("pause", True))
+        data_store.set_strategy_parameter(
+            strategy_name,
+            capital_stage,
+            "paused",
+            1 if pause else 0,
+            value_type="bool",
+            min_value=0,
+            max_value=1,
+            source="dashboard_pause",
+        )
+        return jsonify({"ok": True, "paused": pause})
+
     @app.post("/api/sync-alpaca")
     def api_sync_alpaca() -> Any:
         if not _check_auth():

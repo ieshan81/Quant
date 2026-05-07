@@ -49,11 +49,26 @@ Default mode is paper. Real Alpaca orders are blocked unless **all four** of the
 3. `PROMOTION_GATES_PASSED=1`
 4. `LIVE_MAX_NOTIONAL_PER_TRADE=` greater than zero
 
-Each refused order is logged with reason code `SHADOW_LIVE_BLOCKED`.
+Each refused order is logged with reason code `LIVE_ORDER_BLOCKED`.
 
-### Crypto micro-scalping (paper-first)
+### Crypto micro-scalping (paper-first, DB-configured)
 
-`strategies/crypto_scalper.py` is a deterministic momentum scalper (no LLM). It only enters when the expected edge clears fees + slippage + safety, the spread is under `SCALP_MAX_SPREAD_PCT`, and the pump score is above `SCALP_ENTRY_SCORE`. Defaults size each entry at **$3** so a $100 paper account can run safely. Every entry / rejection is logged to the `crypto_scalp_events` SQLite table.
+`strategies/crypto_scalper.py` is deterministic (no LLM). Tunable parameters are now DB-backed in `strategy_parameters` + `strategy_runtime_state`, then snapshotted in `strategy_versions`. Startup seeds defaults for `aggressive_micro_scalp`/`MICRO`; each cycle computes effective parameters from equity, buying power, recent expectancy/win-rate, spread pressure, and rejection counts. Every entry/rejection is logged to `crypto_scalp_events`.
+
+Emergency-only env overrides (optional):
+
+- `AGGRESSIVE_SCALP_ENABLED=1`
+- `AGGRESSIVE_SCALP_FORCE_DISABLED=0`
+- `AGGRESSIVE_SCALP_HARD_MAX_DAILY_LOSS=2.00`
+- `AGGRESSIVE_SCALP_HARD_MAX_NOTIONAL=5.00`
+
+Dashboard/API controls:
+
+- `GET /api/strategy-parameters`
+- `GET /api/strategy-effective-parameters`
+- `GET /api/adaptive-parameter-changes`
+- `POST /api/strategy-parameters/reset`
+- `POST /api/strategy-parameters/pause`
 
 ### Capital stage manager
 

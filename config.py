@@ -221,6 +221,12 @@ SCALP_MAX_NOTIONAL_PER_TRADE = float(os.getenv("SCALP_MAX_NOTIONAL_PER_TRADE", "
 SCALP_DAILY_MAX_LOSS = float(os.getenv("SCALP_DAILY_MAX_LOSS", "2.00"))
 SCALP_COOLDOWN_AFTER_LOSS_SECONDS = int(os.getenv("SCALP_COOLDOWN_AFTER_LOSS_SECONDS", "900"))
 
+# Emergency-only overrides for aggressive scalper. Normal tuning is DB-backed.
+AGGRESSIVE_SCALP_ENABLED = os.getenv("AGGRESSIVE_SCALP_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+AGGRESSIVE_SCALP_FORCE_DISABLED = os.getenv("AGGRESSIVE_SCALP_FORCE_DISABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+AGGRESSIVE_SCALP_HARD_MAX_DAILY_LOSS = float(os.getenv("AGGRESSIVE_SCALP_HARD_MAX_DAILY_LOSS", "2.00"))
+AGGRESSIVE_SCALP_HARD_MAX_NOTIONAL = float(os.getenv("AGGRESSIVE_SCALP_HARD_MAX_NOTIONAL", "5.00"))
+
 
 def scalper_paper_enabled() -> bool:
     """Scalper runs (paper) when ``SCALP_MODE`` selects paper or full enable."""

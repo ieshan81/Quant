@@ -39,6 +39,9 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert data["rl_learning_history"] == []
     assert "calibration" in data
     assert "rsi" in data["calibration"]
+    assert "strategy_parameters" in data
+    assert "strategy_effective_parameters" in data
+    assert "adaptive_parameter_changes" in data
 
 
 def test_api_config_get_and_post(dash_app) -> None:
@@ -258,3 +261,31 @@ def test_api_dashboard_excludes_sync_trades_from_performance(dash_app) -> None:
     perf = data["performance"]
     assert perf["total_trades"] == 2
     assert perf["closed_round_trips"] == 1
+
+
+def test_strategy_parameter_endpoints(dash_app) -> None:
+    client = dash_app.test_client()
+    r0 = client.get("/api/strategy-parameters")
+    assert r0.status_code == 200
+    rows0 = json.loads(r0.data)
+    assert isinstance(rows0, list)
+
+    r1 = client.post("/api/strategy-parameters/reset", json={})
+    assert r1.status_code == 200
+    body1 = json.loads(r1.data)
+    assert body1["ok"] is True
+
+    r2 = client.get("/api/strategy-parameters")
+    rows = json.loads(r2.data)
+    assert any(str(x.get("key")) == "max_notional_crypto" for x in rows)
+
+    r3 = client.post("/api/strategy-parameters/pause", json={"pause": True})
+    assert r3.status_code == 200
+    body3 = json.loads(r3.data)
+    assert body3["ok"] is True
+    assert body3["paused"] is True
+
+    r4 = client.get("/api/strategy-effective-parameters")
+    assert r4.status_code == 200
+    eff = json.loads(r4.data)
+    assert isinstance(eff, dict)

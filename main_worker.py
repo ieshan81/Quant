@@ -1802,11 +1802,46 @@ def run_trading_cycle_once(
         cap = int(max_sym)
         tasks = tasks[:cap]
 
+    stage_name = "MICRO"
     try:
         from risk import capital_stage_manager as _csm
+        stage_name = _csm.stage_from_equity(equity)
         logger.info(_csm.format_log_line(equity))
     except Exception:
         logger.debug("capital_stage_manager log skipped", exc_info=True)
+    try:
+        from learning import adaptive_parameters as _ap
+
+        _ap.ensure_seeded_defaults(equity=equity, stage=stage_name)
+        buying_power = None
+        try:
+            cli = stock_broker.get_rest_client()
+            if cli is not None:
+                acct = cli.get_account()
+                buying_power = float(getattr(acct, "buying_power", 0) or 0)
+        except Exception:
+            logger.debug("adaptive buying_power read failed", exc_info=True)
+        adaptive_state = _ap.compute_effective_parameters(
+            equity=equity,
+            buying_power=buying_power,
+            capital_stage=stage_name,
+        )
+        effective = dict(adaptive_state.get("effective") or {})
+        rt["scalp_take_profit_pct"] = float(effective.get("take_profit_pct", rt.get("take_profit_pct", 0.006)))
+        rt["scalp_stop_loss_pct"] = float(effective.get("stop_loss_pct", rt.get("stop_loss_pct", 0.003)))
+        rt["scalp_trailing_stop_pct"] = float(
+            effective.get("trailing_stop_pct", config.SCALP_TRAILING_STOP_PCT)
+        )
+        logger.info(
+            "[adaptive] stage={} max_notional_crypto={} max_daily_loss={} paused={} reasons={}",
+            stage_name,
+            effective.get("max_notional_crypto"),
+            effective.get("max_daily_loss"),
+            effective.get("paused"),
+            adaptive_state.get("reasons"),
+        )
+    except Exception:
+        logger.debug("adaptive parameters skipped", exc_info=True)
     logger.info(
         "[exec_path] universe_count={} tasks={} mode={} live_armed={}",
         len(tasks),
@@ -2090,6 +2125,16 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         config.live_safety_status(),
         config.scalper_paper_enabled(),
     )
+    try:
+        from learning import adaptive_parameters as _ap
+        from risk import capital_stage_manager as _csm
+
+        eq = float(getattr(alpaca_account, "equity", config.STARTING_BALANCE) or config.STARTING_BALANCE)
+        stage_name = _csm.stage_from_equity(eq)
+        seeded = _ap.ensure_seeded_defaults(equity=eq, stage=stage_name)
+        logger.info("[startup] adaptive defaults ensured stage={} inserted_rows={}", stage_name, seeded)
+    except Exception:
+        logger.debug("adaptive startup seed skipped", exc_info=True)
     _persist_portfolio_snapshot(
         trader,
         meta={

@@ -553,6 +553,7 @@ def build_dashboard_payload(
         {},
         lambda: _capital_stage_block(latest),
     )
+    stage_name = str(capital_stage.get("stage") or "MICRO")
     decisions = _section_db(
         "execution_decisions",
         [],
@@ -585,6 +586,21 @@ def build_dashboard_payload(
         promotion_status = {"passed": False, "gates": []}
 
     safety = config.live_safety_status()
+    strategy_parameters = _section_db(
+        "strategy_parameters",
+        [],
+        lambda: fetch_strategy_parameters_db("aggressive_micro_scalp", stage_name),
+    )
+    strategy_effective = _section_db(
+        "strategy_effective",
+        {},
+        lambda: fetch_strategy_effective_runtime("aggressive_micro_scalp", stage_name),
+    )
+    adaptive_changes = _section_db(
+        "adaptive_changes",
+        [],
+        lambda: fetch_adaptive_changes_db("aggressive_micro_scalp", stage_name, limit=20),
+    )
 
     return {
         "mode": latest.get("mode") if latest else None,
@@ -613,6 +629,9 @@ def build_dashboard_payload(
         "scalper_paper_enabled": config.scalper_paper_enabled(),
         "scalper_live_allowed": config.scalper_live_allowed(),
         "strategy_version": "signal_combiner_v1@2026.05",
+        "strategy_parameters": strategy_parameters,
+        "strategy_effective_parameters": strategy_effective.get("effective", {}),
+        "adaptive_parameter_changes": adaptive_changes,
     }
 
 
@@ -787,3 +806,50 @@ def count_db_lock_metric(conn: sqlite3.Connection | None = None, hours: int = 24
         return int(row[0] or 0)
     except sqlite3.OperationalError:
         return 0
+
+
+def fetch_strategy_parameters_db(
+    strategy_name: str = "aggressive_micro_scalp",
+    capital_stage: str = "MICRO",
+) -> list[dict[str, Any]]:
+    from data import data_store as _ds
+
+    try:
+        return _ds.fetch_strategy_parameters(strategy_name, capital_stage)
+    except Exception:
+        return []
+
+
+def fetch_strategy_effective_runtime(
+    strategy_name: str = "aggressive_micro_scalp",
+    capital_stage: str = "MICRO",
+) -> dict[str, Any]:
+    from data import data_store as _ds
+
+    try:
+        row = _ds.fetch_strategy_runtime_state(strategy_name, capital_stage)
+        if not row:
+            return {}
+        raw = row.get("current_state_json")
+        if not raw:
+            return {}
+        return json.loads(str(raw))
+    except Exception:
+        return {}
+
+
+def fetch_adaptive_changes_db(
+    strategy_name: str = "aggressive_micro_scalp",
+    capital_stage: str = "MICRO",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    from data import data_store as _ds
+
+    try:
+        return _ds.fetch_adaptive_parameter_changes(
+            strategy_name=strategy_name,
+            capital_stage=capital_stage,
+            limit=int(limit),
+        )
+    except Exception:
+        return []
