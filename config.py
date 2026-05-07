@@ -260,4 +260,5 @@ BOT_CONFIG_DEFAULTS = {
     "kelly_fraction": 0.10,
     "max_position_pct": 0.005,
     "dynamic_risk_enabled": 1.0,
+    "pyramiding_enabled": 0.0,
 }

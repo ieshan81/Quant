@@ -28,6 +28,7 @@ _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
     "take_profit_pct": "Take profit %",
     "max_position_pct": "Max portfolio % per position (~0.5% sleeve; $100-scale paper)",
     "dynamic_risk_enabled": "1=enable dynamic TP/SL by equity, 0=use dashboard TP/SL values",
+    "pyramiding_enabled": "1=allow adding to existing longs, 0=skip additional buys",
 }
 
 

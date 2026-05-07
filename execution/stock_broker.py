@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +25,10 @@ try:
 except ImportError:  # pragma: no cover
     tradeapi = None  # type: ignore[misc, assignment]
 
+_ASSET_META_CACHE_TTL_SEC = 300.0
+_asset_meta_lock = threading.Lock()
+_asset_meta_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+
 
 def alpaca_credentials_configured() -> bool:
     return bool(config.ALPACA_API_KEY and config.ALPACA_SECRET_KEY)
@@ -36,6 +42,59 @@ def get_rest_client() -> Any | None:
             "Alpaca SDK not installed."
         )
         return None
+
+
+def get_asset_metadata(symbol: str) -> dict[str, Any] | None:
+    """Best-effort Alpaca asset metadata with small TTL cache."""
+    sym = _alpaca_order_symbol(str(symbol or "").strip().upper())
+    if not sym:
+        return None
+    now = time.monotonic()
+    with _asset_meta_lock:
+        hit = _asset_meta_cache.get(sym)
+    if hit is not None and (now - hit[0]) < _ASSET_META_CACHE_TTL_SEC:
+        return hit[1]
+    cli = get_rest_client()
+    if cli is None:
+        return None
+    out: dict[str, Any] | None = None
+    try:
+        raw = cli.get_asset(sym)
+        if raw is None:
+            out = None
+        elif isinstance(raw, dict):
+            out = dict(raw)
+        else:
+            out = {
+                "symbol": getattr(raw, "symbol", sym),
+                "tradable": getattr(raw, "tradable", None),
+                "fractionable": getattr(raw, "fractionable", None),
+                "shortable": getattr(raw, "shortable", None),
+            }
+    except Exception:
+        logger.debug("[asset_meta] get_asset failed for {}", sym, exc_info=True)
+        out = None
+    with _asset_meta_lock:
+        _asset_meta_cache[sym] = (now, out)
+    return out
+
+
+def is_tradable(symbol: str) -> bool:
+    meta = get_asset_metadata(symbol) or {}
+    v = meta.get("tradable")
+    return bool(v) if v is not None else True
+
+
+def is_fractionable(symbol: str) -> bool:
+    meta = get_asset_metadata(symbol) or {}
+    v = meta.get("fractionable")
+    return bool(v) if v is not None else False
+
+
+def is_shortable(symbol: str) -> bool:
+    meta = get_asset_metadata(symbol) or {}
+    v = meta.get("shortable")
+    return bool(v) if v is not None else False
     if not alpaca_credentials_configured():
         logger.error(
             "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "

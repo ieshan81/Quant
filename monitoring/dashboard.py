@@ -1376,6 +1376,14 @@ def create_app() -> Flask:
             mimetype="application/json",
         )
 
+    @app.get("/api/buy-gate-status")
+    def api_buy_gate_status() -> Response:
+        from monitoring.dashboard_data import fetch_latest_buy_gate
+
+        with get_connection() as conn:
+            payload = fetch_latest_buy_gate(conn)
+        return Response(json.dumps(payload, default=str), mimetype="application/json")
+
     @app.get("/api/strategy-parameters")
     def api_strategy_parameters() -> Response:
         strategy_name = str(request.args.get("strategy_name", "aggressive_micro_scalp") or "aggressive_micro_scalp")

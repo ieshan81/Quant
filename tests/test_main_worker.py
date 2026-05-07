@@ -81,6 +81,43 @@ def test_can_buy_rejects_notional_below_min_usd() -> None:
     assert reason == "notional_too_small"
 
 
+def test_can_buy_rejects_existing_alpaca_long_when_pyramiding_disabled() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    rt = _rt()
+    rt["max_position_pct"] = 1.0
+    rt["pyramiding_enabled"] = 0.0
+    with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=True):
+        ok, reason = mw._can_buy(
+            t,
+            "stock",
+            "ACHR",
+            5.0,
+            10.0,
+            rt,
+            alpaca_longs={("stock", "ACHR")},
+        )
+    assert ok is False
+    assert reason == "already_long"
+
+
+def test_can_buy_allows_existing_alpaca_long_when_pyramiding_enabled() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    rt = _rt()
+    rt["max_position_pct"] = 1.0
+    rt["pyramiding_enabled"] = 1.0
+    with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=True):
+        ok, reason = mw._can_buy(
+            t,
+            "stock",
+            "ACHR",
+            5.0,
+            10.0,
+            rt,
+            alpaca_longs={("stock", "ACHR")},
+        )
+    assert reason == "ok"
+
+
 def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "TPZ", 1.0, 100.0).ok
@@ -168,6 +205,85 @@ def test_execute_cycle_hold_only() -> None:
     summary = mw.execute_cycle_results(t, [sig], _rt())
     assert summary["holds"] == 1
     assert summary["buys"] == 0
+
+
+def test_execute_cycle_skips_buy_when_insufficient_buying_power() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    sig = mw.CycleSignal("stock", "AAPL", {}, 0.9, "BUY", 10.0, None)
+    fake_account = MagicMock(cash="23.13", buying_power="23.13")
+    fake_client = MagicMock()
+    fake_client.get_account.return_value = fake_account
+    rt = _rt()
+    with patch.object(config, "MIN_ORDER_NOTIONAL_USD", 30.0), patch.object(
+        mw.stock_broker, "get_rest_client", return_value=fake_client
+    ), patch.object(mw, "_submit_routed_order") as mocked_submit:
+        summary = mw.execute_cycle_results(t, [sig], rt)
+    mocked_submit.assert_not_called()
+    assert summary["buys"] == 0
+    assert summary["holds"] == 1
+    assert summary["buy_gate"]["skipped_count"] >= 1
+
+
+def test_execute_cycle_non_fractionable_stock_skips_before_submit() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    sig = mw.CycleSignal("stock", "EZGO", {}, 0.9, "BUY", 9.73, None)
+    fake_account = MagicMock(cash="23.13", buying_power="23.13")
+    fake_client = MagicMock()
+    fake_client.get_account.return_value = fake_account
+    rt = _rt()
+    with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
+        mw.stock_broker, "is_tradable", return_value=True
+    ), patch.object(mw.stock_broker, "is_fractionable", return_value=False), patch.object(
+        mw, "_submit_routed_order"
+    ) as mocked_submit:
+        summary = mw.execute_cycle_results(t, [sig], rt)
+    mocked_submit.assert_not_called()
+    assert summary["buys"] == 0
+    assert summary["holds"] == 1
+
+
+def test_execute_cycle_non_fractionable_stock_uses_whole_share_fallback() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    sig = mw.CycleSignal("stock", "AMPX", {}, 0.9, "BUY", 10.4, None)
+    fake_account = MagicMock(cash="23.13", buying_power="23.13")
+    fake_client = MagicMock()
+    fake_client.get_account.return_value = fake_account
+    rt = _rt()
+    rt["max_position_pct"] = 1.0
+    with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
+        mw.stock_broker, "is_tradable", return_value=True
+    ), patch.object(mw.stock_broker, "is_fractionable", return_value=False), patch.object(
+        mw, "_buy_notional_breakdown", return_value=(23.0, {"sleeve": 23.13, "cap_notional": 23.0, "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0, "kelly_notional": 23.0})
+    ), patch.object(
+        mw, "_submit_routed_order", return_value=MagicMock(ok=True, reason_code="ALPACA_PAPER_ORDER_SUBMITTED", broker_order_id="x", message="ok")
+    ) as mocked_submit:
+        summary = mw.execute_cycle_results(t, [sig], rt)
+    assert mocked_submit.called
+    kwargs = mocked_submit.call_args.kwargs
+    assert kwargs["qty"] == pytest.approx(2.0)
+    assert summary["buys"] == 1
+
+
+def test_execute_cycle_micro_limits_stock_buy_attempts() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    sig1 = mw.CycleSignal("stock", "ACHR", {}, 0.9, "BUY", 10.0, None)
+    sig2 = mw.CycleSignal("stock", "FSLY", {}, 0.8, "BUY", 10.0, None)
+    fake_account = MagicMock(cash="100", buying_power="100")
+    fake_client = MagicMock()
+    fake_client.get_account.return_value = fake_account
+    rt = _rt()
+    rt["max_position_pct"] = 1.0
+    rt["_capital_stage"] = "MICRO"
+    with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
+        mw.stock_broker, "is_tradable", return_value=True
+    ), patch.object(mw.stock_broker, "is_fractionable", return_value=True), patch.object(
+        mw, "_buy_notional_breakdown", return_value=(10.0, {"sleeve": 100.0, "cap_notional": 10.0, "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0, "kelly_notional": 10.0})
+    ), patch.object(
+        mw, "_submit_routed_order", return_value=MagicMock(ok=True, reason_code="ALPACA_PAPER_ORDER_SUBMITTED", broker_order_id="x", message="ok")
+    ) as mocked_submit:
+        summary = mw.execute_cycle_results(t, [sig1, sig2], rt)
+    assert mocked_submit.call_count == 1
+    assert summary["buy_gate"]["max_stock_attempts"] == 1
 
 
 def test_run_trading_cycle_once_with_overrides() -> None:

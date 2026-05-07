@@ -145,3 +145,13 @@ def test_fetch_alpaca_open_positions_maps_sdk_rows() -> None:
     assert rows[0]["net_qty"] == pytest.approx(3.0)
     assert rows[0]["avg_entry_price"] == pytest.approx(60.0)
     assert rows[0]["asset_class"] == "stock"
+
+
+def test_asset_metadata_helpers() -> None:
+    asset = SimpleNamespace(symbol="AAPL", tradable=True, fractionable=False, shortable=True)
+    client = MagicMock()
+    client.get_asset.return_value = asset
+    with patch.object(stock_broker, "get_rest_client", return_value=client):
+        assert stock_broker.is_tradable("AAPL") is True
+        assert stock_broker.is_fractionable("AAPL") is False
+        assert stock_broker.is_shortable("AAPL") is True

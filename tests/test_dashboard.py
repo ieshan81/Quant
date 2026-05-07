@@ -42,6 +42,7 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert "strategy_parameters" in data
     assert "strategy_effective_parameters" in data
     assert "adaptive_parameter_changes" in data
+    assert "buy_gate" in data
 
 
 def test_api_config_get_and_post(dash_app) -> None:
@@ -289,3 +290,23 @@ def test_strategy_parameter_endpoints(dash_app) -> None:
     assert r4.status_code == 200
     eff = json.loads(r4.data)
     assert isinstance(eff, dict)
+
+
+def test_buy_gate_status_endpoint(dash_app) -> None:
+    from data.data_store import get_connection
+    from monitoring import trade_logger
+
+    with get_connection(config.DB_PATH) as conn:
+        trade_logger.log_ops_metric(
+            conn,
+            metric_name="buy_gate",
+            value=23.13,
+            window_label="cycle",
+            meta={"cash": 23.13, "buying_power": 23.13, "max_stock_attempts": 1},
+        )
+    client = dash_app.test_client()
+    r = client.get("/api/buy-gate-status")
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    assert float(body.get("cash", 0)) == pytest.approx(23.13)
+    assert int(body.get("max_stock_attempts", 0)) == 1

@@ -77,6 +77,9 @@ def _trade_interval_sec() -> float:
 CYCLE_WORKERS = int(os.getenv("WORKER_CYCLE_EXECUTOR_WORKERS", "16"))
 MAX_STOCK_POS = 5
 MAX_CRYPTO_POS = 5
+MICRO_MAX_STOCK_BUY_ATTEMPTS = 1
+MICRO_MAX_CRYPTO_BUY_ATTEMPTS = 2
+STOCK_BUY_BUFFER_PCT = 0.90
 # Below this bar count, MACD/RSI inputs are weak; combiner inputs stay ~0 (see paper_trading_loop).
 MIN_OHLCV_BARS_FOR_SIGNALS = 35
 
@@ -783,6 +786,8 @@ def _can_buy(
     mid: float,
     notional: float,
     rt: dict[str, float],
+    *,
+    alpaca_longs: set[tuple[str, str]] | None = None,
 ) -> tuple[bool, str]:
     if drawdown_guard.check_kill_switch(trader.equity_total()):
         return False, "kill_switch"
@@ -808,8 +813,9 @@ def _can_buy(
     if not portfolio_limiter.within_portfolio_deployed_cap(s_mv + c_mv + add, total_eq):
         return False, "portfolio_cap"
     pos = trader.position(asset_class, symbol)
-    if pos is not None and pos.quantity > 1e-8:
-        return False, "already_long"
+    if _is_already_long(trader, asset_class, symbol, alpaca_longs=alpaca_longs):
+        if not _is_pyramiding_enabled(rt):
+            return False, "already_long"
     if pos is not None and pos.quantity < -1e-8:
         return False, "already_short"
     return True, "ok"
@@ -1365,6 +1371,67 @@ def _use_local_paper_trader() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _alpaca_buying_power_snapshot() -> dict[str, float]:
+    """Fetch Alpaca cash/buying power once for cycle-level buy gating."""
+    out = {"cash": 0.0, "buying_power": 0.0, "usable_buying_power": 0.0}
+    try:
+        cli = stock_broker.get_rest_client()
+        if cli is None:
+            return out
+        acct = cli.get_account()
+        cash = max(0.0, float(getattr(acct, "cash", 0) or 0))
+        bp = max(0.0, float(getattr(acct, "buying_power", 0) or 0))
+        usable = min(cash, bp)
+        out = {"cash": cash, "buying_power": bp, "usable_buying_power": usable}
+    except Exception:
+        logger.debug("[buy_gate] failed to fetch alpaca account snapshot", exc_info=True)
+    return out
+
+
+def _alpaca_existing_longs() -> set[tuple[str, str]]:
+    """Current broker long positions keyed as (asset_class, canonical_symbol)."""
+    out: set[tuple[str, str]] = set()
+    try:
+        for p in stock_broker.fetch_alpaca_open_positions():
+            qty = float(p.get("net_qty") or 0.0)
+            if qty <= 1e-8:
+                continue
+            ac = str(p.get("asset_class") or "").strip().lower() or "stock"
+            sym = str(p.get("symbol") or "").strip().upper()
+            if sym:
+                out.add((ac, sym))
+    except Exception:
+        logger.debug("[buy_gate] failed to fetch alpaca open positions", exc_info=True)
+    return out
+
+
+def _is_already_long(
+    trader: PaperTrader,
+    asset_class: AssetClass,
+    symbol: str,
+    *,
+    alpaca_longs: set[tuple[str, str]] | None = None,
+) -> bool:
+    """Check local + broker positions to avoid duplicate entries."""
+    pos = trader.position(asset_class, symbol)
+    if pos is not None and float(pos.quantity) > 1e-8:
+        return True
+    if alpaca_longs is None:
+        return False
+    key = (str(asset_class).lower(), str(symbol or "").strip().upper())
+    flat = key[1].replace("/", "")
+    for ac, sym in alpaca_longs:
+        if ac != key[0]:
+            continue
+        if sym == key[1] or sym.replace("/", "") == flat:
+            return True
+    return False
+
+
+def _is_pyramiding_enabled(rt: dict[str, float]) -> bool:
+    return float(rt.get("pyramiding_enabled", 0.0) or 0.0) >= 0.5
+
+
 def _submit_routed_order(
     *,
     trader: PaperTrader,
@@ -1500,6 +1567,22 @@ def execute_cycle_results(
         "short_covers": 0,
         "cycle_id": cid,
     }
+    alpaca_snapshot = {"cash": 0.0, "buying_power": 0.0, "usable_buying_power": 0.0}
+    if not _use_local_paper_trader() and (config.alpaca_paper_trading_allowed() or config.trading_is_live()):
+        alpaca_snapshot = _alpaca_buying_power_snapshot()
+    usable_buying_power = float(alpaca_snapshot.get("usable_buying_power", 0.0))
+    max_usable_for_new_buys_stock = usable_buying_power * STOCK_BUY_BUFFER_PCT
+    max_usable_for_new_buys_crypto = usable_buying_power
+    reserved_stock_notional = 0.0
+    reserved_crypto_notional = 0.0
+    stock_buy_attempts = 0
+    crypto_buy_attempts = 0
+    buy_gate_skipped_count = 0
+    stage_name = str(rt.get("_capital_stage", "MICRO")).upper()
+    micro_stage = stage_name == "MICRO"
+    max_stock_attempts = MICRO_MAX_STOCK_BUY_ATTEMPTS if micro_stage else 999
+    max_crypto_attempts = MICRO_MAX_CRYPTO_BUY_ATTEMPTS if micro_stage else 999
+    alpaca_longs = _alpaca_existing_longs() if not _use_local_paper_trader() else set()
     top10 = sorted(
         ((r.symbol, r.asset_class, r.score, r.action) for r in results if not r.error),
         key=lambda x: (-(x[2] or 0.0), x[0]),
@@ -1591,6 +1674,41 @@ def execute_cycle_results(
                 notional, bd = _buy_notional_breakdown(trader, cs.asset_class, rt)
                 cash = trader.cash_stocks if cs.asset_class == "stock" else trader.cash_crypto
                 stocks_open = portfolio_limiter.us_stock_market_open()
+                if not _use_local_paper_trader():
+                    cash = float(alpaca_snapshot.get("cash", cash))
+                min_notional = float(config.MIN_ORDER_NOTIONAL_USD)
+                if cs.asset_class == "stock" and stock_buy_attempts >= max_stock_attempts:
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="buy",
+                        decision="rejected",
+                        reason_code="MAX_POSITIONS",
+                        score=eff_score,
+                        notional=notional,
+                        quantity=0.0,
+                        price=mid,
+                        meta={"reason_detail": "micro_stock_attempt_cap", "max_stock_attempts": max_stock_attempts},
+                    )
+                    out["holds"] += 1
+                    continue
+                if cs.asset_class == "crypto" and crypto_buy_attempts >= max_crypto_attempts:
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="buy",
+                        decision="rejected",
+                        reason_code="MAX_POSITIONS",
+                        score=eff_score,
+                        notional=notional,
+                        quantity=0.0,
+                        price=mid,
+                        meta={"reason_detail": "micro_crypto_attempt_cap", "max_crypto_attempts": max_crypto_attempts},
+                    )
+                    out["holds"] += 1
+                    continue
                 logger.info(
                     f"[buy_attempt] {cs.symbol} asset_class={cs.asset_class} score={eff_score:.4f} "
                     f"mid={mid:.4f} notional={notional:.2f} sleeve={bd['sleeve']:.2f} cash={cash:.2f} "
@@ -1598,7 +1716,44 @@ def execute_cycle_results(
                     f"max_pct_eff={bd['effective_max_position_pct']} cap_notional={bd['cap_notional']:.4f} "
                     f"kelly_notional={bd['kelly_notional']:.4f} stocks_open={stocks_open}"
                 )
-                ok, reason = _can_buy(trader, cs.asset_class, cs.symbol, mid, notional, rt)
+                if cs.asset_class == "stock":
+                    remaining_budget = max(0.0, max_usable_for_new_buys_stock - reserved_stock_notional)
+                else:
+                    remaining_budget = max(0.0, max_usable_for_new_buys_crypto - reserved_crypto_notional)
+                if remaining_budget < min_notional:
+                    buy_gate_skipped_count += 1
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="buy",
+                        decision="rejected",
+                        reason_code="INSUFFICIENT_BUYING_POWER",
+                        score=eff_score,
+                        notional=notional,
+                        quantity=0.0,
+                        price=mid,
+                        meta={
+                            "cash": float(alpaca_snapshot.get("cash", 0.0)),
+                            "buying_power": float(alpaca_snapshot.get("buying_power", 0.0)),
+                            "usable_buying_power": usable_buying_power,
+                            "required_notional": min_notional,
+                            "reserved_stock_notional": reserved_stock_notional,
+                            "reserved_crypto_notional": reserved_crypto_notional,
+                        },
+                    )
+                    out["holds"] += 1
+                    continue
+                notional = min(notional, remaining_budget)
+                ok, reason = _can_buy(
+                    trader,
+                    cs.asset_class,
+                    cs.symbol,
+                    mid,
+                    notional,
+                    rt,
+                    alpaca_longs=alpaca_longs,
+                )
                 if reason == "market_closed" and cs.asset_class == "crypto":
                     ok, reason = True, "ok"
                 qty = notional / mid
@@ -1606,6 +1761,22 @@ def execute_cycle_results(
                     qty = round(qty, 4)
                 else:
                     qty = round(qty, 6)
+                # Stock preflight to avoid obvious Alpaca rejects.
+                if ok and cs.asset_class == "stock" and not _use_local_paper_trader():
+                    if not stock_broker.is_tradable(cs.symbol):
+                        ok, reason = False, "SYMBOL_NOT_TRADEABLE"
+                    elif abs(qty - float(int(qty))) > 1e-8 and not stock_broker.is_fractionable(cs.symbol):
+                        floor_qty = float(int(qty))
+                        floor_notional = floor_qty * float(mid)
+                        if (
+                            floor_qty >= 1.0
+                            and floor_notional <= max(0.0, max_usable_for_new_buys_stock - reserved_stock_notional)
+                            and floor_notional >= min_notional
+                        ):
+                            qty = floor_qty
+                            notional = floor_notional
+                        else:
+                            ok, reason = False, "NOT_FRACTIONABLE"
                 if not ok or qty <= 0:
                     n_st, n_cr = _open_counts(trader)
                     s_mv, c_mv = _deployed_notional(trader)
@@ -1645,6 +1816,12 @@ def execute_cycle_results(
                     )
                     out["holds"] += 1
                     continue
+                if cs.asset_class == "stock":
+                    stock_buy_attempts += 1
+                    reserved_stock_notional += float(notional)
+                else:
+                    crypto_buy_attempts += 1
+                    reserved_crypto_notional += float(notional)
                 r = _submit_routed_order(
                     trader=trader,
                     side="buy",
@@ -1753,6 +1930,45 @@ def execute_cycle_results(
                         cs.symbol,
                     )
                     out["holds"] += 1
+    out["buy_gate"] = {
+        "cash": float(alpaca_snapshot.get("cash", 0.0)),
+        "buying_power": float(alpaca_snapshot.get("buying_power", 0.0)),
+        "usable_buying_power": usable_buying_power,
+        "max_usable_for_new_buys_stock": max_usable_for_new_buys_stock,
+        "reserved_stock_notional": reserved_stock_notional,
+        "reserved_crypto_notional": reserved_crypto_notional,
+        "stock_buy_attempts": stock_buy_attempts,
+        "crypto_buy_attempts": crypto_buy_attempts,
+        "skipped_count": buy_gate_skipped_count,
+        "max_stock_attempts": max_stock_attempts,
+        "max_crypto_attempts": max_crypto_attempts,
+    }
+    logger.info(
+        "[buy_gate] cash={:.2f} buying_power={:.2f} usable={:.2f} required_notional={:.2f} skipped_count={} stock_cap={:.2f} reserved_stock={:.2f} reserved_crypto={:.2f} stock_attempts={}/{} crypto_attempts={}/{}",
+        out["buy_gate"]["cash"],
+        out["buy_gate"]["buying_power"],
+        out["buy_gate"]["usable_buying_power"],
+        float(config.MIN_ORDER_NOTIONAL_USD),
+        out["buy_gate"]["skipped_count"],
+        out["buy_gate"]["max_usable_for_new_buys_stock"],
+        out["buy_gate"]["reserved_stock_notional"],
+        out["buy_gate"]["reserved_crypto_notional"],
+        out["buy_gate"]["stock_buy_attempts"],
+        out["buy_gate"]["max_stock_attempts"],
+        out["buy_gate"]["crypto_buy_attempts"],
+        out["buy_gate"]["max_crypto_attempts"],
+    )
+    try:
+        with get_connection(config.DB_PATH) as conn:
+            trade_logger.log_ops_metric(
+                conn,
+                metric_name="buy_gate",
+                value=float(out["buy_gate"]["usable_buying_power"]),
+                window_label="cycle",
+                meta=out["buy_gate"],
+            )
+    except Exception:
+        logger.debug("buy_gate metric log skipped", exc_info=True)
     return out
 
 
@@ -1806,6 +2022,7 @@ def run_trading_cycle_once(
     try:
         from risk import capital_stage_manager as _csm
         stage_name = _csm.stage_from_equity(equity)
+        rt["_capital_stage"] = stage_name
         logger.info(_csm.format_log_line(equity))
     except Exception:
         logger.debug("capital_stage_manager log skipped", exc_info=True)
