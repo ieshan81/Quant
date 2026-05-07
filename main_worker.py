@@ -1360,6 +1360,87 @@ def liquidate_all(trader: PaperTrader, market_ctx: Any) -> None:
         trader.set_telegram_on_fills(True)
 
 
+def _use_local_paper_trader() -> bool:
+    raw = os.getenv("USE_LOCAL_PAPER_TRADER", "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _submit_routed_order(
+    *,
+    trader: PaperTrader,
+    side: str,
+    asset_class: AssetClass,
+    symbol: str,
+    qty: float,
+    mid: float,
+    notional: float | None = None,
+    reason_code: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> Any:
+    """
+    Route orders based on mode/endpoint:
+      - paper + paper endpoint -> Alpaca paper broker (default)
+      - paper + USE_LOCAL_PAPER_TRADER=1 -> local PaperTrader fills
+      - live -> Alpaca live broker (strict safety in stock_broker)
+    """
+    if _use_local_paper_trader():
+        logger.info(
+            "[order_route] mode={} broker=local_paper_trader symbol={} side={}",
+            config.MODE,
+            symbol,
+            side,
+        )
+        if side == "buy":
+            fr = order_manager.paper_market_buy(
+                trader,
+                asset_class,
+                symbol,
+                qty,
+                mid,
+                reason_code=reason_code,
+                meta=meta,
+            )
+        else:
+            fr = order_manager.paper_market_sell(
+                trader,
+                asset_class,
+                symbol,
+                qty,
+                mid,
+                reason_code=reason_code,
+                meta=meta,
+            )
+        return SimpleNamespace(
+            ok=bool(fr.ok),
+            broker_order_id=fr.broker_order_id,
+            message=fr.message,
+            raw=fr,
+            reason_code="PAPER_FILL" if fr.ok else "PAPER_REJECTED",
+        )
+
+    if config.alpaca_paper_trading_allowed():
+        logger.info(
+            "[order_route] mode=paper broker=alpaca_paper symbol={} side={}",
+            symbol,
+            side,
+        )
+    elif config.trading_is_live():
+        logger.info(
+            "[order_route] mode=live broker=alpaca_live symbol={} side={}",
+            symbol,
+            side,
+        )
+    else:
+        logger.info(
+            "[order_route] mode={} broker=alpaca_blocked symbol={} side={} (endpoint={})",
+            config.MODE,
+            symbol,
+            side,
+            config.ALPACA_BASE_URL,
+        )
+    return stock_broker.submit_market_order(side, symbol, qty, notional=notional)
+
+
 def _persist_decision(
     *,
     cycle_id: str,
@@ -1471,7 +1552,16 @@ def execute_cycle_results(
             logger.info("[short] COVER {} qty={:.4f} action={} score={:.4f}", cs.symbol, sq, eff_action, eff_score)
             trader.set_telegram_on_fills(False)
             try:
-                r = stock_broker.submit_market_order("buy", cs.symbol, sq)
+                r = _submit_routed_order(
+                    trader=trader,
+                    side="buy",
+                    asset_class="stock",
+                    symbol=cs.symbol,
+                    qty=sq,
+                    mid=mid,
+                    notional=sq * mid,
+                    reason_code="short_cover",
+                )
             finally:
                 trader.set_telegram_on_fills(True)
             if r.ok:
@@ -1555,7 +1645,17 @@ def execute_cycle_results(
                     )
                     out["holds"] += 1
                     continue
-                r = stock_broker.submit_market_order("buy", cs.symbol, qty, notional=notional)
+                r = _submit_routed_order(
+                    trader=trader,
+                    side="buy",
+                    asset_class=cs.asset_class,
+                    symbol=cs.symbol,
+                    qty=qty,
+                    mid=mid,
+                    notional=notional,
+                    reason_code="SIGNAL_BUY",
+                    meta={"score": eff_score},
+                )
                 _persist_decision(
                     cycle_id=cid,
                     asset_class=cs.asset_class,
@@ -1592,12 +1692,24 @@ def execute_cycle_results(
                 # from broker due to fractional rounding, partial fills, sync gaps).
                 live_qty = _get_real_position_qty(cs.symbol, trader)
                 pos = trader.position(cs.asset_class, cs.symbol)
+                if _use_local_paper_trader() and pos is not None and float(pos.quantity) > 1e-8:
+                    live_qty = float(pos.quantity)
                 if live_qty > 1e-8:
                     entry = float(pos.avg_price) if pos is not None else float(mid)
                     trader.set_telegram_on_fills(False)
                     try:
                         sell_notional = float(live_qty) * float(mid)
-                        r = stock_broker.submit_market_order("sell", cs.symbol, live_qty, notional=sell_notional)
+                        r = _submit_routed_order(
+                            trader=trader,
+                            side="sell",
+                            asset_class=cs.asset_class,
+                            symbol=cs.symbol,
+                            qty=live_qty,
+                            mid=mid,
+                            notional=sell_notional,
+                            reason_code="SIGNAL_SELL",
+                            meta={"score": eff_score},
+                        )
                     finally:
                         trader.set_telegram_on_fills(True)
                     _persist_decision(

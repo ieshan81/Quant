@@ -50,16 +50,41 @@ def trading_is_live() -> bool:
     """Return True only when EVERY live-trading safety flag is satisfied."""
     return (
         MODE == "live"
+        and alpaca_is_live_endpoint()
         and LIVE_TRADING_ARMED == LIVE_TRADING_ARMED_EXPECTED
         and PROMOTION_GATES_PASSED
         and LIVE_MAX_NOTIONAL_PER_TRADE > 0.0
     )
 
 
+def alpaca_is_paper_endpoint() -> bool:
+    """True when ALPACA_BASE_URL points to Alpaca's paper environment."""
+    base = str(ALPACA_BASE_URL or "").strip().lower()
+    return "paper-api.alpaca.markets" in base
+
+
+def alpaca_is_live_endpoint() -> bool:
+    """True when ALPACA_BASE_URL points to a non-paper Alpaca endpoint."""
+    base = str(ALPACA_BASE_URL or "").strip().lower()
+    return ("api.alpaca.markets" in base) and ("paper-api.alpaca.markets" not in base)
+
+
+def alpaca_paper_trading_allowed() -> bool:
+    """
+    Paper broker orders are allowed when:
+      - QUANTBOT_MODE=paper
+      - ALPACA_BASE_URL is paper-api.alpaca.markets
+    """
+    return MODE == "paper" and alpaca_is_paper_endpoint()
+
+
 def live_safety_status() -> dict[str, bool | str]:
     """Detail of which live-trading flags are present (for dashboard / logs)."""
     return {
         "mode_is_live": MODE == "live",
+        "alpaca_live_endpoint": alpaca_is_live_endpoint(),
+        "alpaca_paper_endpoint": alpaca_is_paper_endpoint(),
+        "paper_trading_allowed": alpaca_paper_trading_allowed(),
         "armed_phrase_correct": LIVE_TRADING_ARMED == LIVE_TRADING_ARMED_EXPECTED,
         "promotion_gates_passed": bool(PROMOTION_GATES_PASSED),
         "live_max_notional_set": LIVE_MAX_NOTIONAL_PER_TRADE > 0.0,

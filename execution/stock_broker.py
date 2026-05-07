@@ -214,21 +214,61 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
     if not sym or q <= 0:
         return SimpleNamespace(ok=False, broker_order_id=None, message="invalid symbol/qty", raw=None, reason_code=reason_codes.SYMBOL_NOT_TRADEABLE)
 
-    if not config.trading_is_live():
-        status = config.live_safety_status()
-        logger.warning(
-            "[live_lock] BLOCKED live order {} {} {} — safety flags: {}",
-            s, q, order_sym, status,
-        )
-        return SimpleNamespace(
-            ok=False,
-            broker_order_id=None,
-            message=f"live trading blocked: {status}",
-            raw=None,
-            reason_code=reason_codes.SHADOW_LIVE_BLOCKED,
-        )
+    paper_allowed = config.alpaca_paper_trading_allowed()
+    live_allowed = config.trading_is_live()
+    live_endpoint = config.alpaca_is_live_endpoint()
+    paper_endpoint = config.alpaca_is_paper_endpoint()
 
-    if notional is not None and float(notional) > float(config.LIVE_MAX_NOTIONAL_PER_TRADE):
+    # Explicitly allow Alpaca paper orders in paper mode without live safety flags.
+    if not paper_allowed:
+        # live endpoint always requires strict live flags
+        if live_endpoint and not live_allowed:
+            status = config.live_safety_status()
+            logger.warning(
+                "[live_lock] BLOCKED live order {} {} {} — safety flags: {}",
+                s, q, order_sym, status,
+            )
+            return SimpleNamespace(
+                ok=False,
+                broker_order_id=None,
+                message=f"live trading blocked: {status}",
+                raw=None,
+                reason_code=reason_codes.LIVE_ORDER_BLOCKED,
+            )
+        # live mode on a paper endpoint is misconfigured; do not treat as real live.
+        if config.MODE == "live" and paper_endpoint and not live_allowed:
+            logger.warning(
+                "[live_lock] BLOCKED mode=live order on paper endpoint {} {} {}",
+                s,
+                q,
+                order_sym,
+            )
+            return SimpleNamespace(
+                ok=False,
+                broker_order_id=None,
+                message="mode=live requires non-paper Alpaca endpoint + live safety flags",
+                raw=None,
+                reason_code=reason_codes.LIVE_ORDER_BLOCKED,
+            )
+        # If we're not in paper-allowed mode and not fully live-allowed, block.
+        if not live_allowed:
+            status = config.live_safety_status()
+            logger.warning(
+                "[order_block] BLOCKED order {} {} {} — unsupported mode/endpoint combination: {}",
+                s,
+                q,
+                order_sym,
+                status,
+            )
+            return SimpleNamespace(
+                ok=False,
+                broker_order_id=None,
+                message=f"order blocked: {status}",
+                raw=None,
+                reason_code=reason_codes.LIVE_ORDER_BLOCKED,
+            )
+
+    if live_allowed and notional is not None and float(notional) > float(config.LIVE_MAX_NOTIONAL_PER_TRADE):
         logger.warning(
             "[live_lock] BLOCKED live order {} {} notional={:.2f} > LIVE_MAX_NOTIONAL_PER_TRADE={:.2f}",
             s, order_sym, float(notional), float(config.LIVE_MAX_NOTIONAL_PER_TRADE),
@@ -238,7 +278,7 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
             broker_order_id=None,
             message="notional above LIVE_MAX_NOTIONAL_PER_TRADE",
             raw=None,
-            reason_code=reason_codes.SHADOW_LIVE_BLOCKED,
+            reason_code=reason_codes.LIVE_ORDER_BLOCKED,
         )
 
     client = get_rest_client()
@@ -260,7 +300,8 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
         if s == "sell" and "/" not in sym:
             qty_payload = str(round(q, 6))
             tif = "day"
-        logger.info("[alpaca_order] Placing {} {} {} @ market tif={}", s, qty_payload, order_sym, tif)
+        route = "paper" if paper_allowed else "live"
+        logger.info("[alpaca_order:{}] Placing {} {} {} @ market tif={}", route, s, qty_payload, order_sym, tif)
         order = client.submit_order(
             symbol=order_sym,
             qty=qty_payload,
@@ -269,13 +310,17 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
             time_in_force=tif,
         )
         oid = str(getattr(order, "id", None) or (order.get("id") if isinstance(order, dict) else "") or "")
-        logger.info("[alpaca_order] Filled: order_id={}", oid or "(unknown)")
+        logger.info("[alpaca_order:{}] Filled: order_id={}", route, oid or "(unknown)")
         return SimpleNamespace(
             ok=True,
             broker_order_id=(oid or None),
             message="filled",
             raw=order,
-            reason_code=reason_codes.ALPACA_ORDER_SUBMITTED,
+            reason_code=(
+                reason_codes.ALPACA_PAPER_ORDER_SUBMITTED
+                if paper_allowed
+                else reason_codes.ALPACA_ORDER_SUBMITTED
+            ),
         )
     except Exception as e:
         if s == "sell" and "/" not in sym:
@@ -287,5 +332,9 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
             broker_order_id=None,
             message=str(e),
             raw=None,
-            reason_code=reason_codes.ALPACA_ORDER_REJECTED,
+            reason_code=(
+                reason_codes.ALPACA_PAPER_ORDER_REJECTED
+                if paper_allowed
+                else reason_codes.ALPACA_ORDER_REJECTED
+            ),
         )

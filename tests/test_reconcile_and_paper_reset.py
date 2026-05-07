@@ -110,3 +110,37 @@ def test_reconcile_with_fake_alpaca_client_wipes_ghosts(db: Path) -> None:
     with data_store.get_connection(db) as conn:
         rows = conn.execute("SELECT symbol FROM trades").fetchall()
     assert {r[0] for r in rows} == {"BTC/USD"}
+
+
+def test_reconcile_wipes_crypto_ghosts_when_alpaca_has_only_stocks(db: Path) -> None:
+    # SQLite ghosts
+    for sym in ("BCH/USD", "BTC/USD", "ETH/USD", "LINK/USD"):
+        _seed_trade(db, mode="paper", ac="crypto", sym=sym, side="buy", qty=1.0, price=100.0)
+    # Real stock positions mirrored from Alpaca
+    for sym in ("AMPX", "BROS", "BTG", "FSLY"):
+        _seed_trade(db, mode="paper", ac="stock", sym=sym, side="buy", qty=1.0, price=10.0)
+
+    fake_client = SimpleNamespace(
+        list_positions=lambda: [
+            SimpleNamespace(symbol="AMPX", asset_class="us_equity", qty="1", avg_entry_price="10"),
+            SimpleNamespace(symbol="BROS", asset_class="us_equity", qty="1", avg_entry_price="10"),
+            SimpleNamespace(symbol="BTG", asset_class="us_equity", qty="1", avg_entry_price="10"),
+            SimpleNamespace(symbol="FSLY", asset_class="us_equity", qty="1", avg_entry_price="10"),
+        ]
+    )
+
+    summary = data_store.reconcile_positions_on_startup(
+        db, fake_client, mode="paper", reset_paper=False, wipe_ghosts=True
+    )
+    assert summary["alpaca_positions"] == 4
+    assert summary["ghost_positions_removed"] >= 4
+
+    with data_store.get_connection(db) as conn:
+        rows = conn.execute("SELECT DISTINCT asset_class, symbol FROM trades").fetchall()
+    kept = {(r[0], r[1]) for r in rows}
+    assert kept == {
+        ("stock", "AMPX"),
+        ("stock", "BROS"),
+        ("stock", "BTG"),
+        ("stock", "FSLY"),
+    }

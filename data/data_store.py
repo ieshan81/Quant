@@ -595,24 +595,42 @@ def wipe_ghost_positions(
             """
         )
         rows = cur.fetchall()
+        ghost_canonicals: list[tuple[str, str, str]] = []
         for ac_raw, sym_raw, _net in rows:
             sym = str(sym_raw or "").strip()
             ac = normalize_asset_class(sym, hint=str(ac_raw or "").strip().lower())
             canonical = normalize_symbol_for_db(ac, sym)
             if canonical in real_alpaca_symbols_db:
                 continue
-            cur2 = conn.execute(
-                "DELETE FROM trades WHERE asset_class = ? AND symbol = ?",
-                (ac_raw, sym_raw),
+            ghost_canonicals.append((str(ac_raw or ""), sym, canonical))
+
+        # Delete *all* trade rows whose canonical symbol maps to a ghost position.
+        # This removes legacy duplicates (e.g. BCHUSD + BCH/USD) in one pass.
+        all_trade_rows = conn.execute(
+            "SELECT id, asset_class, symbol FROM trades"
+        ).fetchall()
+        ids_to_delete: set[int] = set()
+        for row_id, ac_raw, sym_raw in all_trade_rows:
+            sym = str(sym_raw or "").strip()
+            ac = normalize_asset_class(sym, hint=str(ac_raw or "").strip().lower())
+            canonical = normalize_symbol_for_db(ac, sym)
+            if any(canonical == c for _, _, c in ghost_canonicals):
+                ids_to_delete.add(int(row_id))
+        if ids_to_delete:
+            conn.executemany(
+                "DELETE FROM trades WHERE id = ?",
+                [(i,) for i in sorted(ids_to_delete)],
             )
+
+        for ac_raw, sym, canonical in ghost_canonicals:
             removed.append(
                 {
                     "asset_class": ac_raw,
                     "symbol": sym,
-                    "rows_deleted": int(cur2.rowcount or 0),
+                    "canonical_symbol": canonical,
                 }
             )
-    return {"removed": removed}
+    return {"removed": removed, "rows_deleted": len(ids_to_delete)}
 
 
 def reset_trading_history(db_path: Path | str | None = None) -> dict[str, Any]:
@@ -755,9 +773,8 @@ def reconcile_positions_on_startup(
     if do_wipe:
         try:
             wiped = wipe_ghost_positions(db_path, real_db_syms)
-            summary["ghost_positions_removed"] = sum(
-                int(r.get("rows_deleted", 0)) for r in wiped.get("removed", [])
-            )
+            summary["ghost_positions_removed"] = len(wiped.get("removed", []))
+            summary["ghost_rows_deleted"] = int(wiped.get("rows_deleted", 0))
             summary["ghost_positions_detail"] = wiped.get("removed", [])
         except Exception as exc:
             summary["errors"].append(f"wipe: {exc}")

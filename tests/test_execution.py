@@ -84,36 +84,31 @@ def test_fetch_equity_latest_prices_includes_crypto_symbols() -> None:
 
 
 def test_submit_market_order_routes_crypto_symbol_with_gtc() -> None:
-    """Crypto pairs route to the ``BTCUSD`` form with GTC, **and** require all live flags."""
-    import config
-
+    """Paper mode + paper endpoint should submit Alpaca paper orders."""
     client = MagicMock()
     client.submit_order.return_value = {"id": "order-1"}
-    with patch.multiple(
-        config,
-        MODE="live",
-        LIVE_TRADING_ARMED=config.LIVE_TRADING_ARMED_EXPECTED,
-        PROMOTION_GATES_PASSED=True,
-        LIVE_MAX_NOTIONAL_PER_TRADE=1000.0,
-    ):
-        with patch.object(stock_broker, "get_rest_client", return_value=client):
-            res = stock_broker.submit_market_order("buy", "ETH/USD", 1.0)
+    with patch.object(stock_broker, "get_rest_client", return_value=client):
+        res = stock_broker.submit_market_order("buy", "ETH/USD", 1.0)
     assert res is not None
     assert res.ok is True
+    assert res.reason_code == "ALPACA_PAPER_ORDER_SUBMITTED"
     client.submit_order.assert_called_once_with(
         symbol="ETHUSD", qty=1.0, side="buy", type="market", time_in_force="gtc"
     )
 
 
-def test_submit_market_order_blocked_in_paper_mode() -> None:
-    """Default paper mode must REFUSE live orders even with valid Alpaca client."""
+def test_submit_market_order_blocked_paper_mode_on_live_endpoint() -> None:
+    """Paper mode must block if ALPACA_BASE_URL points to a live endpoint."""
+    import config
+
     client = MagicMock()
     client.submit_order.return_value = {"id": "order-2"}
-    with patch.object(stock_broker, "get_rest_client", return_value=client):
-        res = stock_broker.submit_market_order("buy", "AAPL", 1.0)
+    with patch.multiple(config, MODE="paper", ALPACA_BASE_URL="https://api.alpaca.markets"):
+        with patch.object(stock_broker, "get_rest_client", return_value=client):
+            res = stock_broker.submit_market_order("buy", "AAPL", 1.0)
     assert res is not None
     assert res.ok is False
-    assert res.reason_code == "SHADOW_LIVE_BLOCKED"
+    assert res.reason_code == "LIVE_ORDER_BLOCKED"
     client.submit_order.assert_not_called()
 
 
