@@ -11,6 +11,8 @@ inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
 """
 
 import json
+import dataclasses
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1344,6 +1346,8 @@ _PAGE = """
     let btDefaults = null;
     let btSelectedRunId = null;
     let btCompareRows = [];
+    let btCompareState = { status: "not_run", rows: [], error: "" };
+    const BT_DEBUG = localStorage.getItem("quantbot_bt_debug") === "1";
     function switchTab(tab) {
       const wantBacktest = tab === "backtest";
       document.querySelectorAll(".tab-nav .tab-btn").forEach((b) => {
@@ -1694,18 +1698,23 @@ _PAGE = """
         });
         const j = await r.json();
         if (!r.ok || !j.ok) throw new Error(j.error || "Compare failed");
+        if (!Array.isArray(j.rows) || !j.rows.every((x) => x && typeof x === "object" && !Array.isArray(x))) {
+          if (BT_DEBUG) console.debug("Invalid compare shape", j);
+          throw new Error("Invalid comparison response shape");
+        }
         const body = document.getElementById("btCompareBody");
         const empty = document.getElementById("btCompareEmpty");
         btCompareRows = Array.isArray(j.rows) ? j.rows : [];
+        btCompareState = { status: "ok", rows: btCompareRows, error: "" };
         if (body) {
           body.innerHTML = btCompareRows.map((x) => {
-            const interp = Number(x.excess_return || 0) >= 0 ? "Beat benchmark" : "Underperformed benchmark";
-            return `<tr><td>${esc(x.strategy || "")}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.buy_and_hold_return ?? ""))}</td><td class="mono">${esc(String(x.excess_return ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td><td>${esc(interp)}</td></tr>`;
+            return `<tr><td>${esc(x.strategy || "")}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.buy_and_hold_return_pct ?? ""))}</td><td class="mono">${esc(String(x.excess_return_pct ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td><td>${esc(String(x.interpretation || ""))}</td></tr>`;
           }).join("");
         }
         if (empty) empty.style.display = btCompareRows.length ? "none" : "block";
         setBacktestStatus("Comparison complete.", "ok");
       } catch (e) {
+        btCompareState = { status: "error", rows: [], error: String(e && e.message ? e.message : e) };
         setBacktestStatus(`Comparison failed: ${String(e && e.message ? e.message : e)}`, "err");
       } finally {
         setBacktestBusy(false);
@@ -1716,8 +1725,15 @@ _PAGE = """
       setBacktestBusy(true, "Copying Report...");
       try {
         const r = await fetch(`/api/backtest/report/${encodeURIComponent(btSelectedRunId)}?format=markdown`, { cache: "no-store" });
-        const md = await r.text();
+        let md = await r.text();
         if (!r.ok) throw new Error(md || "Report fetch failed");
+        if (btCompareState.status === "ok") {
+          md += `\n\n## Strategy Comparison\n${JSON.stringify(btCompareState.rows, null, 2)}\n`;
+        } else if (btCompareState.status === "error") {
+          md += `\n\n## Strategy Comparison\nComparison failed: ${btCompareState.error}\n`;
+        } else {
+          md += `\n\n## Strategy Comparison\nStrategy comparison was not run.\n`;
+        }
         await navigator.clipboard.writeText(md);
         setBacktestStatus("Backtest report copied to clipboard.", "ok");
       } catch (e) {
@@ -1731,8 +1747,15 @@ _PAGE = """
       setBacktestBusy(true, "Preparing Report Download...");
       try {
         const r = await fetch(`/api/backtest/report/${encodeURIComponent(btSelectedRunId)}?format=markdown`, { cache: "no-store" });
-        const md = await r.text();
+        let md = await r.text();
         if (!r.ok) throw new Error(md || "Report fetch failed");
+        if (btCompareState.status === "ok") {
+          md += `\n\n## Strategy Comparison\n${JSON.stringify(btCompareState.rows, null, 2)}\n`;
+        } else if (btCompareState.status === "error") {
+          md += `\n\n## Strategy Comparison\nComparison failed: ${btCompareState.error}\n`;
+        } else {
+          md += `\n\n## Strategy Comparison\nStrategy comparison was not run.\n`;
+        }
         const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -1864,6 +1887,51 @@ def _build_backtest_interpretation(summary: dict[str, Any], rejection_summary: d
     return lines
 
 
+def _to_json_safe(value: Any) -> Any:
+    if dataclasses.is_dataclass(value):
+        return _to_json_safe(dataclasses.asdict(value))
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _to_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_to_json_safe(v) for v in value]
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _to_json_safe(item())
+        except Exception:
+            pass
+    to_py_dt = getattr(value, "to_pydatetime", None)
+    if callable(to_py_dt):
+        try:
+            return _to_json_safe(to_py_dt())
+        except Exception:
+            pass
+    return str(value)
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(n):
+        return None
+    return n
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build_backtest_report_payload(
     run_row: dict[str, Any],
     bt_cfg: dict[str, Any],
@@ -1948,7 +2016,7 @@ def _build_backtest_report_payload(
         "request": request_obj,
         "summary": summary,
         "interpretation": interpretation_lines,
-        "comparison_rows": comparison_rows or [],
+        "comparison_rows": _to_json_safe(comparison_rows or []),
         "rejection_summary": rejection_summary,
         "signal_events_summary": sig_counts,
         "trades_detail": trades[-max_trades:],
@@ -1962,7 +2030,7 @@ def _build_backtest_report_payload(
             "max_signal_events": max_signal_events,
             "effective_backtest_config": bt_cfg,
         },
-        "raw_json": raw_payload,
+        "raw_json": _to_json_safe(raw_payload),
     }
 
 
@@ -2012,7 +2080,11 @@ def _backtest_report_markdown(report: dict[str, Any]) -> str:
         [
             "",
             "## Strategy Comparison",
-            json.dumps(report.get("comparison_rows", []), default=str),
+            (
+                "Strategy comparison was not run."
+                if not (report.get("comparison_rows") or [])
+                else json.dumps(report.get("comparison_rows", []), default=str)
+            ),
             "",
             "## Rejection Summary",
             json.dumps(report.get("rejection_summary", {}), default=str),
@@ -2453,7 +2525,37 @@ def create_app() -> Flask:
                 req,
                 parameter_snapshot={"backtest_config": bt_cfg},
             )
-            return jsonify({"ok": True, "rows": rows, "backtest_config": bt_cfg})
+            if not isinstance(rows, list):
+                raise ValueError("Invalid comparison response shape")
+            normalized_rows: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError("Invalid comparison response shape")
+                norm = _to_json_safe(row)
+                if not isinstance(norm, dict):
+                    raise ValueError("Invalid comparison response shape")
+                final_equity = _safe_float(norm.get("final_equity"))
+                return_pct = _safe_float(norm.get("return_pct"))
+                bh_pct = _safe_float(norm.get("buy_and_hold_return_pct"))
+                excess_pct = _safe_float(norm.get("excess_return_pct"))
+                if excess_pct is None and return_pct is not None and bh_pct is not None:
+                    excess_pct = return_pct - bh_pct
+                interp = str(norm.get("interpretation") or ("Beat benchmark" if (excess_pct is not None and excess_pct >= 0) else "Underperformed benchmark"))
+                normalized_rows.append(
+                    {
+                        "strategy": str(norm.get("strategy") or ""),
+                        "final_equity": final_equity,
+                        "return_pct": return_pct,
+                        "buy_and_hold_return_pct": bh_pct,
+                        "excess_return_pct": excess_pct,
+                        "max_drawdown_pct": _safe_float(norm.get("max_drawdown_pct")),
+                        "closed_trades": _safe_int(norm.get("closed_trades")),
+                        "rejections_total": _safe_int(norm.get("rejections_total")),
+                        "confidence_label": str(norm.get("confidence_label") or "unknown"),
+                        "interpretation": interp,
+                    }
+                )
+            return jsonify({"ok": True, "rows": normalized_rows, "backtest_config": _to_json_safe(bt_cfg)})
         except Exception as exc:
             logger.exception("api/backtest/compare failed")
             return jsonify({"ok": False, "error": str(exc)}), 400

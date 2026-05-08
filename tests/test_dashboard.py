@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 import config
@@ -122,6 +123,7 @@ def test_index_renders(dash_app) -> None:
     assert b"btDownloadReportBtn" in r.data
     assert b"\xe2\x96\xb6 Run Backtest" in r.data
     assert b"btCompareEmpty" in r.data
+    assert b"Invalid comparison response shape" in r.data
 
 
 def test_api_calibration(dash_app) -> None:
@@ -476,6 +478,44 @@ def test_backtest_compare_endpoint_returns_rows(dash_app) -> None:
     data = json.loads(r.data)
     assert data["ok"] is True
     assert len(data["rows"]) == 2
+    assert isinstance(data["rows"], list)
+    assert all(isinstance(x, dict) for x in data["rows"])
+
+
+def test_backtest_compare_sanitizes_numpy_and_nonfinite(dash_app) -> None:
+    client = dash_app.test_client()
+    with patch("backtesting.runner.execute_comparison") as mocked_cmp:
+        mocked_cmp.return_value = [
+            {
+                "strategy": "current_adaptive",
+                "final_equity": np.float64(101.2),
+                "return_pct": np.float64(1.2),
+                "buy_and_hold_return_pct": np.float64(np.nan),
+                "excess_return_pct": np.float64(np.inf),
+                "max_drawdown_pct": np.float64(-np.inf),
+                "closed_trades": np.int64(5),
+                "rejections_total": np.int64(2),
+                "confidence_label": "low",
+                "interpretation": "Underperformed benchmark",
+            }
+        ]
+        r = client.post(
+            "/api/backtest/compare",
+            json={
+                "strategy_names": ["current_adaptive"],
+                "symbols": ["AAPL", "MSFT", "BTC/USD"],
+                "timeframe": "1Day",
+                "start_date": "2025-01-01",
+                "end_date": "2025-02-01",
+            },
+        )
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    row = body["rows"][0]
+    assert isinstance(row["final_equity"], float)
+    assert row["buy_and_hold_return_pct"] is None
+    assert row["excess_return_pct"] is None
+    assert row["max_drawdown_pct"] is None
 
 
 def test_backtest_report_markdown_and_json(dash_app) -> None:
@@ -546,6 +586,7 @@ def test_backtest_report_markdown_and_json(dash_app) -> None:
     assert "## Summary" in text
     assert "## Assumptions" in text
     assert "## Data Quality" in text
+    assert "Strategy comparison was not run." in text
     assert "ALPACA_SECRET_KEY" not in text
     js = client.get(f"/api/backtest/report/{run_id}?format=json")
     assert js.status_code == 200
@@ -556,3 +597,16 @@ def test_backtest_report_markdown_and_json(dash_app) -> None:
     assert "trades_detail" in body
     assert "rejections_detail" in body
     assert "signal_events_detail" in body
+
+
+def test_compare_invalid_shape_returns_error(dash_app) -> None:
+    client = dash_app.test_client()
+    with patch("backtesting.runner.execute_comparison") as mocked_cmp:
+        mocked_cmp.return_value = [np.float64(1.23)]
+        r = client.post(
+            "/api/backtest/compare",
+            json={"strategy_names": ["current_adaptive"], "symbols": ["AAPL"], "start_date": "2025-01-01", "end_date": "2025-02-01"},
+        )
+    assert r.status_code == 400
+    body = json.loads(r.data)
+    assert "Invalid comparison response shape" in body.get("error", "")
