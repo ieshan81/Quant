@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -25,6 +26,27 @@ def _yf_symbol(symbol: str, asset_class: str) -> str:
     return str(symbol or "").strip().upper()
 
 
+def _interval_for_timeframe(timeframe: str) -> str:
+    tf = str(timeframe or "").strip().lower()
+    if tf in ("1h", "1hour", "hour"):
+        return "1h"
+    return "1d"
+
+
+def _days_for_range(start_date: str | None, end_date: str | None, interval: str) -> int:
+    default_days = 365 if interval == "1h" else 730
+    if not start_date or not end_date:
+        return default_days
+    try:
+        start = datetime.fromisoformat(str(start_date)[:10])
+        end = datetime.fromisoformat(str(end_date)[:10])
+    except ValueError:
+        return default_days
+    days = max(5, (end - start).days + 3)
+    hard_cap = 120 if interval == "1h" else 730
+    return int(min(max(days, 5), hard_cap))
+
+
 def load_symbol_ohlcv(
     symbol: str,
     *,
@@ -35,8 +57,9 @@ def load_symbol_ohlcv(
 ) -> LoadedSeries:
     ac = asset_class or normalize_asset_class(symbol)
     yf_sym = _yf_symbol(symbol, ac)
-    # v1 uses yfinance daily bars; timeframe kept for request metadata.
-    df = load_yfinance_history(yf_sym, days=730)
+    interval = _interval_for_timeframe(timeframe)
+    days = _days_for_range(start_date, end_date, interval)
+    df = load_yfinance_history(yf_sym, days=days, interval=interval)
     if df is None or df.empty:
         raise ValueError(f"no data for symbol={symbol}")
     out = df.copy()

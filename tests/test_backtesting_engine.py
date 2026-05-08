@@ -220,3 +220,78 @@ def test_summary_includes_buy_and_hold(monkeypatch):
     assert "equal_weight_buy_and_hold_return_pct" in s
     assert "strategy_return_pct" in s
     assert "excess_return_pct" in s
+
+
+def test_sell_without_position_recorded_as_signal_event(monkeypatch):
+    def _load_many(symbols, **kwargs):
+        _ = kwargs
+        return {s: _Loaded(s, "stock", _frame(days=90)) for s in symbols}
+
+    class _D:
+        def __init__(self, action: str) -> None:
+            self.action = action
+            self.score = -0.9
+            self.reason_code = "BEARISH"
+            self.meta = {}
+
+    monkeypatch.setattr("backtesting.engine.load_many", _load_many)
+    monkeypatch.setattr("backtesting.engine.evaluate_strategy", lambda *args, **kwargs: _D("SELL"))
+    req = BacktestRequest(
+        strategy_name="current_adaptive",
+        asset_class="stock",
+        symbols=["AAPL"],
+        start_date="2025-01-01",
+        end_date="2025-03-31",
+    )
+    res = run_backtest(req, parameter_snapshot={"backtest_config": {}})
+    assert all(r.reason_code != "NO_POSITION" for r in res.rejections)
+    assert any(s.reason_code == "SIGNAL_SELL_NO_POSITION" for s in res.signal_events)
+
+
+def test_confidence_label_uses_configured_thresholds(monkeypatch):
+    def _load_many(symbols, **kwargs):
+        _ = kwargs
+        return {s: _Loaded(s, "stock", _frame(days=90)) for s in symbols}
+
+    monkeypatch.setattr("backtesting.engine.load_many", _load_many)
+    monkeypatch.setattr(
+        "backtesting.engine.summarize",
+        lambda **kwargs: (
+            {
+                "starting_cash": 100.0,
+                "final_equity": 101.0,
+                "pnl": 1.0,
+                "return_pct": 1.0,
+                "max_drawdown_pct": 1.0,
+                "trades_total": 3,
+                "closed_trades": 2,
+                "win_rate_pct": 50.0,
+                "profit_factor": 1.0,
+                "expectancy": 0.5,
+                "avg_hold_seconds": 10.0,
+                "best_trade": 1.0,
+                "worst_trade": -1.0,
+                "rejections_total": 0,
+            },
+            {},
+        ),
+    )
+    req = BacktestRequest(
+        strategy_name="current_adaptive",
+        asset_class="stock",
+        symbols=["AAPL"],
+        start_date="2025-01-01",
+        end_date="2025-03-31",
+    )
+    res = run_backtest(
+        req,
+        parameter_snapshot={
+            "backtest_config": {
+                "confidence_low_min_closed_trades": 1,
+                "confidence_medium_min_closed_trades": 2,
+                "confidence_high_min_closed_trades": 3,
+                "confidence_warning_downgrade_enabled": False,
+            }
+        },
+    )
+    assert res.summary_json["confidence_label"] == "medium"

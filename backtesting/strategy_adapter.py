@@ -41,6 +41,25 @@ def _scalper_from_window(symbol: str, close: pd.Series, volume: pd.Series) -> De
     return Decision(action="HOLD", score=float(entry.pump_score), reason_code=entry.reason_code, meta=entry.meta)
 
 
+def _buy_and_hold_from_window(close: pd.Series) -> Decision:
+    if len(close) < 2:
+        return Decision(action="HOLD", score=0.0, reason_code="INSUFFICIENT_HISTORY", meta={})
+    # One entry then hold; engine will convert repeated BUY attempts into ALREADY_LONG if needed.
+    return Decision(action="BUY", score=1.0, reason_code="BUY_AND_HOLD_ENTRY", meta={})
+
+
+def _simple_momentum_from_window(close: pd.Series) -> Decision:
+    if len(close) < 21:
+        return Decision(action="HOLD", score=0.0, reason_code="INSUFFICIENT_HISTORY", meta={})
+    fast = float(close.tail(5).mean())
+    slow = float(close.tail(20).mean())
+    if fast > slow:
+        return Decision(action="BUY", score=1.0, reason_code="MOMENTUM_UP", meta={"fast_ma": fast, "slow_ma": slow})
+    if fast < slow:
+        return Decision(action="SELL", score=-1.0, reason_code="MOMENTUM_DOWN", meta={"fast_ma": fast, "slow_ma": slow})
+    return Decision(action="HOLD", score=0.0, reason_code="MOMENTUM_FLAT", meta={"fast_ma": fast, "slow_ma": slow})
+
+
 def evaluate_strategy(
     strategy_name: str,
     *,
@@ -50,6 +69,10 @@ def evaluate_strategy(
     volume_window: pd.Series,
 ) -> Decision:
     name = str(strategy_name or "").strip().lower()
+    if name == "simple_buy_and_hold":
+        return _buy_and_hold_from_window(close_window)
+    if name == "simple_momentum":
+        return _simple_momentum_from_window(close_window)
     if name in ("crypto_scalper", "aggressive_micro_scalp"):
         return _scalper_from_window(symbol, close_window, volume_window)
     # combined_stock + current_adaptive both use combined scorer in v1

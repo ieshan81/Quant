@@ -71,6 +71,7 @@ class PortfolioSim:
         pyramiding_enabled: bool = bool(kwargs.get("pyramiding_enabled", False))
         allow_fractional: bool = bool(kwargs["allow_fractional"])
         use_fractionability_rules: bool = bool(kwargs["use_fractionability_rules"])
+        trade_meta: dict = dict(kwargs.get("trade_meta") or {})
         hour_key = ts.strftime("%Y-%m-%d %H")
         day_key = ts.strftime("%Y-%m-%d")
         if self._hour_trade_counts[hour_key] >= max_trades_per_hour:
@@ -122,7 +123,21 @@ class PortfolioSim:
             self._hour_trade_counts[hour_key] += 1
             if not pyramiding_enabled:
                 self._seen_trade_keys.add(trade_key)
-            self.trades.append(TradeSim(ts.strftime("%Y-%m-%d %H:%M:%S"), symbol, asset_class, side, qty, mid, fill, notional, fee, "FILLED"))
+            self.trades.append(
+                TradeSim(
+                    ts.strftime("%Y-%m-%d %H:%M:%S"),
+                    symbol,
+                    asset_class,
+                    side,
+                    qty,
+                    mid,
+                    fill,
+                    notional,
+                    fee,
+                    "FILLED",
+                    meta_json=trade_meta or None,
+                )
+            )
             return
         pos = self.positions.get(symbol)
         if pos is None or pos.qty <= 0:
@@ -156,5 +171,6 @@ class PortfolioSim:
                 pnl=pnl,
                 pnl_pct=(0.0 if pos.avg_price <= 0 else (fill - pos.avg_price) / pos.avg_price * 100.0),
                 hold_seconds=hold_seconds,
+                meta_json=trade_meta or None,
             )
         )

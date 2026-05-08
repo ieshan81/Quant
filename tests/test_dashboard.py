@@ -364,6 +364,8 @@ def test_backtest_defaults_endpoint(dash_app) -> None:
     data = json.loads(r.data)
     assert "strategies" in data
     assert "symbols" in data
+    assert "backtest_config" in data
+    assert "confidence_low_min_closed_trades" in data["backtest_config"]
 
 
 def test_backtest_run_and_fetch_endpoints(dash_app) -> None:
@@ -437,3 +439,37 @@ def test_backtest_result_exposes_parsed_summary_and_rejections(dash_app) -> None
     assert body["summary_json"]["closed_trades"] == 2
     assert body["rejection_summary_json"]["MARKET_CLOSED"] == 3
     assert body["assumptions"]["execution_model"] == "test"
+
+
+def test_backtest_compare_endpoint_returns_rows(dash_app) -> None:
+    client = dash_app.test_client()
+    with patch("backtesting.runner.execute_comparison") as mocked_cmp:
+        mocked_cmp.return_value = [
+            {
+                "strategy": "current_adaptive",
+                "return_pct": 1.2,
+                "buy_and_hold_return": 0.8,
+                "excess_return": 0.4,
+                "confidence_label": "low",
+            },
+            {
+                "strategy": "simple_momentum",
+                "return_pct": 0.7,
+                "buy_and_hold_return": 0.8,
+                "excess_return": -0.1,
+                "confidence_label": "low",
+            },
+        ]
+        r = client.post(
+            "/api/backtest/compare",
+            json={
+                "strategy_names": ["current_adaptive", "simple_momentum"],
+                "symbols": ["AAPL"],
+                "start_date": "2025-01-01",
+                "end_date": "2025-02-01",
+            },
+        )
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["ok"] is True
+    assert len(data["rows"]) == 2

@@ -58,6 +58,18 @@ class RejectionSim:
 
 
 @dataclass
+class SignalEvent:
+    timestamp: str
+    symbol: str
+    asset_class: str
+    strategy_action: str
+    classification: str
+    reason_code: str
+    score: float | None = None
+    meta_json: dict[str, Any] | None = None
+
+
+@dataclass
 class EquityPoint:
     timestamp: str
     equity: float
@@ -76,4 +88,5 @@ class BacktestResult:
     equity_curve: list[EquityPoint]
     trades: list[TradeSim]
     rejections: list[RejectionSim]
+    signal_events: list[SignalEvent] = field(default_factory=list)
     error_message: str | None = None

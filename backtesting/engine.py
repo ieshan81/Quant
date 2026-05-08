@@ -5,7 +5,7 @@ from datetime import datetime
 from backtesting.data_loader import load_many
 from backtesting.execution_simulator import PortfolioSim
 from backtesting.metrics import summarize
-from backtesting.models import BacktestRequest, BacktestResult
+from backtesting.models import BacktestRequest, BacktestResult, SignalEvent
 from backtesting.strategy_adapter import evaluate_strategy
 
 
@@ -39,8 +39,40 @@ def _buy_and_hold_returns(loaded: dict) -> tuple[dict[str, float], float]:
     return per_symbol, eqw
 
 
+def _confidence_label(closed_trades: int, warnings_count: int, cfg: dict) -> tuple[str, dict]:
+    low_min = int(cfg.get("confidence_low_min_closed_trades", 10))
+    med_min = int(cfg.get("confidence_medium_min_closed_trades", 30))
+    high_min = int(cfg.get("confidence_high_min_closed_trades", 60))
+    degrade = bool(cfg.get("confidence_warning_downgrade_enabled", True))
+    if closed_trades >= high_min:
+        label = "higher"
+    elif closed_trades >= med_min:
+        label = "medium"
+    elif closed_trades >= low_min:
+        label = "low"
+    else:
+        label = "low"
+    if degrade and warnings_count > 0:
+        if label == "higher":
+            label = "medium"
+        elif label == "medium":
+            label = "low"
+    rationale = {
+        "closed_trades": int(closed_trades),
+        "warnings_count": int(warnings_count),
+        "thresholds": {
+            "confidence_low_min_closed_trades": low_min,
+            "confidence_medium_min_closed_trades": med_min,
+            "confidence_high_min_closed_trades": high_min,
+            "confidence_warning_downgrade_enabled": degrade,
+        },
+    }
+    return label, rationale
+
+
 def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None) -> BacktestResult:
     params = dict(parameter_snapshot or {})
+    backtest_cfg = dict(params.get("backtest_config") or {})
     loaded = load_many(
         req.symbols,
         asset_class=req.asset_class,
@@ -73,8 +105,10 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
         "provider_warnings": list(warnings),
     }
     is_daily = _is_daily_timeframe(req.timeframe)
+    signal_events: list[SignalEvent] = []
     union_ts = _iter_union_timestamps(loaded)
     for ts in union_ts:
+        ts_norm = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts))
         marks: dict[str, float] = {}
         for sym, ls in loaded.items():
             frame = ls.ohlcv[ls.ohlcv.index <= ts]
@@ -94,9 +128,25 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
             )
             if decision.action == "HOLD":
                 continue
+            if decision.action == "SELL":
+                pos = sim.positions.get(sym)
+                if pos is None or pos.qty <= 0:
+                    signal_events.append(
+                        SignalEvent(
+                            timestamp=ts_norm.strftime("%Y-%m-%d %H:%M:%S"),
+                            symbol=sym,
+                            asset_class=ls.asset_class,
+                            strategy_action="SELL",
+                            classification="HOLD_BEARISH",
+                            reason_code="SIGNAL_SELL_NO_POSITION",
+                            score=float(decision.score),
+                            meta_json=dict(decision.meta or {}),
+                        )
+                    )
+                    continue
             side = "buy" if decision.action == "BUY" else "sell"
             sim.attempt_order(
-                ts=ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts)),
+                ts=ts_norm,
                 symbol=sym,
                 asset_class=ls.asset_class,
                 side=side,
@@ -113,8 +163,13 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
                 pyramiding_enabled=req.pyramiding_enabled,
                 allow_fractional=req.allow_fractional,
                 use_fractionability_rules=req.use_fractionability_rules,
+                trade_meta={
+                    "entry_reason": getattr(decision, "reason_code", "") if side == "buy" else None,
+                    "exit_reason": getattr(decision, "reason_code", "") if side == "sell" else None,
+                    "strategy_score": float(getattr(decision, "score", 0.0)),
+                },
             )
-        sim.mark_equity(ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts)), marks)
+        sim.mark_equity(ts_norm, marks)
     summary, rejections = summarize(
         starting_cash=req.starting_cash,
         equity_curve=sim.equity_curve,
@@ -127,6 +182,13 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
     summary["equal_weight_buy_and_hold_return_pct"] = eqw_bh
     summary["strategy_return_pct"] = strategy_return
     summary["excess_return_pct"] = strategy_return - eqw_bh
+    conf_label, conf_rationale = _confidence_label(
+        int(summary.get("closed_trades") or 0),
+        len(warnings),
+        backtest_cfg,
+    )
+    summary["confidence_label"] = conf_label
+    summary["confidence_rationale"] = conf_rationale
     summary["assumptions"] = assumptions
     summary["data_quality"] = data_quality
     summary["warnings"] = warnings
@@ -139,4 +201,5 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
         equity_curve=sim.equity_curve,
         trades=sim.trades,
         rejections=sim.rejections,
+        signal_events=signal_events,
     )

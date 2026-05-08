@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,24 @@ def _merged_bot_config_defaults() -> dict[str, tuple[float, str]]:
 
 
 BOT_CONFIG_DEFAULTS: dict[str, tuple[float, str]] = _merged_bot_config_defaults()
+
+BACKTEST_CONFIG_DEFAULTS: dict[str, tuple[str, str, str]] = {
+    "confidence_low_min_closed_trades": ("10", "int", "Min closed trades for medium confidence"),
+    "confidence_medium_min_closed_trades": ("30", "int", "Min closed trades for higher confidence"),
+    "confidence_high_min_closed_trades": ("60", "int", "Min closed trades for high confidence"),
+    "confidence_warning_downgrade_enabled": ("1", "bool", "Downgrade confidence when data warnings exist"),
+    "backtest_default_timeframe": ("1Day", "str", "Default backtest timeframe"),
+    "backtest_runtime_limits": (
+        '{"max_symbols":20,"max_days_1h":90,"max_days_1d":730}',
+        "json",
+        "Runtime caps for offline backtests",
+    ),
+    "backtest_cost_defaults": (
+        '{"fee_bps":5.0,"slippage_bps":10.0,"spread_bps":20.0}',
+        "json",
+        "Default simulated costs",
+    ),
+}
 
 
 SCHEMA_SQL = """
@@ -360,6 +379,31 @@ CREATE TABLE IF NOT EXISTS backtest_rejections (
 CREATE INDEX IF NOT EXISTS idx_backtest_rejections_run_ts
     ON backtest_rejections(run_id, timestamp);
 
+CREATE TABLE IF NOT EXISTS backtest_signal_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    asset_class TEXT,
+    strategy_action TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    score REAL,
+    meta_json TEXT,
+    FOREIGN KEY(run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_signal_events_run_ts
+    ON backtest_signal_events(run_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS backtest_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    value_type TEXT NOT NULL DEFAULT 'str',
+    description TEXT,
+    updated_at TEXT
+);
+
 -- Lightweight ops metrics (counter-style). Used for SQLite lock tracking and
 -- price-error counts. ``window_label`` is the bucket key ('total', 'cycle', etc).
 CREATE TABLE IF NOT EXISTS ops_metrics (
@@ -395,6 +439,17 @@ def _seed_bot_config_if_empty(conn: sqlite3.Connection) -> None:
             VALUES (?, ?, ?, datetime('now'))
             """,
             (key, float(val), desc),
+        )
+
+
+def _seed_backtest_config_if_empty(conn: sqlite3.Connection) -> None:
+    for key, (value, value_type, desc) in BACKTEST_CONFIG_DEFAULTS.items():
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO backtest_config (key, value, value_type, description, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            """,
+            (key, value, value_type, desc),
         )
 
 
@@ -462,6 +517,7 @@ def init_schema(db_path: Path | str | None = None) -> None:
     try:
         conn.executescript(SCHEMA_SQL)
         _seed_bot_config_if_empty(conn)
+        _seed_backtest_config_if_empty(conn)
         conn.commit()
     finally:
         conn.close()
@@ -516,6 +572,64 @@ def load_runtime_config_dict(db_path: Path | str | None = None) -> dict[str, flo
     with get_connection(db_path) as conn:
         rows = conn.execute("SELECT key, value FROM bot_config").fetchall()
     return {str(r[0]): float(r[1]) for r in rows}
+
+
+def _parse_backtest_config_value(value: str, value_type: str) -> Any:
+    vt = str(value_type or "").strip().lower()
+    if vt == "int":
+        return int(float(value))
+    if vt == "float":
+        return float(value)
+    if vt == "bool":
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+    if vt == "json":
+        import json
+
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value
+
+
+def fetch_backtest_config(db_path: Path | str | None = None) -> dict[str, Any]:
+    with get_connection(db_path) as conn:
+        _seed_backtest_config_if_empty(conn)
+        rows = conn.execute(
+            "SELECT key, value, value_type FROM backtest_config ORDER BY key ASC"
+        ).fetchall()
+    out: dict[str, Any] = {}
+    for row in rows:
+        out[str(row["key"])] = _parse_backtest_config_value(
+            str(row["value"]), str(row["value_type"])
+        )
+    return out
+
+
+def set_backtest_config(
+    key: str, value: Any, *, value_type: str | None = None, db_path: Path | str | None = None
+) -> None:
+    vt = str(value_type or BACKTEST_CONFIG_DEFAULTS.get(key, ("", "str", ""))[1] or "str")
+    if vt == "json":
+        raw = json.dumps(value, default=str)
+    elif vt == "bool":
+        raw = "1" if bool(value) else "0"
+    else:
+        raw = str(value)
+    desc = BACKTEST_CONFIG_DEFAULTS.get(key, ("", vt, ""))[2]
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO backtest_config (key, value, value_type, description, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                value_type = excluded.value_type,
+                description = COALESCE(excluded.description, backtest_config.description),
+                updated_at = datetime('now')
+            """,
+            (key, raw, vt, desc),
+        )
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1238,7 +1352,11 @@ def insert_backtest_trades(run_id: int, rows: list[dict[str, Any]], db_path: Pat
                         (None if r.get("pnl") is None else float(r["pnl"])),
                         (None if r.get("pnl_pct") is None else float(r["pnl_pct"])),
                         (None if r.get("hold_seconds") is None else float(r["hold_seconds"])),
-                        r.get("meta_json"),
+                        (
+                            None
+                            if r.get("meta_json") is None
+                            else json.dumps(r.get("meta_json"), default=str)
+                        ),
                     )
                     for r in filtered
                 ],
@@ -1264,7 +1382,42 @@ def insert_backtest_rejections(run_id: int, rows: list[dict[str, Any]], db_path:
                     str(r.get("asset_class") or ""),
                     str(r.get("attempted_side") or ""),
                     str(r["reason_code"]),
-                    r.get("meta_json"),
+                    (
+                        None
+                        if r.get("meta_json") is None
+                        else json.dumps(r.get("meta_json"), default=str)
+                    ),
+                )
+                for r in rows
+            ],
+        )
+
+
+def insert_backtest_signal_events(run_id: int, rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
+    if not rows:
+        return
+    with get_connection(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO backtest_signal_events (
+                run_id, timestamp, symbol, asset_class, strategy_action, classification, reason_code, score, meta_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    int(run_id),
+                    str(r["timestamp"]),
+                    str(r["symbol"]),
+                    str(r.get("asset_class") or ""),
+                    str(r.get("strategy_action") or ""),
+                    str(r.get("classification") or ""),
+                    str(r.get("reason_code") or ""),
+                    (None if r.get("score") is None else float(r["score"])),
+                    (
+                        None
+                        if r.get("meta_json") is None
+                        else json.dumps(r.get("meta_json"), default=str)
+                    ),
                 )
                 for r in rows
             ],
@@ -1317,10 +1470,18 @@ def fetch_backtest_result(run_id: int, db_path: Path | str | None = None) -> dic
             """,
             (int(run_id),),
         ).fetchall()
+        signal_events = conn.execute(
+            """
+            SELECT timestamp, symbol, asset_class, strategy_action, classification, reason_code, score, meta_json
+            FROM backtest_signal_events WHERE run_id = ? ORDER BY id ASC
+            """,
+            (int(run_id),),
+        ).fetchall()
     out = _row_to_dict(base)
     out["equity_curve"] = [_row_to_dict(r) for r in curve]
     out["trades"] = [_row_to_dict(r) for r in trades]
     out["rejections"] = [_row_to_dict(r) for r in rejections]
+    out["signal_events"] = [_row_to_dict(r) for r in signal_events]
     return out
 
 

@@ -29,8 +29,8 @@ class BacktestResult:
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
-def load_yfinance_history(symbol: str, days: int = 90) -> pd.DataFrame:
-    """Daily OHLCV for `symbol` over approximately `days` calendar days."""
+def load_yfinance_history(symbol: str, days: int = 90, interval: str = "1d") -> pd.DataFrame:
+    """OHLCV for `symbol` over approximately `days` calendar days."""
     import yfinance as yf  # type: ignore[import-untyped]
 
     sym = symbol.strip().upper()
@@ -38,7 +38,7 @@ def load_yfinance_history(symbol: str, days: int = 90) -> pd.DataFrame:
         raise ValueError("symbol required")
     t = yf.Ticker(sym)
     period = f"{max(5, int(days))}d"
-    df = t.history(period=period, interval="1d", auto_adjust=True)
+    df = t.history(period=period, interval=str(interval or "1d"), auto_adjust=True)
     if df is None or df.empty:
         raise RuntimeError(f"No price history returned for {sym}")
     df = df.rename(columns=str.title)

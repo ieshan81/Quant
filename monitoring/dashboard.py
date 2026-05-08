@@ -491,12 +491,22 @@ _PAGE = """
           <input id="btSymbols" value="AAPL,MSFT,BTC/USD" placeholder="symbols csv" />
           <input id="btStart" value="2025-01-01" placeholder="start YYYY-MM-DD" />
           <input id="btEnd" value="2026-01-01" placeholder="end YYYY-MM-DD" />
+          <select id="btTimeframe">
+            <option value="1Day">1Day</option>
+            <option value="1H">1H</option>
+          </select>
           <label class="mono muted" style="display:flex;align-items:center;gap:6px;">
             <input id="btPyramiding" type="checkbox" />
             pyramiding
           </label>
+          <button id="btPresetSanity" class="bt-action-btn" type="button">Small sanity test</button>
+          <button id="btPresetCrypto" class="bt-action-btn" type="button">Crypto only</button>
+          <button id="btPresetHoldings" class="bt-action-btn" type="button">Current holdings</button>
+          <button id="btPresetStress" class="bt-action-btn" type="button">Stress test</button>
           <button id="btRunBtn" class="bt-action-btn" type="button">Run Backtest</button>
+          <button id="btCompareBtn" class="bt-action-btn" type="button">Compare Strategies</button>
         </div>
+        <p class="muted mono" id="btThresholds" style="margin-top:0.6rem;">loading thresholds…</p>
       </div>
       <div class="card bt-card-summary">
         <h2>Backtest Summary</h2>
@@ -522,7 +532,7 @@ _PAGE = """
       <div class="card bt-card-trades">
         <h2>Simulated trades</h2>
         <div style="overflow-x:auto;">
-          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Fill</th></tr></thead><tbody id="btTradesBody"></tbody></table>
+          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Fill</th><th>Entry reason</th><th>Exit reason</th><th>Score</th><th>Hold sec</th><th>PnL</th><th>PnL %</th></tr></thead><tbody id="btTradesBody"></tbody></table>
         </div>
         <p class="muted" id="btTradesEmpty" style="display:none;">No trades.</p>
       </div>
@@ -532,8 +542,21 @@ _PAGE = """
         <div id="btDataQuality" class="mono muted" style="margin-top:0.5rem;">—</div>
       </div>
       <div class="card bt-card-runs">
+        <h2>Strategy Comparison</h2>
+        <div style="overflow-x:auto;">
+          <table class="data-table"><thead><tr><th>Strategy</th><th>Final Equity</th><th>Return %</th><th>Max DD %</th><th>Closed</th><th>Win %</th><th>B&amp;H %</th><th>Excess %</th><th>Rejections</th><th>Confidence</th></tr></thead><tbody id="btCompareBody"></tbody></table>
+        </div>
+      </div>
+      <div class="card bt-card-runs">
         <h2>Recent Backtest Runs</h2>
         <table class="data-table"><thead><tr><th>ID</th><th>Created</th><th>Strategy</th><th>Status</th><th></th></tr></thead><tbody id="btRunsBody"></tbody></table>
+      </div>
+      <div class="card bt-card-runs">
+        <h2>Bearish Signal Events (No Position)</h2>
+        <div style="overflow-x:auto;">
+          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Class</th><th>Reason</th><th>Score</th></tr></thead><tbody id="btSignalEventsBody"></tbody></table>
+        </div>
+        <p class="muted" id="btSignalEventsEmpty" style="display:none;">No signal events.</p>
       </div>
     </div>
   </main>
@@ -1275,6 +1298,7 @@ _PAGE = """
     bindCfg();
 
     let btChart = null;
+    let btDefaults = null;
     function switchTab(tab) {
       const wantBacktest = tab === "backtest";
       document.querySelectorAll(".tab-nav .tab-btn").forEach((b) => {
@@ -1413,6 +1437,12 @@ _PAGE = """
       }
       const rejPairs = Object.entries(rejectionSummary || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
       renderMiniCards("btRejBadges", rejPairs.map(([k, v]) => ({ label: k, value: String(v) })));
+      const tEl = document.getElementById("btThresholds");
+      if (tEl) {
+        const thr = ((summary.confidence_rationale || {}).thresholds || {});
+        tEl.textContent =
+          `confidence thresholds: low>=${thr.confidence_low_min_closed_trades ?? "—"}, medium>=${thr.confidence_medium_min_closed_trades ?? "—"}, high>=${thr.confidence_high_min_closed_trades ?? "—"}, warning_downgrade=${String(thr.confidence_warning_downgrade_enabled)}`;
+      }
     }
 
     async function loadBacktestResult(runId) {
@@ -1424,10 +1454,13 @@ _PAGE = """
       renderBacktestChart(j.equity_curve || []);
       const trades = Array.isArray(j.trades) ? j.trades : [];
       const rejects = Array.isArray(j.rejections) ? j.rejections : [];
+      const signalEvents = Array.isArray(j.signal_events) ? j.signal_events : [];
       const tbTr = document.getElementById("btTradesBody");
       const tbRej = document.getElementById("btRejectionsBody");
+      const tbSig = document.getElementById("btSignalEventsBody");
       const emptyTr = document.getElementById("btTradesEmpty");
       const emptyRej = document.getElementById("btRejectionsEmpty");
+      const emptySig = document.getElementById("btSignalEventsEmpty");
       if (tbTr) {
         tbTr.innerHTML = trades.slice(-80).reverse().map((t) => {
           const ts = esc(t.timestamp || "");
@@ -1435,7 +1468,13 @@ _PAGE = """
           const side = esc(t.side || "");
           const qty = esc(String(t.qty != null ? t.qty : ""));
           const fp = esc(String(t.fill_price != null ? t.fill_price : ""));
-          return `<tr><td class="mono">${ts}</td><td class="mono">${sym}</td><td>${side}</td><td class="mono">${qty}</td><td class="mono">${fp}</td></tr>`;
+          const entryReason = esc(String((t.meta_json || {}).entry_reason || ""));
+          const exitReason = esc(String((t.meta_json || {}).exit_reason || ""));
+          const score = esc(String((t.meta_json || {}).strategy_score ?? ""));
+          const hold = esc(String(t.hold_seconds != null ? t.hold_seconds : ""));
+          const pnl = esc(String(t.pnl != null ? t.pnl : ""));
+          const pnlPct = esc(String(t.pnl_pct != null ? t.pnl_pct : ""));
+          return `<tr><td class="mono">${ts}</td><td class="mono">${sym}</td><td>${side}</td><td class="mono">${qty}</td><td class="mono">${fp}</td><td>${entryReason}</td><td>${exitReason}</td><td class="mono">${score}</td><td class="mono">${hold}</td><td class="mono">${pnl}</td><td class="mono">${pnlPct}</td></tr>`;
         }).join("");
       }
       if (tbRej) {
@@ -1445,6 +1484,43 @@ _PAGE = """
       }
       if (emptyTr) emptyTr.style.display = trades.length ? "none" : "block";
       if (emptyRej) emptyRej.style.display = rejects.length ? "none" : "block";
+      if (tbSig) {
+        tbSig.innerHTML = signalEvents.slice(-100).reverse().map((x) => {
+          return `<tr><td class="mono">${esc(x.timestamp || "")}</td><td class="mono">${esc(x.symbol || "")}</td><td>${esc(x.strategy_action || "")}</td><td>${esc(x.classification || "")}</td><td>${esc(x.reason_code || "")}</td><td class="mono">${esc(String(x.score != null ? x.score : ""))}</td></tr>`;
+        }).join("");
+      }
+      if (emptySig) emptySig.style.display = signalEvents.length ? "none" : "block";
+    }
+
+    function setBacktestPreset(kind) {
+      const tf = document.getElementById("btTimeframe");
+      if (kind === "sanity") {
+        document.getElementById("btSymbols").value = "AAPL,MSFT,BTC/USD";
+        if (tf) tf.value = "1Day";
+      } else if (kind === "crypto") {
+        document.getElementById("btSymbols").value = "BTC/USD,ETH/USD";
+        if (tf) tf.value = "1H";
+      } else if (kind === "holdings") {
+        document.getElementById("btSymbols").value = "ACHR,AMPX,FSLY";
+      } else if (kind === "stress") {
+        document.getElementById("btSymbols").value = "AAPL,MSFT,SPY,BTC/USD,ETH/USD";
+        if (tf) tf.value = "1H";
+      }
+    }
+
+    async function loadBacktestDefaults() {
+      try {
+        const r = await fetch("/api/backtest/defaults", { cache: "no-store" });
+        btDefaults = await r.json();
+        const tf = document.getElementById("btTimeframe");
+        if (tf && btDefaults && btDefaults.default_timeframe) tf.value = btDefaults.default_timeframe;
+        const tEl = document.getElementById("btThresholds");
+        const cfg = (btDefaults && btDefaults.backtest_config) || {};
+        if (tEl) {
+          tEl.textContent =
+            `confidence thresholds: low>=${cfg.confidence_low_min_closed_trades ?? "—"}, medium>=${cfg.confidence_medium_min_closed_trades ?? "—"}, high>=${cfg.confidence_high_min_closed_trades ?? "—"}, warning_downgrade=${String(cfg.confidence_warning_downgrade_enabled)}`;
+        }
+      } catch (_) {}
     }
 
     async function loadBacktestRuns() {
@@ -1469,6 +1545,7 @@ _PAGE = """
         symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
         start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
         end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
+        timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
         pyramiding_enabled: !!((document.getElementById("btPyramiding") || {}).checked),
       };
       const r = await fetch("/api/backtest/run", {
@@ -1482,6 +1559,32 @@ _PAGE = """
         await loadBacktestResult(j.run_id);
       }
     });
+    document.getElementById("btPresetSanity")?.addEventListener("click", () => setBacktestPreset("sanity"));
+    document.getElementById("btPresetCrypto")?.addEventListener("click", () => setBacktestPreset("crypto"));
+    document.getElementById("btPresetHoldings")?.addEventListener("click", () => setBacktestPreset("holdings"));
+    document.getElementById("btPresetStress")?.addEventListener("click", () => setBacktestPreset("stress"));
+    document.getElementById("btCompareBtn")?.addEventListener("click", async () => {
+      const payload = {
+        strategy_names: ["current_adaptive", "simple_buy_and_hold", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"],
+        symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
+        start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
+        end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
+        timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
+        pyramiding_enabled: !!((document.getElementById("btPyramiding") || {}).checked),
+      };
+      const r = await fetch("/api/backtest/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      const body = document.getElementById("btCompareBody");
+      if (body) {
+        const rows = Array.isArray(j.rows) ? j.rows : [];
+        body.innerHTML = rows.map((x) => `<tr><td>${esc(x.strategy || "")}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.win_rate_pct ?? ""))}</td><td class="mono">${esc(String(x.buy_and_hold_return ?? ""))}</td><td class="mono">${esc(String(x.excess_return ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td></tr>`).join("");
+      }
+    });
+    loadBacktestDefaults();
   </script>
 </body>
 </html>
@@ -1862,17 +1965,34 @@ def create_app() -> Flask:
 
     @app.get("/api/backtest/defaults")
     def api_backtest_defaults() -> Response:
+        bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
+        cost_defaults = dict(bt_cfg.get("backtest_cost_defaults") or {})
+        default_tf = str(bt_cfg.get("backtest_default_timeframe") or "1Day")
         defaults = {
             "strategies": [
                 "combined_stock",
                 "crypto_scalper",
                 "aggressive_micro_scalp",
                 "current_adaptive",
+                "simple_buy_and_hold",
+                "simple_momentum",
             ],
             "symbols": ["AAPL", "MSFT", "SPY", "BTC/USD", "ETH/USD"],
-            "timeframes": ["1Day"],
+            "timeframes": ["1Day", "1H"],
             "date_range": {"start": "2024-01-01", "end": "2026-01-01"},
-            "costs": {"fee_bps": 5.0, "slippage_bps": 10.0, "spread_bps": 20.0},
+            "costs": {
+                "fee_bps": float(cost_defaults.get("fee_bps", 5.0)),
+                "slippage_bps": float(cost_defaults.get("slippage_bps", 10.0)),
+                "spread_bps": float(cost_defaults.get("spread_bps", 20.0)),
+            },
+            "default_timeframe": default_tf,
+            "backtest_config": bt_cfg,
+            "presets": [
+                {"id": "sanity", "label": "Small sanity test", "symbols": ["AAPL", "MSFT", "BTC/USD"], "timeframe": "1Day", "days": 365},
+                {"id": "crypto", "label": "Crypto only", "symbols": ["BTC/USD", "ETH/USD"], "timeframe": "1H", "days": 90},
+                {"id": "holdings", "label": "Current holdings", "symbols": ["ACHR", "AMPX", "FSLY"], "timeframe": default_tf, "days": 180},
+                {"id": "stress", "label": "Stress test", "symbols": ["AAPL", "MSFT", "SPY", "BTC/USD", "ETH/USD"], "timeframe": "1H", "days": 90},
+            ],
             "runtime_effective": data_store.fetch_strategy_runtime_state("aggressive_micro_scalp", "MICRO") or {},
         }
         return Response(json.dumps(defaults, default=str), mimetype="application/json")
@@ -1883,20 +2003,23 @@ def create_app() -> Flask:
             return jsonify({"error": "unauthorized"}), 401
         body = request.get_json(force=True, silent=True) or {}
         try:
+            bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
+            cost_defaults = dict(bt_cfg.get("backtest_cost_defaults") or {})
+            default_timeframe = str(bt_cfg.get("backtest_default_timeframe") or "1Day")
             req = BacktestRequest(
                 strategy_name=str(body.get("strategy_name", "current_adaptive")),
                 asset_class=str(body.get("asset_class", "mixed")),
                 symbols=[str(x).strip() for x in body.get("symbols", ["AAPL"]) if str(x).strip()],
                 start_date=str(body.get("start_date", "2025-01-01")),
                 end_date=str(body.get("end_date", "2026-01-01")),
-                timeframe=str(body.get("timeframe", "1Day")),
+                timeframe=str(body.get("timeframe", default_timeframe)),
                 starting_cash=float(body.get("starting_cash", 100.0)),
                 max_position_notional=float(body.get("max_position_notional", 5.0)),
                 max_positions=int(body.get("max_positions", 3)),
                 max_trades_per_hour=int(body.get("max_trades_per_hour", 6)),
-                fee_bps=float(body.get("fee_bps", 5.0)),
-                slippage_bps=float(body.get("slippage_bps", 10.0)),
-                spread_bps=float(body.get("spread_bps", 20.0)),
+                fee_bps=float(body.get("fee_bps", cost_defaults.get("fee_bps", 5.0))),
+                slippage_bps=float(body.get("slippage_bps", cost_defaults.get("slippage_bps", 10.0))),
+                spread_bps=float(body.get("spread_bps", cost_defaults.get("spread_bps", 20.0))),
                 min_order_notional=float(body.get("min_order_notional", 1.0)),
                 allow_fractional=bool(body.get("allow_fractional", True)),
                 use_fractionability_rules=bool(body.get("use_fractionability_rules", True)),
@@ -1907,11 +2030,16 @@ def create_app() -> Flask:
                 json.dumps(req.__dict__, default=str),
                 strategy_name=req.strategy_name,
                 status="running",
+                parameter_snapshot_json=json.dumps({"backtest_config": bt_cfg}, default=str),
             )
-            result = backtest_runner.execute(req)
+            parameter_snapshot = {"backtest_config": bt_cfg}
+            result = backtest_runner.execute(req, parameter_snapshot=parameter_snapshot)
             data_store.insert_backtest_equity_curve(run_id, [p.__dict__ for p in result.equity_curve])
             data_store.insert_backtest_trades(run_id, [t.__dict__ for t in result.trades])
             data_store.insert_backtest_rejections(run_id, [r.__dict__ for r in result.rejections])
+            data_store.insert_backtest_signal_events(
+                run_id, [s.__dict__ for s in (getattr(result, "signal_events", []) or [])]
+            )
             data_store.update_backtest_status(
                 run_id,
                 status=result.status,
@@ -1921,6 +2049,48 @@ def create_app() -> Flask:
             return jsonify({"ok": True, "run_id": run_id, "status": result.status})
         except Exception as exc:
             logger.exception("api/backtest/run failed")
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.post("/api/backtest/compare")
+    def api_backtest_compare() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
+        cost_defaults = dict(bt_cfg.get("backtest_cost_defaults") or {})
+        default_timeframe = str(bt_cfg.get("backtest_default_timeframe") or "1Day")
+        strategies = [str(x).strip() for x in body.get("strategy_names", []) if str(x).strip()]
+        if not strategies:
+            strategies = ["current_adaptive", "simple_buy_and_hold", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"]
+        try:
+            req = BacktestRequest(
+                strategy_name=strategies[0],
+                asset_class=str(body.get("asset_class", "mixed")),
+                symbols=[str(x).strip() for x in body.get("symbols", ["AAPL"]) if str(x).strip()],
+                start_date=str(body.get("start_date", "2025-01-01")),
+                end_date=str(body.get("end_date", "2026-01-01")),
+                timeframe=str(body.get("timeframe", default_timeframe)),
+                starting_cash=float(body.get("starting_cash", 100.0)),
+                max_position_notional=float(body.get("max_position_notional", 5.0)),
+                max_positions=int(body.get("max_positions", 3)),
+                max_trades_per_hour=int(body.get("max_trades_per_hour", 6)),
+                fee_bps=float(body.get("fee_bps", cost_defaults.get("fee_bps", 5.0))),
+                slippage_bps=float(body.get("slippage_bps", cost_defaults.get("slippage_bps", 10.0))),
+                spread_bps=float(body.get("spread_bps", cost_defaults.get("spread_bps", 20.0))),
+                min_order_notional=float(body.get("min_order_notional", 1.0)),
+                allow_fractional=bool(body.get("allow_fractional", True)),
+                use_fractionability_rules=bool(body.get("use_fractionability_rules", True)),
+                use_market_hours=bool(body.get("use_market_hours", True)),
+                pyramiding_enabled=bool(body.get("pyramiding_enabled", False)),
+            )
+            rows = backtest_runner.execute_comparison(
+                strategies,
+                req,
+                parameter_snapshot={"backtest_config": bt_cfg},
+            )
+            return jsonify({"ok": True, "rows": rows, "backtest_config": bt_cfg})
+        except Exception as exc:
+            logger.exception("api/backtest/compare failed")
             return jsonify({"ok": False, "error": str(exc)}), 400
 
     @app.get("/api/backtest/runs")
@@ -1953,6 +2123,20 @@ def create_app() -> Flask:
                 rejection_obj = {}
             if isinstance(rejection_obj, dict):
                 row["rejection_summary_json"] = rejection_obj
+        for t in row.get("trades", []) or []:
+            raw = t.get("meta_json")
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    t["meta_json"] = json.loads(raw)
+                except json.JSONDecodeError:
+                    t["meta_json"] = {}
+        for s in row.get("signal_events", []) or []:
+            raw = s.get("meta_json")
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    s["meta_json"] = json.loads(raw)
+                except json.JSONDecodeError:
+                    s["meta_json"] = {}
         return jsonify(row)
 
     @app.post("/api/sync-alpaca")
