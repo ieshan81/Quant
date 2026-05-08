@@ -27,7 +27,6 @@ _PAGE = """
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta http-equiv="refresh" content="3600"/>
   <title>QuantBot — Terminal</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -90,7 +89,6 @@ _PAGE = """
       font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
     }
 
-    .wrap { max-width: 1400px; margin: 0 auto; padding: 1rem 1.25rem 2rem; }
     .stats-row {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-top: 1rem;
     }
@@ -238,28 +236,115 @@ _PAGE = """
     .sym-badge-s { color: #00d4ff; font-size: 0.65rem; }
     .sig-sym-crypto .sym-txt { color: #f7931a; font-weight: 700; }
     .sig-sym-stock .sym-txt { color: #00d4ff; font-weight: 700; }
-    .top-tabs { display:flex; gap:8px; margin: 0.8rem auto 0; max-width:1700px; padding:0 1.1rem; }
-    .tab-btn { background:#1e293b; color:#94a3b8; border:1px solid #334155; border-radius:8px; padding:6px 12px; cursor:pointer; }
-    .tab-btn.active { color:#00ff88; border-color:#00ff88; background:rgba(0,255,136,0.1); }
-    .panel-hidden { display:none; }
 
-    /* Institutional grid override */
-    .wrap { max-width: 1700px; padding: 1rem 1.1rem 1.4rem; display: grid; gap: 1rem; grid-template-columns: repeat(12, minmax(0, 1fr)); }
-    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; box-shadow: none; }
-    .stats-row { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1rem; margin-top: 0; }
-    .stats-row > .card { grid-column: span 3; }
-    .chart-main { grid-column: 1 / span 8; margin-top: 0 !important; }
-    .social-panel { grid-column: 9 / -1; }
-    .signal-feed { grid-column: 1 / span 8; }
-    .subrow { grid-column: 9 / -1; margin-top: 0; display: grid; grid-template-columns: 1fr; gap: 1rem; }
-    .bottom-grid { grid-column: 1 / -1; margin-top: 0; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1rem; }
-    .bottom-grid > .card:nth-child(1) { grid-column: span 6; }
-    .bottom-grid > .card:nth-child(2) { grid-column: span 6; }
-    .bottom-grid > .card:nth-child(3) { grid-column: 1 / -1; }
-    .api-links, .last-upd { grid-column: 1 / -1; margin-top: 0; }
+    .tab-nav {
+      display: flex;
+      gap: 0.5rem;
+      max-width: 1700px;
+      margin: 0 auto;
+      padding: 0.75rem 1.1rem 0;
+    }
+    .tab-nav .tab-btn {
+      background: #1e293b;
+      color: #94a3b8;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.875rem;
+    }
+    .tab-nav .tab-btn.active {
+      color: #00ff88;
+      border-color: #00ff88;
+      background: rgba(0, 255, 136, 0.1);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* Dashboard grid — scoped so Backtest tab never inherits 12-col placement rules */
+    .dashboard-wrap {
+      max-width: 1700px;
+      margin: 0 auto;
+      padding: 1rem 1.1rem 1.4rem;
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+    }
+    #dashboard-tab .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: none;
+    }
+    .dashboard-wrap .stats-row {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 1rem;
+      margin-top: 0;
+    }
+    .dashboard-wrap .stats-row > .card { grid-column: span 3; }
+    .dashboard-wrap .chart-main { grid-column: 1 / span 8; margin-top: 0 !important; }
+    .dashboard-wrap .social-panel { grid-column: 9 / -1; }
+    .dashboard-wrap .signal-feed { grid-column: 1 / span 8; }
+    .dashboard-wrap .subrow {
+      grid-column: 9 / -1;
+      margin-top: 0;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+    .dashboard-wrap .bottom-grid {
+      grid-column: 1 / -1;
+      margin-top: 0;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 1rem;
+    }
+    .dashboard-wrap .bottom-grid > .card:nth-child(1) { grid-column: span 6; }
+    .dashboard-wrap .bottom-grid > .card:nth-child(2) { grid-column: span 6; }
+    .dashboard-wrap .bottom-grid > .card:nth-child(3) { grid-column: 1 / -1; }
+    .dashboard-wrap .api-links,
+    .dashboard-wrap .last-upd { grid-column: 1 / -1; margin-top: 0; }
     @media (max-width: 1100px) {
-      .stats-row > .card { grid-column: span 6; }
-      .chart-main, .social-panel, .signal-feed, .subrow, .bottom-grid > .card:nth-child(1), .bottom-grid > .card:nth-child(2), .bottom-grid > .card:nth-child(3) { grid-column: 1 / -1; }
+      .dashboard-wrap .stats-row > .card { grid-column: span 6; }
+      .dashboard-wrap .chart-main,
+      .dashboard-wrap .social-panel,
+      .dashboard-wrap .signal-feed,
+      .dashboard-wrap .subrow,
+      .dashboard-wrap .bottom-grid > .card:nth-child(1),
+      .dashboard-wrap .bottom-grid > .card:nth-child(2),
+      .dashboard-wrap .bottom-grid > .card:nth-child(3) {
+        grid-column: 1 / -1;
+      }
+    }
+
+    .backtest-wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 1rem 1.1rem 2rem;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 1rem;
+    }
+    .backtest-wrap .card.bt-card-form { grid-column: span 4; }
+    .backtest-wrap .card.bt-card-summary { grid-column: span 8; }
+    .backtest-wrap .card.bt-card-chart { grid-column: 1 / -1; }
+    .backtest-wrap .card.bt-card-trades,
+    .backtest-wrap .card.bt-card-rejections,
+    .backtest-wrap .card.bt-card-runs { grid-column: span 6; }
+    @media (max-width: 1000px) {
+      .backtest-wrap > .card { grid-column: 1 / -1 !important; }
+    }
+    .bt-action-btn {
+      background: rgba(0, 212, 255, 0.12);
+      border: 1px solid var(--border-bright);
+      color: var(--accent-blue);
+      border-radius: 8px;
+      padding: 0.35rem 0.65rem;
+      cursor: pointer;
+      font-weight: 600;
     }
   </style>
 </head>
@@ -277,12 +362,13 @@ _PAGE = """
     </div>
     <div class="badge-paper">PAPER TRADING</div>
   </header>
-  <div class="top-tabs">
-    <button id="tabDashboard" class="tab-btn active" type="button">Dashboard</button>
-    <button id="tabBacktest" class="tab-btn" type="button">Backtest</button>
-  </div>
-  <div class="wrap">
-    <div id="dashboardPanel">
+  <nav class="tab-nav" aria-label="Primary">
+    <button type="button" class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
+  </nav>
+
+  <main id="dashboard-tab" class="tab-panel active">
+    <div class="dashboard-wrap">
     <div class="stats-row">
       <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}" id="tilePnl">{{ pnl_str }}</div></div>
       <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div><div class="spark-wrap"><canvas id="sparkEq"></canvas></div></div>
@@ -293,7 +379,8 @@ _PAGE = """
     <div class="card chart-main">
       <h2>Equity curve</h2>
       <div class="chart-controls">
-        <button class="range-btn active" data-range="1D">1D</button>
+        <button class="range-btn" data-range="1D">1D</button>
+        <button class="range-btn" data-range="5D">5D</button>
         <button class="range-btn" data-range="1W">1W</button>
         <button class="range-btn" data-range="1M">1M</button>
         <button class="range-btn" data-range="ALL">ALL</button>
@@ -372,34 +459,51 @@ _PAGE = """
       </div>
     </div>
 
+    <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
+    <p class="last-upd" id="metaNote">Live dashboard via WebSocket (fallback poll {{ refresh_sec }}s) · clock ET</p>
     </div>
-    <div id="backtestPanel" class="panel-hidden">
-      <div class="card" style="grid-column:1 / -1;">
+  </main>
+
+  <main id="backtest-tab" class="tab-panel">
+    <div class="backtest-wrap">
+      <div class="card bt-card-form">
         <h2>Backtest Runner</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
           <input id="btStrategy" value="current_adaptive" placeholder="strategy" />
           <input id="btSymbols" value="AAPL,MSFT,BTC/USD" placeholder="symbols csv" />
           <input id="btStart" value="2025-01-01" placeholder="start YYYY-MM-DD" />
           <input id="btEnd" value="2026-01-01" placeholder="end YYYY-MM-DD" />
-          <button id="btRunBtn" class="cfg-save" type="button">Run Backtest</button>
+          <button id="btRunBtn" class="bt-action-btn" type="button">Run Backtest</button>
         </div>
       </div>
-      <div class="card" style="grid-column:1 / -1;">
+      <div class="card bt-card-summary">
         <h2>Backtest Summary</h2>
         <pre id="btSummary" class="mono muted">No run selected.</pre>
       </div>
-      <div class="card" style="grid-column:1 / -1;">
+      <div class="card bt-card-chart">
         <h2>Backtest Equity Curve</h2>
         <div class="chart-wrap"><canvas id="btChart"></canvas></div>
       </div>
-      <div class="card" style="grid-column:1 / -1;">
+      <div class="card bt-card-trades">
+        <h2>Simulated trades</h2>
+        <div style="overflow-x:auto;">
+          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Fill</th></tr></thead><tbody id="btTradesBody"></tbody></table>
+        </div>
+        <p class="muted" id="btTradesEmpty" style="display:none;">No trades.</p>
+      </div>
+      <div class="card bt-card-rejections">
+        <h2>Rejections</h2>
+        <div style="overflow-x:auto;">
+          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Reason</th></tr></thead><tbody id="btRejectionsBody"></tbody></table>
+        </div>
+        <p class="muted" id="btRejectionsEmpty" style="display:none;">No rejections.</p>
+      </div>
+      <div class="card bt-card-runs">
         <h2>Recent Backtest Runs</h2>
         <table class="data-table"><thead><tr><th>ID</th><th>Created</th><th>Strategy</th><th>Status</th><th></th></tr></thead><tbody id="btRunsBody"></tbody></table>
       </div>
     </div>
-    <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
-    <p class="last-upd" id="metaNote">Live dashboard via WebSocket (fallback poll {{ refresh_sec }}s) · clock ET</p>
-  </div>
+  </main>
 
   <div id="sym-tooltip" aria-hidden="true"></div>
   <script id="dash-payload" type="application/json">{{ dash_snapshot|tojson }}</script>
@@ -407,6 +511,11 @@ _PAGE = """
     const REFRESH_MS = {{ refresh_sec }} * 1000;
     const DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
     const TZ = "America/New_York";
+    const EQUITY_RANGE_KEY = "quantbot_equity_range";
+    const ACTIVE_TAB_KEY = "quantbot_active_tab";
+    const VALID_EQUITY_RANGES = ["1D", "5D", "1W", "1M", "ALL"];
+    let selectedEquityRange = localStorage.getItem(EQUITY_RANGE_KEY) || "1D";
+    if (!VALID_EQUITY_RANGES.includes(selectedEquityRange)) selectedEquityRange = "1D";
     let spark;
     let lastPollMs = 0;
     window.__dashWsConnected = false;
@@ -639,7 +748,6 @@ _PAGE = """
 
     let _chart = null;
     let _equitySeries = [];
-    let _activeRange = "1D";
     function _hexToRgba(hex, alpha) {
       const h = String(hex || "").replace("#", "");
       if (h.length !== 6) return "rgba(0,255,136," + alpha + ")";
@@ -659,6 +767,7 @@ _PAGE = """
       const now = new Date();
       const cutoff = {
         "1D": new Date(now.getTime() - 24 * 60 * 60 * 1000),
+        "5D": new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000),
         "1W": new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000),
         "1M": new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
         "ALL": new Date(0)
@@ -670,9 +779,8 @@ _PAGE = """
       });
     }
     function updateRangeButtons(active) {
-      document.querySelectorAll(".range-btn").forEach((btn) => {
-        const on = btn.dataset.range === active;
-        btn.classList.toggle("active", on);
+      document.querySelectorAll(".dashboard-wrap .range-btn").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.range === active);
       });
     }
     function updateEquityChart(series) {
@@ -745,7 +853,7 @@ _PAGE = """
       if (!data || typeof data !== "object") return;
       applyLiveTiles(data);
       _equitySeries = Array.isArray(data.equity_series) ? data.equity_series : [];
-      const ser = filterSeries(_equitySeries, _activeRange);
+      const ser = filterSeries(_equitySeries, selectedEquityRange);
       updateEquityChart(ser);
       updateSpark(ser);
 
@@ -912,17 +1020,29 @@ _PAGE = """
 
     // buildSpark/buildChart replaced by updateSpark/updateEquityChart (no destroy).
     function bindChartRangeButtons() {
-      document.querySelectorAll(".range-btn").forEach((btn) => {
+      document.querySelectorAll(".dashboard-wrap .range-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
-          const range = btn.dataset.range || "ALL";
-          _activeRange = range;
-          updateRangeButtons(_activeRange);
+          const range = btn.dataset.range || "1D";
+          selectedEquityRange = VALID_EQUITY_RANGES.includes(range) ? range : "1D";
+          localStorage.setItem(EQUITY_RANGE_KEY, selectedEquityRange);
+          updateRangeButtons(selectedEquityRange);
           poll();
         });
       });
-      updateRangeButtons(_activeRange);
+      updateRangeButtons(selectedEquityRange);
     }
     bindChartRangeButtons();
+    (function syncTabFromStorage() {
+      const wantBt = localStorage.getItem(ACTIVE_TAB_KEY) === "backtest";
+      document.querySelectorAll(".tab-nav .tab-btn").forEach((b) => {
+        const isBt = b.dataset.tab === "backtest";
+        b.classList.toggle("active", wantBt ? isBt : !isBt);
+      });
+      const dm = document.getElementById("dashboard-tab");
+      const bm = document.getElementById("backtest-tab");
+      if (dm) dm.classList.toggle("active", !wantBt);
+      if (bm) bm.classList.toggle("active", wantBt);
+    })();
     const boot = readPayload();
     if (typeof boot.market_open === "boolean") __lastDashMarketOpen = boot.market_open;
     tickClock();
@@ -1023,8 +1143,8 @@ _PAGE = """
 
     async function poll() {
       try {
-        const periodMap = { "1D": "1D", "1W": "1W", "1M": "1M", "ALL": "3M" };
-        const eqPeriod = periodMap[_activeRange] || "1D";
+        const periodMap = { "1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M" };
+        const eqPeriod = periodMap[selectedEquityRange] || "1D";
         const r = await fetch("/api/dashboard?equity_period=" + encodeURIComponent(eqPeriod), { cache: "no-store" });
         const j = await r.json();
         applyLiveDashboardSurgical(j);
@@ -1077,7 +1197,7 @@ _PAGE = """
           if (r) r.value = n.value;
         };
       });
-      document.querySelectorAll(".cfg-save").forEach((btn) => {
+      document.querySelectorAll("#dashboard-tab .cfg-save").forEach((btn) => {
         btn.onclick = async () => {
           const k = btn.dataset.key;
           const n = document.querySelector('.cfg-num[data-key="' + k + '"]');
@@ -1123,18 +1243,24 @@ _PAGE = """
 
     let btChart = null;
     function switchTab(tab) {
-      const dash = document.getElementById("dashboardPanel");
-      const bt = document.getElementById("backtestPanel");
-      const bd = document.getElementById("tabDashboard");
-      const bb = document.getElementById("tabBacktest");
-      const showBt = tab === "backtest";
-      if (dash) dash.classList.toggle("panel-hidden", showBt);
-      if (bt) bt.classList.toggle("panel-hidden", !showBt);
-      if (bd) bd.classList.toggle("active", !showBt);
-      if (bb) bb.classList.toggle("active", showBt);
+      const wantBacktest = tab === "backtest";
+      document.querySelectorAll(".tab-nav .tab-btn").forEach((b) => {
+        const isBt = b.dataset.tab === "backtest";
+        b.classList.toggle("active", wantBacktest ? isBt : !isBt);
+      });
+      const dashMain = document.getElementById("dashboard-tab");
+      const btMain = document.getElementById("backtest-tab");
+      if (dashMain) dashMain.classList.toggle("active", !wantBacktest);
+      if (btMain) btMain.classList.toggle("active", wantBacktest);
+      localStorage.setItem(ACTIVE_TAB_KEY, wantBacktest ? "backtest" : "dashboard");
+      if (wantBacktest) loadBacktestRuns();
     }
-    document.getElementById("tabDashboard")?.addEventListener("click", () => switchTab("dashboard"));
-    document.getElementById("tabBacktest")?.addEventListener("click", () => { switchTab("backtest"); loadBacktestRuns(); });
+    document.querySelectorAll(".tab-nav .tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        switchTab(btn.dataset.tab === "backtest" ? "backtest" : "dashboard");
+      });
+    });
+    if (localStorage.getItem(ACTIVE_TAB_KEY) === "backtest") loadBacktestRuns();
 
     function renderBacktestChart(points) {
       const canvas = document.getElementById("btChart");
@@ -1157,9 +1283,32 @@ _PAGE = """
     async function loadBacktestResult(runId) {
       const r = await fetch("/api/backtest/result/" + encodeURIComponent(runId), { cache: "no-store" });
       const j = await r.json();
-      const s = document.getElementById("btSummary");
-      if (s) s.textContent = JSON.stringify({ summary: j.summary_json, rejections: j.rejection_summary_json }, null, 2);
+      const sumEl = document.getElementById("btSummary");
+      if (sumEl) sumEl.textContent = JSON.stringify({ summary: j.summary_json, rejections: j.rejection_summary_json }, null, 2);
       renderBacktestChart(j.equity_curve || []);
+      const trades = Array.isArray(j.trades) ? j.trades : [];
+      const rejects = Array.isArray(j.rejections) ? j.rejections : [];
+      const tbTr = document.getElementById("btTradesBody");
+      const tbRej = document.getElementById("btRejectionsBody");
+      const emptyTr = document.getElementById("btTradesEmpty");
+      const emptyRej = document.getElementById("btRejectionsEmpty");
+      if (tbTr) {
+        tbTr.innerHTML = trades.slice(-80).reverse().map((t) => {
+          const ts = esc(t.timestamp || "");
+          const sym = esc(t.symbol || "");
+          const side = esc(t.side || "");
+          const qty = esc(String(t.qty != null ? t.qty : ""));
+          const fp = esc(String(t.fill_price != null ? t.fill_price : ""));
+          return `<tr><td class="mono">${ts}</td><td class="mono">${sym}</td><td>${side}</td><td class="mono">${qty}</td><td class="mono">${fp}</td></tr>`;
+        }).join("");
+      }
+      if (tbRej) {
+        tbRej.innerHTML = rejects.slice(-80).reverse().map((x) => {
+          return `<tr><td class="mono">${esc(x.timestamp || "")}</td><td class="mono">${esc(x.symbol || "")}</td><td>${esc(x.reason_code || "")}</td></tr>`;
+        }).join("");
+      }
+      if (emptyTr) emptyTr.style.display = trades.length ? "none" : "block";
+      if (emptyRej) emptyRej.style.display = rejects.length ? "none" : "block";
     }
 
     async function loadBacktestRuns() {
@@ -1170,7 +1319,7 @@ _PAGE = """
       body.innerHTML = "";
       for (const row of rows) {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td class="mono">${row.id}</td><td class="mono">${esc(row.created_at || "")}</td><td>${esc(row.strategy_name || "")}</td><td>${esc(row.status || "")}</td><td><button type="button" class="cfg-save" data-run="${row.id}">View</button></td>`;
+        tr.innerHTML = `<td class="mono">${row.id}</td><td class="mono">${esc(row.created_at || "")}</td><td>${esc(row.strategy_name || "")}</td><td>${esc(row.status || "")}</td><td><button type="button" class="bt-action-btn" data-run="${row.id}">View</button></td>`;
         body.appendChild(tr);
       }
       body.querySelectorAll("button[data-run]").forEach((btn) => {
