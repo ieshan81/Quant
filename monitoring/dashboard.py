@@ -11,6 +11,7 @@ inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
 """
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from flask import Flask, Response, jsonify, render_template_string, request
@@ -328,8 +329,10 @@ _PAGE = """
       grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: 1rem;
     }
-    .backtest-wrap .card.bt-card-form { grid-column: span 4; }
-    .backtest-wrap .card.bt-card-summary { grid-column: span 8; }
+    .backtest-wrap .card.bt-card-setup,
+    .backtest-wrap .card.bt-card-actions,
+    .backtest-wrap .card.bt-card-summary,
+    .backtest-wrap .card.bt-card-interpretation,
     .backtest-wrap .card.bt-card-chart { grid-column: 1 / -1; }
     .backtest-wrap .card.bt-card-trades,
     .backtest-wrap .card.bt-card-rejections,
@@ -343,10 +346,34 @@ _PAGE = """
       border: 1px solid var(--border-bright);
       color: var(--accent-blue);
       border-radius: 8px;
-      padding: 0.35rem 0.65rem;
+      padding: 0.48rem 0.85rem;
       cursor: pointer;
       font-weight: 600;
     }
+    .bt-action-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .bt-action-btn.bt-primary {
+      background: linear-gradient(180deg, rgba(0, 255, 136, 0.20), rgba(0, 255, 136, 0.1));
+      color: #e8fff5;
+      border-color: #00ff88;
+      font-size: 1rem;
+      padding: 0.7rem 1rem;
+    }
+    .bt-action-btn.bt-primary:hover { filter: brightness(1.1); }
+    .bt-setup-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 0.6rem;
+    }
+    .bt-setup-grid label { font-size: 0.75rem; color: var(--text-secondary); display: block; }
+    .bt-setup-grid input, .bt-setup-grid select {
+      width: 100%;
+      background: #0b1220; color: var(--text-primary);
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.55rem;
+    }
+    .bt-actions-row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+    .bt-status { margin-top: 0.5rem; font-size: 0.85rem; }
+    .bt-status.ok { color: #22c55e; }
+    .bt-status.err { color: #ef4444; }
     .bt-mini-card {
       background: rgba(15, 23, 42, 0.55);
       border: 1px solid var(--border);
@@ -484,80 +511,96 @@ _PAGE = """
 
   <main id="backtest-tab" class="tab-panel">
     <div class="backtest-wrap">
-      <div class="card bt-card-form">
-        <h2>Backtest Runner</h2>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <input id="btStrategy" value="current_adaptive" placeholder="strategy" />
-          <input id="btSymbols" value="AAPL,MSFT,BTC/USD" placeholder="symbols csv" />
-          <input id="btStart" value="2025-01-01" placeholder="start YYYY-MM-DD" />
-          <input id="btEnd" value="2026-01-01" placeholder="end YYYY-MM-DD" />
-          <select id="btTimeframe">
-            <option value="1Day">1Day</option>
-            <option value="1H">1H</option>
-          </select>
-          <label class="mono muted" style="display:flex;align-items:center;gap:6px;">
-            <input id="btPyramiding" type="checkbox" />
-            pyramiding
-          </label>
+      <div class="card bt-card-setup">
+        <h2>Backtest Setup</h2>
+        <div class="bt-setup-grid">
+          <div><label>Strategy</label><select id="btStrategy"></select></div>
+          <div><label>Symbols (CSV)</label><input id="btSymbols" value="AAPL,MSFT,BTC/USD" /></div>
+          <div><label>Start date</label><input id="btStart" type="date" value="2025-01-01" /></div>
+          <div><label>End date</label><input id="btEnd" type="date" value="2026-01-01" /></div>
+          <div><label>Timeframe</label><select id="btTimeframe"><option value="1Day">1Day</option><option value="1H">1H</option></select></div>
+          <div><label>Starting cash</label><input id="btStartingCash" type="number" step="0.01" value="100.00" /></div>
+          <div style="grid-column: span 2;"><label>Cost assumptions</label><input id="btCostsView" value="fee=5, spread=20, slippage=10" readonly /></div>
+          <div style="display:flex;align-items:end;"><label style="display:flex;align-items:center;gap:6px;"><input id="btPyramiding" type="checkbox" />Pyramiding enabled</label></div>
+        </div>
+        <p class="muted mono" id="btThresholds" style="margin-top:0.6rem;">loading configured thresholds…</p>
+        <div class="bt-actions-row" style="margin-top:0.6rem;">
+          <span class="muted" style="margin-right:0.4rem;">Presets:</span>
           <button id="btPresetSanity" class="bt-action-btn" type="button">Small sanity test</button>
           <button id="btPresetCrypto" class="bt-action-btn" type="button">Crypto only</button>
           <button id="btPresetHoldings" class="bt-action-btn" type="button">Current holdings</button>
           <button id="btPresetStress" class="bt-action-btn" type="button">Stress test</button>
-          <button id="btRunBtn" class="bt-action-btn" type="button">Run Backtest</button>
-          <button id="btCompareBtn" class="bt-action-btn" type="button">Compare Strategies</button>
         </div>
-        <p class="muted mono" id="btThresholds" style="margin-top:0.6rem;">loading thresholds…</p>
+      </div>
+      <div class="card bt-card-actions">
+        <h2>Primary Actions</h2>
+        <div class="bt-actions-row">
+          <button id="btRunBtn" class="bt-action-btn bt-primary" type="button">▶ Run Backtest</button>
+          <button id="btCompareBtn" class="bt-action-btn" type="button">⚖ Compare Strategies</button>
+          <button id="btCopyReportBtn" class="bt-action-btn" type="button" disabled>📋 Copy Backtest Report</button>
+          <button id="btDownloadReportBtn" class="bt-action-btn" type="button" disabled>⬇ Download Backtest Report</button>
+        </div>
+        <p id="btStatus" class="bt-status muted">Run or select a backtest first.</p>
       </div>
       <div class="card bt-card-summary">
-        <h2>Backtest Summary</h2>
+        <h2>Results Overview</h2>
         <p id="btSummaryEmpty" class="mono muted">No run selected.</p>
         <div id="btSummaryCards" class="stats-row" style="margin-top:0.5rem;"></div>
         <p id="btSampleWarning" class="muted" style="display:none;color:#fbbf24;margin-top:0.6rem;"></p>
       </div>
+      <div class="card bt-card-interpretation">
+        <h2>Interpretation</h2>
+        <div id="btInterpretation" class="muted">No run selected.</div>
+      </div>
+      <div class="card bt-card-chart">
+        <h2>Backtest Equity Curve</h2>
+        <div class="chart-wrap" style="height:360px;"><canvas id="btChart"></canvas></div>
+      </div>
+      <div class="card bt-card-runs">
+        <h2>Strategy Comparison</h2>
+        <p id="btCompareEmpty" class="muted">Run comparison to populate this table.</p>
+        <div style="overflow:auto;max-height:360px;">
+          <table class="data-table"><thead><tr><th>Strategy</th><th>Final Equity</th><th>Return %</th><th>Buy &amp; Hold %</th><th>Excess %</th><th>Max Drawdown %</th><th>Closed Trades</th><th>Rejections</th><th>Confidence</th><th>Interpretation</th></tr></thead><tbody id="btCompareBody"></tbody></table>
+        </div>
+      </div>
       <div class="card bt-card-rejections">
-        <h2>Rejections</h2>
+        <h2>Rejections Summary</h2>
         <div id="btRejBadges" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
         <details style="margin-top:0.7rem;">
-          <summary class="muted">Latest rejection rows (max 100)</summary>
-          <div style="overflow-x:auto;margin-top:0.5rem;">
+          <summary class="muted">Details (latest configured rows)</summary>
+          <div style="overflow:auto;max-height:300px;margin-top:0.5rem;">
             <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Reason</th></tr></thead><tbody id="btRejectionsBody"></tbody></table>
           </div>
         </details>
         <p class="muted" id="btRejectionsEmpty" style="display:none;">No rejections.</p>
       </div>
-      <div class="card bt-card-chart">
-        <h2>Backtest Equity Curve</h2>
-        <div class="chart-wrap"><canvas id="btChart"></canvas></div>
-      </div>
       <div class="card bt-card-trades">
         <h2>Simulated trades</h2>
-        <div style="overflow-x:auto;">
+        <div style="overflow:auto;max-height:340px;">
           <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Fill</th><th>Entry reason</th><th>Exit reason</th><th>Score</th><th>Hold sec</th><th>PnL</th><th>PnL %</th></tr></thead><tbody id="btTradesBody"></tbody></table>
         </div>
         <p class="muted" id="btTradesEmpty" style="display:none;">No trades.</p>
-      </div>
-      <div class="card bt-card-assumptions">
-        <h2>Assumptions &amp; Data Quality</h2>
-        <div id="btAssumptions" class="mono muted">—</div>
-        <div id="btDataQuality" class="mono muted" style="margin-top:0.5rem;">—</div>
-      </div>
-      <div class="card bt-card-runs">
-        <h2>Strategy Comparison</h2>
-        <div style="overflow-x:auto;">
-          <table class="data-table"><thead><tr><th>Strategy</th><th>Final Equity</th><th>Return %</th><th>Max DD %</th><th>Closed</th><th>Win %</th><th>B&amp;H %</th><th>Excess %</th><th>Rejections</th><th>Confidence</th></tr></thead><tbody id="btCompareBody"></tbody></table>
-        </div>
       </div>
       <div class="card bt-card-runs">
         <h2>Recent Backtest Runs</h2>
         <table class="data-table"><thead><tr><th>ID</th><th>Created</th><th>Strategy</th><th>Status</th><th></th></tr></thead><tbody id="btRunsBody"></tbody></table>
       </div>
       <div class="card bt-card-runs">
-        <h2>Bearish Signal Events (No Position)</h2>
-        <div style="overflow-x:auto;">
+        <h2>Signal Events</h2>
+        <div id="btSigBadges" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:0.6rem;"></div>
+        <details>
+          <summary class="muted">Details (latest configured rows)</summary>
+          <div style="overflow:auto;max-height:300px;margin-top:0.5rem;">
           <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Class</th><th>Reason</th><th>Score</th></tr></thead><tbody id="btSignalEventsBody"></tbody></table>
-        </div>
+          </div>
+        </details>
         <p class="muted" id="btSignalEventsEmpty" style="display:none;">No signal events.</p>
       </div>
+      <div class="card bt-card-assumptions">
+        <h2>Assumptions &amp; Data Quality</h2>
+        <div id="btAssumptions" class="mono muted">—</div>
+        <div id="btDataQuality" class="mono muted" style="margin-top:0.5rem;">—</div>
+        </div>
     </div>
   </main>
 
@@ -1299,6 +1342,8 @@ _PAGE = """
 
     let btChart = null;
     let btDefaults = null;
+    let btSelectedRunId = null;
+    let btCompareRows = [];
     function switchTab(tab) {
       const wantBacktest = tab === "backtest";
       document.querySelectorAll(".tab-nav .tab-btn").forEach((b) => {
@@ -1319,12 +1364,32 @@ _PAGE = """
     });
     if (localStorage.getItem(ACTIVE_TAB_KEY) === "backtest") loadBacktestRuns();
 
+    function setBacktestStatus(msg, kind) {
+      const el = document.getElementById("btStatus");
+      if (!el) return;
+      el.textContent = msg || "";
+      el.className = "bt-status " + (kind || "muted");
+    }
+    function setBacktestBusy(on, label) {
+      const ids = ["btRunBtn","btCompareBtn","btCopyReportBtn","btDownloadReportBtn","btPresetSanity","btPresetCrypto","btPresetHoldings","btPresetStress"];
+      ids.forEach((id) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = !!on;
+      });
+      if (on && label) setBacktestStatus(label, "muted");
+    }
+    function cfgInt(key, fallback) {
+      const cfg = (btDefaults && btDefaults.backtest_config) || {};
+      const n = Number(cfg[key]);
+      return Number.isFinite(n) ? Math.trunc(n) : fallback;
+    }
     function renderBacktestChart(points) {
       const canvas = document.getElementById("btChart");
       if (!canvas) return;
       const labels = (points || []).map(p => p.timestamp);
       const data = (points || []).map(p => Number(p.equity || 0));
       const looksIntraday = labels.some((ts) => String(ts || "").includes(":"));
+      const maxTicks = cfgInt("backtest_chart_max_ticks", 10);
       if (!btChart) {
         btChart = new Chart(canvas.getContext("2d"), {
           type: "line",
@@ -1338,7 +1403,7 @@ _PAGE = """
               x: {
                 ticks: {
                   autoSkip: true,
-                  maxTicksLimit: 10,
+                  maxTicksLimit: maxTicks,
                   maxRotation: 0,
                   callback: function(value, idx) {
                     const raw = String((this.getLabelForValue ? this.getLabelForValue(value) : labels[idx]) || "");
@@ -1383,6 +1448,7 @@ _PAGE = """
       const empty = document.getElementById("btSummaryEmpty");
       if (empty) empty.style.display = "none";
       const closedTrades = Number(summary.closed_trades || 0);
+      const confidence = String(summary.confidence_label || "—");
       renderMiniCards("btSummaryCards", [
         { label: "Starting Cash", value: fmtMoney(summary.starting_cash) },
         { label: "Final Equity", value: fmtMoney(summary.final_equity) },
@@ -1395,6 +1461,7 @@ _PAGE = """
         { label: "Profit Factor", value: fmtPlain(summary.profit_factor) },
         { label: "Expectancy", value: fmtMoney(summary.expectancy) },
         { label: "Rejections Total", value: String(summary.rejections_total ?? 0) },
+        { label: "Confidence Label", value: confidence },
         { label: "Strategy Return", value: fmtPct(summary.strategy_return_pct) },
         { label: "Buy & Hold Return", value: fmtPct(summary.equal_weight_buy_and_hold_return_pct) },
         { label: "Excess Return", value: fmtPct(summary.excess_return_pct) },
@@ -1402,13 +1469,12 @@ _PAGE = """
       const warn = document.getElementById("btSampleWarning");
       if (warn) {
         warn.style.display = "none";
-        if (closedTrades === 0) {
-          warn.textContent = "No completed round trips. Return may reflect open/unrealized positions only.";
-          warn.style.display = "block";
-        } else if (closedTrades < 10) {
-          warn.textContent = "Sample too small: fewer than 10 closed trades. Do not trust win rate or profit factor.";
-          warn.style.display = "block";
-        }
+        const rationale = summary.confidence_rationale || {};
+        const thr = rationale.thresholds || {};
+        const lowMin = Number(thr.confidence_low_min_closed_trades || 0);
+        if (closedTrades === 0) warn.textContent = "No completed round trips. Return may reflect open/unrealized positions only.";
+        else if (closedTrades < lowMin) warn.textContent = "Sample is below configured confidence minimum; reliability is low.";
+        if (warn.textContent) warn.style.display = "block";
       }
       const assumptions = summary.assumptions || {};
       const dataQuality = summary.data_quality || {};
@@ -1443,11 +1509,23 @@ _PAGE = """
         tEl.textContent =
           `confidence thresholds: low>=${thr.confidence_low_min_closed_trades ?? "—"}, medium>=${thr.confidence_medium_min_closed_trades ?? "—"}, high>=${thr.confidence_high_min_closed_trades ?? "—"}, warning_downgrade=${String(thr.confidence_warning_downgrade_enabled)}`;
       }
+      const interpEl = document.getElementById("btInterpretation");
+      if (interpEl) {
+        const lines = [];
+        const excess = Number(summary.excess_return_pct || 0);
+        const rejTotal = Number(summary.rejections_total || 0);
+        if (excess >= 0) lines.push("Strategy beat benchmark on excess return.");
+        else lines.push("Strategy underperformed benchmark; profit alone can be misleading.");
+        if (confidence === "low") lines.push("Confidence is low based on configured sample thresholds and warnings.");
+        if (rejTotal > 0) lines.push("Execution rules blocked many actions; inspect rejection and signal-event summaries.");
+        interpEl.innerHTML = lines.map((x) => `<p style="margin:0.25rem 0;">• ${esc(x)}</p>`).join("");
+      }
     }
 
     async function loadBacktestResult(runId) {
       const r = await fetch("/api/backtest/result/" + encodeURIComponent(runId), { cache: "no-store" });
       const j = await r.json();
+      btSelectedRunId = Number(j.id || runId);
       const summary = (j.summary_json && typeof j.summary_json === "object") ? j.summary_json : {};
       const rejectionSummary = (j.rejection_summary_json && typeof j.rejection_summary_json === "object") ? j.rejection_summary_json : {};
       renderBacktestSummary(summary, rejectionSummary);
@@ -1455,6 +1533,9 @@ _PAGE = """
       const trades = Array.isArray(j.trades) ? j.trades : [];
       const rejects = Array.isArray(j.rejections) ? j.rejections : [];
       const signalEvents = Array.isArray(j.signal_events) ? j.signal_events : [];
+      const maxTrades = cfgInt("backtest_max_report_trades", 80);
+      const maxRejects = cfgInt("backtest_max_report_rejections", 100);
+      const maxSignals = cfgInt("backtest_max_report_signal_events", 100);
       const tbTr = document.getElementById("btTradesBody");
       const tbRej = document.getElementById("btRejectionsBody");
       const tbSig = document.getElementById("btSignalEventsBody");
@@ -1462,11 +1543,12 @@ _PAGE = """
       const emptyRej = document.getElementById("btRejectionsEmpty");
       const emptySig = document.getElementById("btSignalEventsEmpty");
       if (tbTr) {
-        tbTr.innerHTML = trades.slice(-80).reverse().map((t) => {
+        tbTr.innerHTML = trades.slice(-maxTrades).reverse().map((t) => {
           const ts = esc(t.timestamp || "");
           const sym = esc(t.symbol || "");
           const side = esc(t.side || "");
-          const qty = esc(String(t.qty != null ? t.qty : ""));
+          const qn = Number(t.qty);
+          const qty = esc(Number.isFinite(qn) ? (Math.abs(qn) < 1 ? qn.toFixed(6) : qn.toFixed(3)) : String(t.qty != null ? t.qty : ""));
           const fp = esc(String(t.fill_price != null ? t.fill_price : ""));
           const entryReason = esc(String((t.meta_json || {}).entry_reason || ""));
           const exitReason = esc(String((t.meta_json || {}).exit_reason || ""));
@@ -1478,18 +1560,29 @@ _PAGE = """
         }).join("");
       }
       if (tbRej) {
-        tbRej.innerHTML = rejects.slice(-100).reverse().map((x) => {
+        tbRej.innerHTML = rejects.slice(-maxRejects).reverse().map((x) => {
           return `<tr><td class="mono">${esc(x.timestamp || "")}</td><td class="mono">${esc(x.symbol || "")}</td><td>${esc(x.reason_code || "")}</td></tr>`;
         }).join("");
       }
       if (emptyTr) emptyTr.style.display = trades.length ? "none" : "block";
       if (emptyRej) emptyRej.style.display = rejects.length ? "none" : "block";
       if (tbSig) {
-        tbSig.innerHTML = signalEvents.slice(-100).reverse().map((x) => {
+        tbSig.innerHTML = signalEvents.slice(-maxSignals).reverse().map((x) => {
           return `<tr><td class="mono">${esc(x.timestamp || "")}</td><td class="mono">${esc(x.symbol || "")}</td><td>${esc(x.strategy_action || "")}</td><td>${esc(x.classification || "")}</td><td>${esc(x.reason_code || "")}</td><td class="mono">${esc(String(x.score != null ? x.score : ""))}</td></tr>`;
         }).join("");
       }
+      const sigCounts = {};
+      signalEvents.forEach((x) => {
+        const k = String(x.reason_code || "UNKNOWN");
+        sigCounts[k] = (sigCounts[k] || 0) + 1;
+      });
+      renderMiniCards("btSigBadges", Object.entries(sigCounts).map(([k, v]) => ({ label: k, value: String(v) })));
       if (emptySig) emptySig.style.display = signalEvents.length ? "none" : "block";
+      const copyBtn = document.getElementById("btCopyReportBtn");
+      const dlBtn = document.getElementById("btDownloadReportBtn");
+      if (copyBtn) copyBtn.disabled = false;
+      if (dlBtn) dlBtn.disabled = false;
+      setBacktestStatus("Backtest run loaded.", "ok");
     }
 
     function setBacktestPreset(kind) {
@@ -1512,15 +1605,27 @@ _PAGE = """
       try {
         const r = await fetch("/api/backtest/defaults", { cache: "no-store" });
         btDefaults = await r.json();
+        const strat = document.getElementById("btStrategy");
+        if (strat && Array.isArray(btDefaults.strategies)) {
+          strat.innerHTML = btDefaults.strategies.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+          strat.value = "current_adaptive";
+        }
         const tf = document.getElementById("btTimeframe");
         if (tf && btDefaults && btDefaults.default_timeframe) tf.value = btDefaults.default_timeframe;
+        const sym = document.getElementById("btSymbols");
+        if (sym && Array.isArray(btDefaults.symbols)) sym.value = btDefaults.symbols.join(",");
+        const costs = (btDefaults && btDefaults.costs) || {};
+        const costsView = document.getElementById("btCostsView");
+        if (costsView) costsView.value = `fee=${costs.fee_bps ?? "—"}, spread=${costs.spread_bps ?? "—"}, slippage=${costs.slippage_bps ?? "—"}`;
         const tEl = document.getElementById("btThresholds");
         const cfg = (btDefaults && btDefaults.backtest_config) || {};
         if (tEl) {
           tEl.textContent =
             `confidence thresholds: low>=${cfg.confidence_low_min_closed_trades ?? "—"}, medium>=${cfg.confidence_medium_min_closed_trades ?? "—"}, high>=${cfg.confidence_high_min_closed_trades ?? "—"}, warning_downgrade=${String(cfg.confidence_warning_downgrade_enabled)}`;
         }
-      } catch (_) {}
+      } catch (_) {
+        setBacktestStatus("Failed to load backtest defaults.", "err");
+      }
     }
 
     async function loadBacktestRuns() {
@@ -1540,23 +1645,30 @@ _PAGE = """
     }
 
     document.getElementById("btRunBtn")?.addEventListener("click", async () => {
+      setBacktestBusy(true, "Running Backtest...");
       const payload = {
         strategy_name: (document.getElementById("btStrategy") || {}).value || "current_adaptive",
+        starting_cash: Number((document.getElementById("btStartingCash") || {}).value || 100),
         symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
         start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
         end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
         timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
         pyramiding_enabled: !!((document.getElementById("btPyramiding") || {}).checked),
       };
-      const r = await fetch("/api/backtest/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-        body: JSON.stringify(payload),
-      });
-      const j = await r.json();
-      if (j && j.run_id) {
+      try {
+        const r = await fetch("/api/backtest/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          body: JSON.stringify(payload),
+        });
+        const j = await r.json();
+        if (!r.ok || !j || !j.run_id) throw new Error(j.error || "Run failed");
         await loadBacktestRuns();
         await loadBacktestResult(j.run_id);
+      } catch (e) {
+        setBacktestStatus(`Backtest run failed: ${String(e && e.message ? e.message : e)}`, "err");
+      } finally {
+        setBacktestBusy(false);
       }
     });
     document.getElementById("btPresetSanity")?.addEventListener("click", () => setBacktestPreset("sanity"));
@@ -1564,24 +1676,75 @@ _PAGE = """
     document.getElementById("btPresetHoldings")?.addEventListener("click", () => setBacktestPreset("holdings"));
     document.getElementById("btPresetStress")?.addEventListener("click", () => setBacktestPreset("stress"));
     document.getElementById("btCompareBtn")?.addEventListener("click", async () => {
+      setBacktestBusy(true, "Comparing Strategies...");
       const payload = {
-        strategy_names: ["current_adaptive", "simple_buy_and_hold", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"],
+        strategy_names: ((btDefaults && btDefaults.backtest_config && btDefaults.backtest_config.backtest_ui_compare_strategies) || ["current_adaptive", "simple_buy_and_hold", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"]),
+        starting_cash: Number((document.getElementById("btStartingCash") || {}).value || 100),
         symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
         start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
         end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
         timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
         pyramiding_enabled: !!((document.getElementById("btPyramiding") || {}).checked),
       };
-      const r = await fetch("/api/backtest/compare", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-        body: JSON.stringify(payload),
-      });
-      const j = await r.json();
-      const body = document.getElementById("btCompareBody");
-      if (body) {
-        const rows = Array.isArray(j.rows) ? j.rows : [];
-        body.innerHTML = rows.map((x) => `<tr><td>${esc(x.strategy || "")}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.win_rate_pct ?? ""))}</td><td class="mono">${esc(String(x.buy_and_hold_return ?? ""))}</td><td class="mono">${esc(String(x.excess_return ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td></tr>`).join("");
+      try {
+        const r = await fetch("/api/backtest/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          body: JSON.stringify(payload),
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error(j.error || "Compare failed");
+        const body = document.getElementById("btCompareBody");
+        const empty = document.getElementById("btCompareEmpty");
+        btCompareRows = Array.isArray(j.rows) ? j.rows : [];
+        if (body) {
+          body.innerHTML = btCompareRows.map((x) => {
+            const interp = Number(x.excess_return || 0) >= 0 ? "Beat benchmark" : "Underperformed benchmark";
+            return `<tr><td>${esc(x.strategy || "")}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.buy_and_hold_return ?? ""))}</td><td class="mono">${esc(String(x.excess_return ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td><td>${esc(interp)}</td></tr>`;
+          }).join("");
+        }
+        if (empty) empty.style.display = btCompareRows.length ? "none" : "block";
+        setBacktestStatus("Comparison complete.", "ok");
+      } catch (e) {
+        setBacktestStatus(`Comparison failed: ${String(e && e.message ? e.message : e)}`, "err");
+      } finally {
+        setBacktestBusy(false);
+      }
+    });
+    document.getElementById("btCopyReportBtn")?.addEventListener("click", async () => {
+      if (!btSelectedRunId) return setBacktestStatus("Run or select a backtest first.", "err");
+      setBacktestBusy(true, "Copying Report...");
+      try {
+        const r = await fetch(`/api/backtest/report/${encodeURIComponent(btSelectedRunId)}?format=markdown`, { cache: "no-store" });
+        const md = await r.text();
+        if (!r.ok) throw new Error(md || "Report fetch failed");
+        await navigator.clipboard.writeText(md);
+        setBacktestStatus("Backtest report copied to clipboard.", "ok");
+      } catch (e) {
+        setBacktestStatus(`Copy failed: ${String(e && e.message ? e.message : e)}`, "err");
+      } finally {
+        setBacktestBusy(false);
+      }
+    });
+    document.getElementById("btDownloadReportBtn")?.addEventListener("click", async () => {
+      if (!btSelectedRunId) return setBacktestStatus("Run or select a backtest first.", "err");
+      setBacktestBusy(true, "Preparing Report Download...");
+      try {
+        const r = await fetch(`/api/backtest/report/${encodeURIComponent(btSelectedRunId)}?format=markdown`, { cache: "no-store" });
+        const md = await r.text();
+        if (!r.ok) throw new Error(md || "Report fetch failed");
+        const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `quantbot_backtest_run_${btSelectedRunId}.md`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setBacktestStatus("Backtest report downloaded.", "ok");
+      } catch (e) {
+        setBacktestStatus(`Download failed: ${String(e && e.message ? e.message : e)}`, "err");
+      } finally {
+        setBacktestBusy(false);
       }
     });
     loadBacktestDefaults();
@@ -1677,6 +1840,206 @@ def _fmt_signals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         d["action_badge"] = "BUY" if dir_v > 0 else ("SELL" if dir_v < 0 else "HOLD")
         out.append(d)
     return out
+
+
+def _build_backtest_interpretation(summary: dict[str, Any], rejection_summary: dict[str, int], cfg: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    excess = float(summary.get("excess_return_pct") or 0.0)
+    ret = float(summary.get("return_pct") or 0.0)
+    closed = int(summary.get("closed_trades") or 0)
+    rejections_total = int(summary.get("rejections_total") or 0)
+    thr = dict((summary.get("confidence_rationale") or {}).get("thresholds") or {})
+    low_min = int(thr.get("confidence_low_min_closed_trades", cfg.get("confidence_low_min_closed_trades", 10)))
+    if excess >= 0:
+        lines.append("Strategy beat benchmark on excess return.")
+    else:
+        lines.append("Strategy underperformed benchmark on excess return.")
+    if closed < low_min:
+        lines.append("Sample size is low relative to configured confidence thresholds.")
+    if ret > 0 and excess < 0:
+        lines.append("Positive absolute return is misleading because benchmark did better.")
+    if rejections_total > 0:
+        top = sorted(rejection_summary.items(), key=lambda kv: int(kv[1]), reverse=True)[:3]
+        lines.append("High action blocking from execution rules: " + ", ".join(f"{k}={v}" for k, v in top))
+    return lines
+
+
+def _build_backtest_report_payload(
+    run_row: dict[str, Any],
+    bt_cfg: dict[str, Any],
+    *,
+    comparison_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    summary_raw = run_row.get("summary_json")
+    if isinstance(summary_raw, str) and summary_raw.strip():
+        try:
+            summary = json.loads(summary_raw)
+        except json.JSONDecodeError:
+            summary = {}
+    elif isinstance(summary_raw, dict):
+        summary = summary_raw
+    else:
+        summary = {}
+    rej_raw = run_row.get("rejection_summary_json")
+    if isinstance(rej_raw, str) and rej_raw.strip():
+        try:
+            rejection_summary = json.loads(rej_raw)
+        except json.JSONDecodeError:
+            rejection_summary = {}
+    elif isinstance(rej_raw, dict):
+        rejection_summary = rej_raw
+    else:
+        rejection_summary = {}
+    trades = list(run_row.get("trades") or [])
+    rejections = list(run_row.get("rejections") or [])
+    signal_events = list(run_row.get("signal_events") or [])
+    max_trades = int(bt_cfg.get("backtest_max_report_trades", 80))
+    max_rejections = int(bt_cfg.get("backtest_max_report_rejections", 100))
+    max_signal_events = int(bt_cfg.get("backtest_max_report_signal_events", 100))
+    request_json = run_row.get("request_json")
+    request_obj: dict[str, Any] = {}
+    if isinstance(request_json, str) and request_json.strip():
+        try:
+            request_obj = json.loads(request_json)
+        except json.JSONDecodeError:
+            request_obj = {}
+    elif isinstance(request_json, dict):
+        request_obj = request_json
+    assumptions = dict(summary.get("assumptions") or {})
+    data_quality = dict(summary.get("data_quality") or {})
+    for t in trades:
+        raw = t.get("meta_json")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                t["meta_json"] = json.loads(raw)
+            except json.JSONDecodeError:
+                t["meta_json"] = {}
+    for s in signal_events:
+        raw = s.get("meta_json")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                s["meta_json"] = json.loads(raw)
+            except json.JSONDecodeError:
+                s["meta_json"] = {}
+    interpretation_lines = _build_backtest_interpretation(summary, rejection_summary, bt_cfg)
+    raw_payload = {
+        "id": run_row.get("id"),
+        "created_at": run_row.get("created_at"),
+        "strategy_name": run_row.get("strategy_name"),
+        "status": run_row.get("status"),
+        "summary_json": summary,
+        "rejection_summary_json": rejection_summary,
+        "signal_events_summary": {
+            k: int(v)
+            for k, v in sorted(
+                ((str(x.get("reason_code") or "UNKNOWN"), 0) for x in signal_events),
+                key=lambda kv: kv[0],
+            )
+        },
+    }
+    sig_counts: dict[str, int] = {}
+    for s in signal_events:
+        key = str(s.get("reason_code") or "UNKNOWN")
+        sig_counts[key] = sig_counts.get(key, 0) + 1
+    raw_payload["signal_events_summary"] = sig_counts
+    return {
+        "report_generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "run_id": run_row.get("id"),
+        "request": request_obj,
+        "summary": summary,
+        "interpretation": interpretation_lines,
+        "comparison_rows": comparison_rows or [],
+        "rejection_summary": rejection_summary,
+        "signal_events_summary": sig_counts,
+        "trades_detail": trades[-max_trades:],
+        "rejections_detail": rejections[-max_rejections:],
+        "signal_events_detail": signal_events[-max_signal_events:],
+        "assumptions": assumptions,
+        "data_quality": data_quality,
+        "report_config": {
+            "max_trades": max_trades,
+            "max_rejections": max_rejections,
+            "max_signal_events": max_signal_events,
+            "effective_backtest_config": bt_cfg,
+        },
+        "raw_json": raw_payload,
+    }
+
+
+def _backtest_report_markdown(report: dict[str, Any]) -> str:
+    req = dict(report.get("request") or {})
+    summary = dict(report.get("summary") or {})
+    cfg = dict((report.get("report_config") or {}).get("effective_backtest_config") or {})
+    costs = dict(cfg.get("backtest_cost_defaults") or {})
+    lines = [
+        "# QuantBot Backtest Report",
+        "",
+        "## Request",
+        f"- Strategy: {req.get('strategy_name', '—')}",
+        f"- Symbols: {', '.join(req.get('symbols', []) or [])}",
+        f"- Start date: {req.get('start_date', '—')}",
+        f"- End date: {req.get('end_date', '—')}",
+        f"- Timeframe: {req.get('timeframe', '—')}",
+        f"- Starting cash: {req.get('starting_cash', '—')}",
+        f"- Pyramiding: {req.get('pyramiding_enabled', '—')}",
+        "- Costs:",
+        f"  - fee_bps: {costs.get('fee_bps', req.get('fee_bps', '—'))}",
+        f"  - spread_bps: {costs.get('spread_bps', req.get('spread_bps', '—'))}",
+        f"  - slippage_bps: {costs.get('slippage_bps', req.get('slippage_bps', '—'))}",
+        "",
+        "## Summary",
+        f"- Starting cash: {summary.get('starting_cash', '—')}",
+        f"- Final equity: {summary.get('final_equity', '—')}",
+        f"- P&L: {summary.get('pnl', '—')}",
+        f"- Return %: {summary.get('return_pct', '—')}",
+        f"- Buy & Hold Return %: {summary.get('equal_weight_buy_and_hold_return_pct', '—')}",
+        f"- Excess Return %: {summary.get('excess_return_pct', '—')}",
+        f"- Max Drawdown %: {summary.get('max_drawdown_pct', '—')}",
+        f"- Total trades: {summary.get('trades_total', '—')}",
+        f"- Closed trades: {summary.get('closed_trades', '—')}",
+        f"- Win rate: {summary.get('win_rate_pct', '—')}",
+        f"- Profit factor: {summary.get('profit_factor', '—')}",
+        f"- Expectancy: {summary.get('expectancy', '—')}",
+        f"- Rejections total: {summary.get('rejections_total', '—')}",
+        f"- Confidence label: {summary.get('confidence_label', '—')}",
+        f"- Confidence rationale: {json.dumps(summary.get('confidence_rationale', {}), default=str)}",
+        "",
+        "## Interpretation",
+    ]
+    for ln in report.get("interpretation", []) or []:
+        lines.append(f"- {ln}")
+    lines.extend(
+        [
+            "",
+            "## Strategy Comparison",
+            json.dumps(report.get("comparison_rows", []), default=str),
+            "",
+            "## Rejection Summary",
+            json.dumps(report.get("rejection_summary", {}), default=str),
+            "",
+            "## Signal Events Summary",
+            json.dumps(report.get("signal_events_summary", {}), default=str),
+            "",
+            "## Simulated Trades",
+            json.dumps(report.get("trades_detail", []), default=str),
+            "",
+            "## Rejections Detail",
+            json.dumps(report.get("rejections_detail", []), default=str),
+            "",
+            "## Signal Events Detail",
+            json.dumps(report.get("signal_events_detail", []), default=str),
+            "",
+            "## Assumptions",
+            json.dumps(report.get("assumptions", {}), default=str),
+            "",
+            "## Data Quality",
+            json.dumps(report.get("data_quality", {}), default=str),
+            "",
+            "## Raw JSON",
+            json.dumps(report.get("raw_json", {}), default=str),
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _dashboard_host_port() -> tuple[str, int]:
@@ -1968,6 +2331,8 @@ def create_app() -> Flask:
         bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
         cost_defaults = dict(bt_cfg.get("backtest_cost_defaults") or {})
         default_tf = str(bt_cfg.get("backtest_default_timeframe") or "1Day")
+        default_symbols = list(bt_cfg.get("backtest_default_symbols") or ["AAPL", "MSFT", "BTC/USD"])
+        default_days = int(bt_cfg.get("backtest_default_date_range_days", 365))
         defaults = {
             "strategies": [
                 "combined_stock",
@@ -1977,9 +2342,9 @@ def create_app() -> Flask:
                 "simple_buy_and_hold",
                 "simple_momentum",
             ],
-            "symbols": ["AAPL", "MSFT", "SPY", "BTC/USD", "ETH/USD"],
+            "symbols": default_symbols,
             "timeframes": ["1Day", "1H"],
-            "date_range": {"start": "2024-01-01", "end": "2026-01-01"},
+            "date_range_days": default_days,
             "costs": {
                 "fee_bps": float(cost_defaults.get("fee_bps", 5.0)),
                 "slippage_bps": float(cost_defaults.get("slippage_bps", 10.0)),
@@ -2138,6 +2503,19 @@ def create_app() -> Flask:
                 except json.JSONDecodeError:
                     s["meta_json"] = {}
         return jsonify(row)
+
+    @app.get("/api/backtest/report/<int:run_id>")
+    def api_backtest_report(run_id: int) -> Any:
+        row = data_store.fetch_backtest_result(run_id)
+        if row is None:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
+        fmt = str(request.args.get("format", "markdown") or "markdown").strip().lower()
+        report = _build_backtest_report_payload(row, bt_cfg)
+        if fmt == "json":
+            return jsonify(report)
+        md = _backtest_report_markdown(report)
+        return Response(md, mimetype="text/markdown")
 
     @app.post("/api/sync-alpaca")
     def api_sync_alpaca() -> Any:

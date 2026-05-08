@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 
@@ -295,3 +296,10 @@ def test_confidence_label_uses_configured_thresholds(monkeypatch):
         },
     )
     assert res.summary_json["confidence_label"] == "medium"
+
+
+def test_backtesting_modules_do_not_import_broker_execution():
+    root = Path(__file__).resolve().parents[1] / "backtesting"
+    for py in root.glob("*.py"):
+        txt = py.read_text(encoding="utf-8")
+        assert "execution.stock_broker" not in txt

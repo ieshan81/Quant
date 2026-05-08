@@ -118,7 +118,10 @@ def test_index_renders(dash_app) -> None:
     assert b"Signal calibration" in r.data
     assert b"Backtest" in r.data
     assert b"btSampleWarning" in r.data
-    assert b"maxTicksLimit: 10" in r.data
+    assert b"btCopyReportBtn" in r.data
+    assert b"btDownloadReportBtn" in r.data
+    assert b"\xe2\x96\xb6 Run Backtest" in r.data
+    assert b"btCompareEmpty" in r.data
 
 
 def test_api_calibration(dash_app) -> None:
@@ -473,3 +476,83 @@ def test_backtest_compare_endpoint_returns_rows(dash_app) -> None:
     data = json.loads(r.data)
     assert data["ok"] is True
     assert len(data["rows"]) == 2
+
+
+def test_backtest_report_markdown_and_json(dash_app) -> None:
+    from data import data_store
+
+    client = dash_app.test_client()
+    run_id = data_store.create_backtest_run(
+        json.dumps(
+            {
+                "strategy_name": "current_adaptive",
+                "symbols": ["AAPL", "MSFT"],
+                "start_date": "2025-01-01",
+                "end_date": "2025-02-01",
+                "timeframe": "1Day",
+                "starting_cash": 100.0,
+                "pyramiding_enabled": False,
+            }
+        ),
+        strategy_name="current_adaptive",
+        status="completed",
+        parameter_snapshot_json=json.dumps({"backtest_config": {"confidence_low_min_closed_trades": 10}}),
+    )
+    data_store.update_backtest_status(
+        run_id,
+        status="completed",
+        summary_json=json.dumps(
+            {
+                "starting_cash": 100.0,
+                "final_equity": 104.0,
+                "pnl": 4.0,
+                "return_pct": 4.0,
+                "equal_weight_buy_and_hold_return_pct": 5.5,
+                "excess_return_pct": -1.5,
+                "max_drawdown_pct": 2.0,
+                "trades_total": 8,
+                "closed_trades": 3,
+                "win_rate_pct": 66.7,
+                "profit_factor": 1.2,
+                "expectancy": 0.8,
+                "rejections_total": 12,
+                "confidence_label": "low",
+                "confidence_rationale": {"thresholds": {"confidence_low_min_closed_trades": 10}},
+                "assumptions": {"data_source": "yfinance"},
+                "data_quality": {"symbols_loaded": 2, "candle_count": 100},
+            }
+        ),
+        rejection_summary_json=json.dumps({"NO_POSITION": 2}),
+    )
+    data_store.insert_backtest_signal_events(
+        run_id,
+        [
+            {
+                "timestamp": "2025-01-10 00:00:00",
+                "symbol": "AAPL",
+                "asset_class": "stock",
+                "strategy_action": "SELL",
+                "classification": "HOLD_BEARISH",
+                "reason_code": "SIGNAL_SELL_NO_POSITION",
+                "score": -0.7,
+                "meta_json": {"x": 1},
+            }
+        ],
+    )
+    md = client.get(f"/api/backtest/report/{run_id}?format=markdown")
+    assert md.status_code == 200
+    text = md.data.decode("utf-8")
+    assert "QuantBot Backtest Report" in text
+    assert "## Summary" in text
+    assert "## Assumptions" in text
+    assert "## Data Quality" in text
+    assert "ALPACA_SECRET_KEY" not in text
+    js = client.get(f"/api/backtest/report/{run_id}?format=json")
+    assert js.status_code == 200
+    body = json.loads(js.data)
+    assert "summary" in body
+    assert "assumptions" in body
+    assert "data_quality" in body
+    assert "trades_detail" in body
+    assert "rejections_detail" in body
+    assert "signal_events_detail" in body

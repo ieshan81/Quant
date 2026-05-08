@@ -60,6 +60,21 @@ BACKTEST_CONFIG_DEFAULTS: dict[str, tuple[str, str, str]] = {
         "json",
         "Default simulated costs",
     ),
+    "backtest_default_symbols": (
+        '["AAPL","MSFT","BTC/USD"]',
+        "json",
+        "Default symbol list for backtest setup",
+    ),
+    "backtest_default_date_range_days": ("365", "int", "Default backtest date range in days"),
+    "backtest_chart_max_ticks": ("10", "int", "Max x-axis ticks on backtest equity chart"),
+    "backtest_ui_compare_strategies": (
+        '["current_adaptive","simple_buy_and_hold","simple_momentum","crypto_scalper","aggressive_micro_scalp"]',
+        "json",
+        "Default strategy list for compare mode",
+    ),
+    "backtest_max_report_trades": ("80", "int", "Max simulated trades included in report/details"),
+    "backtest_max_report_rejections": ("100", "int", "Max rejection detail rows included in report/details"),
+    "backtest_max_report_signal_events": ("100", "int", "Max signal-event detail rows included in report/details"),
 }
 
 
