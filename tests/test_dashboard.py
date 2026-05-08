@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import config
@@ -610,3 +611,66 @@ def test_compare_invalid_shape_returns_error(dash_app) -> None:
     assert r.status_code == 400
     body = json.loads(r.data)
     assert "Invalid comparison response shape" in body.get("error", "")
+
+
+def test_backtest_compare_direct_endpoint_rows_shape(dash_app, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Loaded:
+        def __init__(self, symbol: str, asset_class: str, frame: pd.DataFrame) -> None:
+            self.symbol = symbol
+            self.asset_class = asset_class
+            self.timeframe = "1Day"
+            self.source = "test"
+            self.ohlcv = frame
+
+    def _frame(days: int = 90) -> pd.DataFrame:
+        ts = pd.date_range("2025-01-01", periods=days, freq="D")
+        close = np.linspace(100.0, 120.0, days)
+        return pd.DataFrame(
+            {
+                "Open": close,
+                "High": close + 1.0,
+                "Low": close - 1.0,
+                "Close": close,
+                "Volume": np.linspace(1000, 2000, days),
+            },
+            index=ts,
+        )
+
+    def _load_many(symbols, **kwargs):
+        _ = kwargs
+        return {s: _Loaded(s, "crypto" if "/" in s else "stock", _frame()) for s in symbols}
+
+    monkeypatch.setattr("backtesting.engine.load_many", _load_many)
+    client = dash_app.test_client()
+    r = client.post(
+        "/api/backtest/compare",
+        json={
+            "strategy_name": "current_adaptive",
+            "strategy_names": ["current_adaptive", "simple_momentum"],
+            "symbols": ["AAPL", "MSFT", "BTC/USD"],
+            "start_date": "2025-01-01",
+            "end_date": "2026-01-01",
+            "timeframe": "1Day",
+            "starting_cash": 100,
+            "fee_bps": 5,
+            "spread_bps": 20,
+            "slippage_bps": 10,
+            "pyramiding": False,
+        },
+    )
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    assert body["ok"] is True
+    rows = body["rows"]
+    assert isinstance(rows, list)
+    assert len(rows) > 0
+    assert all(isinstance(x, dict) for x in rows)
+    for row in rows:
+        assert "strategy" in row
+        assert "return_pct" in row
+        assert "buy_and_hold_return_pct" in row
+        assert "excess_return_pct" in row
+        for v in row.values():
+            assert not isinstance(v, np.floating)
+            if isinstance(v, float):
+                assert np.isfinite(v)

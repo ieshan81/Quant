@@ -1711,10 +1711,21 @@ _PAGE = """
             return `<tr><td>${esc(x.strategy || "")}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.buy_and_hold_return_pct ?? ""))}</td><td class="mono">${esc(String(x.excess_return_pct ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td><td>${esc(String(x.interpretation || ""))}</td></tr>`;
           }).join("");
         }
-        if (empty) empty.style.display = btCompareRows.length ? "none" : "block";
+        if (empty) {
+          empty.textContent = btCompareRows.length ? "" : "No comparison rows returned.";
+          empty.style.display = btCompareRows.length ? "none" : "block";
+        }
         setBacktestStatus("Comparison complete.", "ok");
       } catch (e) {
         btCompareState = { status: "error", rows: [], error: String(e && e.message ? e.message : e) };
+        const empty = document.getElementById("btCompareEmpty");
+        if (empty) {
+          const msg = String(e && e.message ? e.message : e);
+          empty.textContent = msg.includes("Invalid comparison response shape")
+            ? "Invalid comparison response."
+            : "Comparison failed. See status message.";
+          empty.style.display = "block";
+        }
         setBacktestStatus(`Comparison failed: ${String(e && e.message ? e.message : e)}`, "err");
       } finally {
         setBacktestBusy(false);
@@ -2494,7 +2505,10 @@ def create_app() -> Flask:
             return jsonify({"error": "unauthorized"}), 401
         body = request.get_json(force=True, silent=True) or {}
         bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
-        cost_defaults = dict(bt_cfg.get("backtest_cost_defaults") or {})
+        if not isinstance(bt_cfg, dict):
+            bt_cfg = {}
+        cost_defaults_raw = bt_cfg.get("backtest_cost_defaults")
+        cost_defaults = dict(cost_defaults_raw) if isinstance(cost_defaults_raw, dict) else {}
         default_timeframe = str(bt_cfg.get("backtest_default_timeframe") or "1Day")
         strategies = [str(x).strip() for x in body.get("strategy_names", []) if str(x).strip()]
         if not strategies:

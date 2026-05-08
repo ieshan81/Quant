@@ -7,7 +7,13 @@ from backtesting.models import BacktestRequest, BacktestResult
 
 
 def execute(request: BacktestRequest, *, parameter_snapshot: dict | None = None) -> BacktestResult:
-    runtime = dict((parameter_snapshot or {}).get("backtest_config", {}).get("backtest_runtime_limits", {}) or {})
+    snap = parameter_snapshot if isinstance(parameter_snapshot, dict) else {}
+    cfg = snap.get("backtest_config")
+    if not isinstance(cfg, dict):
+        cfg = {}
+    runtime = cfg.get("backtest_runtime_limits")
+    if not isinstance(runtime, dict):
+        runtime = {}
     max_symbols = int(runtime.get("max_symbols", 20))
     if len(request.symbols) > max_symbols:
         raise ValueError(f"too many symbols; max={max_symbols}")
