@@ -9,6 +9,7 @@ from backtesting.engine import run_backtest
 from backtesting.execution_simulator import PortfolioSim
 from backtesting.models import BacktestRequest
 from backtesting.runner import execute
+from backtesting.runner import execute_comparison
 
 
 class _Loaded:
@@ -303,3 +304,82 @@ def test_backtesting_modules_do_not_import_broker_execution():
     for py in root.glob("*.py"):
         txt = py.read_text(encoding="utf-8")
         assert "execution.stock_broker" not in txt
+
+
+def test_executable_buy_and_hold_tracks_theoretical_minus_costs(monkeypatch):
+    def _load_many(symbols, **kwargs):
+        _ = kwargs
+        return {s: _Loaded(s, "stock", _frame(days=80, start=100.0, step=1.0)) for s in symbols}
+
+    monkeypatch.setattr("backtesting.engine.load_many", _load_many)
+    req = BacktestRequest(
+        strategy_name="executable_buy_and_hold",
+        asset_class="mixed",
+        symbols=["AAPL", "MSFT"],
+        start_date="2025-01-01",
+        end_date="2025-03-31",
+        timeframe="1Day",
+        starting_cash=100.0,
+        fee_bps=5.0,
+        spread_bps=20.0,
+        slippage_bps=10.0,
+    )
+    res = run_backtest(req, parameter_snapshot={"backtest_config": {}})
+    s = res.summary_json
+    theo = float(s.get("equal_weight_buy_and_hold_return_pct") or 0.0)
+    exe = float(s.get("return_pct") or 0.0)
+    assert s.get("capital_deployed_avg_pct", 0.0) > 50.0
+    assert exe <= theo + 1e-6
+    assert (theo - exe) < 5.0
+
+
+def test_compare_marks_not_applicable_strategies(monkeypatch):
+    def _load_many(symbols, **kwargs):
+        _ = kwargs
+        return {s: _Loaded(s, "stock", _frame(days=80)) for s in symbols}
+
+    monkeypatch.setattr("backtesting.engine.load_many", _load_many)
+    req = BacktestRequest(
+        strategy_name="current_adaptive",
+        asset_class="mixed",
+        symbols=["AAPL", "MSFT"],
+        start_date="2025-01-01",
+        end_date="2025-03-31",
+        timeframe="1Day",
+    )
+    rows = execute_comparison(
+        ["current_adaptive", "crypto_scalper", "aggressive_micro_scalp"],
+        req,
+        parameter_snapshot={"backtest_config": {}},
+    )
+    m = {str(r.get("strategy")): r for r in rows}
+    assert m["crypto_scalper"]["status"] == "not_applicable"
+    assert m["aggressive_micro_scalp"]["status"] == "not_applicable"
+    assert m["current_adaptive"]["status"] == "completed"
+
+
+def test_summary_includes_deployment_metrics(monkeypatch):
+    def _load_many(symbols, **kwargs):
+        _ = kwargs
+        return {s: _Loaded(s, "stock", _frame(days=80)) for s in symbols}
+
+    monkeypatch.setattr("backtesting.engine.load_many", _load_many)
+    req = BacktestRequest(
+        strategy_name="current_adaptive",
+        asset_class="stock",
+        symbols=["AAPL"],
+        start_date="2025-01-01",
+        end_date="2025-03-31",
+    )
+    res = run_backtest(req, parameter_snapshot={"backtest_config": {}})
+    s = res.summary_json
+    for k in (
+        "capital_deployed_avg_pct",
+        "capital_deployed_max_pct",
+        "idle_cash_avg_pct",
+        "idle_cash_max_pct",
+        "time_in_market_pct",
+        "capital_turnover",
+        "open_positions_end",
+    ):
+        assert k in s

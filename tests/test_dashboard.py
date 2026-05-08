@@ -125,6 +125,9 @@ def test_index_renders(dash_app) -> None:
     assert b"\xe2\x96\xb6 Run Backtest" in r.data
     assert b"btCompareEmpty" in r.data
     assert b"Invalid comparison response shape" in r.data
+    assert b"Strategy Diagnostics" in r.data
+    assert b"Parameter Experiments" in r.data
+    assert b"Experiment Results" in r.data
 
 
 def test_api_calibration(dash_app) -> None:
@@ -372,6 +375,8 @@ def test_backtest_defaults_endpoint(dash_app) -> None:
     assert "symbols" in data
     assert "backtest_config" in data
     assert "confidence_low_min_closed_trades" in data["backtest_config"]
+    assert "parameter_defaults" in data
+    assert "ranking_weights" in data
 
 
 def test_backtest_run_and_fetch_endpoints(dash_app) -> None:
@@ -481,6 +486,7 @@ def test_backtest_compare_endpoint_returns_rows(dash_app) -> None:
     assert len(data["rows"]) == 2
     assert isinstance(data["rows"], list)
     assert all(isinstance(x, dict) for x in data["rows"])
+    assert all("status" in x for x in data["rows"])
 
 
 def test_backtest_compare_sanitizes_numpy_and_nonfinite(dash_app) -> None:
@@ -673,6 +679,7 @@ def test_backtest_compare_direct_endpoint_rows_shape(dash_app, monkeypatch: pyte
     assert all(isinstance(x, dict) for x in rows)
     for row in rows:
         assert "strategy" in row
+        assert "status" in row
         assert "return_pct" in row
         assert "buy_and_hold_return_pct" in row
         assert "excess_return_pct" in row
@@ -680,3 +687,63 @@ def test_backtest_compare_direct_endpoint_rows_shape(dash_app, monkeypatch: pyte
             assert not isinstance(v, np.floating)
             if isinstance(v, float):
                 assert np.isfinite(v)
+
+
+def test_backtest_parameter_and_experiment_endpoints(dash_app, monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Loaded:
+        def __init__(self, symbol: str, asset_class: str, frame: pd.DataFrame) -> None:
+            self.symbol = symbol
+            self.asset_class = asset_class
+            self.timeframe = "1Day"
+            self.source = "test"
+            self.ohlcv = frame
+
+    def _frame(days: int = 60) -> pd.DataFrame:
+        ts = pd.date_range("2025-01-01", periods=days, freq="D")
+        close = np.linspace(100.0, 120.0, days)
+        return pd.DataFrame({"Open": close, "High": close + 1.0, "Low": close - 1.0, "Close": close, "Volume": close * 10.0}, index=ts)
+
+    def _load_many(symbols, **kwargs):
+        _ = kwargs
+        return {s: _Loaded(s, "crypto" if "/" in s else "stock", _frame()) for s in symbols}
+
+    monkeypatch.setattr("backtesting.engine.load_many", _load_many)
+    client = dash_app.test_client()
+    r0 = client.get("/api/backtest/parameter-defaults")
+    assert r0.status_code == 200
+    assert json.loads(r0.data)["ok"] is True
+
+    r1 = client.post(
+        "/api/backtest/parameter-sets",
+        json={
+            "name": "candidate1",
+            "strategy_name": "current_adaptive",
+            "source": "experiment",
+            "params_json": {"buy_score_threshold": 0.6},
+        },
+    )
+    assert r1.status_code == 200
+    set_id = int(json.loads(r1.data)["id"])
+    r2 = client.post(f"/api/backtest/parameter-sets/{set_id}/mark-paper-candidate")
+    assert r2.status_code == 200
+
+    r3 = client.post(
+        "/api/backtest/experiments/run",
+        json={
+            "name": "tiny-exp",
+            "strategy_name": "current_adaptive",
+            "symbols": ["AAPL", "MSFT"],
+            "start_date": "2025-01-01",
+            "end_date": "2025-03-01",
+            "timeframe": "1Day",
+            "starting_cash": 100.0,
+            "parameter_grid_json": {"buy_score_threshold": [0.5, 0.6]},
+        },
+    )
+    assert r3.status_code == 200
+    b3 = json.loads(r3.data)
+    assert b3["ok"] is True
+    exp_id = int(b3["experiment_id"])
+    r4 = client.get(f"/api/backtest/experiments/{exp_id}")
+    assert r4.status_code == 200
+    assert json.loads(r4.data)["ok"] is True

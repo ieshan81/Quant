@@ -68,13 +68,38 @@ BACKTEST_CONFIG_DEFAULTS: dict[str, tuple[str, str, str]] = {
     "backtest_default_date_range_days": ("365", "int", "Default backtest date range in days"),
     "backtest_chart_max_ticks": ("10", "int", "Max x-axis ticks on backtest equity chart"),
     "backtest_ui_compare_strategies": (
-        '["current_adaptive","simple_buy_and_hold","simple_momentum","crypto_scalper","aggressive_micro_scalp"]',
+        '["current_adaptive","simple_momentum","crypto_scalper","aggressive_micro_scalp"]',
         "json",
         "Default strategy list for compare mode",
     ),
     "backtest_max_report_trades": ("80", "int", "Max simulated trades included in report/details"),
     "backtest_max_report_rejections": ("100", "int", "Max rejection detail rows included in report/details"),
     "backtest_max_report_signal_events": ("100", "int", "Max signal-event detail rows included in report/details"),
+    "backtest_experiment_runtime_caps": (
+        '{"max_candidates":50,"max_symbols":20,"max_candles":20000,"max_days":730}',
+        "json",
+        "Runtime caps for experiment sweeps",
+    ),
+    "backtest_ranking_weights": (
+        '{"rank_weight_excess_return":1.0,"rank_weight_drawdown":0.6,"rank_weight_trade_count":0.3,"rank_weight_rejections":0.2,"rank_weight_confidence":0.4,"rank_weight_capital_deployment":0.4}',
+        "json",
+        "Weights for experiment ranking",
+    ),
+    "backtest_parameter_defaults": (
+        '{"buy_score_threshold":0.6,"sell_score_threshold":-0.4,"max_position_notional_pct":5.0,"take_profit_pct":2.5,"stop_loss_pct":2.0,"cooldown_bars":3}',
+        "json",
+        "Default strategy parameter values for experiments",
+    ),
+    "backtest_parameter_allowed_ranges": (
+        '{"buy_score_threshold":[0.1,1.0],"sell_score_threshold":[-1.0,-0.05],"max_position_notional_pct":[0.5,25.0],"take_profit_pct":[0.2,10.0],"stop_loss_pct":[0.2,10.0],"cooldown_bars":[0,30]}',
+        "json",
+        "Allowed ranges for parameter experiments",
+    ),
+    "backtest_walk_forward_defaults": (
+        '{"enabled":false,"train_ratio":0.7,"top_n":3}',
+        "json",
+        "Default walk-forward settings",
+    ),
 }
 
 
@@ -418,6 +443,58 @@ CREATE TABLE IF NOT EXISTS backtest_config (
     description TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS strategy_parameter_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    source TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'draft',
+    params_json TEXT NOT NULL,
+    notes TEXT,
+    active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_parameter_sets_lookup
+    ON strategy_parameter_sets(strategy_name, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS backtest_experiments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    name TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    symbols_json TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    starting_cash REAL NOT NULL,
+    cost_assumptions_json TEXT,
+    parameter_grid_json TEXT,
+    ranking_weights_json TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    best_result_json TEXT,
+    summary_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_experiments_lookup
+    ON backtest_experiments(created_at DESC, status);
+
+CREATE TABLE IF NOT EXISTS backtest_experiment_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experiment_id INTEGER NOT NULL,
+    parameter_set_id INTEGER,
+    params_json TEXT NOT NULL,
+    metrics_json TEXT,
+    rank_score REAL,
+    status TEXT NOT NULL DEFAULT 'completed',
+    warnings_json TEXT,
+    FOREIGN KEY(experiment_id) REFERENCES backtest_experiments(id) ON DELETE CASCADE,
+    FOREIGN KEY(parameter_set_id) REFERENCES strategy_parameter_sets(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_experiment_results_lookup
+    ON backtest_experiment_results(experiment_id, rank_score DESC);
 
 -- Lightweight ops metrics (counter-style). Used for SQLite lock tracking and
 -- price-error counts. ``window_label`` is the bucket key ('total', 'cycle', etc).
@@ -1505,6 +1582,229 @@ def fetch_latest_backtest(db_path: Path | str | None = None) -> dict[str, Any] |
     if not rows:
         return None
     return fetch_backtest_result(int(rows[0]["id"]), db_path=db_path)
+
+
+def create_strategy_parameter_set(
+    *,
+    name: str,
+    strategy_name: str,
+    source: str,
+    params: dict[str, Any],
+    notes: str = "",
+    status: str = "draft",
+    active: bool = False,
+    db_path: Path | str | None = None,
+) -> int:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO strategy_parameter_sets
+            (name, strategy_name, source, status, params_json, notes, active)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(name),
+                str(strategy_name),
+                str(source),
+                str(status),
+                json.dumps(params or {}, default=str),
+                str(notes or ""),
+                1 if active else 0,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def fetch_strategy_parameter_sets(
+    *,
+    strategy_name: str | None = None,
+    limit: int = 100,
+    db_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        if strategy_name:
+            rows = conn.execute(
+                """
+                SELECT * FROM strategy_parameter_sets
+                WHERE strategy_name = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (str(strategy_name), int(limit)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM strategy_parameter_sets ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+    out = [_row_to_dict(r) for r in rows]
+    for row in out:
+        raw = row.get("params_json")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                row["params_json"] = json.loads(raw)
+            except json.JSONDecodeError:
+                row["params_json"] = {}
+    return out
+
+
+def mark_parameter_set_paper_candidate(set_id: int, db_path: Path | str | None = None) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE strategy_parameter_sets
+            SET source = 'experiment', status = 'paper_candidate', active = 0
+            WHERE id = ?
+            """,
+            (int(set_id),),
+        )
+
+
+def create_backtest_experiment(
+    *,
+    name: str,
+    strategy_name: str,
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    timeframe: str,
+    starting_cash: float,
+    cost_assumptions: dict[str, Any] | None,
+    parameter_grid: dict[str, Any] | None,
+    ranking_weights: dict[str, Any] | None,
+    status: str = "queued",
+    db_path: Path | str | None = None,
+) -> int:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO backtest_experiments
+            (name, strategy_name, symbols_json, start_date, end_date, timeframe, starting_cash,
+             cost_assumptions_json, parameter_grid_json, ranking_weights_json, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(name),
+                str(strategy_name),
+                json.dumps(symbols or [], default=str),
+                str(start_date),
+                str(end_date),
+                str(timeframe),
+                float(starting_cash),
+                json.dumps(cost_assumptions or {}, default=str),
+                json.dumps(parameter_grid or {}, default=str),
+                json.dumps(ranking_weights or {}, default=str),
+                str(status),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_backtest_experiment(
+    experiment_id: int,
+    *,
+    status: str | None = None,
+    best_result: dict[str, Any] | None = None,
+    summary: dict[str, Any] | None = None,
+    db_path: Path | str | None = None,
+) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE backtest_experiments
+            SET status = COALESCE(?, status),
+                best_result_json = COALESCE(?, best_result_json),
+                summary_json = COALESCE(?, summary_json)
+            WHERE id = ?
+            """,
+            (
+                status,
+                None if best_result is None else json.dumps(best_result, default=str),
+                None if summary is None else json.dumps(summary, default=str),
+                int(experiment_id),
+            ),
+        )
+
+
+def insert_backtest_experiment_result(
+    experiment_id: int,
+    *,
+    parameter_set_id: int | None = None,
+    params: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
+    rank_score: float | None = None,
+    status: str = "completed",
+    warnings: list[str] | None = None,
+    db_path: Path | str | None = None,
+) -> int:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO backtest_experiment_results
+            (experiment_id, parameter_set_id, params_json, metrics_json, rank_score, status, warnings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(experiment_id),
+                (None if parameter_set_id is None else int(parameter_set_id)),
+                json.dumps(params or {}, default=str),
+                json.dumps(metrics or {}, default=str),
+                (None if rank_score is None else float(rank_score)),
+                str(status),
+                json.dumps(warnings or [], default=str),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def fetch_backtest_experiments(limit: int = 20, db_path: Path | str | None = None) -> list[dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM backtest_experiments ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    out = [_row_to_dict(r) for r in rows]
+    for row in out:
+        for key in ("symbols_json", "cost_assumptions_json", "parameter_grid_json", "ranking_weights_json", "best_result_json", "summary_json"):
+            raw = row.get(key)
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    row[key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    row[key] = {}
+    return out
+
+
+def fetch_backtest_experiment(experiment_id: int, db_path: Path | str | None = None) -> dict[str, Any] | None:
+    with get_connection(db_path) as conn:
+        base = conn.execute(
+            "SELECT * FROM backtest_experiments WHERE id = ?",
+            (int(experiment_id),),
+        ).fetchone()
+        if base is None:
+            return None
+        rows = conn.execute(
+            "SELECT * FROM backtest_experiment_results WHERE experiment_id = ? ORDER BY rank_score DESC, id ASC",
+            (int(experiment_id),),
+        ).fetchall()
+    out = _row_to_dict(base)
+    for key in ("symbols_json", "cost_assumptions_json", "parameter_grid_json", "ranking_weights_json", "best_result_json", "summary_json"):
+        raw = out.get(key)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                out[key] = json.loads(raw)
+            except json.JSONDecodeError:
+                out[key] = {}
+    parsed_rows = [_row_to_dict(r) for r in rows]
+    for row in parsed_rows:
+        for key in ("params_json", "metrics_json", "warnings_json"):
+            raw = row.get(key)
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    row[key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    row[key] = {} if key != "warnings_json" else []
+    out["results"] = parsed_rows
+    return out
 
 
 def _alpaca_ts_to_sqlite(ts: Any) -> str:

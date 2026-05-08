@@ -562,7 +562,7 @@ _PAGE = """
         <h2>Strategy Comparison</h2>
         <p id="btCompareEmpty" class="muted">Run comparison to populate this table.</p>
         <div style="overflow:auto;max-height:360px;">
-          <table class="data-table"><thead><tr><th>Strategy</th><th>Final Equity</th><th>Return %</th><th>Buy &amp; Hold %</th><th>Excess %</th><th>Max Drawdown %</th><th>Closed Trades</th><th>Rejections</th><th>Confidence</th><th>Interpretation</th></tr></thead><tbody id="btCompareBody"></tbody></table>
+          <table class="data-table"><thead><tr><th>Strategy</th><th>Status</th><th>Reason</th><th>Final Equity</th><th>Return %</th><th>Benchmark %</th><th>Excess %</th><th>Max Drawdown %</th><th>Closed Trades</th><th>Deployed Avg %</th><th>Rejections</th><th>Confidence</th><th>Interpretation</th></tr></thead><tbody id="btCompareBody"></tbody></table>
         </div>
       </div>
       <div class="card bt-card-rejections">
@@ -603,6 +603,43 @@ _PAGE = """
         <div id="btAssumptions" class="mono muted">—</div>
         <div id="btDataQuality" class="mono muted" style="margin-top:0.5rem;">—</div>
         </div>
+      <div class="card bt-card-runs">
+        <details open>
+          <summary><strong>Strategy Diagnostics</strong></summary>
+          <div id="btStrategyDiagnostics" class="mono muted" style="margin-top:0.6rem;">Run or select a backtest to view diagnostics.</div>
+        </details>
+      </div>
+      <div class="card bt-card-runs">
+        <details>
+          <summary><strong>Parameter Experiments</strong></summary>
+          <div style="margin-top:0.6rem;">
+            <div class="bt-setup-grid">
+              <div><label>Base parameter set</label><select id="btParamSetSelect"><option value="">defaults</option></select></div>
+              <div style="grid-column: span 3;"><label>Parameter grid (JSON)</label><input id="btParamGrid" value='{"buy_score_threshold":[0.5,0.6],"sell_score_threshold":[-0.5,-0.4]}' /></div>
+              <div><label>Walk-forward</label><label style="display:flex;align-items:center;gap:6px;"><input id="btWalkForwardEnabled" type="checkbox" />Enable one split</label></div>
+            </div>
+            <div class="bt-actions-row" style="margin-top:0.6rem;">
+              <button id="btRunExperimentBtn" class="bt-action-btn" type="button">🧪 Run Experiment</button>
+            </div>
+            <p id="btExperimentStatus" class="bt-status muted">No experiment run yet.</p>
+          </div>
+        </details>
+      </div>
+      <div class="card bt-card-runs">
+        <details>
+          <summary><strong>Experiment Results</strong></summary>
+          <p id="btExperimentEmpty" class="muted">Run a parameter experiment to populate this table.</p>
+          <div style="overflow:auto;max-height:320px;">
+            <table class="data-table"><thead><tr><th>Rank</th><th>Status</th><th>Params</th><th>Return %</th><th>Benchmark %</th><th>Excess %</th><th>Drawdown %</th><th>Closed</th><th>Deployed Avg %</th><th>Rejections</th><th>Confidence</th><th>Score</th><th></th></tr></thead><tbody id="btExperimentBody"></tbody></table>
+          </div>
+        </details>
+      </div>
+      <div class="card bt-card-runs">
+        <details open>
+          <summary><strong>Reports</strong></summary>
+          <p class="muted">Use Copy/Download to export backtest or experiment context.</p>
+        </details>
+      </div>
     </div>
   </main>
 
@@ -1347,6 +1384,8 @@ _PAGE = """
     let btSelectedRunId = null;
     let btCompareRows = [];
     let btCompareState = { status: "not_run", rows: [], error: "" };
+    let btExperimentRows = [];
+    let btParameterSets = [];
     const BT_DEBUG = localStorage.getItem("quantbot_bt_debug") === "1";
     function switchTab(tab) {
       const wantBacktest = tab === "backtest";
@@ -1482,6 +1521,19 @@ _PAGE = """
       }
       const assumptions = summary.assumptions || {};
       const dataQuality = summary.data_quality || {};
+      const diagEl = document.getElementById("btStrategyDiagnostics");
+      if (diagEl) {
+        diagEl.textContent =
+          `capital_deployed_avg_pct: ${fmtPct(summary.capital_deployed_avg_pct)}\n` +
+          `capital_deployed_max_pct: ${fmtPct(summary.capital_deployed_max_pct)}\n` +
+          `idle_cash_avg_pct: ${fmtPct(summary.idle_cash_avg_pct)}\n` +
+          `idle_cash_max_pct: ${fmtPct(summary.idle_cash_max_pct)}\n` +
+          `time_in_market_pct: ${fmtPct(summary.time_in_market_pct)}\n` +
+          `capital_turnover: ${fmtPlain(summary.capital_turnover)}\n` +
+          `open_positions_end: ${String(summary.open_positions_end ?? 0)}\n` +
+          `benchmark_return_pct: ${fmtPct(summary.equal_weight_buy_and_hold_return_pct)}\n` +
+          `excess_return_pct: ${fmtPct(summary.excess_return_pct)}`;
+      }
       const aEl = document.getElementById("btAssumptions");
       if (aEl) {
         aEl.textContent =
@@ -1627,9 +1679,71 @@ _PAGE = """
           tEl.textContent =
             `confidence thresholds: low>=${cfg.confidence_low_min_closed_trades ?? "—"}, medium>=${cfg.confidence_medium_min_closed_trades ?? "—"}, high>=${cfg.confidence_high_min_closed_trades ?? "—"}, warning_downgrade=${String(cfg.confidence_warning_downgrade_enabled)}`;
         }
+        const gridEl = document.getElementById("btParamGrid");
+        if (gridEl && btDefaults && btDefaults.parameter_defaults) {
+          const d = btDefaults.parameter_defaults || {};
+          const grid = {
+            buy_score_threshold: [d.buy_score_threshold],
+            sell_score_threshold: [d.sell_score_threshold],
+            max_position_notional_pct: [d.max_position_notional_pct],
+            take_profit_pct: [d.take_profit_pct],
+            stop_loss_pct: [d.stop_loss_pct],
+            cooldown_bars: [d.cooldown_bars],
+          };
+          gridEl.value = JSON.stringify(grid);
+        }
       } catch (_) {
         setBacktestStatus("Failed to load backtest defaults.", "err");
       }
+    }
+
+    async function loadParameterSets() {
+      try {
+        const strategyName = (document.getElementById("btStrategy") || {}).value || "";
+        const r = await fetch(`/api/backtest/parameter-sets?strategy_name=${encodeURIComponent(strategyName)}`, { cache: "no-store" });
+        const j = await r.json();
+        btParameterSets = Array.isArray(j.rows) ? j.rows : [];
+        const sel = document.getElementById("btParamSetSelect");
+        if (!sel) return;
+        sel.innerHTML = `<option value="">defaults</option>` + btParameterSets.map((x) => `<option value="${esc(String(x.id))}">${esc(String(x.name || `set-${x.id}`))}</option>`).join("");
+      } catch (_) {}
+    }
+
+    function renderExperimentRows(rows) {
+      const body = document.getElementById("btExperimentBody");
+      const empty = document.getElementById("btExperimentEmpty");
+      if (!body) return;
+      btExperimentRows = Array.isArray(rows) ? rows : [];
+      body.innerHTML = btExperimentRows.map((r, idx) => {
+        const m = r.metrics || {};
+        const params = r.params || {};
+        const paramSetText = Object.keys(params).length ? JSON.stringify(params) : "{}";
+        const setId = Number(r.parameter_set_id || 0);
+        const promoteBtn = setId > 0
+          ? `<button type="button" class="bt-action-btn" data-promote="${setId}">Promote</button>`
+          : "";
+        return `<tr><td class="mono">${idx + 1}</td><td>${esc(String(r.status || ""))}</td><td class="mono">${esc(paramSetText)}</td><td class="mono">${esc(String(m.return_pct ?? ""))}</td><td class="mono">${esc(String(m.benchmark_return_pct ?? ""))}</td><td class="mono">${esc(String(m.excess_return_pct ?? ""))}</td><td class="mono">${esc(String(m.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(m.closed_trades ?? ""))}</td><td class="mono">${esc(String(m.capital_deployed_avg_pct ?? ""))}</td><td class="mono">${esc(String(m.rejections_total ?? ""))}</td><td>${esc(String(m.confidence_label ?? ""))}</td><td class="mono">${esc(String(r.rank_score ?? ""))}</td><td>${promoteBtn}</td></tr>`;
+      }).join("");
+      if (empty) {
+        empty.style.display = btExperimentRows.length ? "none" : "block";
+      }
+      body.querySelectorAll("button[data-promote]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = Number(btn.getAttribute("data-promote"));
+          if (!Number.isFinite(id) || id <= 0) return;
+          const rr = await fetch(`/api/backtest/parameter-sets/${id}/mark-paper-candidate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          });
+          const jj = await rr.json();
+          if (!rr.ok || !jj.ok) {
+            setBacktestStatus(`Promote failed: ${String(jj.error || rr.status)}`, "err");
+            return;
+          }
+          setBacktestStatus("Candidate marked for paper trial metadata.", "ok");
+          await loadParameterSets();
+        });
+      });
     }
 
     async function loadBacktestRuns() {
@@ -1679,10 +1793,11 @@ _PAGE = """
     document.getElementById("btPresetCrypto")?.addEventListener("click", () => setBacktestPreset("crypto"));
     document.getElementById("btPresetHoldings")?.addEventListener("click", () => setBacktestPreset("holdings"));
     document.getElementById("btPresetStress")?.addEventListener("click", () => setBacktestPreset("stress"));
+    document.getElementById("btStrategy")?.addEventListener("change", () => { loadParameterSets(); });
     document.getElementById("btCompareBtn")?.addEventListener("click", async () => {
       setBacktestBusy(true, "Comparing Strategies...");
       const payload = {
-        strategy_names: ((btDefaults && btDefaults.backtest_config && btDefaults.backtest_config.backtest_ui_compare_strategies) || ["current_adaptive", "simple_buy_and_hold", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"]),
+        strategy_names: ((btDefaults && btDefaults.backtest_config && btDefaults.backtest_config.backtest_ui_compare_strategies) || ["current_adaptive", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"]),
         starting_cash: Number((document.getElementById("btStartingCash") || {}).value || 100),
         symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
         start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
@@ -1708,7 +1823,7 @@ _PAGE = """
         btCompareState = { status: "ok", rows: btCompareRows, error: "" };
         if (body) {
           body.innerHTML = btCompareRows.map((x) => {
-            return `<tr><td>${esc(x.strategy || "")}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.buy_and_hold_return_pct ?? ""))}</td><td class="mono">${esc(String(x.excess_return_pct ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td><td>${esc(String(x.interpretation || ""))}</td></tr>`;
+            return `<tr><td>${esc(x.strategy || "")}</td><td>${esc(String(x.status || ""))}</td><td>${esc(String(x.reason || ""))}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.benchmark_return_pct ?? x.buy_and_hold_return_pct ?? ""))}</td><td class="mono">${esc(String(x.excess_return_pct ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.capital_deployed_avg_pct ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td><td>${esc(String(x.interpretation || ""))}</td></tr>`;
           }).join("");
         }
         if (empty) {
@@ -1781,7 +1896,47 @@ _PAGE = """
         setBacktestBusy(false);
       }
     });
+    document.getElementById("btRunExperimentBtn")?.addEventListener("click", async () => {
+      setBacktestBusy(true, "Running parameter experiment...");
+      const statusEl = document.getElementById("btExperimentStatus");
+      try {
+        let grid = {};
+        try {
+          grid = JSON.parse(String((document.getElementById("btParamGrid") || {}).value || "{}"));
+        } catch (_) {
+          throw new Error("Invalid parameter grid JSON");
+        }
+        const payload = {
+          name: `exp-${Date.now()}`,
+          strategy_name: (document.getElementById("btStrategy") || {}).value || "current_adaptive",
+          symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
+          start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
+          end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
+          timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
+          starting_cash: Number((document.getElementById("btStartingCash") || {}).value || 100),
+          parameter_grid_json: grid,
+          walk_forward: { enabled: !!((document.getElementById("btWalkForwardEnabled") || {}).checked) },
+        };
+        const r = await fetch("/api/backtest/experiments/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          body: JSON.stringify(payload),
+        });
+        const j = await r.json();
+        if (!r.ok || !j.ok) throw new Error(j.error || "Experiment failed");
+        renderExperimentRows(Array.isArray(j.top_results) ? j.top_results : []);
+        if (statusEl) statusEl.textContent = `Experiment ${j.experiment_id} completed.`;
+        setBacktestStatus("Parameter experiment complete.", "ok");
+      } catch (e) {
+        const msg = String(e && e.message ? e.message : e);
+        if (statusEl) statusEl.textContent = msg;
+        setBacktestStatus(`Experiment failed: ${msg}`, "err");
+      } finally {
+        setBacktestBusy(false);
+      }
+    });
     loadBacktestDefaults();
+    loadParameterSets();
   </script>
 </body>
 </html>
@@ -2048,6 +2203,7 @@ def _build_backtest_report_payload(
 def _backtest_report_markdown(report: dict[str, Any]) -> str:
     req = dict(report.get("request") or {})
     summary = dict(report.get("summary") or {})
+    assumptions = dict(report.get("assumptions") or {})
     cfg = dict((report.get("report_config") or {}).get("effective_backtest_config") or {})
     costs = dict(cfg.get("backtest_cost_defaults") or {})
     lines = [
@@ -2082,6 +2238,17 @@ def _backtest_report_markdown(report: dict[str, Any]) -> str:
         f"- Rejections total: {summary.get('rejections_total', '—')}",
         f"- Confidence label: {summary.get('confidence_label', '—')}",
         f"- Confidence rationale: {json.dumps(summary.get('confidence_rationale', {}), default=str)}",
+        f"- Capital deployed avg %: {summary.get('capital_deployed_avg_pct', '—')}",
+        f"- Capital deployed max %: {summary.get('capital_deployed_max_pct', '—')}",
+        f"- Idle cash avg %: {summary.get('idle_cash_avg_pct', '—')}",
+        f"- Idle cash max %: {summary.get('idle_cash_max_pct', '—')}",
+        f"- Time in market %: {summary.get('time_in_market_pct', '—')}",
+        f"- Capital turnover: {summary.get('capital_turnover', '—')}",
+        f"- Open positions end: {summary.get('open_positions_end', '—')}",
+        "",
+        "## Benchmark Definitions",
+        f"- theoretical_equal_weight_buy_and_hold: {((assumptions.get('benchmark_definitions') or {}).get('theoretical_equal_weight_buy_and_hold') or 'reference benchmark')}",
+        f"- executable_buy_and_hold: {((assumptions.get('benchmark_definitions') or {}).get('executable_buy_and_hold') or 'simulated benchmark strategy')}",
         "",
         "## Interpretation",
     ]
@@ -2137,6 +2304,7 @@ def create_app() -> Flask:
     from data.data_store import get_connection, init_schema
     from backtesting.models import BacktestRequest
     from backtesting import runner as backtest_runner
+    from backtesting import experiments as backtest_experiments
     from monitoring.dashboard_data import build_dashboard_payload
 
     app = Flask(__name__)
@@ -2435,6 +2603,10 @@ def create_app() -> Flask:
             },
             "default_timeframe": default_tf,
             "backtest_config": bt_cfg,
+            "parameter_defaults": dict(bt_cfg.get("backtest_parameter_defaults") or {}),
+            "parameter_allowed_ranges": dict(bt_cfg.get("backtest_parameter_allowed_ranges") or {}),
+            "ranking_weights": dict(bt_cfg.get("backtest_ranking_weights") or {}),
+            "experiment_runtime_caps": dict(bt_cfg.get("backtest_experiment_runtime_caps") or {}),
             "presets": [
                 {"id": "sanity", "label": "Small sanity test", "symbols": ["AAPL", "MSFT", "BTC/USD"], "timeframe": "1Day", "days": 365},
                 {"id": "crypto", "label": "Crypto only", "symbols": ["BTC/USD", "ETH/USD"], "timeframe": "1H", "days": 90},
@@ -2512,7 +2684,7 @@ def create_app() -> Flask:
         default_timeframe = str(bt_cfg.get("backtest_default_timeframe") or "1Day")
         strategies = [str(x).strip() for x in body.get("strategy_names", []) if str(x).strip()]
         if not strategies:
-            strategies = ["current_adaptive", "simple_buy_and_hold", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"]
+            strategies = ["current_adaptive", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"]
         try:
             req = BacktestRequest(
                 strategy_name=strategies[0],
@@ -2551,21 +2723,37 @@ def create_app() -> Flask:
                 final_equity = _safe_float(norm.get("final_equity"))
                 return_pct = _safe_float(norm.get("return_pct"))
                 bh_pct = _safe_float(norm.get("buy_and_hold_return_pct"))
+                benchmark_return_pct = _safe_float(norm.get("benchmark_return_pct"))
+                if benchmark_return_pct is None:
+                    benchmark_return_pct = bh_pct
                 excess_pct = _safe_float(norm.get("excess_return_pct"))
                 if excess_pct is None and return_pct is not None and bh_pct is not None:
                     excess_pct = return_pct - bh_pct
+                status = str(norm.get("status") or "completed")
+                reason = str(norm.get("reason") or "")
                 interp = str(norm.get("interpretation") or ("Beat benchmark" if (excess_pct is not None and excess_pct >= 0) else "Underperformed benchmark"))
                 normalized_rows.append(
                     {
                         "strategy": str(norm.get("strategy") or ""),
+                        "status": status,
+                        "reason": reason,
                         "final_equity": final_equity,
                         "return_pct": return_pct,
+                        "benchmark_return_pct": benchmark_return_pct,
                         "buy_and_hold_return_pct": bh_pct,
                         "excess_return_pct": excess_pct,
                         "max_drawdown_pct": _safe_float(norm.get("max_drawdown_pct")),
+                        "total_trades": _safe_int(norm.get("total_trades")),
                         "closed_trades": _safe_int(norm.get("closed_trades")),
+                        "open_positions_end": _safe_int(norm.get("open_positions_end")),
                         "rejections_total": _safe_int(norm.get("rejections_total")),
                         "confidence_label": str(norm.get("confidence_label") or "unknown"),
+                        "capital_deployed_avg_pct": _safe_float(norm.get("capital_deployed_avg_pct")),
+                        "capital_deployed_max_pct": _safe_float(norm.get("capital_deployed_max_pct")),
+                        "idle_cash_avg_pct": _safe_float(norm.get("idle_cash_avg_pct")),
+                        "idle_cash_max_pct": _safe_float(norm.get("idle_cash_max_pct")),
+                        "capital_turnover": _safe_float(norm.get("capital_turnover")),
+                        "time_in_market_pct": _safe_float(norm.get("time_in_market_pct")),
                         "interpretation": interp,
                     }
                 )
@@ -2632,6 +2820,225 @@ def create_app() -> Flask:
             return jsonify(report)
         md = _backtest_report_markdown(report)
         return Response(md, mimetype="text/markdown")
+
+    @app.get("/api/backtest/parameter-defaults")
+    def api_backtest_parameter_defaults() -> Any:
+        bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
+        return jsonify(
+            {
+                "ok": True,
+                "parameter_defaults": bt_cfg.get("backtest_parameter_defaults") or {},
+                "parameter_allowed_ranges": bt_cfg.get("backtest_parameter_allowed_ranges") or {},
+                "ranking_weights": bt_cfg.get("backtest_ranking_weights") or {},
+                "runtime_caps": bt_cfg.get("backtest_experiment_runtime_caps") or {},
+                "confidence_thresholds": {
+                    "confidence_low_min_closed_trades": int(bt_cfg.get("confidence_low_min_closed_trades", 10)),
+                    "confidence_medium_min_closed_trades": int(bt_cfg.get("confidence_medium_min_closed_trades", 30)),
+                    "confidence_high_min_closed_trades": int(bt_cfg.get("confidence_high_min_closed_trades", 60)),
+                },
+            }
+        )
+
+    @app.get("/api/backtest/parameter-sets")
+    def api_backtest_parameter_sets() -> Any:
+        strategy_name = str(request.args.get("strategy_name", "") or "").strip()
+        rows = data_store.fetch_strategy_parameter_sets(strategy_name=(strategy_name or None), limit=200)
+        return jsonify({"ok": True, "rows": rows})
+
+    @app.post("/api/backtest/parameter-sets")
+    def api_backtest_parameter_sets_create() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        name = str(body.get("name", "") or "").strip()
+        strategy_name = str(body.get("strategy_name", "") or "").strip()
+        params = body.get("params_json")
+        if not name or not strategy_name or not isinstance(params, dict):
+            return jsonify({"ok": False, "error": "invalid payload"}), 400
+        set_id = data_store.create_strategy_parameter_set(
+            name=name,
+            strategy_name=strategy_name,
+            source=str(body.get("source") or "manual"),
+            params=params,
+            notes=str(body.get("notes") or ""),
+            status=str(body.get("status") or "draft"),
+            active=False,
+        )
+        return jsonify({"ok": True, "id": set_id})
+
+    @app.post("/api/backtest/parameter-sets/<int:set_id>/mark-paper-candidate")
+    def api_backtest_parameter_set_mark_paper_candidate(set_id: int) -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        data_store.mark_parameter_set_paper_candidate(set_id)
+        return jsonify({"ok": True, "id": set_id, "status": "paper_candidate", "active": False})
+
+    @app.post("/api/backtest/experiments/run")
+    def api_backtest_experiments_run() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        bt_cfg = data_store.fetch_backtest_config(config.DB_PATH)
+        cost_defaults = dict(bt_cfg.get("backtest_cost_defaults") or {})
+        default_timeframe = str(bt_cfg.get("backtest_default_timeframe") or "1Day")
+        strategy_name = str(body.get("strategy_name", "current_adaptive") or "current_adaptive")
+        symbols = [str(x).strip() for x in body.get("symbols", ["AAPL"]) if str(x).strip()]
+        req = BacktestRequest(
+            strategy_name=strategy_name,
+            asset_class=str(body.get("asset_class", "mixed")),
+            symbols=symbols,
+            start_date=str(body.get("start_date", "2025-01-01")),
+            end_date=str(body.get("end_date", "2026-01-01")),
+            timeframe=str(body.get("timeframe", default_timeframe)),
+            starting_cash=float(body.get("starting_cash", 100.0)),
+            max_position_notional=float(body.get("max_position_notional", 5.0)),
+            max_positions=int(body.get("max_positions", 3)),
+            max_trades_per_hour=int(body.get("max_trades_per_hour", 6)),
+            fee_bps=float(body.get("fee_bps", cost_defaults.get("fee_bps", 5.0))),
+            slippage_bps=float(body.get("slippage_bps", cost_defaults.get("slippage_bps", 10.0))),
+            spread_bps=float(body.get("spread_bps", cost_defaults.get("spread_bps", 20.0))),
+            min_order_notional=float(body.get("min_order_notional", 1.0)),
+            allow_fractional=bool(body.get("allow_fractional", True)),
+            use_fractionability_rules=bool(body.get("use_fractionability_rules", True)),
+            use_market_hours=bool(body.get("use_market_hours", True)),
+            pyramiding_enabled=bool(body.get("pyramiding_enabled", False)),
+        )
+        parameter_grid = body.get("parameter_grid_json")
+        if not isinstance(parameter_grid, dict):
+            parameter_grid = {}
+        runtime_caps = dict(bt_cfg.get("backtest_experiment_runtime_caps") or {})
+        ranking_weights = dict(bt_cfg.get("backtest_ranking_weights") or {})
+        req_weights = body.get("ranking_weights_json")
+        if isinstance(req_weights, dict):
+            ranking_weights.update(req_weights)
+        confidence_thresholds = {
+            "confidence_low_min_closed_trades": int(bt_cfg.get("confidence_low_min_closed_trades", 10)),
+            "confidence_medium_min_closed_trades": int(bt_cfg.get("confidence_medium_min_closed_trades", 30)),
+            "confidence_high_min_closed_trades": int(bt_cfg.get("confidence_high_min_closed_trades", 60)),
+        }
+        experiment_id = data_store.create_backtest_experiment(
+            name=str(body.get("name") or f"{strategy_name}-experiment"),
+            strategy_name=strategy_name,
+            symbols=symbols,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            timeframe=req.timeframe,
+            starting_cash=req.starting_cash,
+            cost_assumptions={
+                "fee_bps": req.fee_bps,
+                "slippage_bps": req.slippage_bps,
+                "spread_bps": req.spread_bps,
+            },
+            parameter_grid=parameter_grid,
+            ranking_weights=ranking_weights,
+            status="running",
+        )
+        try:
+            result = backtest_experiments.run_parameter_experiment(
+                strategy_name=strategy_name,
+                base_request=req,
+                parameter_grid=parameter_grid,
+                weights=ranking_weights,
+                confidence_thresholds=confidence_thresholds,
+                caps=runtime_caps,
+                walk_forward=(body.get("walk_forward") if isinstance(body.get("walk_forward"), dict) else bt_cfg.get("backtest_walk_forward_defaults")),
+                parameter_snapshot={"backtest_config": bt_cfg},
+            )
+            for row in result.get("rows", []):
+                data_store.insert_backtest_experiment_result(
+                    experiment_id,
+                    params=row.get("params") if isinstance(row.get("params"), dict) else {},
+                    metrics=row.get("metrics") if isinstance(row.get("metrics"), dict) else {},
+                    rank_score=_safe_float(row.get("rank_score")),
+                    status=str(row.get("status") or "completed"),
+                    warnings=row.get("warnings") if isinstance(row.get("warnings"), list) else [],
+                )
+            data_store.update_backtest_experiment(
+                experiment_id,
+                status="completed",
+                best_result=(result.get("best_result") if isinstance(result.get("best_result"), dict) else {}),
+                summary=(result.get("summary") if isinstance(result.get("summary"), dict) else {}),
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "experiment_id": experiment_id,
+                    "top_results": result.get("rows", [])[:10],
+                    "summary": result.get("summary", {}),
+                }
+            )
+        except Exception as exc:
+            data_store.update_backtest_experiment(
+                experiment_id,
+                status="failed",
+                summary={"error": str(exc), "runtime_caps": runtime_caps},
+            )
+            return jsonify({"ok": False, "error": str(exc), "experiment_id": experiment_id}), 400
+
+    @app.get("/api/backtest/experiments")
+    def api_backtest_experiments() -> Any:
+        limit = int(request.args.get("limit", 20) or 20)
+        rows = data_store.fetch_backtest_experiments(limit=limit)
+        return jsonify({"ok": True, "rows": rows})
+
+    @app.get("/api/backtest/experiments/<int:experiment_id>")
+    def api_backtest_experiment(experiment_id: int) -> Any:
+        row = data_store.fetch_backtest_experiment(experiment_id)
+        if row is None:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        return jsonify({"ok": True, "experiment": row})
+
+    @app.get("/api/backtest/experiments/<int:experiment_id>/report")
+    def api_backtest_experiment_report(experiment_id: int) -> Any:
+        row = data_store.fetch_backtest_experiment(experiment_id)
+        if row is None:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        fmt = str(request.args.get("format", "json") or "json").strip().lower()
+        result_rows = list(row.get("results") or [])
+        report_limit = int((data_store.fetch_backtest_config(config.DB_PATH).get("backtest_max_report_trades") or 80))
+        payload = {
+            "experiment_id": row.get("id"),
+            "created_at": row.get("created_at"),
+            "request": {
+                "name": row.get("name"),
+                "strategy_name": row.get("strategy_name"),
+                "symbols": row.get("symbols_json") or [],
+                "start_date": row.get("start_date"),
+                "end_date": row.get("end_date"),
+                "timeframe": row.get("timeframe"),
+                "starting_cash": row.get("starting_cash"),
+            },
+            "parameter_grid": row.get("parameter_grid_json") or {},
+            "ranking_weights": row.get("ranking_weights_json") or {},
+            "top_candidates": result_rows[:10],
+            "full_results_limited": result_rows[:report_limit],
+            "summary": row.get("summary_json") or {},
+            "best_result": row.get("best_result_json") or {},
+            "warnings": [w for r in result_rows for w in (r.get("warnings_json") or [])],
+        }
+        if fmt == "markdown":
+            text = "\n".join(
+                [
+                    f"# QuantBot Experiment Report {payload['experiment_id']}",
+                    "",
+                    "## Request",
+                    json.dumps(payload["request"], default=str),
+                    "",
+                    "## Parameter Grid",
+                    json.dumps(payload["parameter_grid"], default=str),
+                    "",
+                    "## Ranking Weights",
+                    json.dumps(payload["ranking_weights"], default=str),
+                    "",
+                    "## Top Candidates",
+                    json.dumps(payload["top_candidates"], default=str),
+                    "",
+                    "## Summary",
+                    json.dumps(payload["summary"], default=str),
+                ]
+            )
+            return Response(text, mimetype="text/markdown")
+        return jsonify({"ok": True, "report": payload})
 
     @app.post("/api/sync-alpaca")
     def api_sync_alpaca() -> Any:

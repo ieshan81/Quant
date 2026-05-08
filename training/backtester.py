@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
 import config
 from signals import mean_reversion, momentum, signal_combiner
@@ -38,13 +39,28 @@ def load_yfinance_history(symbol: str, days: int = 90, interval: str = "1d") -> 
         raise ValueError("symbol required")
     t = yf.Ticker(sym)
     period = f"{max(5, int(days))}d"
-    df = t.history(period=period, interval=str(interval or "1d"), auto_adjust=True)
+    use_interval = str(interval or "1d")
+    df = t.history(period=period, interval=use_interval, auto_adjust=True)
     if df is None or df.empty:
         raise RuntimeError(f"No price history returned for {sym}")
+    if isinstance(df.columns, pd.MultiIndex):
+        # yfinance can return MultiIndex columns in some environments;
+        # flatten to the first level so OHLCV normalization still works.
+        try:
+            df.columns = [str(c[0]) if isinstance(c, tuple) and c else str(c) for c in df.columns]
+        except Exception:
+            df.columns = [str(c) for c in df.columns]
     df = df.rename(columns=str.title)
     need = {"Open", "High", "Low", "Close", "Volume"}
     missing = need - set(df.columns)
     if missing:
+        logger.warning(
+            "load_yfinance_history unexpected columns | symbol={} interval={} period={} columns={}",
+            sym,
+            use_interval,
+            period,
+            list(df.columns),
+        )
         raise RuntimeError(f"Unexpected yfinance columns for {sym}: missing {missing}")
     return df[list(sorted(need))].dropna(how="any")
 

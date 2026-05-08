@@ -25,6 +25,28 @@ def summarize(
     profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
     expectancy = mean([(t.pnl or 0.0) for t in closed]) if closed else 0.0
     rej_counts = dict(Counter(r.reason_code for r in rejections))
+    deployed_pcts: list[float] = []
+    idle_pcts: list[float] = []
+    in_market_points = 0
+    for p in equity_curve:
+        eq = float(p.equity)
+        exposure = max(0.0, float(p.exposure))
+        cash = max(0.0, float(p.cash))
+        if eq > 0:
+            dep = max(0.0, min(100.0, (exposure / eq) * 100.0))
+            idle = max(0.0, min(100.0, (cash / eq) * 100.0))
+        else:
+            dep = 0.0
+            idle = 100.0
+        deployed_pcts.append(dep)
+        idle_pcts.append(idle)
+        if exposure > 1e-9:
+            in_market_points += 1
+    turnover = (
+        (sum(abs(float(t.notional or 0.0)) for t in trades) / float(starting_cash))
+        if float(starting_cash) > 0
+        else 0.0
+    )
     summary = {
         "starting_cash": float(starting_cash),
         "final_equity": final_eq,
@@ -40,5 +62,12 @@ def summarize(
         "best_trade": max(((t.pnl or 0.0) for t in closed), default=0.0),
         "worst_trade": min(((t.pnl or 0.0) for t in closed), default=0.0),
         "rejections_total": len(rejections),
+        "open_positions_end": 0,  # filled by engine where position state is available
+        "capital_deployed_avg_pct": mean(deployed_pcts) if deployed_pcts else 0.0,
+        "capital_deployed_max_pct": max(deployed_pcts) if deployed_pcts else 0.0,
+        "idle_cash_avg_pct": mean(idle_pcts) if idle_pcts else 100.0,
+        "idle_cash_max_pct": max(idle_pcts) if idle_pcts else 100.0,
+        "time_in_market_pct": (in_market_points / len(equity_curve) * 100.0) if equity_curve else 0.0,
+        "capital_turnover": turnover,
     }
     return summary, rej_counts
