@@ -121,15 +121,29 @@ def test_can_buy_allows_existing_alpaca_long_when_pyramiding_enabled() -> None:
 def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "TPZ", 1.0, 100.0).ok
+    monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
+    monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 106.0)
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, trader: 1.0)
+    mw._blocked_exit_until.clear()
+    mw._blocked_exit_reason.clear()
     monkeypatch.setattr(
         mw.stock_broker,
         "submit_market_order",
         lambda side, symbol, qty: MagicMock(ok=True, broker_order_id="oid-1", message="filled"),
     )
     lines, checked, fired = mw.apply_stops_and_targets(
-        t, None, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}
+        t,
+        None,
+        {
+            **_rt(),
+            "take_profit_pct": 0.05,
+            "stop_loss_pct": 0.05,
+            "stock_take_profit_pct": 0.05,
+            "stock_stop_loss_pct": 0.05,
+            "crypto_take_profit_pct": 0.05,
+            "crypto_stop_loss_pct": 0.05,
+        },
     )
     assert checked >= 1
     assert fired >= 1
@@ -158,6 +172,8 @@ def test_stock_exit_broker_merges_sqlite_when_paper_ledger_flat(tmp_path: Path) 
 def test_max_hold_force_exit_stock(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "MHOLD", 1.0, 100.0).ok
+    monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
+    monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 100.0)
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, trader: 1.0)
     monkeypatch.setattr(
@@ -172,7 +188,7 @@ def test_max_hold_force_exit_stock(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda symbol, asset_class, qty_signed, db_path: old,
     )
     lines, _, fired = mw.apply_stops_and_targets(
-        t, None, {"take_profit_pct": 0.99, "stop_loss_pct": 0.99}
+        t, None, {**_rt(), "take_profit_pct": 0.99, "stop_loss_pct": 0.99}
     )
     assert fired >= 1
     assert any("MAX_HOLD" in ln for ln in lines)
@@ -181,6 +197,7 @@ def test_max_hold_force_exit_stock(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_sell("stock", "SHS", 1.0, 100.0, reason_code="short_entry", meta=None).ok
+    monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
     monkeypatch.setattr(mw.stock_broker, "fetch_alpaca_open_positions", lambda: [])
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, broker: 0.0)
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 94.0)
@@ -192,7 +209,7 @@ def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) ->
     st = mw._StockExitBroker(t, None)
     ct = mw._CryptoExitBroker(t, None)
     lines, checked, fired, _health = mw._check_and_execute_exits(
-        st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH
+        st, ct, {**_rt(), "take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH
     )
     assert checked >= 1
     assert fired == 0
@@ -421,14 +438,42 @@ def test_pdt_blocked_symbol_not_retried_every_cycle(monkeypatch: pytest.MonkeyPa
             return [{"symbol": "AAPL", "net_qty": 1.0, "avg_entry_price": 100.0, "asset_class": "stock", "source": "paper_ledger"}]
 
     sb = _B(t)
-    sb.get_open_positions = lambda: []
+    sb.get_open_positions = lambda: [
+        {"symbol": "AAPL", "net_qty": 1.0, "avg_entry_price": 100.0, "asset_class": "stock", "source": "paper_ledger"}
+    ]
     cb = _B(t)
+    cb.get_open_positions = lambda: []
+    monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
     monkeypatch.setattr(mw, "_exit_mark_price", lambda *_: 106.0)
+    monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda *_: 1.0)
     monkeypatch.setattr(mw, "_position_entry_datetime_from_trades", lambda *a, **k: None)
     mw._blocked_exit_until.clear()
-    mw._check_and_execute_exits(sb, cb, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH)
-    mw._check_and_execute_exits(sb, cb, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH)
+    mw._blocked_exit_reason.clear()
+    mw._check_and_execute_exits(
+        sb,
+        cb,
+        {
+            **_rt(),
+            "take_profit_pct": 0.05,
+            "stop_loss_pct": 0.05,
+            "stock_take_profit_pct": 0.05,
+            "stock_stop_loss_pct": 0.05,
+        },
+        config.DB_PATH,
+    )
+    mw._check_and_execute_exits(
+        sb,
+        cb,
+        {
+            **_rt(),
+            "take_profit_pct": 0.05,
+            "stop_loss_pct": 0.05,
+            "stock_take_profit_pct": 0.05,
+            "stock_stop_loss_pct": 0.05,
+        },
+        config.DB_PATH,
+    )
     assert sb.place_sell_order.call_count == 1
 
 
@@ -480,7 +525,7 @@ def test_sqlite_only_position_with_broker_zero_qty_records_stale() -> None:
         mw, "_get_real_position_qty", return_value=0.0
     ), patch.object(mw, "_persist_decision") as pers:
         _lines, _checked, _fired, health = mw._check_and_execute_exits(
-            sb, cb, {"take_profit_pct": 0.02, "stop_loss_pct": 0.02}, config.DB_PATH
+            sb, cb, {**_rt(), "take_profit_pct": 0.02, "stop_loss_pct": 0.02}, config.DB_PATH
         )
     assert cb.place_sell_order.call_count == 0
     reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]

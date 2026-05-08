@@ -25,12 +25,21 @@ _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
     "sell_threshold": "Score to trigger SELL (stocks)",
     "crypto_buy_threshold": "Score to trigger BUY (crypto)",
     "kelly_fraction": "Kelly fraction",
-    "stop_loss_pct": "Stop loss %",
-    "take_profit_pct": "Take profit %",
+    "stop_loss_pct": "Legacy unified stop loss % (baseline for scaling)",
+    "take_profit_pct": "Legacy unified take profit % (baseline for scaling)",
     "max_position_pct": "Max portfolio % per position (~0.5% sleeve; $100-scale paper)",
-    "dynamic_risk_enabled": "1=enable dynamic TP/SL by equity, 0=use dashboard TP/SL values",
+    "dynamic_risk_enabled": "1=scale TP/SL by equity from baseline keys, 0=use dashboard TP/SL values",
     "pyramiding_enabled": "1=allow adding to existing longs, 0=skip additional buys",
-    "pdt_avoid_same_day_round_trip": "1=avoid same-day stock round-trips for PDT-risk small accounts",
+    "pdt_avoid_same_day_round_trip": "1=PDT guard for small accounts (same-day stock exits)",
+    "crypto_take_profit_pct": "Crypto take-profit fraction",
+    "crypto_stop_loss_pct": "Crypto stop-loss fraction",
+    "crypto_trailing_stop_pct": "Crypto trailing drop-from-peak fraction",
+    "stock_take_profit_pct": "Stock take-profit fraction",
+    "stock_stop_loss_pct": "Stock stop-loss fraction",
+    "stock_trailing_stop_pct": "Stock trailing drop-from-peak fraction",
+    "crypto_fast_exit_enabled": "1=allow crypto TP/trailing 24/7 when broker qty OK",
+    "pdt_exit_block_seconds": "Cooldown seconds after PDT-blocked exit retry",
+    "dashboard_exit_positions_limit": "Max rows in dashboard exit eligibility table",
 }
 
 
@@ -497,6 +506,17 @@ CREATE TABLE IF NOT EXISTS backtest_experiment_results (
 CREATE INDEX IF NOT EXISTS idx_backtest_experiment_results_lookup
     ON backtest_experiment_results(experiment_id, rank_score DESC);
 
+-- Per-position trailing peak (long-only); broker qty remains authoritative for sells.
+CREATE TABLE IF NOT EXISTS position_exit_state (
+    asset_class TEXT NOT NULL CHECK (asset_class IN ('stock', 'crypto')),
+    symbol TEXT NOT NULL,
+    peak_price REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (asset_class, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_position_exit_state_updated ON position_exit_state(updated_at);
+
 -- Lightweight ops metrics (counter-style). Used for SQLite lock tracking and
 -- price-error counts. ``window_label`` is the bucket key ('total', 'cycle', etc).
 CREATE TABLE IF NOT EXISTS ops_metrics (
@@ -948,6 +968,173 @@ def wipe_ghost_positions(
                 }
             )
     return {"removed": removed, "rows_deleted": len(ids_to_delete)}
+
+
+def ensure_bot_config_keys_migrated(db_path: Path | str | None = None) -> int:
+    """Insert missing ``bot_config`` keys after defaults expand (idempotent). Returns inserted count."""
+    path = _resolved_db_path(db_path)
+    inserted = 0
+    with get_connection(path) as conn:
+        for key, (val, desc) in BOT_CONFIG_DEFAULTS.items():
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO bot_config (key, value, description, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                """,
+                (key, float(val), desc),
+            )
+            inserted += int(cur.rowcount or 0)
+    return inserted
+
+
+def position_exit_update_peak(
+    db_path: Path | str | None,
+    asset_class: str,
+    symbol: str,
+    mid: float,
+) -> float:
+    """Upsert trailing peak = max(stored_peak, mid). Returns effective peak price."""
+    from utils.symbols import normalize_asset_class, normalize_symbol_for_db
+
+    ac = normalize_asset_class(str(symbol or ""), hint=str(asset_class or "").strip().lower())
+    sym_db = normalize_symbol_for_db(ac, str(symbol or "").strip())
+    mid_v = float(mid or 0.0)
+    try:
+        if mid_v <= 0:
+            with get_connection(db_path) as conn:
+                row = conn.execute(
+                    "SELECT peak_price FROM position_exit_state WHERE asset_class = ? AND symbol = ?",
+                    (ac, sym_db),
+                ).fetchone()
+            return float(row[0]) if row else 0.0
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO position_exit_state (asset_class, symbol, peak_price, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                ON CONFLICT(asset_class, symbol) DO UPDATE SET
+                    peak_price = MAX(position_exit_state.peak_price, excluded.peak_price),
+                    updated_at = datetime('now')
+                """,
+                (ac, sym_db, mid_v),
+            )
+            row2 = conn.execute(
+                "SELECT peak_price FROM position_exit_state WHERE asset_class = ? AND symbol = ?",
+                (ac, sym_db),
+            ).fetchone()
+            return float(row2[0]) if row2 else mid_v
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).lower():
+            raise
+        init_schema(db_path)
+        return position_exit_update_peak(db_path, asset_class, symbol, mid)
+
+
+def position_exit_clear_symbol(
+    db_path: Path | str | None,
+    asset_class: str,
+    symbol: str,
+) -> None:
+    from utils.symbols import normalize_asset_class, normalize_symbol_for_db
+
+    ac = normalize_asset_class(str(symbol or ""), hint=str(asset_class or "").strip().lower())
+    sym_db = normalize_symbol_for_db(ac, str(symbol or "").strip())
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "DELETE FROM position_exit_state WHERE asset_class = ? AND symbol = ?",
+            (ac, sym_db),
+        )
+
+
+def reconcile_sqlite_symbol_if_broker_missing(
+    db_path: Path | str | None,
+    asset_class: str,
+    symbol: str,
+    rest_client: Any | None,
+) -> dict[str, Any]:
+    """If Alpaca has no position for this symbol but SQLite shows fills, delete trade rows for that symbol only."""
+    from utils.symbols import normalize_asset_class, normalize_symbol_for_db
+
+    if rest_client is None:
+        return {"skipped": True, "reason": "no_rest_client"}
+    path = _resolved_db_path(db_path)
+    sym = str(symbol or "").strip()
+    ac = normalize_asset_class(sym, hint=str(asset_class or "").strip().lower())
+    canonical = normalize_symbol_for_db(ac, sym)
+
+    real_db_syms: set[str] = set()
+    try:
+        raw_positions = rest_client.list_positions() or []
+        for p in raw_positions:
+            psym = str(getattr(p, "symbol", None) or (p.get("symbol", "") if isinstance(p, dict) else ""))
+            if not psym:
+                continue
+            ac_raw = getattr(p, "asset_class", None)
+            if ac_raw is None and isinstance(p, dict):
+                ac_raw = p.get("asset_class")
+            pac = normalize_asset_class(psym, hint=str(ac_raw or "").strip().lower())
+            real_db_syms.add(normalize_symbol_for_db(pac, psym))
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    if canonical in real_db_syms:
+        return {"aligned": True, "canonical": canonical}
+
+    removed_detail: list[dict[str, Any]] = []
+    rows_deleted = 0
+    with get_connection(path) as conn:
+        cur = conn.execute(
+            """
+            SELECT asset_class, symbol,
+                   SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
+            FROM trades
+            WHERE status = 'filled'
+            GROUP BY asset_class, symbol
+            HAVING ABS(net_qty) > 1e-8
+            """
+        )
+        ghost_canonicals: list[tuple[str, str, str]] = []
+        for ac_raw, sym_raw, _net in cur.fetchall():
+            s = str(sym_raw or "").strip()
+            acc = normalize_asset_class(s, hint=str(ac_raw or "").strip().lower())
+            can = normalize_symbol_for_db(acc, s)
+            if can != canonical:
+                continue
+            ghost_canonicals.append((str(ac_raw or ""), s, can))
+
+        if not ghost_canonicals:
+            return {"removed": False, "canonical": canonical, "reason": "no_sqlite_position"}
+
+        all_trade_rows = conn.execute("SELECT id, asset_class, symbol FROM trades").fetchall()
+        ids_to_delete: set[int] = set()
+        for row_id, ac_raw, sym_raw in all_trade_rows:
+            s = str(sym_raw or "").strip()
+            acc = normalize_asset_class(s, hint=str(ac_raw or "").strip().lower())
+            can = normalize_symbol_for_db(acc, s)
+            if any(can == c for _, _, c in ghost_canonicals):
+                ids_to_delete.add(int(row_id))
+        if ids_to_delete:
+            conn.executemany(
+                "DELETE FROM trades WHERE id = ?",
+                [(i,) for i in sorted(ids_to_delete)],
+            )
+            rows_deleted = len(ids_to_delete)
+
+        for ac_raw, s, can in ghost_canonicals:
+            removed_detail.append(
+                {"asset_class": ac_raw, "symbol": s, "canonical_symbol": can}
+            )
+    try:
+        position_exit_clear_symbol(path, ac, sym)
+    except Exception:
+        logger.debug("[reconcile] position_exit_clear failed", exc_info=True)
+
+    return {
+        "removed": True,
+        "canonical": canonical,
+        "ghost_positions_detail": removed_detail,
+        "rows_deleted": rows_deleted,
+    }
 
 
 def reset_trading_history(db_path: Path | str | None = None) -> dict[str, Any]:

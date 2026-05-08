@@ -107,6 +107,7 @@ LEGACY_TO_REASON: Final[dict[str, str]] = {
     "portfolio_cap": MAX_DEPLOYED,
     "already_long": ALREADY_LONG,
     "already_short": ALREADY_SHORT,
+    "broker_qty_zero": NO_BROKER_QTY,
 }
 
 

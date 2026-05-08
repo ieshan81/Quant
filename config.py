@@ -262,4 +262,13 @@ BOT_CONFIG_DEFAULTS = {
     "dynamic_risk_enabled": 1.0,
     "pyramiding_enabled": 0.0,
     "pdt_avoid_same_day_round_trip": 1.0,
+    "crypto_take_profit_pct": 0.10,
+    "crypto_stop_loss_pct": 0.05,
+    "crypto_trailing_stop_pct": 0.02,
+    "stock_take_profit_pct": 0.10,
+    "stock_stop_loss_pct": 0.05,
+    "stock_trailing_stop_pct": 0.02,
+    "crypto_fast_exit_enabled": 1.0,
+    "pdt_exit_block_seconds": 600.0,
+    "dashboard_exit_positions_limit": 50.0,
 }

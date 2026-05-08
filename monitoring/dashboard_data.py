@@ -628,6 +628,7 @@ def build_dashboard_payload(
         "db_lock_count_24h": db_lock_count,
         "buy_gate": buy_gate,
         "execution_health": execution_health,
+        "position_exit_rows": list((execution_health or {}).get("position_exit_rows") or []),
         "promotion_gates": promotion_status,
         "live_safety": safety,
         "scalper_paper_enabled": config.scalper_paper_enabled(),

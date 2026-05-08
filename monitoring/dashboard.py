@@ -308,6 +308,85 @@ _PAGE = """
     .dashboard-wrap .bottom-grid > .card:nth-child(1) { grid-column: span 6; }
     .dashboard-wrap .bottom-grid > .card:nth-child(2) { grid-column: span 6; }
     .dashboard-wrap .bottom-grid > .card:nth-child(3) { grid-column: 1 / -1; }
+    .dashboard-wrap .exec-health-card {
+      grid-column: 1 / -1;
+      margin-top: 0;
+    }
+    .exec-health-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin-top: 0.35rem;
+    }
+    @media (max-width: 1100px) {
+      .exec-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .exec-health-grid { grid-template-columns: 1fr; }
+    }
+    .exec-health-tile {
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.55rem 0.65rem;
+      min-height: 3.25rem;
+    }
+    .exec-health-tile.exec-health-warn {
+      border-color: rgba(251, 191, 36, 0.55);
+      background: rgba(251, 191, 36, 0.06);
+    }
+    .exec-health-tile-wide {
+      grid-column: span 2;
+    }
+    @media (max-width: 560px) {
+      .exec-health-tile-wide { grid-column: span 1; }
+    }
+    .exec-health-tile-label {
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 0.25rem;
+    }
+    .exec-health-tile-value { font-size: 1.05rem; font-weight: 600; }
+    .exec-health-tile-sm { font-size: 0.82rem; word-break: break-word; }
+    .exec-health-card.exec-health-card-warn {
+      border-color: rgba(251, 191, 36, 0.45);
+      box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12);
+    }
+    .exec-health-pdt-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      align-items: center;
+      min-height: 1.35rem;
+    }
+    .exec-health-badge {
+      display: inline-block;
+      padding: 0.15rem 0.45rem;
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      font-family: "JetBrains Mono", monospace;
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      color: #fcd34d;
+    }
+    .exec-health-hint {
+      margin: 0.35rem 0 0;
+      font-size: 0.72rem;
+      line-height: 1.35;
+    }
+    .exec-exit-details { margin-top: 0.85rem; }
+    .exec-exit-summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: var(--accent-blue);
+      list-style: none;
+    }
+    .exec-exit-summary::-webkit-details-marker { display: none; }
+    .exec-exit-details[open] .exec-exit-summary { margin-bottom: 0.25rem; }
     .dashboard-wrap .api-links,
     .dashboard-wrap .last-upd { grid-column: 1 / -1; margin-top: 0; }
     @media (max-width: 1100px) {
@@ -504,19 +583,69 @@ _PAGE = """
             <td>{% if e.win_rate is not none %}{{ (e.win_rate * 100) | round(1) }}%{% else %}—{% endif %}</td></tr>{% endfor %}
         </tbody></table>{% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
       </div>
-      <div class="card"><h2>🩺 Execution health</h2>
-        <table class="data-table">
-          <tbody>
-            <tr><td>Cash</td><td class="mono" id="execHealthCash">—</td></tr>
-            <tr><td>Buying power</td><td class="mono" id="execHealthBuyingPower">—</td></tr>
-            <tr><td>Usable buying power</td><td class="mono" id="execHealthUsable">—</td></tr>
-            <tr><td>Blocked exits</td><td class="mono" id="execHealthBlockedExits">0</td></tr>
-            <tr><td>PDT blocked symbols</td><td class="mono" id="execHealthPdtSymbols">—</td></tr>
-            <tr><td>Stale local positions</td><td class="mono" id="execHealthStaleLocal">0</td></tr>
-            <tr><td>Broker/local mismatches</td><td class="mono" id="execHealthMismatches">0</td></tr>
-          </tbody>
-        </table>
+    </div>
+
+    <div class="card exec-health-card" id="execHealthCard">
+      <h2>🩺 Execution health</h2>
+      <div class="exec-health-grid" id="execHealthGrid">
+        <div class="exec-health-tile" id="execTileCash">
+          <div class="exec-health-tile-label">Cash</div>
+          <div class="exec-health-tile-value mono" id="execHealthCash">—</div>
+        </div>
+        <div class="exec-health-tile" id="execTileBp">
+          <div class="exec-health-tile-label">Buying power</div>
+          <div class="exec-health-tile-value mono" id="execHealthBuyingPower">—</div>
+        </div>
+        <div class="exec-health-tile" id="execTileUsable">
+          <div class="exec-health-tile-label">Usable buying power</div>
+          <div class="exec-health-tile-value mono" id="execHealthUsable">—</div>
+        </div>
+        <div class="exec-health-tile" id="execTileBlocked">
+          <div class="exec-health-tile-label">Blocked exits</div>
+          <div class="exec-health-tile-value mono" id="execHealthBlockedExits">0</div>
+        </div>
+        <div class="exec-health-tile exec-health-tile-wide" id="execTilePdt">
+          <div class="exec-health-tile-label">PDT blocked symbols</div>
+          <div class="exec-health-pdt-wrap" id="execHealthPdtBadges"><span class="muted exec-health-empty">—</span></div>
+          <span class="exec-health-tile-fallback mono" id="execHealthPdtSymbols" style="display:none;">—</span>
+        </div>
+        <div class="exec-health-tile" id="execTileStale">
+          <div class="exec-health-tile-label">Stale local positions</div>
+          <div class="exec-health-tile-value mono" id="execHealthStaleLocal">0</div>
+        </div>
+        <div class="exec-health-tile" id="execTileMismatch">
+          <div class="exec-health-tile-label">Broker/local mismatches</div>
+          <div class="exec-health-tile-value mono" id="execHealthMismatches">0</div>
+        </div>
+        <div class="exec-health-tile" id="execTileCryptoFast">
+          <div class="exec-health-tile-label">Fast crypto exits</div>
+          <div class="exec-health-tile-value mono" id="execHealthCryptoFast">—</div>
+        </div>
+        <div class="exec-health-tile" id="execTilePdtGuard">
+          <div class="exec-health-tile-label">Stock PDT guard</div>
+          <div class="exec-health-tile-value mono" id="execHealthPdtGuard">—</div>
+        </div>
+        <div class="exec-health-tile" id="execTileEligible">
+          <div class="exec-health-tile-label">Exit-eligible positions</div>
+          <div class="exec-health-tile-value mono" id="execHealthExitEligible">—</div>
+        </div>
+        <div class="exec-health-tile" id="execTileReconcile">
+          <div class="exec-health-tile-label">Last reconciliation</div>
+          <div class="exec-health-tile-value mono exec-health-tile-sm" id="execHealthLastReconcile">—</div>
+        </div>
       </div>
+      <p class="muted exec-health-hint">PDT blocked exits mean Alpaca refused same-day stock exits.</p>
+      <p class="muted exec-health-hint">Broker/local mismatches mean local SQLite and Alpaca position records differ.</p>
+      <details class="exec-exit-details" id="execExitDetails">
+        <summary class="exec-exit-summary">Position exit eligibility <span class="muted" id="execExitSummaryCount"></span></summary>
+        <div style="overflow-x:auto;margin-top:0.5rem;">
+          <table class="data-table"><thead><tr>
+            <th>Symbol</th><th>Class</th><th>Local qty</th><th>Broker qty</th><th>Entry</th><th>Mark</th><th>P/L %</th>
+            <th>Eligibility</th><th>Block reason</th><th>PDT</th><th>Last exit try</th><th>Cooldown</th><th>Action</th>
+          </tr></thead><tbody id="execExitTableBody"></tbody></table>
+          <p class="muted" id="execExitEmpty" style="display:none;margin-top:0.35rem;">No position exit rows.</p>
+        </div>
+      </details>
     </div>
 
     <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
@@ -1027,11 +1156,74 @@ _PAGE = """
       setTxt("execHealthCash", fmtMoney(eh.cash));
       setTxt("execHealthBuyingPower", fmtMoney(eh.buying_power));
       setTxt("execHealthUsable", fmtMoney(eh.usable_buying_power));
-      setTxt("execHealthBlockedExits", String(Math.trunc(Number(eh.blocked_exits_count || 0))));
-      const syms = Array.isArray(eh.pdt_blocked_symbols) ? eh.pdt_blocked_symbols.join(", ") : "";
-      setTxt("execHealthPdtSymbols", syms || "—");
-      setTxt("execHealthStaleLocal", String(Math.trunc(Number(eh.stale_local_positions_count || 0))));
-      setTxt("execHealthMismatches", String(Math.trunc(Number(eh.broker_local_mismatch_count || 0))));
+      const blocked = Math.trunc(Number(eh.blocked_exits_count || 0));
+      const stale = Math.trunc(Number(eh.stale_local_positions_count || 0));
+      const mismatch = Math.trunc(Number(eh.broker_local_mismatch_count || 0));
+      setTxt("execHealthBlockedExits", String(blocked));
+      const pdtSyms = Array.isArray(eh.pdt_blocked_symbols) ? eh.pdt_blocked_symbols.map((s) => String(s || "").trim()).filter(Boolean) : [];
+      const pdtWrap = document.getElementById("execHealthPdtBadges");
+      const pdtFallback = document.getElementById("execHealthPdtSymbols");
+      if (pdtWrap) {
+        if (!pdtSyms.length) {
+          pdtWrap.innerHTML = '<span class="muted exec-health-empty">—</span>';
+        } else {
+          pdtWrap.innerHTML = pdtSyms.map((s) => '<span class="exec-health-badge">' + esc(s) + "</span>").join("");
+        }
+      }
+      if (pdtFallback) {
+        pdtFallback.style.display = "none";
+        pdtFallback.textContent = pdtSyms.join(", ") || "—";
+      }
+      setTxt("execHealthStaleLocal", String(stale));
+      setTxt("execHealthMismatches", String(mismatch));
+      const cryptoFast = eh.crypto_fast_exit_enabled;
+      const pdtGuard = eh.stock_pdt_guard_enabled;
+      setTxt("execHealthCryptoFast", cryptoFast === true ? "on" : cryptoFast === false ? "off" : "—");
+      setTxt("execHealthPdtGuard", pdtGuard === true ? "on" : pdtGuard === false ? "off" : "—");
+      const elig = eh.exit_eligible_positions_count;
+      setTxt("execHealthExitEligible", elig != null && elig !== "" ? String(elig) : "—");
+      const lr = eh.last_reconciliation_at;
+      setTxt("execHealthLastReconcile", lr != null && lr !== "" ? String(lr) : "—");
+      const warn = blocked > 0 || stale > 0 || mismatch > 0;
+      const card = document.getElementById("execHealthCard");
+      if (card) card.classList.toggle("exec-health-card-warn", warn);
+      function tileWarn(id, on) {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle("exec-health-warn", !!on);
+      }
+      tileWarn("execTileBlocked", blocked > 0);
+      tileWarn("execTileStale", stale > 0);
+      tileWarn("execTileMismatch", mismatch > 0);
+      const exitRows = Array.isArray(data.position_exit_rows) ? data.position_exit_rows : [];
+      const sumCt = document.getElementById("execExitSummaryCount");
+      if (sumCt) sumCt.textContent = exitRows.length ? "(" + exitRows.length + ")" : "";
+      const tbody = document.getElementById("execExitTableBody");
+      const exEmpty = document.getElementById("execExitEmpty");
+      if (tbody) {
+        if (!exitRows.length) {
+          tbody.innerHTML = "";
+          if (exEmpty) exEmpty.style.display = "block";
+        } else {
+          if (exEmpty) exEmpty.style.display = "none";
+          tbody.innerHTML = exitRows.map((r) => {
+            const sym = esc(String(r.symbol || ""));
+            const ac = esc(String(r.asset_class || ""));
+            const lq = r.local_qty != null ? esc(String(r.local_qty)) : "—";
+            const bq = r.broker_qty != null ? esc(String(r.broker_qty)) : "—";
+            const ep = r.entry_price != null ? esc(String(r.entry_price)) : "—";
+            const cp = r.current_price != null ? esc(String(r.current_price)) : "—";
+            const pl = r.pnl_pct != null ? esc(String(r.pnl_pct)) : "—";
+            const elg = esc(String(r.exit_eligibility || "—"));
+            const br = esc(String(r.exit_block_reason || "—"));
+            const pd = esc(String(r.pdt_status || "—"));
+            const letm = esc(String(r.last_exit_attempt_at || "—"));
+            const cd = esc(String(r.cooldown_remaining || "—"));
+            const act = esc(String(r.recommended_action || "—"));
+            const cls = String(r.asset_class || "").toLowerCase() === "crypto" ? "row-crypto" : "row-stock";
+            return "<tr class=\"" + cls + "\"><td class=\"mono\">" + sym + "</td><td>" + ac + "</td><td class=\"mono\">" + lq + "</td><td class=\"mono\">" + bq + "</td><td class=\"mono\">" + ep + "</td><td class=\"mono\">" + cp + "</td><td class=\"mono\">" + pl + "</td><td>" + elg + "</td><td class=\"muted\">" + br + "</td><td>" + pd + "</td><td class=\"mono\" style=\"font-size:0.68rem;\">" + letm + "</td><td class=\"mono\">" + cd + "</td><td>" + act + "</td></tr>";
+          }).join("");
+        }
+      }
 
       const el = document.getElementById("dash-payload");
       if (el) el.textContent = JSON.stringify(data);
@@ -2000,6 +2192,15 @@ _SLIDER_LIMITS: dict[str, tuple[float, float, float]] = {
     "kelly_fraction": (0.01, 0.99, 0.01),
     "stop_loss_pct": (0.01, 0.25, 0.005),
     "take_profit_pct": (0.02, 0.50, 0.01),
+    "crypto_take_profit_pct": (0.02, 0.50, 0.01),
+    "crypto_stop_loss_pct": (0.01, 0.25, 0.005),
+    "crypto_trailing_stop_pct": (0.005, 0.15, 0.005),
+    "stock_take_profit_pct": (0.02, 0.50, 0.01),
+    "stock_stop_loss_pct": (0.01, 0.25, 0.005),
+    "stock_trailing_stop_pct": (0.005, 0.15, 0.005),
+    "crypto_fast_exit_enabled": (0.0, 1.0, 1.0),
+    "pdt_exit_block_seconds": (60.0, 3600.0, 30.0),
+    "dashboard_exit_positions_limit": (5.0, 200.0, 1.0),
     "max_position_pct": (0.02, 0.25, 0.01),
 }
 

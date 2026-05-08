@@ -30,7 +30,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import config
-from data.data_store import get_connection, init_schema, load_runtime_config_dict, sync_from_alpaca
+from data.data_store import (
+    get_connection,
+    init_schema,
+    load_runtime_config_dict,
+    position_exit_update_peak,
+    reconcile_sqlite_symbol_if_broker_missing,
+    sync_from_alpaca,
+)
 from learning.rl_nudge import maybe_nudge_thresholds
 from execution import order_manager, stock_broker
 from monitoring import alerts, trade_logger
@@ -88,7 +95,9 @@ _halted = threading.Event()
 _trader_lock = threading.Lock()
 _sentiment_lock = threading.Lock()
 _blocked_exit_until: dict[str, float] = {}
+_blocked_exit_reason: dict[str, str] = {}
 _reconcile_queue: set[tuple[str, str]] = set()
+_last_reconcile_iso: str | None = None
 
 # --- Sprint 11: news aggregator (asyncio loop in background thread) ---
 _news_aggregator: Any = None
@@ -1012,7 +1021,14 @@ def _get_real_position_qty(symbol: str, broker: Any) -> float:
     return 0.0
 
 
-def _pdt_exit_block_seconds() -> float:
+def _pdt_exit_block_seconds(rt: dict[str, float] | None = None) -> float:
+    if rt is not None:
+        try:
+            raw_db = float(rt.get("pdt_exit_block_seconds", 0) or 0.0)
+            if raw_db > 0:
+                return max(60.0, raw_db)
+        except (TypeError, ValueError):
+            pass
     raw = str(os.getenv("PDT_EXIT_BLOCK_SECONDS", "600") or "600").strip()
     try:
         return max(60.0, float(raw))
@@ -1033,6 +1049,7 @@ def _mark_exit_blocked(symbol: str, seconds: float, *, reason_code: str) -> None
     if not sym:
         return
     _blocked_exit_until[sym] = time.time() + max(1.0, float(seconds))
+    _blocked_exit_reason[sym] = str(reason_code or "")
     logger.warning("[exit_block] symbol={} reason={} ttl_sec={}", sym, reason_code, seconds)
 
 
@@ -1041,9 +1058,39 @@ def _queue_reconciliation_cleanup(asset_class: str, symbol: str) -> None:
     _reconcile_queue.add(key)
 
 
-def _is_pdt_risk_active_for_small_account() -> bool:
+def _drain_reconcile_queue(rt: dict[str, float]) -> None:
+    """Symbol-scoped SQLite cleanup when broker reports no position (queued from exit path)."""
+    global _last_reconcile_iso
+    if not _reconcile_queue:
+        return
+    cli = stock_broker.get_rest_client()
+    if cli is None:
+        return
+    for key in list(_reconcile_queue):
+        ac, sym = key
+        try:
+            summary = reconcile_sqlite_symbol_if_broker_missing(config.DB_PATH, ac, sym, cli)
+            if summary.get("error"):
+                continue
+            _reconcile_queue.discard(key)
+            _last_reconcile_iso = dt_et.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            logger.info("[reconcile] symbol={} {} summary={}", ac, sym, summary)
+        except Exception:
+            logger.warning("[reconcile] {} {} cleanup failed", ac, sym, exc_info=True)
+
+
+def _cooldown_remaining_seconds(symbol: str) -> float:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return 0.0
+    until = float(_blocked_exit_until.get(sym, 0.0) or 0.0)
+    return max(0.0, until - time.time())
+
+
+def _is_pdt_risk_active_for_small_account(rt: dict[str, float] | None = None) -> bool:
     try:
-        if not bool(int(load_runtime_config_dict().get("pdt_avoid_same_day_round_trip", 0))):
+        cfg = rt if rt is not None else load_runtime_config_dict()
+        if not bool(int(cfg.get("pdt_avoid_same_day_round_trip", 0))):
             return False
     except Exception:
         return False
@@ -1073,11 +1120,11 @@ def _same_et_trading_day(entry_dt: dt_et | None) -> bool:
 def _check_and_execute_exits(
     stock_trader: _StockExitBroker,
     crypto_trader: _CryptoExitBroker,
-    risk_params: dict[str, float],
+    rt: dict[str, float],
     db_path: str | Path,
 ) -> tuple[list[str], int, int, dict[str, Any]]:
     """
-    Every cycle (before new signals): TP/SL vs mark for longs (sell) and shorts (buy to cover).
+    Every cycle (before new signals): TP/SL/trailing vs mark for longs (sell) and shorts (buy to cover).
     Positions are the union of Alpaca + SQLite fills + the paper ledger.
     Max-hold uses filled-trade timestamps from SQLite ``trades`` (crypto 4h, stocks 8h).
     Returns ``(log_lines, len(all_positions), exits_filled_ok, health_meta)``.
@@ -1091,14 +1138,67 @@ def _check_and_execute_exits(
 
     market_ctx = None
     ledger = stock_trader.ledger
-    stop_loss_frac = float(risk_params.get("stop_loss_pct", 0.015))
-    take_profit_frac = float(risk_params.get("take_profit_pct", 0.03))
+    legacy_tp = float(rt.get("take_profit_pct", 0.10))
+    legacy_sl = float(rt.get("stop_loss_pct", 0.05))
+    stock_tp = float(rt.get("stock_take_profit_pct", legacy_tp))
+    stock_sl = float(rt.get("stock_stop_loss_pct", legacy_sl))
+    stock_trail = float(rt.get("stock_trailing_stop_pct", 0.02))
+    crypto_tp = float(rt.get("crypto_take_profit_pct", legacy_tp))
+    crypto_sl = float(rt.get("crypto_stop_loss_pct", legacy_sl))
+    crypto_trail = float(rt.get("crypto_trailing_stop_pct", 0.02))
+    try:
+        crypto_fast = bool(int(rt.get("crypto_fast_exit_enabled", 1.0)) == 1)
+    except (TypeError, ValueError):
+        crypto_fast = True
+    dash_exit_limit = int(max(1.0, float(rt.get("dashboard_exit_positions_limit", 50.0))))
+    pdt_sec = _pdt_exit_block_seconds(rt)
+
     lines: list[str] = []
     exits_ok = 0
     blocked_exits_count = 0
     pdt_blocked_symbols: set[str] = set()
     stale_local_positions_count = 0
     broker_local_mismatch_count = 0
+    exit_eligible_positions_count = 0
+    position_exit_rows: list[dict[str, Any]] = []
+
+    def _snapshot_exit_row(
+        *,
+        symbol: str,
+        asset_class: str,
+        local_qty: float | None,
+        broker_qty: float | None,
+        entry_p: float | None,
+        mid_p: float | None,
+        block_reason: str,
+        pdt_status: str,
+        recommended_action: str,
+    ) -> None:
+        pq = (
+            f"{100.0 * (float(mid_p) - float(entry_p)) / float(entry_p):.2f}%"
+            if (entry_p is not None and mid_p is not None and float(entry_p) > 0)
+            else "—"
+        )
+        cd = _cooldown_remaining_seconds(symbol)
+        cd_s = f"{cd:.0f}s" if cd > 1.0 else "—"
+        position_exit_rows.append(
+            {
+                "symbol": symbol,
+                "asset_class": asset_class,
+                "local_qty": local_qty,
+                "broker_qty": broker_qty,
+                "entry_price": entry_p,
+                "current_price": mid_p,
+                "pnl_pct": pq,
+                "exit_eligibility": recommended_action,
+                "exit_block_reason": block_reason,
+                "pdt_status": pdt_status,
+                "last_exit_attempt_at": "—",
+                "cooldown_remaining": cd_s,
+                "recommended_action": recommended_action,
+            }
+        )
+
     db_p = Path(db_path)
     for raw in all_positions:
         pos = _normalize_exit_row_to_dict(raw)
@@ -1107,10 +1207,6 @@ def _check_and_execute_exits(
         mark_ns = _mark_target_for_exit_dict(market_ctx, pos)
         sym = str(pos.get("symbol") or "").strip()
         ac = mark_ns.asset_class
-        if _is_exit_blocked(sym):
-            blocked_exits_count += 1
-            pdt_blocked_symbols.add(sym)
-            continue
         mid = _exit_mark_price(market_ctx, mark_ns)
         if mid is None or mid <= 0:
             logger.warning(
@@ -1127,6 +1223,25 @@ def _check_and_execute_exits(
         qty = _get_real_position_qty(sym, broker)
         source = str(pos.get("source") or "")
         local_pos = ledger.position(ac, sym)
+        local_qty_val = float(local_pos.quantity) if local_pos is not None else float(pos.get("net_qty") or 0.0)
+
+        if _is_exit_blocked(sym):
+            blocked_exits_count += 1
+            if str(_blocked_exit_reason.get(str(sym).upper(), "")).strip().upper() == "PDT_PROTECTION":
+                pdt_blocked_symbols.add(sym)
+            _snapshot_exit_row(
+                symbol=sym,
+                asset_class=ac,
+                local_qty=local_qty_val,
+                broker_qty=qty,
+                entry_p=entry if entry > 0 else None,
+                mid_p=mid,
+                block_reason="COOLDOWN",
+                pdt_status="blocked" if sym in pdt_blocked_symbols else "—",
+                recommended_action="COOLDOWN",
+            )
+            continue
+
         if source == "alpaca_rest" and local_pos is None:
             broker_local_mismatch_count += 1
             _persist_decision(
@@ -1166,49 +1281,179 @@ def _check_and_execute_exits(
         _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
         max_hold_h = _max_hold_hours_for_symbol(sym)
 
+        if ac == "crypto":
+            if crypto_fast:
+                tp_frac, sl_frac, trail_frac = crypto_tp, crypto_sl, crypto_trail
+            else:
+                tp_frac, sl_frac, trail_frac = stock_tp, stock_sl, stock_trail
+        else:
+            tp_frac, sl_frac, trail_frac = stock_tp, stock_sl, stock_trail
+
+        stock_market_closed = ac == "stock" and not portfolio_limiter.us_stock_market_open()
+        pdt_small = _is_pdt_risk_active_for_small_account(rt)
+        same_day = _same_et_trading_day(entry_dt)
+
         if qty > 1e-12:
             sell_qty = qty
+            peak_px = position_exit_update_peak(db_path, ac, sym, float(mid))
             pnl_pct = (mid - entry) / entry
-            if pnl_pct <= -stop_loss_frac:
-                logger.info(
-                    "[exit] STOP_LOSS {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
-                    ac,
-                    sym,
-                    entry,
-                    mid,
-                    pnl_pct,
-                    -stop_loss_frac,
-                    held_sfx,
+            trail_hit = (
+                trail_frac > 1e-12
+                and peak_px > 0
+                and ((peak_px - float(mid)) / peak_px) >= trail_frac
+            )
+
+            def _reject_market_closed(reason_detail: str) -> None:
+                _persist_decision(
+                    cycle_id=f"exit-{int(time.time())}",
+                    asset_class=ac,
+                    symbol=sym,
+                    side="sell",
+                    decision="rejected",
+                    reason_code="MARKET_CLOSED",
+                    score=None,
+                    notional=sell_qty * mid,
+                    quantity=sell_qty,
+                    price=mid,
+                    meta={"reason_detail": reason_detail, "eligibility": "blocked"},
                 )
-                ledger.set_telegram_on_fills(False)
-                try:
-                    r = broker.place_sell_order(
-                        sym, sell_qty, mid, reason_code="STOP_LOSS", meta=None
-                    )
-                finally:
-                    ledger.set_telegram_on_fills(True)
-                if r.ok:
-                    exits_ok += 1
-                    _ensure_exit_trade_logged(
-                        db_path=db_path,
-                        mode=ledger.mode,
-                        asset_class=ac,
+
+            if pnl_pct <= -sl_frac:
+                if ac == "stock" and stock_market_closed:
+                    _reject_market_closed("stop_loss_stock_market_closed")
+                    _snapshot_exit_row(
                         symbol=sym,
-                        side="sell",
-                        quantity=sell_qty,
-                        price=mid,
-                        status="filled",
-                        broker_order_id=r.broker_order_id,
-                        reason_code="STOP_LOSS",
-                        meta=None,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="MARKET_CLOSED",
+                        pdt_status="—",
+                        recommended_action="MARKET_CLOSED",
                     )
-                pnl = (mid - entry) * sell_qty
-                lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
-            elif pnl_pct >= take_profit_frac:
-                if ac == "stock" and _is_pdt_risk_active_for_small_account() and _same_et_trading_day(entry_dt):
+                else:
+                    logger.info(
+                        "[exit] STOP_LOSS {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
+                        ac,
+                        sym,
+                        entry,
+                        mid,
+                        pnl_pct,
+                        -sl_frac,
+                        held_sfx,
+                    )
+                    ledger.set_telegram_on_fills(False)
+                    try:
+                        r = broker.place_sell_order(
+                            sym,
+                            sell_qty,
+                            mid,
+                            reason_code="STOP_LOSS",
+                            meta={"risk_snapshot": {"sl_frac": sl_frac, "tp_frac": tp_frac}},
+                        )
+                    finally:
+                        ledger.set_telegram_on_fills(True)
+                    if r.ok:
+                        exits_ok += 1
+                        _ensure_exit_trade_logged(
+                            db_path=db_path,
+                            mode=ledger.mode,
+                            asset_class=ac,
+                            symbol=sym,
+                            side="sell",
+                            quantity=sell_qty,
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="STOP_LOSS",
+                            meta=None,
+                        )
+                    pnl = (mid - entry) * sell_qty
+                    lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+                    _snapshot_exit_row(
+                        symbol=sym,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="—" if r.ok else str(getattr(r, "reason_code", "") or ""),
+                        pdt_status="same_day" if (ac == "stock" and same_day) else "—",
+                        recommended_action="EXIT_ALLOWED" if r.ok else "HOLD",
+                    )
+            elif trail_hit:
+                if ac == "stock" and stock_market_closed:
+                    _reject_market_closed("trailing_stop_stock_market_closed")
+                    _snapshot_exit_row(
+                        symbol=sym,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="MARKET_CLOSED",
+                        pdt_status="—",
+                        recommended_action="MARKET_CLOSED",
+                    )
+                else:
+                    logger.info(
+                        "[exit] TRAILING_STOP {} {} peak={:.4f} mark={:.4f} trail={:.2%}{}",
+                        ac,
+                        sym,
+                        peak_px,
+                        mid,
+                        trail_frac,
+                        held_sfx,
+                    )
+                    ledger.set_telegram_on_fills(False)
+                    try:
+                        r = broker.place_sell_order(
+                            sym,
+                            sell_qty,
+                            mid,
+                            reason_code="TRAILING_STOP",
+                            meta={
+                                "peak_price": peak_px,
+                                "trail_frac": trail_frac,
+                                "eligibility": "allowed",
+                            },
+                        )
+                    finally:
+                        ledger.set_telegram_on_fills(True)
+                    if r.ok:
+                        exits_ok += 1
+                        _ensure_exit_trade_logged(
+                            db_path=db_path,
+                            mode=ledger.mode,
+                            asset_class=ac,
+                            symbol=sym,
+                            side="sell",
+                            quantity=sell_qty,
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="TRAILING_STOP",
+                            meta=None,
+                        )
+                    pnl = (mid - entry) * sell_qty
+                    lines.append(f"TRAILING_STOP {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+                    _snapshot_exit_row(
+                        symbol=sym,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="—" if r.ok else str(getattr(r, "reason_code", "") or ""),
+                        pdt_status="—",
+                        recommended_action="EXIT_ALLOWED" if r.ok else "HOLD",
+                    )
+            elif pnl_pct >= tp_frac:
+                if ac == "stock" and pdt_small and same_day:
                     blocked_exits_count += 1
                     pdt_blocked_symbols.add(sym)
-                    _mark_exit_blocked(sym, _pdt_exit_block_seconds(), reason_code="PDT_PROTECTION")
+                    _mark_exit_blocked(sym, pdt_sec, reason_code="PDT_PROTECTION")
                     _persist_decision(
                         cycle_id=f"exit-{int(time.time())}",
                         asset_class=ac,
@@ -1222,207 +1467,315 @@ def _check_and_execute_exits(
                         price=mid,
                         meta={"reason_detail": "same_day_round_trip_avoided"},
                     )
-                    continue
-                logger.info(
-                    "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
-                    ac,
-                    sym,
-                    entry,
-                    mid,
-                    pnl_pct,
-                    take_profit_frac,
-                    held_sfx,
-                )
-                ledger.set_telegram_on_fills(False)
-                try:
-                    r = broker.place_sell_order(
-                        sym, sell_qty, mid, reason_code="TAKE_PROFIT", meta=None
-                    )
-                finally:
-                    ledger.set_telegram_on_fills(True)
-                if r.ok:
-                    exits_ok += 1
-                    _ensure_exit_trade_logged(
-                        db_path=db_path,
-                        mode=ledger.mode,
-                        asset_class=ac,
+                    _snapshot_exit_row(
                         symbol=sym,
-                        side="sell",
-                        quantity=sell_qty,
-                        price=mid,
-                        status="filled",
-                        broker_order_id=r.broker_order_id,
-                        reason_code="TAKE_PROFIT",
-                        meta=None,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="PDT_PROTECTION",
+                        pdt_status="same_day",
+                        recommended_action="PDT_BLOCKED",
+                    )
+                elif ac == "stock" and stock_market_closed:
+                    _reject_market_closed("take_profit_stock_market_closed")
+                    _snapshot_exit_row(
+                        symbol=sym,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="MARKET_CLOSED",
+                        pdt_status="—",
+                        recommended_action="MARKET_CLOSED",
                     )
                 else:
-                    if str(getattr(r, "reason_code", "")) == "PDT_PROTECTION":
-                        blocked_exits_count += 1
-                        pdt_blocked_symbols.add(sym)
-                        _mark_exit_blocked(sym, _pdt_exit_block_seconds(), reason_code="PDT_PROTECTION")
-                        _persist_decision(
-                            cycle_id=f"exit-{int(time.time())}",
+                    logger.info(
+                        "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
+                        ac,
+                        sym,
+                        entry,
+                        mid,
+                        pnl_pct,
+                        tp_frac,
+                        held_sfx,
+                    )
+                    ledger.set_telegram_on_fills(False)
+                    try:
+                        r = broker.place_sell_order(
+                            sym,
+                            sell_qty,
+                            mid,
+                            reason_code="TAKE_PROFIT",
+                            meta={"risk_snapshot": {"tp_frac": tp_frac}, "eligibility": "allowed"},
+                        )
+                    finally:
+                        ledger.set_telegram_on_fills(True)
+                    if r.ok:
+                        exits_ok += 1
+                        _ensure_exit_trade_logged(
+                            db_path=db_path,
+                            mode=ledger.mode,
                             asset_class=ac,
                             symbol=sym,
                             side="sell",
-                            decision="rejected",
-                            reason_code="PDT_PROTECTION",
-                            score=None,
-                            notional=sell_qty * mid,
                             quantity=sell_qty,
                             price=mid,
-                            meta={"order_message": getattr(r, "message", None)},
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="TAKE_PROFIT",
+                            meta=None,
                         )
-                pnl = (mid - entry) * sell_qty
-                lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
-            elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
-                logger.info(
-                    "[exit] MAX_HOLD {} {} held={:.1f}h max_hold={:.0f}h — force selling",
-                    ac,
-                    sym,
-                    _held_h,
-                    max_hold_h,
-                )
-                ledger.set_telegram_on_fills(False)
-                try:
-                    r = broker.place_sell_order(
-                        sym, sell_qty, mid, reason_code="MAX_HOLD_TIME", meta=None
-                    )
-                finally:
-                    ledger.set_telegram_on_fills(True)
-                if r.ok:
-                    exits_ok += 1
-                    _ensure_exit_trade_logged(
-                        db_path=db_path,
-                        mode=ledger.mode,
-                        asset_class=ac,
+                    else:
+                        if str(getattr(r, "reason_code", "")) == "PDT_PROTECTION":
+                            blocked_exits_count += 1
+                            pdt_blocked_symbols.add(sym)
+                            _mark_exit_blocked(sym, pdt_sec, reason_code="PDT_PROTECTION")
+                            _persist_decision(
+                                cycle_id=f"exit-{int(time.time())}",
+                                asset_class=ac,
+                                symbol=sym,
+                                side="sell",
+                                decision="rejected",
+                                reason_code="PDT_PROTECTION",
+                                score=None,
+                                notional=sell_qty * mid,
+                                quantity=sell_qty,
+                                price=mid,
+                                meta={"order_message": getattr(r, "message", None)},
+                            )
+                    pnl = (mid - entry) * sell_qty
+                    lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+                    _snapshot_exit_row(
                         symbol=sym,
-                        side="sell",
-                        quantity=sell_qty,
-                        price=mid,
-                        status="filled",
-                        broker_order_id=r.broker_order_id,
-                        reason_code="MAX_HOLD_TIME",
-                        meta=None,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="—" if r.ok else str(getattr(r, "reason_code", "") or ""),
+                        pdt_status="same_day" if (ac == "stock" and same_day) else "—",
+                        recommended_action="EXIT_ALLOWED" if r.ok else "PDT_BLOCKED",
                     )
-                pnl = (mid - entry) * sell_qty
-                lines.append(f"MAX_HOLD {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+            elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
+                if ac == "stock" and stock_market_closed:
+                    _reject_market_closed("max_hold_stock_market_closed")
+                    _snapshot_exit_row(
+                        symbol=sym,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="MARKET_CLOSED",
+                        pdt_status="—",
+                        recommended_action="MARKET_CLOSED",
+                    )
+                else:
+                    logger.info(
+                        "[exit] MAX_HOLD {} {} held={:.1f}h max_hold={:.0f}h — force selling",
+                        ac,
+                        sym,
+                        _held_h,
+                        max_hold_h,
+                    )
+                    ledger.set_telegram_on_fills(False)
+                    try:
+                        r = broker.place_sell_order(
+                            sym, sell_qty, mid, reason_code="MAX_HOLD_TIME", meta=None
+                        )
+                    finally:
+                        ledger.set_telegram_on_fills(True)
+                    if r.ok:
+                        exits_ok += 1
+                        _ensure_exit_trade_logged(
+                            db_path=db_path,
+                            mode=ledger.mode,
+                            asset_class=ac,
+                            symbol=sym,
+                            side="sell",
+                            quantity=sell_qty,
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="MAX_HOLD_TIME",
+                            meta=None,
+                        )
+                    pnl = (mid - entry) * sell_qty
+                    lines.append(f"MAX_HOLD {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+                    _snapshot_exit_row(
+                        symbol=sym,
+                        asset_class=ac,
+                        local_qty=local_qty_val,
+                        broker_qty=qty,
+                        entry_p=entry,
+                        mid_p=mid,
+                        block_reason="—",
+                        pdt_status="—",
+                        recommended_action="EXIT_ALLOWED" if r.ok else "HOLD",
+                    )
+            else:
+                _snapshot_exit_row(
+                    symbol=sym,
+                    asset_class=ac,
+                    local_qty=local_qty_val,
+                    broker_qty=qty,
+                    entry_p=entry,
+                    mid_p=mid,
+                    block_reason="—",
+                    pdt_status="same_day" if (ac == "stock" and same_day) else "—",
+                    recommended_action="HOLD",
+                )
         elif qty < -1e-12:
             pnl_pct = (entry - mid) / entry
-            if pnl_pct <= -stop_loss_frac:
-                logger.info(
-                    "[exit] STOP_LOSS_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
-                    ac,
-                    sym,
-                    entry,
-                    mid,
-                    pnl_pct,
-                    -stop_loss_frac,
-                    held_sfx,
+            short_tp, short_sl = tp_frac, sl_frac
+            stock_short_closed = ac == "stock" and not portfolio_limiter.us_stock_market_open()
+
+            def _reject_short_market(reason_detail: str) -> None:
+                _persist_decision(
+                    cycle_id=f"exit-{int(time.time())}",
+                    asset_class=ac,
+                    symbol=sym,
+                    side="buy",
+                    decision="rejected",
+                    reason_code="MARKET_CLOSED",
+                    score=None,
+                    notional=abs(qty) * mid,
+                    quantity=abs(qty),
+                    price=mid,
+                    meta={"reason_detail": reason_detail, "short": True},
                 )
-                ledger.set_telegram_on_fills(False)
-                try:
-                    r = broker.place_buy_order(
+
+            if pnl_pct <= -short_sl:
+                if ac == "stock" and stock_short_closed:
+                    _reject_short_market("stop_loss_short_market_closed")
+                else:
+                    logger.info(
+                        "[exit] STOP_LOSS_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
+                        ac,
                         sym,
-                        abs(qty),
+                        entry,
                         mid,
-                        reason_code="STOP_LOSS",
-                        meta={"short": True},
+                        pnl_pct,
+                        -short_sl,
+                        held_sfx,
                     )
-                finally:
-                    ledger.set_telegram_on_fills(True)
-                if r.ok:
-                    exits_ok += 1
-                    _ensure_exit_trade_logged(
-                        db_path=db_path,
-                        mode=ledger.mode,
-                        asset_class=ac,
-                        symbol=sym,
-                        side="buy",
-                        quantity=abs(qty),
-                        price=mid,
-                        status="filled",
-                        broker_order_id=r.broker_order_id,
-                        reason_code="STOP_LOSS",
-                        meta={"short": True},
-                    )
-                pnl = (entry - mid) * abs(qty)
-                lines.append(f"STOP_LOSS_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
-            elif pnl_pct >= take_profit_frac:
-                logger.info(
-                    "[exit] TAKE_PROFIT_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
-                    ac,
-                    sym,
-                    entry,
-                    mid,
-                    pnl_pct,
-                    take_profit_frac,
-                    held_sfx,
-                )
-                ledger.set_telegram_on_fills(False)
-                try:
-                    r = broker.place_buy_order(
+                    ledger.set_telegram_on_fills(False)
+                    try:
+                        r = broker.place_buy_order(
+                            sym,
+                            abs(qty),
+                            mid,
+                            reason_code="STOP_LOSS",
+                            meta={"short": True},
+                        )
+                    finally:
+                        ledger.set_telegram_on_fills(True)
+                    if r.ok:
+                        exits_ok += 1
+                        _ensure_exit_trade_logged(
+                            db_path=db_path,
+                            mode=ledger.mode,
+                            asset_class=ac,
+                            symbol=sym,
+                            side="buy",
+                            quantity=abs(qty),
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="STOP_LOSS",
+                            meta={"short": True},
+                        )
+                    pnl = (entry - mid) * abs(qty)
+                    lines.append(f"STOP_LOSS_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+            elif pnl_pct >= short_tp:
+                if ac == "stock" and stock_short_closed:
+                    _reject_short_market("take_profit_short_market_closed")
+                else:
+                    logger.info(
+                        "[exit] TAKE_PROFIT_SHORT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
+                        ac,
                         sym,
-                        abs(qty),
+                        entry,
                         mid,
-                        reason_code="TAKE_PROFIT",
-                        meta={"short": True},
+                        pnl_pct,
+                        short_tp,
+                        held_sfx,
                     )
-                finally:
-                    ledger.set_telegram_on_fills(True)
-                if r.ok:
-                    exits_ok += 1
-                    _ensure_exit_trade_logged(
-                        db_path=db_path,
-                        mode=ledger.mode,
-                        asset_class=ac,
-                        symbol=sym,
-                        side="buy",
-                        quantity=abs(qty),
-                        price=mid,
-                        status="filled",
-                        broker_order_id=r.broker_order_id,
-                        reason_code="TAKE_PROFIT",
-                        meta={"short": True},
-                    )
-                pnl = (entry - mid) * abs(qty)
-                lines.append(f"TAKE_PROFIT_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
-            elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
-                logger.info(
-                    "[exit] MAX_HOLD_SHORT {} {} held={:.1f}h max_hold={:.0f}h — force buy to cover",
-                    ac,
-                    sym,
-                    _held_h,
-                    max_hold_h,
-                )
-                ledger.set_telegram_on_fills(False)
-                try:
-                    r = broker.place_buy_order(
+                    ledger.set_telegram_on_fills(False)
+                    try:
+                        r = broker.place_buy_order(
+                            sym,
+                            abs(qty),
+                            mid,
+                            reason_code="TAKE_PROFIT",
+                            meta={"short": True},
+                        )
+                    finally:
+                        ledger.set_telegram_on_fills(True)
+                    if r.ok:
+                        exits_ok += 1
+                        _ensure_exit_trade_logged(
+                            db_path=db_path,
+                            mode=ledger.mode,
+                            asset_class=ac,
+                            symbol=sym,
+                            side="buy",
+                            quantity=abs(qty),
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="TAKE_PROFIT",
+                            meta={"short": True},
+                        )
+                    pnl = (entry - mid) * abs(qty)
+                    lines.append(f"TAKE_PROFIT_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+            elif (
+                entry_dt is not None
+                and _held_h is not None
+                and _held_h >= max_hold_h
+            ):
+                if ac == "stock" and stock_short_closed:
+                    _reject_short_market("max_hold_short_market_closed")
+                else:
+                    logger.info(
+                        "[exit] MAX_HOLD_SHORT {} {} held={:.1f}h max_hold={:.0f}h — force buy to cover",
+                        ac,
                         sym,
-                        abs(qty),
-                        mid,
-                        reason_code="MAX_HOLD_TIME",
-                        meta={"short": True},
+                        _held_h,
+                        max_hold_h,
                     )
-                finally:
-                    ledger.set_telegram_on_fills(True)
-                if r.ok:
-                    exits_ok += 1
-                    _ensure_exit_trade_logged(
-                        db_path=db_path,
-                        mode=ledger.mode,
-                        asset_class=ac,
-                        symbol=sym,
-                        side="buy",
-                        quantity=abs(qty),
-                        price=mid,
-                        status="filled",
-                        broker_order_id=r.broker_order_id,
-                        reason_code="MAX_HOLD_TIME",
-                        meta={"short": True},
-                    )
-                pnl = (entry - mid) * abs(qty)
-                lines.append(f"MAX_HOLD_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+                    ledger.set_telegram_on_fills(False)
+                    try:
+                        r = broker.place_buy_order(
+                            sym,
+                            abs(qty),
+                            mid,
+                            reason_code="MAX_HOLD_TIME",
+                            meta={"short": True},
+                        )
+                    finally:
+                        ledger.set_telegram_on_fills(True)
+                    if r.ok:
+                        exits_ok += 1
+                        _ensure_exit_trade_logged(
+                            db_path=db_path,
+                            mode=ledger.mode,
+                            asset_class=ac,
+                            symbol=sym,
+                            side="buy",
+                            quantity=abs(qty),
+                            price=mid,
+                            status="filled",
+                            broker_order_id=r.broker_order_id,
+                            reason_code="MAX_HOLD_TIME",
+                            meta={"short": True},
+                        )
+                    pnl = (entry - mid) * abs(qty)
+                    lines.append(f"MAX_HOLD_SHORT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+
     n_all = len(all_positions)
     logger.info(
         "[exits] checked={} stock={} crypto={} fired={}",
@@ -1437,6 +1790,13 @@ def _check_and_execute_exits(
         "stale_local_positions_count": stale_local_positions_count,
         "broker_local_mismatch_count": broker_local_mismatch_count,
         "reconcile_queue_count": len(_reconcile_queue),
+        "exit_eligible_positions_count": sum(
+            1 for row in position_exit_rows if str(row.get("recommended_action")) == "EXIT_ALLOWED"
+        ),
+        "position_exit_rows": position_exit_rows[:dash_exit_limit],
+        "crypto_fast_exit_enabled": crypto_fast,
+        "stock_pdt_guard_enabled": bool(int(rt.get("pdt_avoid_same_day_round_trip", 1.0)) == 1),
+        "last_reconciliation_at": _last_reconcile_iso,
     }
     return lines, n_all, exits_ok, health
 
@@ -1446,13 +1806,9 @@ def apply_stops_and_targets(
     market_ctx: Any,
     rt: dict[str, float],
 ) -> tuple[list[str], int, int]:
-    risk_params = {
-        "take_profit_pct": float(rt["take_profit_pct"]),
-        "stop_loss_pct": float(rt["stop_loss_pct"]),
-    }
     stock_trader = _StockExitBroker(trader, market_ctx)
     crypto_trader = _CryptoExitBroker(trader, market_ctx)
-    lines, checked, fired, _health = _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
+    lines, checked, fired, _health = _check_and_execute_exits(stock_trader, crypto_trader, rt, config.DB_PATH)
     return lines, checked, fired
 
 
@@ -2169,10 +2525,20 @@ def run_trading_cycle_once(
 ) -> dict[str, Any]:
     rt = dict(load_runtime_config_dict())
     equity = _latest_portfolio_equity_for_cycle(trader)
+    legacy_tp = float(rt.get("take_profit_pct", float(config.BOT_CONFIG_DEFAULTS["take_profit_pct"])))
+    legacy_sl = float(rt.get("stop_loss_pct", float(config.BOT_CONFIG_DEFAULTS["stop_loss_pct"])))
     if str(rt.get("dynamic_risk_enabled", 1.0)) in ("1", "1.0", "true", "True"):
         p = dynamic_risk_params(equity)
         rt["take_profit_pct"] = float(p["take_profit_pct"])
         rt["stop_loss_pct"] = float(p["stop_loss_pct"])
+        scale_tp = float(p["take_profit_pct"]) / max(1e-12, legacy_tp)
+        scale_sl = float(p["stop_loss_pct"]) / max(1e-12, legacy_sl)
+        rt["stock_take_profit_pct"] = float(rt.get("stock_take_profit_pct", legacy_tp)) * scale_tp
+        rt["stock_stop_loss_pct"] = float(rt.get("stock_stop_loss_pct", legacy_sl)) * scale_sl
+        rt["crypto_take_profit_pct"] = float(rt.get("crypto_take_profit_pct", legacy_tp)) * scale_tp
+        rt["crypto_stop_loss_pct"] = float(rt.get("crypto_stop_loss_pct", legacy_sl)) * scale_sl
+        rt["stock_trailing_stop_pct"] = float(rt.get("stock_trailing_stop_pct", 0.02)) * scale_tp
+        rt["crypto_trailing_stop_pct"] = float(rt.get("crypto_trailing_stop_pct", 0.02)) * scale_tp
     else:
         p = {
             "take_profit_pct": float(rt.get("take_profit_pct", 0.015)),
@@ -2180,17 +2546,20 @@ def run_trading_cycle_once(
         }
         rt["take_profit_pct"] = p["take_profit_pct"]
         rt["stop_loss_pct"] = p["stop_loss_pct"]
-    risk_params = {"take_profit_pct": rt["take_profit_pct"], "stop_loss_pct": rt["stop_loss_pct"]}
     stock_trader = _StockExitBroker(trader, market_ctx)
     crypto_trader = _CryptoExitBroker(trader, market_ctx)
-    lines, _, _, exit_health = _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
+    lines, _, _, exit_health = _check_and_execute_exits(stock_trader, crypto_trader, rt, config.DB_PATH)
+    try:
+        _drain_reconcile_queue(rt)
+    except Exception:
+        logger.debug("[reconcile] drain queue failed", exc_info=True)
     for ln in lines:
         logger.info(ln)
 
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
     logger.info(
-        f"[risk] equity={equity:.2f} take_profit={p['take_profit_pct']} stop_loss={p['stop_loss_pct']}"
+        f"[risk] equity={equity:.2f} take_profit={rt['take_profit_pct']} stop_loss={rt['stop_loss_pct']}"
     )
     logger.info(
         f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "
@@ -2290,6 +2659,16 @@ def run_trading_cycle_once(
         eh["pdt_blocked_symbols"] = list(exit_health.get("pdt_blocked_symbols") or [])
         eh["stale_local_positions_count"] = int(eh.get("stale_local_positions_count", 0)) + int(exit_health.get("stale_local_positions_count") or 0)
         eh["broker_local_mismatch_count"] = int(eh.get("broker_local_mismatch_count", 0)) + int(exit_health.get("broker_local_mismatch_count") or 0)
+        for k in (
+            "exit_eligible_positions_count",
+            "position_exit_rows",
+            "crypto_fast_exit_enabled",
+            "stock_pdt_guard_enabled",
+            "last_reconciliation_at",
+            "reconcile_queue_count",
+        ):
+            if k in exit_health:
+                eh[k] = exit_health[k]
         summary["execution_health"] = eh
         with get_connection(config.DB_PATH) as conn:
             trade_logger.log_ops_metric(
@@ -2536,9 +2915,10 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
             except Exception:
                 logger.exception("Alpaca DB sync failed")
         try:
-            from data.data_store import reconcile_positions_on_startup
+            from data.data_store import reconcile_positions_on_startup, ensure_bot_config_keys_migrated
 
             reconcile_positions_on_startup(config.DB_PATH, cli, mode=config.MODE)
+            ensure_bot_config_keys_migrated(config.DB_PATH)
         except Exception:
             logger.exception("[startup] reconcile_positions_on_startup failed")
     logger.info(
