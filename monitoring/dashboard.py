@@ -472,6 +472,7 @@ _PAGE = """
       font-size: 0.92rem;
       color: var(--text-main);
     }
+    .dash-api-err { max-width: 42rem; line-height: 1.35; }
   </style>
 </head>
 <body data-terminal="1">
@@ -480,7 +481,8 @@ _PAGE = """
     <div class="brand"><span class="live-dot" title="live"></span><span class="mono">⚡ QUANTBOT</span></div>
     <div class="header-center">
       <div class="clock-et" id="clockEt">—</div>
-      <div class="muted sync-reconnect" id="last-sync" style="font-size:0.68rem;margin-top:0.2rem;">Reconnecting…</div>
+      <div class="muted sync-reconnect" id="last-sync" style="font-size:0.68rem;margin-top:0.2rem;">Starting…</div>
+      <div id="dash-api-error" class="dash-api-err" style="display:none;font-size:0.68rem;color:#f87171;margin-top:0.15rem;"></div>
       <div class="sym-legend muted" title="Symbol coloring in tables below">
         <span class="legend-stock">● STOCK</span>
         <span class="legend-crypto">● CRYPTO</span>
@@ -807,8 +809,15 @@ _PAGE = """
     let __symHoverLast = "";
 
     function readPayload() {
-      const el = document.getElementById("dash-payload");
-      return JSON.parse(el.textContent || "{}");
+      try {
+        const el = document.getElementById("dash-payload");
+        const raw = el ? String(el.textContent || "").trim() : "";
+        if (!raw) return {};
+        return JSON.parse(raw);
+      } catch (e) {
+        console.error("readPayload", e);
+        return {};
+      }
     }
     function esc(s) {
       return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -1130,6 +1139,7 @@ _PAGE = """
     }
 
     function applyLiveDashboardSurgical(data) {
+      try {
       if (!data || typeof data !== "object") return;
       applyLiveTiles(data);
       _equitySeries = Array.isArray(data.equity_series) ? data.equity_series : [];
@@ -1227,6 +1237,14 @@ _PAGE = """
 
       const el = document.getElementById("dash-payload");
       if (el) el.textContent = JSON.stringify(data);
+      } catch (e) {
+        console.error("applyLiveDashboardSurgical", e);
+        const errEl = document.getElementById("dash-api-error");
+        if (errEl) {
+          errEl.style.display = "block";
+          errEl.textContent = "Dashboard render error — see browser console.";
+        }
+      }
     }
 
     function fmtEtTime(d) {
@@ -1296,12 +1314,16 @@ _PAGE = """
         lu.className = "muted sync-live";
         return;
       }
+      if (lastPollMs) {
+        const ago = Math.floor((Date.now() - lastPollMs) / 1000);
+        const wsNote = window.__dashWsEnabled ? " · WS reconnecting" : "";
+        lu.textContent = "Last sync: " + ago + "s ago" + wsNote;
+        lu.className = "muted";
+        return;
+      }
       if (!window.__dashWsEnabled) {
-        if (lastPollMs) {
-          const ago = Math.floor((Date.now() - lastPollMs) / 1000);
-          lu.textContent = "Last sync: " + ago + "s ago";
-          lu.className = "muted";
-        }
+        lu.textContent = "Starting…";
+        lu.className = "muted";
         return;
       }
       lu.textContent = "Reconnecting…";
@@ -1495,22 +1517,49 @@ _PAGE = """
     setupSymbolTooltips();
 
     async function poll() {
+      const errEl = document.getElementById("dash-api-error");
       try {
         const periodMap = { "1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M" };
         const eqPeriod = periodMap[selectedEquityRange] || "1D";
         const r = await fetch("/api/dashboard?equity_period=" + encodeURIComponent(eqPeriod), { cache: "no-store" });
-        const j = await r.json();
+        if (!r.ok) {
+          if (errEl) {
+            errEl.style.display = "block";
+            errEl.textContent = "Dashboard API error: HTTP " + r.status + " " + (r.statusText || "");
+          }
+          return;
+        }
+        let j;
+        try {
+          j = await r.json();
+        } catch (parseErr) {
+          console.error("dashboard JSON", parseErr);
+          if (errEl) {
+            errEl.style.display = "block";
+            errEl.textContent = "Dashboard API returned invalid JSON.";
+          }
+          return;
+        }
+        if (errEl) {
+          errEl.style.display = "none";
+          errEl.textContent = "";
+        }
         applyLiveDashboardSurgical(j);
         lastPollMs = Date.now();
-        if (!window.__dashWsConnected) updateDashSyncStatus();
-      } catch (e) { console.warn(e); }
+        updateDashSyncStatus();
+      } catch (e) {
+        console.warn("poll", e);
+        if (errEl) {
+          errEl.style.display = "block";
+          errEl.textContent = "Dashboard refresh failed — check network.";
+        }
+      }
     }
     if (window.__dashWsEnabled) {
       const dashSocket = io({ transports: ["websocket", "polling"] });
       dashSocket.on("connect", function () {
         window.__dashWsConnected = true;
         updateDashSyncStatus();
-        stopHttpFallbackPoll();
       });
       dashSocket.on("disconnect", function () {
         window.__dashWsConnected = false;
@@ -1529,9 +1578,7 @@ _PAGE = """
     } else {
       console.warn("Socket.IO client not loaded; using HTTP poll only");
     }
-    if (!window.__dashWsEnabled) {
-      startHttpFallbackPoll();
-    }
+    startHttpFallbackPoll();
     poll();
     updateDashSyncStatus();
 

@@ -46,6 +46,18 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert "adaptive_parameter_changes" in data
     assert "buy_gate" in data
     assert "execution_health" in data
+    assert "position_exit_rows" in data
+    assert isinstance(data["position_exit_rows"], list)
+
+
+def test_index_has_execution_health_dom_ids(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b"execHealthCash" in body
+    assert b"execHealthCard" in body
+    assert b"execExitTableBody" in body
 
 
 def test_api_config_get_and_post(dash_app) -> None:

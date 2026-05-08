@@ -39,7 +39,7 @@ from data.data_store import (
     sync_from_alpaca,
 )
 from learning.rl_nudge import maybe_nudge_thresholds
-from execution import order_manager, stock_broker
+from execution import order_manager, reason_codes, stock_broker
 from monitoring import alerts, trade_logger
 from risk import drawdown_guard
 from risk import portfolio_limiter
@@ -427,6 +427,24 @@ class _StockExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
+        rt = load_runtime_config_dict()
+        dbp = _position_db_path(self._trader) or Path(config.DB_PATH)
+        ok_pf, rcode, _ = _routed_sell_preflight(
+            asset_class="stock",
+            symbol=symbol,
+            broker_qty=float(qty),
+            mid=float(mid),
+            rt=rt,
+            db_path=dbp,
+        )
+        if not ok_pf:
+            return SimpleNamespace(
+                ok=False,
+                broker_order_id=None,
+                message=str(rcode or "sell_preflight_blocked"),
+                raw=None,
+                reason_code=rcode,
+            )
         return stock_broker.submit_market_order("sell", symbol, qty)
 
     def place_buy_order(
@@ -489,6 +507,24 @@ class _CryptoExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
+        rt = load_runtime_config_dict()
+        dbp = _position_db_path(self._trader) or Path(config.DB_PATH)
+        ok_pf, rcode, _ = _routed_sell_preflight(
+            asset_class="crypto",
+            symbol=symbol,
+            broker_qty=float(qty),
+            mid=float(mid),
+            rt=rt,
+            db_path=dbp,
+        )
+        if not ok_pf:
+            return SimpleNamespace(
+                ok=False,
+                broker_order_id=None,
+                message=str(rcode or "sell_preflight_blocked"),
+                raw=None,
+                reason_code=rcode,
+            )
         return stock_broker.submit_market_order("sell", symbol, qty)
 
     def place_buy_order(
@@ -1103,6 +1139,44 @@ def _is_pdt_risk_active_for_small_account(rt: dict[str, float] | None = None) ->
         return eq > 0.0 and eq < 25_000.0
     except Exception:
         return False
+
+
+def _routed_sell_preflight(
+    *,
+    asset_class: AssetClass,
+    symbol: str,
+    broker_qty: float,
+    mid: float,
+    rt: dict[str, float],
+    db_path: str | Path,
+) -> tuple[bool, str | None, dict[str, Any]]:
+    """
+    Single gate for every Alpaca-routed SELL (signal sells + automated exits).
+    Enforces broker qty, cooldown, stock session hours, and PDT same-day guard (crypto exempt from NYSE hours).
+    """
+    sym = str(symbol or "").strip().upper()
+    meta: dict[str, Any] = {}
+    q = float(broker_qty or 0.0)
+    if q <= 1e-12:
+        return False, reason_codes.NO_BROKER_QTY, meta
+
+    if _is_exit_blocked(sym):
+        rc = str(_blocked_exit_reason.get(sym, "") or "").strip().upper()
+        code = reason_codes.PDT_PROTECTION if rc == "PDT_PROTECTION" else reason_codes.COOLDOWN
+        return False, code, meta
+
+    ac = str(asset_class or "").strip().lower()
+    if ac == "stock" and not portfolio_limiter.us_stock_market_open():
+        return False, reason_codes.MARKET_CLOSED, {**meta, "reason_detail": "stock_market_closed"}
+
+    if ac == "stock" and _is_pdt_risk_active_for_small_account(rt):
+        entry_dt = _position_entry_datetime_from_trades(sym, "stock", q, Path(db_path))
+        if _same_et_trading_day(entry_dt):
+            _mark_exit_blocked(sym, _pdt_exit_block_seconds(rt), reason_code="PDT_PROTECTION")
+            return False, reason_codes.PDT_PROTECTION, {**meta, "reason_detail": "same_day_round_trip"}
+
+    _ = float(mid or 0.0)
+    return True, None, meta
 
 
 def _same_et_trading_day(entry_dt: dt_et | None) -> bool:
@@ -1948,6 +2022,7 @@ def _submit_routed_order(
     notional: float | None = None,
     reason_code: str | None = None,
     meta: dict[str, Any] | None = None,
+    rt: dict[str, float] | None = None,
 ) -> Any:
     """
     Route orders based on mode/endpoint:
@@ -1955,6 +2030,26 @@ def _submit_routed_order(
       - paper + USE_LOCAL_PAPER_TRADER=1 -> local PaperTrader fills
       - live -> Alpaca live broker (strict safety in stock_broker)
     """
+    s_side = str(side or "").strip().lower()
+    if s_side == "sell":
+        rt_eff = rt if rt is not None else load_runtime_config_dict()
+        ok_pf, rcode, _ = _routed_sell_preflight(
+            asset_class=asset_class,
+            symbol=symbol,
+            broker_qty=float(qty),
+            mid=float(mid),
+            rt=rt_eff,
+            db_path=config.DB_PATH,
+        )
+        if not ok_pf:
+            return SimpleNamespace(
+                ok=False,
+                broker_order_id=None,
+                message=str(rcode or "sell_preflight_blocked"),
+                raw=None,
+                reason_code=rcode,
+            )
+
     if _use_local_paper_trader():
         logger.info(
             "[order_route] mode={} broker=local_paper_trader symbol={} side={}",
@@ -2350,6 +2445,7 @@ def execute_cycle_results(
                     notional=notional,
                     reason_code="SIGNAL_BUY",
                     meta={"score": eff_score},
+                    rt=rt,
                 )
                 _persist_decision(
                     cycle_id=cid,
@@ -2404,6 +2500,7 @@ def execute_cycle_results(
                             notional=sell_notional,
                             reason_code="SIGNAL_SELL",
                             meta={"score": eff_score},
+                            rt=rt,
                         )
                     finally:
                         trader.set_telegram_on_fills(True)

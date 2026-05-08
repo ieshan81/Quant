@@ -531,3 +531,71 @@ def test_sqlite_only_position_with_broker_zero_qty_records_stale() -> None:
     reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]
     assert "LOCAL_POSITION_STALE" in reasons
     assert int(health["stale_local_positions_count"]) >= 1
+
+
+def test_execute_cycle_stock_sell_blocked_when_market_closed() -> None:
+    mw._blocked_exit_until.clear()
+    mw._blocked_exit_reason.clear()
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "AAPL", 1.0, 100.0).ok
+    sig = mw.CycleSignal("stock", "AAPL", {}, -0.9, "SELL", 105.0, None)
+    rt = _rt()
+    with patch.object(mw.portfolio_limiter, "us_stock_market_open", return_value=False), patch.object(
+        mw, "_get_real_position_qty", return_value=1.0
+    ), patch.object(mw.stock_broker, "submit_market_order") as sm, patch.object(mw, "_persist_decision") as pers:
+        mw.execute_cycle_results(t, [sig], rt, cycle_id="mclosed")
+    sm.assert_not_called()
+    reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]
+    assert mw.reason_codes.MARKET_CLOSED in reasons
+
+
+def test_execute_cycle_crypto_sell_ok_when_stock_market_closed() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("crypto", "BTC/USD", 0.001, 50000.0).ok
+    sig = mw.CycleSignal("crypto", "BTC/USD", {}, -0.9, "SELL", 51000.0, None)
+    rt = _rt()
+    with patch.object(mw.portfolio_limiter, "us_stock_market_open", return_value=False), patch.object(
+        mw, "_get_real_position_qty", return_value=0.001
+    ), patch.object(
+        mw.stock_broker,
+        "submit_market_order",
+        return_value=MagicMock(ok=True, broker_order_id="oid-c", message="ok", reason_code="OK"),
+    ) as sm:
+        summary = mw.execute_cycle_results(t, [sig], rt, cycle_id="crypt")
+    sm.assert_called_once()
+    assert summary["sells"] >= 1
+
+
+def test_execute_cycle_stock_sell_preflight_blocks_pdt_same_day() -> None:
+    mw._blocked_exit_until.clear()
+    mw._blocked_exit_reason.clear()
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "AEHL", 1.0, 10.0).ok
+    sig = mw.CycleSignal("stock", "AEHL", {}, -0.9, "SELL", 11.0, None)
+    rt = {**_rt(), "pdt_avoid_same_day_round_trip": 1.0}
+    fake_account = MagicMock(equity="10000")
+    fake_client = MagicMock()
+    fake_client.get_account.return_value = fake_account
+    tz = mw.pytz.timezone("America/New_York")
+    now_et = mw.dt_et.now(tz)
+    with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
+        mw.portfolio_limiter, "us_stock_market_open", return_value=True
+    ), patch.object(mw, "_get_real_position_qty", return_value=1.0), patch.object(
+        mw,
+        "_position_entry_datetime_from_trades",
+        lambda *_a, **_k: now_et,
+    ), patch.object(mw.stock_broker, "submit_market_order") as sm:
+        mw.execute_cycle_results(t, [sig], rt, cycle_id="pdtsd")
+    sm.assert_not_called()
+
+
+def test_execute_cycle_stock_sell_skips_when_broker_qty_zero() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "AAPL", 1.0, 100.0).ok
+    sig = mw.CycleSignal("stock", "AAPL", {}, -0.9, "SELL", 105.0, None)
+    rt = _rt()
+    with patch.object(mw, "_get_real_position_qty", return_value=0.0), patch.object(
+        mw.stock_broker, "submit_market_order"
+    ) as sm:
+        mw.execute_cycle_results(t, [sig], rt, cycle_id="bq0")
+    sm.assert_not_called()
