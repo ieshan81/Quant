@@ -646,7 +646,13 @@ def test_backtest_compare_direct_endpoint_rows_shape(dash_app, monkeypatch: pyte
         "/api/backtest/compare",
         json={
             "strategy_name": "current_adaptive",
-            "strategy_names": ["current_adaptive", "simple_momentum"],
+            "strategy_names": [
+                "current_adaptive",
+                "simple_buy_and_hold",
+                "simple_momentum",
+                "crypto_scalper",
+                "aggressive_micro_scalp",
+            ],
             "symbols": ["AAPL", "MSFT", "BTC/USD"],
             "start_date": "2025-01-01",
             "end_date": "2026-01-01",
