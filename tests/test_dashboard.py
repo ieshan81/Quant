@@ -127,16 +127,58 @@ def test_api_calibration(dash_app) -> None:
     assert "weight_suggestion" in data["rsi"]
 
 
-def test_health(dash_app) -> None:
+def test_health_liveness_always_200_and_no_db_shape(dash_app) -> None:
+    """Railway /health must stay lightweight — no DB snapshot checks here."""
     client = dash_app.test_client()
     r = client.get("/health")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data.get("ok") is True
+    assert data.get("service") == "quantbot-dashboard"
+
+
+def test_health_ready_checks_db(dash_app) -> None:
+    """Deep readiness lives at /health/ready (optional for ops)."""
+    client = dash_app.test_client()
+    r = client.get("/health/ready")
     assert r.status_code == 200
     data = json.loads(r.data)
     assert data.get("status") == "ok"
     checks = data.get("checks") or {}
     assert checks.get("db") == "ok"
-    # Empty test DB has no snapshot row yet — health stays soft-green.
     assert checks.get("snapshot") in ("missing", "fresh")
+
+
+def test_health_without_alpaca_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    db = tmp_path / "no_alpaca.sqlite3"
+    with patch.object(config, "DB_PATH", db), patch(
+        "execution.stock_broker.get_rest_client", return_value=None
+    ):
+        app = create_app()
+        app.config["TESTING"] = True
+        r = app.test_client().get("/health")
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    assert body.get("ok") is True
+
+
+def test_health_ok_when_init_schema_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Liveness /health must return 200 even if SQLite init fails (degraded API)."""
+    db = tmp_path / "bad.sqlite3"
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    with patch.object(config, "DB_PATH", db), patch(
+        "data.data_store.init_schema", side_effect=RuntimeError("db unavailable")
+    ):
+        app = create_app()
+        app.config["TESTING"] = True
+        r = app.test_client().get("/health")
+    assert r.status_code == 200
+    assert json.loads(r.data).get("ok") is True
 
 
 def test_api_symbol_stock_fallback(dash_app) -> None:

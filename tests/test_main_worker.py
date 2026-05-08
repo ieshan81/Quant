@@ -250,12 +250,32 @@ def test_execute_cycle_non_fractionable_stock_uses_whole_share_fallback() -> Non
     fake_client.get_account.return_value = fake_account
     rt = _rt()
     rt["max_position_pct"] = 1.0
-    with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
-        mw.stock_broker, "is_tradable", return_value=True
-    ), patch.object(mw.stock_broker, "is_fractionable", return_value=False), patch.object(
-        mw, "_buy_notional_breakdown", return_value=(23.0, {"sleeve": 23.13, "cap_notional": 23.0, "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0, "kelly_notional": 23.0})
+    with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=True), patch.object(
+        mw.stock_broker, "get_rest_client", return_value=fake_client
+    ), patch.object(mw.stock_broker, "is_tradable", return_value=True), patch.object(
+        mw.stock_broker, "is_fractionable", return_value=False
     ), patch.object(
-        mw, "_submit_routed_order", return_value=MagicMock(ok=True, reason_code="ALPACA_PAPER_ORDER_SUBMITTED", broker_order_id="x", message="ok")
+        mw,
+        "_buy_notional_breakdown",
+        return_value=(
+            23.0,
+            {
+                "sleeve": 23.13,
+                "cap_notional": 23.0,
+                "rt_max_position_pct": 1.0,
+                "effective_max_position_pct": 1.0,
+                "kelly_notional": 23.0,
+            },
+        ),
+    ), patch.object(
+        mw,
+        "_submit_routed_order",
+        return_value=MagicMock(
+            ok=True,
+            reason_code="ALPACA_PAPER_ORDER_SUBMITTED",
+            broker_order_id="x",
+            message="ok",
+        ),
     ) as mocked_submit:
         summary = mw.execute_cycle_results(t, [sig], rt)
     assert mocked_submit.called
@@ -274,12 +294,32 @@ def test_execute_cycle_micro_limits_stock_buy_attempts() -> None:
     rt = _rt()
     rt["max_position_pct"] = 1.0
     rt["_capital_stage"] = "MICRO"
-    with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
-        mw.stock_broker, "is_tradable", return_value=True
-    ), patch.object(mw.stock_broker, "is_fractionable", return_value=True), patch.object(
-        mw, "_buy_notional_breakdown", return_value=(10.0, {"sleeve": 100.0, "cap_notional": 10.0, "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0, "kelly_notional": 10.0})
+    with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=True), patch.object(
+        mw.stock_broker, "get_rest_client", return_value=fake_client
+    ), patch.object(mw.stock_broker, "is_tradable", return_value=True), patch.object(
+        mw.stock_broker, "is_fractionable", return_value=True
     ), patch.object(
-        mw, "_submit_routed_order", return_value=MagicMock(ok=True, reason_code="ALPACA_PAPER_ORDER_SUBMITTED", broker_order_id="x", message="ok")
+        mw,
+        "_buy_notional_breakdown",
+        return_value=(
+            10.0,
+            {
+                "sleeve": 100.0,
+                "cap_notional": 10.0,
+                "rt_max_position_pct": 1.0,
+                "effective_max_position_pct": 1.0,
+                "kelly_notional": 10.0,
+            },
+        ),
+    ), patch.object(
+        mw,
+        "_submit_routed_order",
+        return_value=MagicMock(
+            ok=True,
+            reason_code="ALPACA_PAPER_ORDER_SUBMITTED",
+            broker_order_id="x",
+            message="ok",
+        ),
     ) as mocked_submit:
         summary = mw.execute_cycle_results(t, [sig1, sig2], rt)
     assert mocked_submit.call_count == 1

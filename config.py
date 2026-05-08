@@ -143,9 +143,9 @@ ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Sprint 8 — Flask monitoring dashboard
-FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1").strip()
-FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
+# Sprint 8 — Flask monitoring dashboard (Railway sets PORT; bind all interfaces by default)
+FLASK_HOST = os.getenv("FLASK_HOST", "0.0.0.0").strip()
+FLASK_PORT = int(os.getenv("PORT", os.getenv("FLASK_PORT", "5000")))
 
 # Paper trading worker (`main.py` default when mode is paper)
 PAPER_LOOP_INTERVAL_SECONDS = int(os.getenv("PAPER_LOOP_INTERVAL_SECONDS", "300"))

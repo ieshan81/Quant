@@ -1180,13 +1180,31 @@ def _fmt_signals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _dashboard_host_port() -> tuple[str, int]:
+    """Host/port for Railway and local runs; PORT wins over FLASK_PORT."""
+    host = os.getenv("FLASK_HOST", "0.0.0.0").strip()
+    port = int(os.getenv("PORT", os.getenv("FLASK_PORT", "5000")))
+    return host, port
+
+
 def create_app() -> Flask:
     from data import data_store
     from data.data_store import get_connection, init_schema
     from monitoring.dashboard_data import build_dashboard_payload
 
-    init_schema()
     app = Flask(__name__)
+
+    @app.get("/health")
+    def health():
+        """Railway liveness: no DB, Alpaca, or worker dependency."""
+        return jsonify({"ok": True, "service": "quantbot-dashboard"}), 200
+
+    try:
+        init_schema()
+    except Exception as exc:
+        logger.exception(
+            "init_schema failed; /health still OK but DB-backed routes may fail: {}", exc
+        )
 
     from flask_socketio import SocketIO
 
@@ -1226,13 +1244,11 @@ def create_app() -> Flask:
     if not app.config.get("TESTING"):
         socketio.start_background_task(_dashboard_ws_push)
 
-    @app.route("/health")
-    def health():
+    @app.get("/health/ready")
+    def health_ready():
         """
-        Real readiness check for Railway: verify the SQLite DB is reachable and the
-        most recent ``portfolio_state`` snapshot is not stale. The worker writes a
-        snapshot every cycle, so an old snapshot signals a dead worker even when
-        Flask is alive.
+        Readiness: SQLite reachable and optional portfolio snapshot age.
+        Use for ops; Railway should use lightweight GET /health.
         """
         import time as _time
         from datetime import datetime as _dt
@@ -1250,8 +1266,6 @@ def create_app() -> Flask:
                     "SELECT snapshot_at FROM portfolio_state ORDER BY id DESC LIMIT 1"
                 ).fetchone()
             if row2 is None or row2[0] is None:
-                # Soft state: dashboard may be running before worker writes its first
-                # snapshot. Report it but keep Railway healthcheck green.
                 status["checks"]["snapshot"] = "missing"
             else:
                 raw_ts = str(row2[0])
@@ -1624,27 +1638,28 @@ def create_app() -> Flask:
 
 
 def run_dashboard() -> None:
-    port = int(os.environ.get("PORT", "5000"))
+    host, port = _dashboard_host_port()
     app = create_app()
     sio = app.extensions.get("socketio")
     mode = app.config.get("SOCKETIO_ASYNC_MODE", "?")
     logger.info(
-        "Monitoring dashboard | http://0.0.0.0:{} (SocketIO async_mode={} · HTTP fallback {}s)",
+        "Monitoring dashboard | http://{}:{} (SocketIO async_mode={} · HTTP fallback {}s)",
+        host,
         port,
         mode,
         _REFRESH_SEC,
     )
     if sio is not None:
-        sio.run(app, host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        sio.run(app, host=host, port=port, debug=False, use_reloader=False)
     else:
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
+        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
 
 
 if __name__ == "__main__":
+    host, port = _dashboard_host_port()
     app = create_app()
-    port = int(os.environ.get("PORT", 5000))
     sio = app.extensions.get("socketio")
     if sio is not None:
-        sio.run(app, host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        sio.run(app, host=host, port=port, debug=False, use_reloader=False)
     else:
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+        app.run(host=host, port=port, debug=False, use_reloader=False)
