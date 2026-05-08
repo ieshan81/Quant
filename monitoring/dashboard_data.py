@@ -577,6 +577,7 @@ def build_dashboard_payload(
     ghost_count = _section_db("ghost_count", 0, lambda: count_ghost_positions(conn))
     db_lock_count = _section_db("db_lock_count", 0, lambda: count_db_lock_metric(conn, hours=24))
     buy_gate = _section_db("buy_gate", {}, lambda: fetch_latest_buy_gate(conn))
+    execution_health = _section_db("execution_health", {}, lambda: fetch_latest_execution_health(conn))
 
     try:
         from risk import promotion_gates as _pg
@@ -626,6 +627,7 @@ def build_dashboard_payload(
         "ghost_position_count": ghost_count,
         "db_lock_count_24h": db_lock_count,
         "buy_gate": buy_gate,
+        "execution_health": execution_health,
         "promotion_gates": promotion_status,
         "live_safety": safety,
         "scalper_paper_enabled": config.scalper_paper_enabled(),
@@ -820,6 +822,34 @@ def fetch_latest_buy_gate(conn: sqlite3.Connection | None = None) -> dict[str, A
             SELECT value, meta_json, created_at
             FROM ops_metrics
             WHERE metric_name = 'buy_gate'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {}
+    if not row:
+        return {}
+    out: dict[str, Any] = {"usable_buying_power": float(row[0] or 0.0), "created_at": row[2]}
+    raw_meta = row[1]
+    if raw_meta:
+        try:
+            out.update(json.loads(str(raw_meta)) or {})
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+def fetch_latest_execution_health(conn: sqlite3.Connection | None = None) -> dict[str, Any]:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_latest_execution_health(local_conn)
+    try:
+        row = conn.execute(
+            """
+            SELECT value, meta_json, created_at
+            FROM ops_metrics
+            WHERE metric_name = 'execution_health'
             ORDER BY id DESC
             LIMIT 1
             """

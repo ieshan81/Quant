@@ -191,7 +191,7 @@ def test_apply_stops_short_take_profit_fires(monkeypatch: pytest.MonkeyPatch) ->
     )
     st = mw._StockExitBroker(t, None)
     ct = mw._CryptoExitBroker(t, None)
-    lines, checked, fired = mw._check_and_execute_exits(
+    lines, checked, fired, _health = mw._check_and_execute_exits(
         st, ct, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH
     )
     assert checked >= 1
@@ -391,3 +391,98 @@ def test_trade_interval_market_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("WORKER_TRADE_INTERVAL_SEC", raising=False)
     with patch("market_hours.nyse_regular_session_open", return_value=False):
         assert mw._trade_interval_sec() == 300.0
+
+
+def test_pdt_rejection_creates_pdt_protection() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "AAPL", 1.0, 100.0).ok
+    sig = mw.CycleSignal("stock", "AAPL", {}, -0.9, "SELL", 105.0, None)
+    rt = _rt()
+    with patch.object(mw, "_get_real_position_qty", return_value=1.0), patch.object(
+        mw,
+        "_submit_routed_order",
+        return_value=MagicMock(ok=False, reason_code="PDT_PROTECTION", broker_order_id=None, message="pdt"),
+    ), patch.object(mw, "_persist_decision") as pers:
+        mw.execute_cycle_results(t, [sig], rt, cycle_id="pdt1")
+    reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]
+    assert "PDT_PROTECTION" in reasons
+
+
+def test_pdt_blocked_symbol_not_retried_every_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "AAPL", 1.0, 100.0).ok
+
+    class _B:
+        def __init__(self, trader):
+            self.ledger = trader
+            self.place_sell_order = MagicMock(return_value=MagicMock(ok=False, reason_code="PDT_PROTECTION", message="pdt"))
+
+        def get_open_positions(self):
+            return [{"symbol": "AAPL", "net_qty": 1.0, "avg_entry_price": 100.0, "asset_class": "stock", "source": "paper_ledger"}]
+
+    sb = _B(t)
+    sb.get_open_positions = lambda: []
+    cb = _B(t)
+    monkeypatch.setattr(mw, "_exit_mark_price", lambda *_: 106.0)
+    monkeypatch.setattr(mw, "_get_real_position_qty", lambda *_: 1.0)
+    monkeypatch.setattr(mw, "_position_entry_datetime_from_trades", lambda *a, **k: None)
+    mw._blocked_exit_until.clear()
+    mw._check_and_execute_exits(sb, cb, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH)
+    mw._check_and_execute_exits(sb, cb, {"take_profit_pct": 0.05, "stop_loss_pct": 0.05}, config.DB_PATH)
+    assert sb.place_sell_order.call_count == 1
+
+
+def test_buy_attempt_logged_only_after_gates_pass() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+    sig = mw.CycleSignal("stock", "AAPL", {}, 0.9, "BUY", 10.0, None)
+    fake_account = MagicMock(cash="0.27", buying_power="0.27")
+    fake_client = MagicMock()
+    fake_client.get_account.return_value = fake_account
+    logs: list[str] = []
+
+    def _capture(msg, *args, **kwargs):  # noqa: ANN001
+        text = str(msg)
+        if args:
+            try:
+                text = text.format(*args)
+            except Exception:
+                pass
+        logs.append(text)
+
+    with patch.object(config, "MIN_ORDER_NOTIONAL_USD", 1.0), patch.object(
+        mw.stock_broker, "get_rest_client", return_value=fake_client
+    ), patch.object(mw, "_buy_notional_breakdown", return_value=(27.0, {"sleeve": 27.0, "cap_notional": 27.0, "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0, "kelly_notional": 27.0})), patch.object(
+        mw.logger, "info", side_effect=_capture
+    ), patch.object(
+        mw, "_submit_routed_order"
+    ) as submit:
+        mw.execute_cycle_results(t, [sig], _rt(), cycle_id="buyg1")
+    assert submit.call_count == 0
+    assert any("[buy_candidate]" in x for x in logs)
+    assert not any("[buy_attempt]" in x for x in logs)
+
+
+def test_sqlite_only_position_with_broker_zero_qty_records_stale() -> None:
+    t = create_paper_trader(persist_sqlite=False)
+
+    class _B:
+        def __init__(self, trader):
+            self.ledger = trader
+            self.place_sell_order = MagicMock(return_value=MagicMock(ok=True, broker_order_id="x", message="ok"))
+
+        def get_open_positions(self):
+            return [{"symbol": "BTC/USD", "net_qty": 0.5, "avg_entry_price": 100.0, "asset_class": "crypto", "source": "sqlite_trades"}]
+
+    sb = _B(t)
+    sb.get_open_positions = lambda: []
+    cb = _B(t)
+    with patch.object(mw, "_exit_mark_price", return_value=105.0), patch.object(
+        mw, "_get_real_position_qty", return_value=0.0
+    ), patch.object(mw, "_persist_decision") as pers:
+        _lines, _checked, _fired, health = mw._check_and_execute_exits(
+            sb, cb, {"take_profit_pct": 0.02, "stop_loss_pct": 0.02}, config.DB_PATH
+        )
+    assert cb.place_sell_order.call_count == 0
+    reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]
+    assert "LOCAL_POSITION_STALE" in reasons
+    assert int(health["stale_local_positions_count"]) >= 1

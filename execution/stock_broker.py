@@ -33,6 +33,16 @@ _rest_client_cached: Any | None = None
 _alpaca_config_logged_once = False
 
 
+def _looks_like_pdt_rejection(exc: Exception) -> bool:
+    raw = str(exc or "").lower()
+    resp = getattr(exc, "response", None)
+    txt = ""
+    if resp is not None:
+        txt = str(getattr(resp, "text", "") or "").lower()
+    blob = f"{raw} {txt}"
+    return "pattern day trading" in blob or "pdt" in blob
+
+
 def alpaca_credentials_configured() -> bool:
     return bool(config.ALPACA_API_KEY and config.ALPACA_SECRET_KEY)
 
@@ -421,14 +431,19 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
             full_err = e.response.text if hasattr(e, "response") and getattr(e, "response", None) is not None else e
             logger.error("[alpaca_short] Full error: {}", full_err)
         logger.error("[alpaca_order] FAILED: {}", e, exc_info=True)
+        pdt = _looks_like_pdt_rejection(e)
         return SimpleNamespace(
             ok=False,
             broker_order_id=None,
             message=str(e),
             raw=None,
             reason_code=(
-                reason_codes.ALPACA_PAPER_ORDER_REJECTED
-                if paper_allowed
-                else reason_codes.ALPACA_ORDER_REJECTED
+                reason_codes.PDT_PROTECTION
+                if pdt
+                else (
+                    reason_codes.ALPACA_PAPER_ORDER_REJECTED
+                    if paper_allowed
+                    else reason_codes.ALPACA_ORDER_REJECTED
+                )
             ),
         )

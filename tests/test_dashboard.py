@@ -45,6 +45,7 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert "strategy_effective_parameters" in data
     assert "adaptive_parameter_changes" in data
     assert "buy_gate" in data
+    assert "execution_health" in data
 
 
 def test_api_config_get_and_post(dash_app) -> None:

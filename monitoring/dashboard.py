@@ -504,6 +504,19 @@ _PAGE = """
             <td>{% if e.win_rate is not none %}{{ (e.win_rate * 100) | round(1) }}%{% else %}—{% endif %}</td></tr>{% endfor %}
         </tbody></table>{% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
       </div>
+      <div class="card"><h2>🩺 Execution health</h2>
+        <table class="data-table">
+          <tbody>
+            <tr><td>Cash</td><td class="mono" id="execHealthCash">—</td></tr>
+            <tr><td>Buying power</td><td class="mono" id="execHealthBuyingPower">—</td></tr>
+            <tr><td>Usable buying power</td><td class="mono" id="execHealthUsable">—</td></tr>
+            <tr><td>Blocked exits</td><td class="mono" id="execHealthBlockedExits">0</td></tr>
+            <tr><td>PDT blocked symbols</td><td class="mono" id="execHealthPdtSymbols">—</td></tr>
+            <tr><td>Stale local positions</td><td class="mono" id="execHealthStaleLocal">0</td></tr>
+            <tr><td>Broker/local mismatches</td><td class="mono" id="execHealthMismatches">0</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
@@ -1009,6 +1022,16 @@ _PAGE = """
       updateTable("sigFeedBody", sigRows, _renderSignalRow, (r) => r.id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.signal_name || "")), { maxRows: 50 });
       updateTable("tradesTableBody", tradeRows, _renderTradeRow, (r) => r.id ?? (r.broker_order_id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.side || ""))), { maxRows: 50 });
       updateTable("posTableBody", posRows, _renderPositionRow, (r) => (String(r.symbol || "").replace("/", "").toUpperCase()), { maxRows: 50 });
+      const eh = (data.execution_health && typeof data.execution_health === "object") ? data.execution_health : {};
+      const setTxt = (id, v) => { const n = document.getElementById(id); if (n) n.textContent = v; };
+      setTxt("execHealthCash", fmtMoney(eh.cash));
+      setTxt("execHealthBuyingPower", fmtMoney(eh.buying_power));
+      setTxt("execHealthUsable", fmtMoney(eh.usable_buying_power));
+      setTxt("execHealthBlockedExits", String(Math.trunc(Number(eh.blocked_exits_count || 0))));
+      const syms = Array.isArray(eh.pdt_blocked_symbols) ? eh.pdt_blocked_symbols.join(", ") : "";
+      setTxt("execHealthPdtSymbols", syms || "—");
+      setTxt("execHealthStaleLocal", String(Math.trunc(Number(eh.stale_local_positions_count || 0))));
+      setTxt("execHealthMismatches", String(Math.trunc(Number(eh.broker_local_mismatch_count || 0))));
 
       const el = document.getElementById("dash-payload");
       if (el) el.textContent = JSON.stringify(data);

@@ -87,6 +87,8 @@ _stop = threading.Event()
 _halted = threading.Event()
 _trader_lock = threading.Lock()
 _sentiment_lock = threading.Lock()
+_blocked_exit_until: dict[str, float] = {}
+_reconcile_queue: set[tuple[str, str]] = set()
 
 # --- Sprint 11: news aggregator (asyncio loop in background thread) ---
 _news_aggregator: Any = None
@@ -306,6 +308,7 @@ def _normalize_exit_row_to_dict(pos: Any) -> dict[str, Any] | None:
         qty = pos.get("net_qty", pos.get("qty", pos.get("quantity")))
         entry = pos.get("avg_entry_price", pos.get("cost_basis", pos.get("avg_price")))
         ac = pos.get("asset_class")
+        source = pos.get("source")
     else:
         sym = str(getattr(pos, "symbol", None) or "").strip()
         qty = getattr(pos, "qty", None)
@@ -319,6 +322,7 @@ def _normalize_exit_row_to_dict(pos: Any) -> dict[str, Any] | None:
         if entry is None:
             entry = getattr(pos, "avg_price", None)
         ac = getattr(pos, "asset_class", None)
+        source = getattr(pos, "source", None)
     try:
         qf = float(qty or 0)
     except (TypeError, ValueError):
@@ -339,6 +343,7 @@ def _normalize_exit_row_to_dict(pos: Any) -> dict[str, Any] | None:
         "net_qty": qf,
         "avg_entry_price": ef,
         "asset_class": ac_s,
+        "source": source,
     }
 
 
@@ -1007,17 +1012,75 @@ def _get_real_position_qty(symbol: str, broker: Any) -> float:
     return 0.0
 
 
+def _pdt_exit_block_seconds() -> float:
+    raw = str(os.getenv("PDT_EXIT_BLOCK_SECONDS", "600") or "600").strip()
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return 600.0
+
+
+def _is_exit_blocked(symbol: str) -> bool:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return False
+    until = float(_blocked_exit_until.get(sym, 0.0) or 0.0)
+    return time.time() < until
+
+
+def _mark_exit_blocked(symbol: str, seconds: float, *, reason_code: str) -> None:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return
+    _blocked_exit_until[sym] = time.time() + max(1.0, float(seconds))
+    logger.warning("[exit_block] symbol={} reason={} ttl_sec={}", sym, reason_code, seconds)
+
+
+def _queue_reconciliation_cleanup(asset_class: str, symbol: str) -> None:
+    key = (str(asset_class or "").strip().lower(), str(symbol or "").strip().upper())
+    _reconcile_queue.add(key)
+
+
+def _is_pdt_risk_active_for_small_account() -> bool:
+    try:
+        if not bool(int(load_runtime_config_dict().get("pdt_avoid_same_day_round_trip", 0))):
+            return False
+    except Exception:
+        return False
+    try:
+        cli = stock_broker.get_rest_client()
+        if cli is None:
+            return False
+        acct = cli.get_account()
+        eq = float(getattr(acct, "equity", 0) or 0.0)
+        return eq > 0.0 and eq < 25_000.0
+    except Exception:
+        return False
+
+
+def _same_et_trading_day(entry_dt: dt_et | None) -> bool:
+    if entry_dt is None:
+        return False
+    tz = pytz.timezone("America/New_York")
+    now_et = dt_et.now(tz).date()
+    if entry_dt.tzinfo is None:
+        e = pytz.utc.localize(entry_dt).astimezone(tz).date()
+    else:
+        e = entry_dt.astimezone(tz).date()
+    return e == now_et
+
+
 def _check_and_execute_exits(
     stock_trader: _StockExitBroker,
     crypto_trader: _CryptoExitBroker,
     risk_params: dict[str, float],
     db_path: str | Path,
-) -> tuple[list[str], int, int]:
+) -> tuple[list[str], int, int, dict[str, Any]]:
     """
     Every cycle (before new signals): TP/SL vs mark for longs (sell) and shorts (buy to cover).
     Positions are the union of Alpaca + SQLite fills + the paper ledger.
     Max-hold uses filled-trade timestamps from SQLite ``trades`` (crypto 4h, stocks 8h).
-    Returns ``(log_lines, len(all_positions), exits_filled_ok)``.
+    Returns ``(log_lines, len(all_positions), exits_filled_ok, health_meta)``.
     """
     stock_pos = stock_trader.get_open_positions()
     crypto_pos = crypto_trader.get_open_positions()
@@ -1032,6 +1095,10 @@ def _check_and_execute_exits(
     take_profit_frac = float(risk_params.get("take_profit_pct", 0.03))
     lines: list[str] = []
     exits_ok = 0
+    blocked_exits_count = 0
+    pdt_blocked_symbols: set[str] = set()
+    stale_local_positions_count = 0
+    broker_local_mismatch_count = 0
     db_p = Path(db_path)
     for raw in all_positions:
         pos = _normalize_exit_row_to_dict(raw)
@@ -1040,6 +1107,10 @@ def _check_and_execute_exits(
         mark_ns = _mark_target_for_exit_dict(market_ctx, pos)
         sym = str(pos.get("symbol") or "").strip()
         ac = mark_ns.asset_class
+        if _is_exit_blocked(sym):
+            blocked_exits_count += 1
+            pdt_blocked_symbols.add(sym)
+            continue
         mid = _exit_mark_price(market_ctx, mark_ns)
         if mid is None or mid <= 0:
             logger.warning(
@@ -1054,8 +1125,42 @@ def _check_and_execute_exits(
             continue
         broker = _exit_broker_for_position(stock_trader, crypto_trader, pos)
         qty = _get_real_position_qty(sym, broker)
+        source = str(pos.get("source") or "")
+        local_pos = ledger.position(ac, sym)
+        if source == "alpaca_rest" and local_pos is None:
+            broker_local_mismatch_count += 1
+            _persist_decision(
+                cycle_id=f"exit-{int(time.time())}",
+                asset_class=ac,
+                symbol=sym,
+                side="sell",
+                decision="rejected",
+                reason_code="BROKER_POSITION_UNTRACKED",
+                score=None,
+                notional=0.0,
+                quantity=float(pos.get("net_qty") or 0.0),
+                price=mid,
+                meta={"source": source},
+            )
         if qty <= 0:
             logger.info("[exits] skip {} {} — broker reports zero qty", ac, sym)
+            if source == "sqlite_trades" or local_pos is not None:
+                stale_local_positions_count += 1
+                broker_local_mismatch_count += 1
+                _queue_reconciliation_cleanup(ac, sym)
+                _persist_decision(
+                    cycle_id=f"exit-{int(time.time())}",
+                    asset_class=ac,
+                    symbol=sym,
+                    side="sell",
+                    decision="rejected",
+                    reason_code="LOCAL_POSITION_STALE",
+                    score=None,
+                    notional=0.0,
+                    quantity=float(pos.get("net_qty") or 0.0),
+                    price=mid,
+                    meta={"source": source},
+                )
             continue
         entry_dt = _position_entry_datetime_from_trades(sym, ac, qty, db_p)
         _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
@@ -1100,6 +1205,24 @@ def _check_and_execute_exits(
                 pnl = (mid - entry) * sell_qty
                 lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif pnl_pct >= take_profit_frac:
+                if ac == "stock" and _is_pdt_risk_active_for_small_account() and _same_et_trading_day(entry_dt):
+                    blocked_exits_count += 1
+                    pdt_blocked_symbols.add(sym)
+                    _mark_exit_blocked(sym, _pdt_exit_block_seconds(), reason_code="PDT_PROTECTION")
+                    _persist_decision(
+                        cycle_id=f"exit-{int(time.time())}",
+                        asset_class=ac,
+                        symbol=sym,
+                        side="sell",
+                        decision="rejected",
+                        reason_code="PDT_PROTECTION",
+                        score=None,
+                        notional=sell_qty * mid,
+                        quantity=sell_qty,
+                        price=mid,
+                        meta={"reason_detail": "same_day_round_trip_avoided"},
+                    )
+                    continue
                 logger.info(
                     "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
                     ac,
@@ -1132,6 +1255,24 @@ def _check_and_execute_exits(
                         reason_code="TAKE_PROFIT",
                         meta=None,
                     )
+                else:
+                    if str(getattr(r, "reason_code", "")) == "PDT_PROTECTION":
+                        blocked_exits_count += 1
+                        pdt_blocked_symbols.add(sym)
+                        _mark_exit_blocked(sym, _pdt_exit_block_seconds(), reason_code="PDT_PROTECTION")
+                        _persist_decision(
+                            cycle_id=f"exit-{int(time.time())}",
+                            asset_class=ac,
+                            symbol=sym,
+                            side="sell",
+                            decision="rejected",
+                            reason_code="PDT_PROTECTION",
+                            score=None,
+                            notional=sell_qty * mid,
+                            quantity=sell_qty,
+                            price=mid,
+                            meta={"order_message": getattr(r, "message", None)},
+                        )
                 pnl = (mid - entry) * sell_qty
                 lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
             elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
@@ -1290,7 +1431,14 @@ def _check_and_execute_exits(
         len(crypto_positions),
         exits_ok,
     )
-    return lines, n_all, exits_ok
+    health = {
+        "blocked_exits_count": blocked_exits_count,
+        "pdt_blocked_symbols": sorted(pdt_blocked_symbols),
+        "stale_local_positions_count": stale_local_positions_count,
+        "broker_local_mismatch_count": broker_local_mismatch_count,
+        "reconcile_queue_count": len(_reconcile_queue),
+    }
+    return lines, n_all, exits_ok, health
 
 
 def apply_stops_and_targets(
@@ -1304,7 +1452,8 @@ def apply_stops_and_targets(
     }
     stock_trader = _StockExitBroker(trader, market_ctx)
     crypto_trader = _CryptoExitBroker(trader, market_ctx)
-    return _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
+    lines, checked, fired, _health = _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
+    return lines, checked, fired
 
 
 def _telegram_buy(trader: PaperTrader, asset_class: AssetClass, symbol: str, price: float, score: float) -> None:
@@ -1578,6 +1727,15 @@ def execute_cycle_results(
     stock_buy_attempts = 0
     crypto_buy_attempts = 0
     buy_gate_skipped_count = 0
+    execution_health = {
+        "cash": float(alpaca_snapshot.get("cash", 0.0)),
+        "buying_power": float(alpaca_snapshot.get("buying_power", 0.0)),
+        "usable_buying_power": usable_buying_power,
+        "blocked_exits_count": 0,
+        "pdt_blocked_symbols": [],
+        "stale_local_positions_count": 0,
+        "broker_local_mismatch_count": 0,
+    }
     stage_name = str(rt.get("_capital_stage", "MICRO")).upper()
     micro_stage = stage_name == "MICRO"
     max_stock_attempts = MICRO_MAX_STOCK_BUY_ATTEMPTS if micro_stage else 999
@@ -1710,7 +1868,7 @@ def execute_cycle_results(
                     out["holds"] += 1
                     continue
                 logger.info(
-                    f"[buy_attempt] {cs.symbol} asset_class={cs.asset_class} score={eff_score:.4f} "
+                    f"[buy_candidate] {cs.symbol} asset_class={cs.asset_class} score={eff_score:.4f} "
                     f"mid={mid:.4f} notional={notional:.2f} sleeve={bd['sleeve']:.2f} cash={cash:.2f} "
                     f"threshold={config.MIN_ORDER_NOTIONAL_USD} max_pct_rt={bd['rt_max_position_pct']} "
                     f"max_pct_eff={bd['effective_max_position_pct']} cap_notional={bd['cap_notional']:.4f} "
@@ -1816,6 +1974,10 @@ def execute_cycle_results(
                     )
                     out["holds"] += 1
                     continue
+                logger.info(
+                    f"[buy_attempt] {cs.symbol} asset_class={cs.asset_class} score={eff_score:.4f} "
+                    f"mid={mid:.4f} notional={notional:.2f} qty={qty} cash={cash:.2f}"
+                )
                 if cs.asset_class == "stock":
                     stock_buy_attempts += 1
                     reserved_stock_notional += float(notional)
@@ -1923,6 +2085,23 @@ def execute_cycle_results(
                 elif pos is not None and pos.quantity < -1e-8:
                     out["holds"] += 1
                 elif cs.asset_class == "crypto":
+                    if pos is not None and float(pos.quantity) > 1e-8 and live_qty <= 0.0:
+                        execution_health["stale_local_positions_count"] = int(execution_health["stale_local_positions_count"]) + 1
+                        execution_health["broker_local_mismatch_count"] = int(execution_health["broker_local_mismatch_count"]) + 1
+                        _queue_reconciliation_cleanup(cs.asset_class, cs.symbol)
+                        _persist_decision(
+                            cycle_id=cid,
+                            asset_class=cs.asset_class,
+                            symbol=cs.symbol,
+                            side="sell",
+                            decision="rejected",
+                            reason_code="LOCAL_POSITION_STALE",
+                            score=eff_score,
+                            notional=0.0,
+                            quantity=float(pos.quantity),
+                            price=mid,
+                            meta={"reason_detail": "broker_qty_zero"},
+                        )
                     out["holds"] += 1
                 else:
                     logger.info(
@@ -1943,6 +2122,7 @@ def execute_cycle_results(
         "max_stock_attempts": max_stock_attempts,
         "max_crypto_attempts": max_crypto_attempts,
     }
+    out["execution_health"] = execution_health
     logger.info(
         "[buy_gate] cash={:.2f} buying_power={:.2f} usable={:.2f} required_notional={:.2f} skipped_count={} stock_cap={:.2f} reserved_stock={:.2f} reserved_crypto={:.2f} stock_attempts={}/{} crypto_attempts={}/{}",
         out["buy_gate"]["cash"],
@@ -1966,6 +2146,13 @@ def execute_cycle_results(
                 value=float(out["buy_gate"]["usable_buying_power"]),
                 window_label="cycle",
                 meta=out["buy_gate"],
+            )
+            trade_logger.log_ops_metric(
+                conn,
+                metric_name="execution_health",
+                value=float(out["execution_health"]["usable_buying_power"]),
+                window_label="cycle",
+                meta=out["execution_health"],
             )
     except Exception:
         logger.debug("buy_gate metric log skipped", exc_info=True)
@@ -1996,7 +2183,7 @@ def run_trading_cycle_once(
     risk_params = {"take_profit_pct": rt["take_profit_pct"], "stop_loss_pct": rt["stop_loss_pct"]}
     stock_trader = _StockExitBroker(trader, market_ctx)
     crypto_trader = _CryptoExitBroker(trader, market_ctx)
-    lines, _, _ = _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
+    lines, _, _, exit_health = _check_and_execute_exits(stock_trader, crypto_trader, risk_params, config.DB_PATH)
     for ln in lines:
         logger.info(ln)
 
@@ -2097,6 +2284,23 @@ def run_trading_cycle_once(
 
     cid = _uuid.uuid4().hex[:10]
     summary = execute_cycle_results(trader, results, rt, cycle_id=cid)
+    try:
+        eh = dict(summary.get("execution_health") or {})
+        eh["blocked_exits_count"] = int(exit_health.get("blocked_exits_count") or 0)
+        eh["pdt_blocked_symbols"] = list(exit_health.get("pdt_blocked_symbols") or [])
+        eh["stale_local_positions_count"] = int(eh.get("stale_local_positions_count", 0)) + int(exit_health.get("stale_local_positions_count") or 0)
+        eh["broker_local_mismatch_count"] = int(eh.get("broker_local_mismatch_count", 0)) + int(exit_health.get("broker_local_mismatch_count") or 0)
+        summary["execution_health"] = eh
+        with get_connection(config.DB_PATH) as conn:
+            trade_logger.log_ops_metric(
+                conn,
+                metric_name="execution_health",
+                value=float(eh.get("usable_buying_power", 0.0) or 0.0),
+                window_label="cycle",
+                meta=eh,
+            )
+    except Exception:
+        logger.debug("execution_health merge/log skipped", exc_info=True)
     summary["stop_events"] = lines
     summary["analyzed"] = len(results)
     sorted_crypto_scores = sorted(

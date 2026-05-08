@@ -261,4 +261,5 @@ BOT_CONFIG_DEFAULTS = {
     "max_position_pct": 0.005,
     "dynamic_risk_enabled": 1.0,
     "pyramiding_enabled": 0.0,
+    "pdt_avoid_same_day_round_trip": 1.0,
 }
