@@ -333,7 +333,8 @@ _PAGE = """
     .backtest-wrap .card.bt-card-chart { grid-column: 1 / -1; }
     .backtest-wrap .card.bt-card-trades,
     .backtest-wrap .card.bt-card-rejections,
-    .backtest-wrap .card.bt-card-runs { grid-column: span 6; }
+    .backtest-wrap .card.bt-card-runs,
+    .backtest-wrap .card.bt-card-assumptions { grid-column: span 6; }
     @media (max-width: 1000px) {
       .backtest-wrap > .card { grid-column: 1 / -1 !important; }
     }
@@ -345,6 +346,23 @@ _PAGE = """
       padding: 0.35rem 0.65rem;
       cursor: pointer;
       font-weight: 600;
+    }
+    .bt-mini-card {
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.45rem 0.55rem;
+      min-width: 140px;
+    }
+    .bt-mini-card .label {
+      color: var(--text-secondary);
+      font-size: 0.7rem;
+      margin-bottom: 0.2rem;
+    }
+    .bt-mini-card .value {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92rem;
+      color: var(--text-main);
     }
   </style>
 </head>
@@ -473,12 +491,29 @@ _PAGE = """
           <input id="btSymbols" value="AAPL,MSFT,BTC/USD" placeholder="symbols csv" />
           <input id="btStart" value="2025-01-01" placeholder="start YYYY-MM-DD" />
           <input id="btEnd" value="2026-01-01" placeholder="end YYYY-MM-DD" />
+          <label class="mono muted" style="display:flex;align-items:center;gap:6px;">
+            <input id="btPyramiding" type="checkbox" />
+            pyramiding
+          </label>
           <button id="btRunBtn" class="bt-action-btn" type="button">Run Backtest</button>
         </div>
       </div>
       <div class="card bt-card-summary">
         <h2>Backtest Summary</h2>
-        <pre id="btSummary" class="mono muted">No run selected.</pre>
+        <p id="btSummaryEmpty" class="mono muted">No run selected.</p>
+        <div id="btSummaryCards" class="stats-row" style="margin-top:0.5rem;"></div>
+        <p id="btSampleWarning" class="muted" style="display:none;color:#fbbf24;margin-top:0.6rem;"></p>
+      </div>
+      <div class="card bt-card-rejections">
+        <h2>Rejections</h2>
+        <div id="btRejBadges" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+        <details style="margin-top:0.7rem;">
+          <summary class="muted">Latest rejection rows (max 100)</summary>
+          <div style="overflow-x:auto;margin-top:0.5rem;">
+            <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Reason</th></tr></thead><tbody id="btRejectionsBody"></tbody></table>
+          </div>
+        </details>
+        <p class="muted" id="btRejectionsEmpty" style="display:none;">No rejections.</p>
       </div>
       <div class="card bt-card-chart">
         <h2>Backtest Equity Curve</h2>
@@ -491,12 +526,10 @@ _PAGE = """
         </div>
         <p class="muted" id="btTradesEmpty" style="display:none;">No trades.</p>
       </div>
-      <div class="card bt-card-rejections">
-        <h2>Rejections</h2>
-        <div style="overflow-x:auto;">
-          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Reason</th></tr></thead><tbody id="btRejectionsBody"></tbody></table>
-        </div>
-        <p class="muted" id="btRejectionsEmpty" style="display:none;">No rejections.</p>
+      <div class="card bt-card-assumptions">
+        <h2>Assumptions &amp; Data Quality</h2>
+        <div id="btAssumptions" class="mono muted">—</div>
+        <div id="btDataQuality" class="mono muted" style="margin-top:0.5rem;">—</div>
       </div>
       <div class="card bt-card-runs">
         <h2>Recent Backtest Runs</h2>
@@ -1267,11 +1300,34 @@ _PAGE = """
       if (!canvas) return;
       const labels = (points || []).map(p => p.timestamp);
       const data = (points || []).map(p => Number(p.equity || 0));
+      const looksIntraday = labels.some((ts) => String(ts || "").includes(":"));
       if (!btChart) {
         btChart = new Chart(canvas.getContext("2d"), {
           type: "line",
           data: { labels, datasets: [{ data, borderColor: "#00ff88", pointRadius: 0, tension: 0.2 }] },
-          options: { animation: false, responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+          options: {
+            animation: false,
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: {
+                ticks: {
+                  autoSkip: true,
+                  maxTicksLimit: 10,
+                  maxRotation: 0,
+                  callback: function(value, idx) {
+                    const raw = String((this.getLabelForValue ? this.getLabelForValue(value) : labels[idx]) || "");
+                    const d = new Date(raw.replace(" ", "T"));
+                    if (Number.isNaN(d.getTime())) return raw.slice(0, 10);
+                    return looksIntraday
+                      ? d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+                      : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+                  }
+                }
+              }
+            }
+          }
         });
         return;
       }
@@ -1280,11 +1336,91 @@ _PAGE = """
       btChart.update("none");
     }
 
+    function fmtMoney(v) {
+      const n = Number(v || 0);
+      return Number.isFinite(n) ? n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 }) : "—";
+    }
+    function fmtPct(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? `${n.toFixed(2)}%` : "—";
+    }
+    function fmtPlain(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(2) : "—";
+    }
+    function renderMiniCards(rootId, items) {
+      const root = document.getElementById(rootId);
+      if (!root) return;
+      root.innerHTML = items.map((i) => (
+        `<div class="bt-mini-card"><div class="label">${esc(i.label)}</div><div class="value">${esc(i.value)}</div></div>`
+      )).join("");
+    }
+    function renderBacktestSummary(summary, rejectionSummary) {
+      const empty = document.getElementById("btSummaryEmpty");
+      if (empty) empty.style.display = "none";
+      const closedTrades = Number(summary.closed_trades || 0);
+      renderMiniCards("btSummaryCards", [
+        { label: "Starting Cash", value: fmtMoney(summary.starting_cash) },
+        { label: "Final Equity", value: fmtMoney(summary.final_equity) },
+        { label: "P&L", value: fmtMoney(summary.pnl) },
+        { label: "Return %", value: fmtPct(summary.return_pct) },
+        { label: "Max Drawdown %", value: fmtPct(summary.max_drawdown_pct) },
+        { label: "Total Trades", value: String(summary.trades_total ?? 0) },
+        { label: "Closed Trades", value: String(summary.closed_trades ?? 0) },
+        { label: "Win Rate", value: fmtPct(summary.win_rate_pct) },
+        { label: "Profit Factor", value: fmtPlain(summary.profit_factor) },
+        { label: "Expectancy", value: fmtMoney(summary.expectancy) },
+        { label: "Rejections Total", value: String(summary.rejections_total ?? 0) },
+        { label: "Strategy Return", value: fmtPct(summary.strategy_return_pct) },
+        { label: "Buy & Hold Return", value: fmtPct(summary.equal_weight_buy_and_hold_return_pct) },
+        { label: "Excess Return", value: fmtPct(summary.excess_return_pct) },
+      ]);
+      const warn = document.getElementById("btSampleWarning");
+      if (warn) {
+        warn.style.display = "none";
+        if (closedTrades === 0) {
+          warn.textContent = "No completed round trips. Return may reflect open/unrealized positions only.";
+          warn.style.display = "block";
+        } else if (closedTrades < 10) {
+          warn.textContent = "Sample too small: fewer than 10 closed trades. Do not trust win rate or profit factor.";
+          warn.style.display = "block";
+        }
+      }
+      const assumptions = summary.assumptions || {};
+      const dataQuality = summary.data_quality || {};
+      const aEl = document.getElementById("btAssumptions");
+      if (aEl) {
+        aEl.textContent =
+          `Assumptions\n` +
+          `execution model: ${assumptions.execution_model || "—"}\n` +
+          `fill model: ${assumptions.fills || "—"}\n` +
+          `market hours enforced: ${String(assumptions.market_hours_enforced)}\n` +
+          `fractionability enforced: ${String(assumptions.fractionability_rules_enforced)}\n` +
+          `data source: ${assumptions.data_source || "—"}\n` +
+          `fee bps: ${assumptions.fee_bps ?? "—"}\n` +
+          `spread bps: ${assumptions.spread_bps ?? "—"}\n` +
+          `slippage bps: ${assumptions.slippage_bps ?? "—"}`;
+      }
+      const dEl = document.getElementById("btDataQuality");
+      if (dEl) {
+        dEl.textContent =
+          `Data Quality\n` +
+          `symbols loaded: ${dataQuality.symbols_loaded ?? "—"}\n` +
+          `points by symbol: ${JSON.stringify(dataQuality.points_by_symbol || {})}\n` +
+          `warnings count: ${dataQuality.warnings_count ?? 0}\n` +
+          `candle count: ${dataQuality.candle_count ?? 0}\n` +
+          `provider warnings: ${JSON.stringify(dataQuality.provider_warnings || [])}`;
+      }
+      const rejPairs = Object.entries(rejectionSummary || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+      renderMiniCards("btRejBadges", rejPairs.map(([k, v]) => ({ label: k, value: String(v) })));
+    }
+
     async function loadBacktestResult(runId) {
       const r = await fetch("/api/backtest/result/" + encodeURIComponent(runId), { cache: "no-store" });
       const j = await r.json();
-      const sumEl = document.getElementById("btSummary");
-      if (sumEl) sumEl.textContent = JSON.stringify({ summary: j.summary_json, rejections: j.rejection_summary_json }, null, 2);
+      const summary = (j.summary_json && typeof j.summary_json === "object") ? j.summary_json : {};
+      const rejectionSummary = (j.rejection_summary_json && typeof j.rejection_summary_json === "object") ? j.rejection_summary_json : {};
+      renderBacktestSummary(summary, rejectionSummary);
       renderBacktestChart(j.equity_curve || []);
       const trades = Array.isArray(j.trades) ? j.trades : [];
       const rejects = Array.isArray(j.rejections) ? j.rejections : [];
@@ -1303,7 +1439,7 @@ _PAGE = """
         }).join("");
       }
       if (tbRej) {
-        tbRej.innerHTML = rejects.slice(-80).reverse().map((x) => {
+        tbRej.innerHTML = rejects.slice(-100).reverse().map((x) => {
           return `<tr><td class="mono">${esc(x.timestamp || "")}</td><td class="mono">${esc(x.symbol || "")}</td><td>${esc(x.reason_code || "")}</td></tr>`;
         }).join("");
       }
@@ -1333,6 +1469,7 @@ _PAGE = """
         symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
         start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
         end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
+        pyramiding_enabled: !!((document.getElementById("btPyramiding") || {}).checked),
       };
       const r = await fetch("/api/backtest/run", {
         method: "POST",
@@ -1764,6 +1901,7 @@ def create_app() -> Flask:
                 allow_fractional=bool(body.get("allow_fractional", True)),
                 use_fractionability_rules=bool(body.get("use_fractionability_rules", True)),
                 use_market_hours=bool(body.get("use_market_hours", True)),
+                pyramiding_enabled=bool(body.get("pyramiding_enabled", False)),
             )
             run_id = data_store.create_backtest_run(
                 json.dumps(req.__dict__, default=str),
@@ -1803,9 +1941,18 @@ def create_app() -> Flask:
             except json.JSONDecodeError:
                 summary_obj = {}
             if isinstance(summary_obj, dict):
+                row["summary_json"] = summary_obj
                 row["assumptions"] = summary_obj.get("assumptions", {})
                 row["data_quality"] = summary_obj.get("data_quality", {})
                 row["warnings"] = summary_obj.get("warnings", [])
+        rejection_raw = row.get("rejection_summary_json")
+        if isinstance(rejection_raw, str) and rejection_raw.strip():
+            try:
+                rejection_obj = json.loads(rejection_raw)
+            except json.JSONDecodeError:
+                rejection_obj = {}
+            if isinstance(rejection_obj, dict):
+                row["rejection_summary_json"] = rejection_obj
         return jsonify(row)
 
     @app.post("/api/sync-alpaca")

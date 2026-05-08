@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from backtesting.models import EquityPoint, RejectionSim, TradeSim
 
@@ -15,9 +16,13 @@ class Position:
 
 
 def _is_nyse_open(ts: datetime) -> bool:
-    if ts.weekday() >= 5:
+    if ts.tzinfo is None:
+        ts_et = ts.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/New_York"))
+    else:
+        ts_et = ts.astimezone(ZoneInfo("America/New_York"))
+    if ts_et.weekday() >= 5:
         return False
-    mins = ts.hour * 60 + ts.minute
+    mins = ts_et.hour * 60 + ts_et.minute
     return (9 * 60 + 30) <= mins < (16 * 60)
 
 
@@ -31,6 +36,7 @@ class PortfolioSim:
         self._hour_trade_counts: dict[str, int] = defaultdict(int)
         self._day_pnl: dict[str, float] = defaultdict(float)
         self._max_equity_seen = float(starting_cash)
+        self._seen_trade_keys: set[tuple[str, str, str, str]] = set()
 
     def mark_equity(self, ts: datetime, marks: dict[str, float]) -> None:
         exposure = sum(abs(float(marks.get(sym, pos.avg_price)) * pos.qty) for sym, pos in self.positions.items())
@@ -61,6 +67,8 @@ class PortfolioSim:
         max_positions: int = int(kwargs["max_positions"])
         max_trades_per_hour: int = int(kwargs["max_trades_per_hour"])
         use_market_hours: bool = bool(kwargs["use_market_hours"])
+        is_daily_bar: bool = bool(kwargs.get("is_daily_bar", False))
+        pyramiding_enabled: bool = bool(kwargs.get("pyramiding_enabled", False))
         allow_fractional: bool = bool(kwargs["allow_fractional"])
         use_fractionability_rules: bool = bool(kwargs["use_fractionability_rules"])
         hour_key = ts.strftime("%Y-%m-%d %H")
@@ -68,13 +76,21 @@ class PortfolioSim:
         if self._hour_trade_counts[hour_key] >= max_trades_per_hour:
             self.rejections.append(RejectionSim(ts.strftime("%Y-%m-%d %H:%M:%S"), symbol, asset_class, side, "MAX_TRADES_PER_HOUR"))
             return
-        if use_market_hours and asset_class == "stock" and not _is_nyse_open(ts):
+        if use_market_hours and asset_class == "stock" and not is_daily_bar and not _is_nyse_open(ts):
             self.rejections.append(RejectionSim(ts.strftime("%Y-%m-%d %H:%M:%S"), symbol, asset_class, side, "MARKET_CLOSED"))
+            return
+        trade_key = (ts.strftime("%Y-%m-%d %H:%M:%S"), symbol, side, "single")
+        if (not pyramiding_enabled) and trade_key in self._seen_trade_keys:
+            self.rejections.append(RejectionSim(ts.strftime("%Y-%m-%d %H:%M:%S"), symbol, asset_class, side, "DUPLICATE_TRADE"))
             return
         fee_rate = fee_bps / 10000.0
         slip = slippage_bps / 10000.0
         spr = spread_bps / 10000.0
         if side == "buy":
+            pos = self.positions.get(symbol)
+            if pos is not None and pos.qty > 0 and not pyramiding_enabled:
+                self.rejections.append(RejectionSim(ts.strftime("%Y-%m-%d %H:%M:%S"), symbol, asset_class, side, "ALREADY_LONG"))
+                return
             fill = mid * (1.0 + spr / 2.0 + slip)
             notional = min(max_position_notional, self.cash)
             if notional < min_order_notional:
@@ -104,6 +120,8 @@ class PortfolioSim:
                 pos.avg_price = ((pos.avg_price * pos.qty) + (fill * qty)) / max(1e-12, new_qty)
                 pos.qty = new_qty
             self._hour_trade_counts[hour_key] += 1
+            if not pyramiding_enabled:
+                self._seen_trade_keys.add(trade_key)
             self.trades.append(TradeSim(ts.strftime("%Y-%m-%d %H:%M:%S"), symbol, asset_class, side, qty, mid, fill, notional, fee, "FILLED"))
             return
         pos = self.positions.get(symbol)
@@ -120,6 +138,8 @@ class PortfolioSim:
         self.cash += proceeds
         self._day_pnl[day_key] += pnl
         self._hour_trade_counts[hour_key] += 1
+        if not pyramiding_enabled:
+            self._seen_trade_keys.add(trade_key)
         del self.positions[symbol]
         self.trades.append(
             TradeSim(

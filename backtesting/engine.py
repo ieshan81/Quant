@@ -17,6 +17,28 @@ def _iter_union_timestamps(series_map):
     return sorted(ts)
 
 
+def _is_daily_timeframe(tf: str) -> bool:
+    t = str(tf or "").strip().lower()
+    return t in {"1d", "1day", "day", "daily"}
+
+
+def _buy_and_hold_returns(loaded: dict) -> tuple[dict[str, float], float]:
+    per_symbol: dict[str, float] = {}
+    for sym, ls in loaded.items():
+        close = ls.ohlcv["Close"] if "Close" in ls.ohlcv else None
+        if close is None or len(close) < 2:
+            continue
+        start_px = float(close.iloc[0])
+        end_px = float(close.iloc[-1])
+        if start_px <= 0:
+            continue
+        per_symbol[sym] = ((end_px - start_px) / start_px) * 100.0
+    if not per_symbol:
+        return {}, 0.0
+    eqw = sum(per_symbol.values()) / float(len(per_symbol))
+    return per_symbol, eqw
+
+
 def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None) -> BacktestResult:
     params = dict(parameter_snapshot or {})
     loaded = load_many(
@@ -37,13 +59,20 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
         "fills": "buy=mid*(1+spread/2+slippage), sell=mid*(1-spread/2-slippage)",
         "market_hours_enforced": bool(req.use_market_hours),
         "fractionability_rules_enforced": bool(req.use_fractionability_rules),
+        "pyramiding_enabled": bool(req.pyramiding_enabled),
         "data_source": "yfinance",
+        "fee_bps": float(req.fee_bps),
+        "spread_bps": float(req.spread_bps),
+        "slippage_bps": float(req.slippage_bps),
     }
     data_quality = {
         "symbols_loaded": len(loaded),
         "points_by_symbol": points_by_symbol,
         "warnings_count": len(warnings),
+        "candle_count": sum(points_by_symbol.values()),
+        "provider_warnings": list(warnings),
     }
+    is_daily = _is_daily_timeframe(req.timeframe)
     union_ts = _iter_union_timestamps(loaded)
     for ts in union_ts:
         marks: dict[str, float] = {}
@@ -80,6 +109,8 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
                 max_positions=req.max_positions,
                 max_trades_per_hour=req.max_trades_per_hour,
                 use_market_hours=req.use_market_hours,
+                is_daily_bar=is_daily,
+                pyramiding_enabled=req.pyramiding_enabled,
                 allow_fractional=req.allow_fractional,
                 use_fractionability_rules=req.use_fractionability_rules,
             )
@@ -90,6 +121,12 @@ def run_backtest(req: BacktestRequest, *, parameter_snapshot: dict | None = None
         trades=sim.trades,
         rejections=sim.rejections,
     )
+    per_symbol_bh, eqw_bh = _buy_and_hold_returns(loaded)
+    strategy_return = float(summary.get("return_pct") or 0.0)
+    summary["buy_and_hold_return_pct_by_symbol"] = per_symbol_bh
+    summary["equal_weight_buy_and_hold_return_pct"] = eqw_bh
+    summary["strategy_return_pct"] = strategy_return
+    summary["excess_return_pct"] = strategy_return - eqw_bh
     summary["assumptions"] = assumptions
     summary["data_quality"] = data_quality
     summary["warnings"] = warnings

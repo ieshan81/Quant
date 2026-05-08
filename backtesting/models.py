@@ -23,6 +23,7 @@ class BacktestRequest:
     allow_fractional: bool = True
     use_fractionability_rules: bool = True
     use_market_hours: bool = True
+    pyramiding_enabled: bool = False
     use_current_db_parameters: bool = True
     use_realistic_rejections: bool = True
     parameter_overrides_json: dict[str, Any] = field(default_factory=dict)

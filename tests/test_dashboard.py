@@ -117,6 +117,8 @@ def test_index_renders(dash_app) -> None:
     assert b"Performance" in r.data
     assert b"Signal calibration" in r.data
     assert b"Backtest" in r.data
+    assert b"btSampleWarning" in r.data
+    assert b"maxTicksLimit: 10" in r.data
 
 
 def test_api_calibration(dash_app) -> None:
@@ -403,3 +405,35 @@ def test_backtest_run_and_fetch_endpoints(dash_app) -> None:
     assert r_result.status_code == 200
     got = json.loads(r_result.data)
     assert int(got["id"]) == run_id
+    assert isinstance(got.get("summary_json"), dict)
+    assert isinstance(got.get("rejection_summary_json"), dict)
+
+
+def test_backtest_result_exposes_parsed_summary_and_rejections(dash_app) -> None:
+    from data import data_store
+
+    client = dash_app.test_client()
+    run_id = data_store.create_backtest_run(
+        json.dumps({"strategy_name": "current_adaptive"}),
+        strategy_name="current_adaptive",
+        status="completed",
+    )
+    data_store.update_backtest_status(
+        run_id,
+        status="completed",
+        summary_json=json.dumps(
+            {
+                "closed_trades": 2,
+                "assumptions": {"execution_model": "test"},
+                "data_quality": {"warnings_count": 1},
+                "warnings": ["limited_history:AAPL"],
+            }
+        ),
+        rejection_summary_json=json.dumps({"MARKET_CLOSED": 3}),
+    )
+    r = client.get(f"/api/backtest/result/{run_id}")
+    assert r.status_code == 200
+    body = json.loads(r.data)
+    assert body["summary_json"]["closed_trades"] == 2
+    assert body["rejection_summary_json"]["MARKET_CLOSED"] == 3
+    assert body["assumptions"]["execution_model"] == "test"

@@ -1201,6 +1201,18 @@ def insert_backtest_equity_curve(
 def insert_backtest_trades(run_id: int, rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
     if not rows:
         return
+    filtered: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for r in rows:
+        meta = r.get("meta_json") if isinstance(r.get("meta_json"), dict) else {}
+        allow_dup = bool(meta.get("pyramiding"))
+        key = (str(r.get("timestamp", "")), str(r.get("symbol", "")), str(r.get("side", "")))
+        if (not allow_dup) and key in seen:
+            continue
+        seen.add(key)
+        filtered.append(r)
+    if not filtered:
+        return
     def _do_insert() -> None:
         with get_connection(db_path) as conn:
             conn.executemany(
@@ -1228,7 +1240,7 @@ def insert_backtest_trades(run_id: int, rows: list[dict[str, Any]], db_path: Pat
                         (None if r.get("hold_seconds") is None else float(r["hold_seconds"])),
                         r.get("meta_json"),
                     )
-                    for r in rows
+                    for r in filtered
                 ],
             )
     with_sqlite_retry(_do_insert)
