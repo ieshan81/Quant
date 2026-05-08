@@ -42,6 +42,34 @@ def get_rest_client() -> Any | None:
             "Alpaca SDK not installed."
         )
         return None
+    if not alpaca_credentials_configured():
+        logger.error(
+            "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
+            "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in env.",
+        )
+        return None
+    try:
+        api_key = str(getattr(config, "ALPACA_API_KEY", "")).strip()
+        secret = str(getattr(config, "ALPACA_SECRET_KEY", "")).strip()
+        base_url = str(getattr(config, "ALPACA_BASE_URL", "")).strip()
+        logger.info(
+            "[alpaca_config] key_present={} secret_present={} base_url={}",
+            bool(api_key),
+            bool(secret),
+            base_url,
+        )
+        return tradeapi.REST(
+            api_key,
+            secret,
+            base_url,
+        )
+    except Exception as e:  # pragma: no cover - hard to hit reliably in tests
+        logger.error(
+            "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. err={}",
+            e,
+            exc_info=True,
+        )
+        return None
 
 
 def get_asset_metadata(symbol: str) -> dict[str, Any] | None:
@@ -95,26 +123,6 @@ def is_shortable(symbol: str) -> bool:
     meta = get_asset_metadata(symbol) or {}
     v = meta.get("shortable")
     return bool(v) if v is not None else False
-    if not alpaca_credentials_configured():
-        logger.error(
-            "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
-            "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway env vars."
-        )
-        return None
-    try:
-        return tradeapi.REST(
-            config.ALPACA_API_KEY,
-            config.ALPACA_SECRET_KEY,
-            config.ALPACA_BASE_URL,
-        )
-    except Exception as e:
-        logger.error(
-            "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
-            "Check ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway env vars. err={}",
-            e,
-            exc_info=True,
-        )
-        return None
 
 
 def _trade_price(trade: Any) -> float:

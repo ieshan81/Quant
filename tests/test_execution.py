@@ -155,3 +155,47 @@ def test_asset_metadata_helpers() -> None:
         assert stock_broker.is_tradable("AAPL") is True
         assert stock_broker.is_fractionable("AAPL") is False
         assert stock_broker.is_shortable("AAPL") is True
+
+
+def test_get_rest_client_returns_none_when_sdk_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(stock_broker, "tradeapi", None)
+    cli = stock_broker.get_rest_client()
+    assert cli is None
+
+
+def test_get_rest_client_returns_none_when_keys_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyConfig:
+        ALPACA_API_KEY = ""
+        ALPACA_SECRET_KEY = ""
+        ALPACA_BASE_URL = ""
+
+    monkeypatch.setattr(stock_broker, "tradeapi", object())
+    monkeypatch.setattr(stock_broker, "config", DummyConfig)
+    cli = stock_broker.get_rest_client()
+    assert cli is None
+
+
+def test_get_rest_client_uses_tradeapi_rest_when_keys_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy = SimpleNamespace(called_with=None)
+
+    class DummyREST:
+        def __init__(self, key, secret, base_url):
+            dummy.called_with = (key, secret, base_url)
+
+    class DummyTradeApi:
+        REST = DummyREST
+
+    class DummyConfig:
+        ALPACA_API_KEY = " KEY "
+        ALPACA_SECRET_KEY = " SECRET "
+        ALPACA_BASE_URL = " https://paper-api.alpaca.markets "
+
+    monkeypatch.setattr(stock_broker, "tradeapi", DummyTradeApi())
+    monkeypatch.setattr(stock_broker, "config", DummyConfig)
+    cli = stock_broker.get_rest_client()
+    assert isinstance(cli, DummyREST)
+    assert dummy.called_with == (
+        "KEY",
+        "SECRET",
+        "https://paper-api.alpaca.markets",
+    )
