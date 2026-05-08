@@ -199,3 +199,64 @@ def test_get_rest_client_uses_tradeapi_rest_when_keys_present(monkeypatch: pytes
         "SECRET",
         "https://paper-api.alpaca.markets",
     )
+
+
+def test_get_rest_client_sanitizes_trailing_v2(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy = SimpleNamespace(called_with=None)
+
+    class DummyREST:
+        def __init__(self, key, secret, base_url):
+            dummy.called_with = (key, secret, base_url)
+
+    class DummyTradeApi:
+        REST = DummyREST
+
+    class DummyConfig:
+        ALPACA_API_KEY = "K"
+        ALPACA_SECRET_KEY = "S"
+        ALPACA_BASE_URL = " https://paper-api.alpaca.markets/v2/ "
+
+    monkeypatch.setattr(stock_broker, "tradeapi", DummyTradeApi())
+    monkeypatch.setattr(stock_broker, "config", DummyConfig)
+    monkeypatch.setattr(stock_broker, "_rest_client_cached", None)
+    monkeypatch.setattr(stock_broker, "_alpaca_config_logged_once", False)
+    cli = stock_broker.get_rest_client()
+    assert isinstance(cli, DummyREST)
+    assert dummy.called_with == ("K", "S", "https://paper-api.alpaca.markets")
+
+
+def test_get_rest_client_logs_config_once_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+    infos: list[str] = []
+
+    class DummyREST:
+        def __init__(self, key, secret, base_url):
+            _ = (key, secret, base_url)
+            calls["n"] += 1
+
+    class DummyTradeApi:
+        REST = DummyREST
+
+    class DummyConfig:
+        ALPACA_API_KEY = "K"
+        ALPACA_SECRET_KEY = "S"
+        ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+
+    def _info(msg, *args, **kwargs):
+        infos.append(str(msg))
+
+    monkeypatch.setattr(stock_broker, "tradeapi", DummyTradeApi())
+    monkeypatch.setattr(stock_broker, "config", DummyConfig)
+    monkeypatch.setattr(stock_broker, "_rest_client_cached", None)
+    monkeypatch.setattr(stock_broker, "_alpaca_config_logged_once", False)
+    monkeypatch.setattr(stock_broker.logger, "info", _info)
+    cli1 = stock_broker.get_rest_client()
+    cli2 = stock_broker.get_rest_client()
+    assert cli1 is cli2
+    assert calls["n"] == 1
+    assert len(infos) == 1
+
+
+def test_is_shortable_metadata_only_no_rest_creation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(stock_broker, "get_asset_metadata", lambda _s: {"shortable": True})
+    assert stock_broker.is_shortable("AAPL") is True

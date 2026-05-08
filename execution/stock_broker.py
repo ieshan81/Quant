@@ -28,14 +28,29 @@ except ImportError:  # pragma: no cover
 _ASSET_META_CACHE_TTL_SEC = 300.0
 _asset_meta_lock = threading.Lock()
 _asset_meta_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+_rest_client_lock = threading.Lock()
+_rest_client_cached: Any | None = None
+_alpaca_config_logged_once = False
 
 
 def alpaca_credentials_configured() -> bool:
     return bool(config.ALPACA_API_KEY and config.ALPACA_SECRET_KEY)
 
 
+def _sanitize_alpaca_base_url(raw: str) -> str:
+    base = str(raw or "").strip().rstrip("/")
+    if base.lower().endswith("/v2"):
+        base = base[:-3]
+    return base.rstrip("/")
+
+
 def get_rest_client() -> Any | None:
     """Return Alpaca REST client, or None if SDK missing or keys unset."""
+    global _rest_client_cached
+    global _alpaca_config_logged_once
+    with _rest_client_lock:
+        if _rest_client_cached is not None:
+            return _rest_client_cached
     if tradeapi is None:
         logger.error(
             "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "
@@ -51,18 +66,30 @@ def get_rest_client() -> Any | None:
     try:
         api_key = str(getattr(config, "ALPACA_API_KEY", "")).strip()
         secret = str(getattr(config, "ALPACA_SECRET_KEY", "")).strip()
-        base_url = str(getattr(config, "ALPACA_BASE_URL", "")).strip()
-        logger.info(
-            "[alpaca_config] key_present={} secret_present={} base_url={}",
-            bool(api_key),
-            bool(secret),
-            base_url,
-        )
-        return tradeapi.REST(
+        base_url = _sanitize_alpaca_base_url(getattr(config, "ALPACA_BASE_URL", ""))
+        if not _alpaca_config_logged_once:
+            logger.info(
+                "[alpaca_config] key_present={} secret_present={} base_url={}",
+                bool(api_key),
+                bool(secret),
+                base_url,
+            )
+            _alpaca_config_logged_once = True
+        else:
+            logger.debug(
+                "[alpaca_config] (cached) key_present={} secret_present={} base_url={}",
+                bool(api_key),
+                bool(secret),
+                base_url,
+            )
+        cli = tradeapi.REST(
             api_key,
             secret,
             base_url,
         )
+        with _rest_client_lock:
+            _rest_client_cached = cli
+        return cli
     except Exception as e:  # pragma: no cover - hard to hit reliably in tests
         logger.error(
             "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. err={}",

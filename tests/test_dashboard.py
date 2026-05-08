@@ -116,6 +116,7 @@ def test_index_renders(dash_app) -> None:
     assert b"Bot parameters" in r.data
     assert b"Performance" in r.data
     assert b"Signal calibration" in r.data
+    assert b"Backtest" in r.data
 
 
 def test_api_calibration(dash_app) -> None:
@@ -352,3 +353,53 @@ def test_buy_gate_status_endpoint(dash_app) -> None:
     body = json.loads(r.data)
     assert float(body.get("cash", 0)) == pytest.approx(23.13)
     assert int(body.get("max_stock_attempts", 0)) == 1
+
+
+def test_backtest_defaults_endpoint(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/api/backtest/defaults")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert "strategies" in data
+    assert "symbols" in data
+
+
+def test_backtest_run_and_fetch_endpoints(dash_app) -> None:
+    client = dash_app.test_client()
+    fake_result = {
+        "status": "completed",
+        "summary_json": {"return_pct": 1.23},
+        "rejection_summary_json": {"MAX_POSITIONS": 1},
+        "equity_curve": [],
+        "trades": [],
+        "rejections": [],
+    }
+    with patch("backtesting.runner.execute") as mocked_run:
+        mocked_run.return_value = type(
+            "Obj",
+            (),
+            {
+                "status": "completed",
+                "summary_json": fake_result["summary_json"],
+                "rejection_summary_json": fake_result["rejection_summary_json"],
+                "equity_curve": [],
+                "trades": [],
+                "rejections": [],
+            },
+        )()
+        r = client.post(
+            "/api/backtest/run",
+            json={"strategy_name": "current_adaptive", "symbols": ["AAPL"], "start_date": "2025-01-01", "end_date": "2025-02-01"},
+        )
+    assert r.status_code == 200
+    payload = json.loads(r.data)
+    assert payload["ok"] is True
+    run_id = int(payload["run_id"])
+    r_runs = client.get("/api/backtest/runs")
+    assert r_runs.status_code == 200
+    rows = json.loads(r_runs.data)
+    assert any(int(x["id"]) == run_id for x in rows)
+    r_result = client.get(f"/api/backtest/result/{run_id}")
+    assert r_result.status_code == 200
+    got = json.loads(r_result.data)
+    assert int(got["id"]) == run_id

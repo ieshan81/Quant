@@ -293,6 +293,73 @@ CREATE TABLE IF NOT EXISTS adaptive_parameter_changes (
 CREATE INDEX IF NOT EXISTS idx_adaptive_changes_lookup
     ON adaptive_parameter_changes(strategy_name, capital_stage, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    strategy_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    request_json TEXT,
+    parameter_snapshot_json TEXT,
+    summary_json TEXT,
+    rejection_summary_json TEXT,
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_status
+    ON backtest_runs(created_at DESC, status);
+
+CREATE TABLE IF NOT EXISTS backtest_equity_curve (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL,
+    equity REAL NOT NULL,
+    cash REAL NOT NULL,
+    exposure REAL NOT NULL,
+    drawdown_pct REAL NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_curve_run_ts
+    ON backtest_equity_curve(run_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS backtest_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    asset_class TEXT,
+    side TEXT NOT NULL,
+    qty REAL NOT NULL,
+    price REAL NOT NULL,
+    fill_price REAL NOT NULL,
+    notional REAL NOT NULL,
+    fee REAL NOT NULL,
+    reason_code TEXT,
+    pnl REAL,
+    pnl_pct REAL,
+    hold_seconds REAL,
+    meta_json TEXT,
+    FOREIGN KEY(run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_trades_run_ts
+    ON backtest_trades(run_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS backtest_rejections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    asset_class TEXT,
+    attempted_side TEXT,
+    reason_code TEXT NOT NULL,
+    meta_json TEXT,
+    FOREIGN KEY(run_id) REFERENCES backtest_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_rejections_run_ts
+    ON backtest_rejections(run_id, timestamp);
+
 -- Lightweight ops metrics (counter-style). Used for SQLite lock tracking and
 -- price-error counts. ``window_label`` is the bucket key ('total', 'cycle', etc).
 CREATE TABLE IF NOT EXISTS ops_metrics (
@@ -1057,6 +1124,199 @@ def fetch_adaptive_parameter_changes(
             (strategy_name, capital_stage, int(limit)),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def create_backtest_run(
+    request_json: str,
+    *,
+    strategy_name: str,
+    status: str = "running",
+    parameter_snapshot_json: str | None = None,
+    db_path: Path | str | None = None,
+) -> int:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO backtest_runs (
+                strategy_name, status, request_json, parameter_snapshot_json
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (strategy_name, status, request_json, parameter_snapshot_json),
+        )
+        return int(cur.lastrowid)
+
+
+def update_backtest_status(
+    run_id: int,
+    *,
+    status: str,
+    summary_json: str | None = None,
+    rejection_summary_json: str | None = None,
+    error_message: str | None = None,
+    db_path: Path | str | None = None,
+) -> None:
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE backtest_runs
+            SET status = ?, summary_json = COALESCE(?, summary_json),
+                rejection_summary_json = COALESCE(?, rejection_summary_json),
+                error_message = ?
+            WHERE id = ?
+            """,
+            (status, summary_json, rejection_summary_json, error_message, int(run_id)),
+        )
+
+
+def insert_backtest_equity_curve(
+    run_id: int,
+    rows: list[dict[str, Any]],
+    db_path: Path | str | None = None,
+) -> None:
+    if not rows:
+        return
+    def _do_insert() -> None:
+        with get_connection(db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO backtest_equity_curve
+                (run_id, timestamp, equity, cash, exposure, drawdown_pct)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        int(run_id),
+                        str(r["timestamp"]),
+                        float(r["equity"]),
+                        float(r["cash"]),
+                        float(r["exposure"]),
+                        float(r["drawdown_pct"]),
+                    )
+                    for r in rows
+                ],
+            )
+    with_sqlite_retry(_do_insert)
+
+
+def insert_backtest_trades(run_id: int, rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
+    if not rows:
+        return
+    def _do_insert() -> None:
+        with get_connection(db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO backtest_trades (
+                    run_id, timestamp, symbol, asset_class, side, qty, price, fill_price,
+                    notional, fee, reason_code, pnl, pnl_pct, hold_seconds, meta_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        int(run_id),
+                        str(r["timestamp"]),
+                        str(r["symbol"]),
+                        str(r.get("asset_class") or ""),
+                        str(r["side"]),
+                        float(r["qty"]),
+                        float(r["price"]),
+                        float(r["fill_price"]),
+                        float(r["notional"]),
+                        float(r["fee"]),
+                        str(r.get("reason_code") or ""),
+                        (None if r.get("pnl") is None else float(r["pnl"])),
+                        (None if r.get("pnl_pct") is None else float(r["pnl_pct"])),
+                        (None if r.get("hold_seconds") is None else float(r["hold_seconds"])),
+                        r.get("meta_json"),
+                    )
+                    for r in rows
+                ],
+            )
+    with_sqlite_retry(_do_insert)
+
+
+def insert_backtest_rejections(run_id: int, rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
+    if not rows:
+        return
+    with get_connection(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO backtest_rejections (
+                run_id, timestamp, symbol, asset_class, attempted_side, reason_code, meta_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    int(run_id),
+                    str(r["timestamp"]),
+                    str(r["symbol"]),
+                    str(r.get("asset_class") or ""),
+                    str(r.get("attempted_side") or ""),
+                    str(r["reason_code"]),
+                    r.get("meta_json"),
+                )
+                for r in rows
+            ],
+        )
+
+
+def fetch_backtest_runs(limit: int = 20, db_path: Path | str | None = None) -> list[dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            """
+            SELECT id, created_at, strategy_name, status, summary_json, rejection_summary_json, error_message
+            FROM backtest_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+        return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def fetch_backtest_result(run_id: int, db_path: Path | str | None = None) -> dict[str, Any] | None:
+    with get_connection(db_path) as conn:
+        base = conn.execute(
+            """
+            SELECT * FROM backtest_runs WHERE id = ?
+            """,
+            (int(run_id),),
+        ).fetchone()
+        if base is None:
+            return None
+        curve = conn.execute(
+            """
+            SELECT timestamp, equity, cash, exposure, drawdown_pct
+            FROM backtest_equity_curve WHERE run_id = ? ORDER BY id ASC
+            """,
+            (int(run_id),),
+        ).fetchall()
+        trades = conn.execute(
+            """
+            SELECT timestamp, symbol, asset_class, side, qty, price, fill_price, notional,
+                   fee, reason_code, pnl, pnl_pct, hold_seconds, meta_json
+            FROM backtest_trades WHERE run_id = ? ORDER BY id ASC
+            """,
+            (int(run_id),),
+        ).fetchall()
+        rejections = conn.execute(
+            """
+            SELECT timestamp, symbol, asset_class, attempted_side, reason_code, meta_json
+            FROM backtest_rejections WHERE run_id = ? ORDER BY id ASC
+            """,
+            (int(run_id),),
+        ).fetchall()
+    out = _row_to_dict(base)
+    out["equity_curve"] = [_row_to_dict(r) for r in curve]
+    out["trades"] = [_row_to_dict(r) for r in trades]
+    out["rejections"] = [_row_to_dict(r) for r in rejections]
+    return out
+
+
+def fetch_latest_backtest(db_path: Path | str | None = None) -> dict[str, Any] | None:
+    rows = fetch_backtest_runs(limit=1, db_path=db_path)
+    if not rows:
+        return None
+    return fetch_backtest_result(int(rows[0]["id"]), db_path=db_path)
 
 
 def _alpaca_ts_to_sqlite(ts: Any) -> str:

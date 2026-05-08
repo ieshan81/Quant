@@ -238,6 +238,10 @@ _PAGE = """
     .sym-badge-s { color: #00d4ff; font-size: 0.65rem; }
     .sig-sym-crypto .sym-txt { color: #f7931a; font-weight: 700; }
     .sig-sym-stock .sym-txt { color: #00d4ff; font-weight: 700; }
+    .top-tabs { display:flex; gap:8px; margin: 0.8rem auto 0; max-width:1700px; padding:0 1.1rem; }
+    .tab-btn { background:#1e293b; color:#94a3b8; border:1px solid #334155; border-radius:8px; padding:6px 12px; cursor:pointer; }
+    .tab-btn.active { color:#00ff88; border-color:#00ff88; background:rgba(0,255,136,0.1); }
+    .panel-hidden { display:none; }
 
     /* Institutional grid override */
     .wrap { max-width: 1700px; padding: 1rem 1.1rem 1.4rem; display: grid; gap: 1rem; grid-template-columns: repeat(12, minmax(0, 1fr)); }
@@ -273,7 +277,12 @@ _PAGE = """
     </div>
     <div class="badge-paper">PAPER TRADING</div>
   </header>
+  <div class="top-tabs">
+    <button id="tabDashboard" class="tab-btn active" type="button">Dashboard</button>
+    <button id="tabBacktest" class="tab-btn" type="button">Backtest</button>
+  </div>
   <div class="wrap">
+    <div id="dashboardPanel">
     <div class="stats-row">
       <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}" id="tilePnl">{{ pnl_str }}</div></div>
       <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div><div class="spark-wrap"><canvas id="sparkEq"></canvas></div></div>
@@ -363,7 +372,32 @@ _PAGE = """
       </div>
     </div>
 
-    <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
+    </div>
+    <div id="backtestPanel" class="panel-hidden">
+      <div class="card" style="grid-column:1 / -1;">
+        <h2>Backtest Runner</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <input id="btStrategy" value="current_adaptive" placeholder="strategy" />
+          <input id="btSymbols" value="AAPL,MSFT,BTC/USD" placeholder="symbols csv" />
+          <input id="btStart" value="2025-01-01" placeholder="start YYYY-MM-DD" />
+          <input id="btEnd" value="2026-01-01" placeholder="end YYYY-MM-DD" />
+          <button id="btRunBtn" class="cfg-save" type="button">Run Backtest</button>
+        </div>
+      </div>
+      <div class="card" style="grid-column:1 / -1;">
+        <h2>Backtest Summary</h2>
+        <pre id="btSummary" class="mono muted">No run selected.</pre>
+      </div>
+      <div class="card" style="grid-column:1 / -1;">
+        <h2>Backtest Equity Curve</h2>
+        <div class="chart-wrap"><canvas id="btChart"></canvas></div>
+      </div>
+      <div class="card" style="grid-column:1 / -1;">
+        <h2>Recent Backtest Runs</h2>
+        <table class="data-table"><thead><tr><th>ID</th><th>Created</th><th>Strategy</th><th>Status</th><th></th></tr></thead><tbody id="btRunsBody"></tbody></table>
+      </div>
+    </div>
+    <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
     <p class="last-upd" id="metaNote">Live dashboard via WebSocket (fallback poll {{ refresh_sec }}s) · clock ET</p>
   </div>
 
@@ -1086,6 +1120,82 @@ _PAGE = """
       }
     }
     bindCfg();
+
+    let btChart = null;
+    function switchTab(tab) {
+      const dash = document.getElementById("dashboardPanel");
+      const bt = document.getElementById("backtestPanel");
+      const bd = document.getElementById("tabDashboard");
+      const bb = document.getElementById("tabBacktest");
+      const showBt = tab === "backtest";
+      if (dash) dash.classList.toggle("panel-hidden", showBt);
+      if (bt) bt.classList.toggle("panel-hidden", !showBt);
+      if (bd) bd.classList.toggle("active", !showBt);
+      if (bb) bb.classList.toggle("active", showBt);
+    }
+    document.getElementById("tabDashboard")?.addEventListener("click", () => switchTab("dashboard"));
+    document.getElementById("tabBacktest")?.addEventListener("click", () => { switchTab("backtest"); loadBacktestRuns(); });
+
+    function renderBacktestChart(points) {
+      const canvas = document.getElementById("btChart");
+      if (!canvas) return;
+      const labels = (points || []).map(p => p.timestamp);
+      const data = (points || []).map(p => Number(p.equity || 0));
+      if (!btChart) {
+        btChart = new Chart(canvas.getContext("2d"), {
+          type: "line",
+          data: { labels, datasets: [{ data, borderColor: "#00ff88", pointRadius: 0, tension: 0.2 }] },
+          options: { animation: false, responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
+        return;
+      }
+      btChart.data.labels = labels;
+      btChart.data.datasets[0].data = data;
+      btChart.update("none");
+    }
+
+    async function loadBacktestResult(runId) {
+      const r = await fetch("/api/backtest/result/" + encodeURIComponent(runId), { cache: "no-store" });
+      const j = await r.json();
+      const s = document.getElementById("btSummary");
+      if (s) s.textContent = JSON.stringify({ summary: j.summary_json, rejections: j.rejection_summary_json }, null, 2);
+      renderBacktestChart(j.equity_curve || []);
+    }
+
+    async function loadBacktestRuns() {
+      const r = await fetch("/api/backtest/runs?limit=20", { cache: "no-store" });
+      const rows = await r.json();
+      const body = document.getElementById("btRunsBody");
+      if (!body) return;
+      body.innerHTML = "";
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td class="mono">${row.id}</td><td class="mono">${esc(row.created_at || "")}</td><td>${esc(row.strategy_name || "")}</td><td>${esc(row.status || "")}</td><td><button type="button" class="cfg-save" data-run="${row.id}">View</button></td>`;
+        body.appendChild(tr);
+      }
+      body.querySelectorAll("button[data-run]").forEach((btn) => {
+        btn.addEventListener("click", () => loadBacktestResult(btn.dataset.run));
+      });
+    }
+
+    document.getElementById("btRunBtn")?.addEventListener("click", async () => {
+      const payload = {
+        strategy_name: (document.getElementById("btStrategy") || {}).value || "current_adaptive",
+        symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
+        start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
+        end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
+      };
+      const r = await fetch("/api/backtest/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (j && j.run_id) {
+        await loadBacktestRuns();
+        await loadBacktestResult(j.run_id);
+      }
+    });
   </script>
 </body>
 </html>
@@ -1190,6 +1300,8 @@ def _dashboard_host_port() -> tuple[str, int]:
 def create_app() -> Flask:
     from data import data_store
     from data.data_store import get_connection, init_schema
+    from backtesting.models import BacktestRequest
+    from backtesting import runner as backtest_runner
     from monitoring.dashboard_data import build_dashboard_payload
 
     app = Flask(__name__)
@@ -1461,6 +1573,91 @@ def create_app() -> Flask:
             source="dashboard_pause",
         )
         return jsonify({"ok": True, "paused": pause})
+
+    @app.get("/api/backtest/defaults")
+    def api_backtest_defaults() -> Response:
+        defaults = {
+            "strategies": [
+                "combined_stock",
+                "crypto_scalper",
+                "aggressive_micro_scalp",
+                "current_adaptive",
+            ],
+            "symbols": ["AAPL", "MSFT", "SPY", "BTC/USD", "ETH/USD"],
+            "timeframes": ["1Day"],
+            "date_range": {"start": "2024-01-01", "end": "2026-01-01"},
+            "costs": {"fee_bps": 5.0, "slippage_bps": 10.0, "spread_bps": 20.0},
+            "runtime_effective": data_store.fetch_strategy_runtime_state("aggressive_micro_scalp", "MICRO") or {},
+        }
+        return Response(json.dumps(defaults, default=str), mimetype="application/json")
+
+    @app.post("/api/backtest/run")
+    def api_backtest_run() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            req = BacktestRequest(
+                strategy_name=str(body.get("strategy_name", "current_adaptive")),
+                asset_class=str(body.get("asset_class", "mixed")),
+                symbols=[str(x).strip() for x in body.get("symbols", ["AAPL"]) if str(x).strip()],
+                start_date=str(body.get("start_date", "2025-01-01")),
+                end_date=str(body.get("end_date", "2026-01-01")),
+                timeframe=str(body.get("timeframe", "1Day")),
+                starting_cash=float(body.get("starting_cash", 100.0)),
+                max_position_notional=float(body.get("max_position_notional", 5.0)),
+                max_positions=int(body.get("max_positions", 3)),
+                max_trades_per_hour=int(body.get("max_trades_per_hour", 6)),
+                fee_bps=float(body.get("fee_bps", 5.0)),
+                slippage_bps=float(body.get("slippage_bps", 10.0)),
+                spread_bps=float(body.get("spread_bps", 20.0)),
+                min_order_notional=float(body.get("min_order_notional", 1.0)),
+                allow_fractional=bool(body.get("allow_fractional", True)),
+                use_fractionability_rules=bool(body.get("use_fractionability_rules", True)),
+                use_market_hours=bool(body.get("use_market_hours", True)),
+            )
+            run_id = data_store.create_backtest_run(
+                json.dumps(req.__dict__, default=str),
+                strategy_name=req.strategy_name,
+                status="running",
+            )
+            result = backtest_runner.execute(req)
+            data_store.insert_backtest_equity_curve(run_id, [p.__dict__ for p in result.equity_curve])
+            data_store.insert_backtest_trades(run_id, [t.__dict__ for t in result.trades])
+            data_store.insert_backtest_rejections(run_id, [r.__dict__ for r in result.rejections])
+            data_store.update_backtest_status(
+                run_id,
+                status=result.status,
+                summary_json=json.dumps(result.summary_json, default=str),
+                rejection_summary_json=json.dumps(result.rejection_summary_json, default=str),
+            )
+            return jsonify({"ok": True, "run_id": run_id, "status": result.status})
+        except Exception as exc:
+            logger.exception("api/backtest/run failed")
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.get("/api/backtest/runs")
+    def api_backtest_runs() -> Response:
+        limit = int(request.args.get("limit", 20) or 20)
+        rows = data_store.fetch_backtest_runs(limit=limit)
+        return Response(json.dumps(rows, default=str), mimetype="application/json")
+
+    @app.get("/api/backtest/result/<int:run_id>")
+    def api_backtest_result(run_id: int) -> Any:
+        row = data_store.fetch_backtest_result(run_id)
+        if row is None:
+            return jsonify({"ok": False, "error": "not found"}), 404
+        summary_raw = row.get("summary_json")
+        if isinstance(summary_raw, str) and summary_raw.strip():
+            try:
+                summary_obj = json.loads(summary_raw)
+            except json.JSONDecodeError:
+                summary_obj = {}
+            if isinstance(summary_obj, dict):
+                row["assumptions"] = summary_obj.get("assumptions", {})
+                row["data_quality"] = summary_obj.get("data_quality", {})
+                row["warnings"] = summary_obj.get("warnings", [])
+        return jsonify(row)
 
     @app.post("/api/sync-alpaca")
     def api_sync_alpaca() -> Any:
