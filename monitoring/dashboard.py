@@ -13,6 +13,8 @@ inside ``create_app`` from ``data.data_store`` + ``monitoring.dashboard_data``.
 import json
 import dataclasses
 import math
+from pathlib import Path
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,6 +25,24 @@ import config
 
 _REFRESH_SEC = 30
 DASHBOARD_SECRET = os.environ.get("DASHBOARD_SECRET", "")
+_DEBUG_LOG_PATH = Path("debug-22f1f6.log")
+
+
+def _debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
+    try:
+        rec = {
+            "sessionId": "22f1f6",
+            "runId": "run2",
+            "hypothesisId": hypothesis_id,
+            "location": "monitoring/dashboard.py",
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, default=str) + "\n")
+    except Exception:
+        pass
 
 _PAGE = """
 <!DOCTYPE html>
@@ -3606,6 +3626,11 @@ def create_app() -> Flask:
         from execution import stock_broker
 
         cli = stock_broker.get_rest_client()
+        _debug_log(
+            "H7",
+            "build_dashboard_payload_safe entry",
+            {"period": period, "has_rest_client": bool(cli)},
+        )
 
         def _full() -> dict[str, Any]:
             with get_connection() as conn:
@@ -3618,7 +3643,18 @@ def create_app() -> Flask:
         try:
             with ThreadPoolExecutor(max_workers=1) as ex:
                 fut = ex.submit(_full)
-                return fut.result(timeout=_DASH_PAYLOAD_BUILD_SEC)
+                payload = fut.result(timeout=_DASH_PAYLOAD_BUILD_SEC)
+                _debug_log(
+                    "H7",
+                    "build_dashboard_payload_safe success",
+                    {
+                        "has_payload": isinstance(payload, dict),
+                        "positions": len(payload.get("open_positions", []))
+                        if isinstance(payload, dict) and isinstance(payload.get("open_positions"), list)
+                        else -1,
+                    },
+                )
+                return payload
         except FutTimeout:
             logger.warning(
                 "[dashboard] build_dashboard_payload exceeded {:.1f}s — SQLite-only fallback",
@@ -3627,9 +3663,11 @@ def create_app() -> Flask:
             p = _sqlite_only()
             if isinstance(p, dict):
                 p["dashboard_build_timed_out"] = True
+            _debug_log("H8", "build_dashboard_payload_safe timeout fallback", {"period": period})
             return p
         except Exception:
             logger.exception("[dashboard] build_dashboard_payload failed — SQLite-only fallback")
+            _debug_log("H8", "build_dashboard_payload_safe exception fallback", {"period": period})
             return _sqlite_only()
 
     def _dashboard_ws_push() -> None:
@@ -3705,6 +3743,23 @@ def create_app() -> Flask:
         if period not in ("1D", "1W", "1M", "3M"):
             period = "1D"
         payload = _build_dashboard_payload_safe(period)
+        _debug_log(
+            "H9",
+            "api_dashboard response summary",
+            {
+                "period": period,
+                "positions": len(payload.get("open_positions", []))
+                if isinstance(payload.get("open_positions"), list)
+                else -1,
+                "signals": len(payload.get("recent_signals", []))
+                if isinstance(payload.get("recent_signals"), list)
+                else -1,
+                "eq": len(payload.get("equity_series", []))
+                if isinstance(payload.get("equity_series"), list)
+                else -1,
+                "has_eh": isinstance(payload.get("execution_health"), dict),
+            },
+        )
         return Response(
             json.dumps(payload, default=str),
             mimetype="application/json",
@@ -4441,6 +4496,23 @@ def create_app() -> Flask:
         if period not in ("1D", "1W", "1M", "3M"):
             period = "1D"
         payload = _build_dashboard_payload_safe(period)
+        _debug_log(
+            "H9",
+            "index render summary",
+            {
+                "period": period,
+                "positions": len(payload.get("open_positions", []))
+                if isinstance(payload.get("open_positions"), list)
+                else -1,
+                "signals": len(payload.get("recent_signals", []))
+                if isinstance(payload.get("recent_signals"), list)
+                else -1,
+                "eq": len(payload.get("equity_series", []))
+                if isinstance(payload.get("equity_series"), list)
+                else -1,
+                "has_eh": isinstance(payload.get("execution_health"), dict),
+            },
+        )
         with get_connection() as conn:
             cfg_rows = data_store.fetch_all_bot_config_rows(conn)
             bot_ui = _bot_ui_rows(cfg_rows)
