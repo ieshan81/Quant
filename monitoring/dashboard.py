@@ -274,12 +274,20 @@ _PAGE = """
       gap: 1rem;
       grid-template-columns: repeat(12, minmax(0, 1fr));
     }
-    #dashboard-tab .card {
+    #overview-tab .card,
+    #positions-tab .card,
+    #system-tab .card {
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 10px;
       box-shadow: none;
     }
+    .warning-card {
+      grid-column: 1 / -1;
+      border-color: #fbbf24 !important;
+      background: rgba(251, 191, 36, 0.08) !important;
+    }
+    .warning-card h2 { color: #fbbf24; }
     .dashboard-wrap .stats-row {
       grid-column: 1 / -1;
       display: grid;
@@ -450,7 +458,18 @@ _PAGE = """
       width: 100%;
       background: #0b1220; color: var(--text-primary);
       border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.55rem;
+      font-family: inherit;
+      font-size: 0.85rem;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%), linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+      background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%;
+      background-size: 6px 6px;
+      background-repeat: no-repeat;
+      padding-right: 28px;
     }
+    .bt-setup-grid input { background-image: none; padding-right: 0.55rem; }
+    .bt-setup-grid select option { background: #0b1220; color: var(--text-primary); }
     .bt-actions-row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
     .bt-status { margin-top: 0.5rem; font-size: 0.85rem; }
     .bt-status.ok { color: #22c55e; }
@@ -491,17 +510,24 @@ _PAGE = """
     <div class="badge-paper">PAPER TRADING</div>
   </header>
   <nav class="tab-nav" aria-label="Primary">
-    <button type="button" class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button type="button" class="tab-btn active" data-tab="overview">Overview</button>
+    <button type="button" class="tab-btn" data-tab="positions">Positions</button>
     <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
+    <button type="button" class="tab-btn" data-tab="system">System Health</button>
   </nav>
 
-  <main id="dashboard-tab" class="tab-panel active">
+  <main id="overview-tab" class="tab-panel active">
     <div class="dashboard-wrap">
     <div class="stats-row">
       <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}" id="tilePnl">{{ pnl_str }}</div></div>
       <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div><div class="spark-wrap"><canvas id="sparkEq"></canvas></div></div>
-      <div class="card"><h2>Mode</h2><div class="big mono" id="tileMode">{{ mode_str }}</div><p class="muted" style="margin:0.35rem 0 0;">DB: {{ db }}</p></div>
+      <div class="card"><h2>Mode</h2><div class="big mono" id="tileMode">{{ mode_str }}</div><p class="muted" style="margin:0.35rem 0 0;">Cash: <span class="mono" id="tileCash">—</span> · BP: <span class="mono" id="tileBp">—</span></p></div>
       <div class="card"><h2>Market (NYSE)</h2><div id="mktLine" class="market-closed">…</div><div class="countdown" id="mktCd"></div></div>
+    </div>
+
+    <div class="card warning-card" id="overviewWarnings" style="display:none;">
+      <h2>⚠️ Warnings</h2>
+      <ul id="overviewWarningsList" style="margin:0.4rem 0 0; padding-left:1.1rem;"></ul>
     </div>
 
     <div class="card chart-main">
@@ -519,14 +545,9 @@ _PAGE = """
       </div>
     </div>
 
-    <div class="card social-panel">
-      <h2><span>🔥</span> Social momentum</h2>
-      <p class="muted" style="margin-top:0;">Top 10 · <a href="/api/social">/api/social</a></p>
-      <div id="socialMoRoot" style="margin-top:0.5rem;"><p class="muted">Loading…</p></div>
-    </div>
-
     <div class="card signal-feed">
-      <h2>Signal feed</h2>
+      <h2>Recent decisions</h2>
+      <p class="muted" style="margin-top:0;">Latest signals from the worker.</p>
       <div style="overflow-x:auto;">
       <table><thead><tr><th></th><th>Time</th><th>Symbol</th><th>Type</th><th>Signal</th><th>Score</th><th></th></tr></thead><tbody id="sigFeedBody"></tbody></table>
       </div>
@@ -535,6 +556,7 @@ _PAGE = """
 
     <div class="subrow">
       <div class="card"><h2>Open positions</h2>
+        <p class="muted" style="margin-top:0;">Quick view · full detail in <a href="#" data-tab-link="positions">Positions</a> tab.</p>
         <table class="data-table"><thead><tr><th>Class</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>Unrealized</th><th>Unrealized %</th></tr></thead><tbody id="posTableBody"></tbody></table>
         <p class="muted" id="posEmpty" style="display:none;">No open positions.</p>
       </div>
@@ -543,118 +565,33 @@ _PAGE = """
         <p class="muted" id="tradesEmpty" style="display:none;">No trades yet.</p>
       </div>
     </div>
-
-    <div class="bottom-grid">
-      <div class="card"><h2>📊 Signal calibration</h2>
-        {% if calibration %}
-        <table class="data-table"><thead><tr><th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th></tr></thead><tbody>
-          {% for leg, row in calibration.items()|sort %}
-          <tr class="{% if row.resolved < 1 %}muted{% elif row.accuracy > 55 %}cal-ok{% elif row.accuracy >= 45 %}cal-mid{% else %}cal-bad{% endif %}">
-            <td>{{ leg }}</td><td>{{ row.total }}</td>
-            <td>{% if row.resolved > 0 %}{{ row.accuracy }}%{% else %}—{% endif %}</td><td>{{ row.weight_suggestion }}</td>
-          </tr>{% endfor %}
-        </tbody></table>{% else %}<p class="muted">No calibration data.</p>{% endif %}
-      </div>
-      <div class="card"><h2>⚙️ Bot parameters</h2>
-        <p class="muted" style="margin-top:0;">SQLite — worker reads each cycle.</p>
-        <p class="muted" style="margin-top:0.4rem;">
-          Dynamic risk:
-          <label class="mono">
-            <input type="checkbox" id="cfg-dynamic-risk" {% if dynamic_risk_enabled %}checked{% endif %}/>
-            enabled
-          </label>
-        </p>
-        <table class="data-table"><thead><tr><th>Parameter</th><th>Slider</th><th>Value</th><th></th></tr></thead><tbody>
-          {% for row in bot_ui %}
-          <tr data-key="{{ row.key }}">
-            <td title="{{ row.description }}">{{ row.key }}</td>
-            <td colspan="2"><input type="range" class="cfg-range" data-key="{{ row.key }}" min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}"/></td>
-            <td style="white-space:nowrap;"><input type="number" class="cfg-num mono" data-key="{{ row.key }}" min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}" style="width:4.5rem"/>
-            <button type="button" class="cfg-save" data-key="{{ row.key }}">Save</button></td>
-          </tr>{% endfor %}
-        </tbody></table>
-        <p style="margin-top:0.75rem;"><button type="button" id="cfg-reset">Reset defaults</button></p>
-      </div>
-      <div class="card"><h2>📈 Performance &amp; learning</h2>
-        {% if perf.closed_round_trips and perf.closed_round_trips > 0 %}
-        <p class="muted">Trades: <strong class="mono">{{ perf.total_trades }}</strong> · Round-trips: <strong class="mono">{{ perf.closed_round_trips }}</strong> · Win rate: <strong class="mono">{{ (perf.win_rate_pct | round(1)) if perf.win_rate_pct is not none else "—" }}%</strong> · Best: <strong class="mono">{{ "+" if perf.best_trade is not none and perf.best_trade >= 0 else "" }}${{ (perf.best_trade | round(2)) if perf.best_trade is not none else "—" }}</strong> · Worst: <strong class="mono">{{ "$" }}{{ (perf.worst_trade | round(2)) if perf.worst_trade is not none else "—" }}</strong></p>
-        {% else %}
-        <p class="muted">No completed round-trips yet</p>
-        {% endif %}
-        {% if rl_history %}
-        <table class="data-table"><thead><tr><th>Time</th><th>Summary</th><th>Pairs</th><th>Win%</th></tr></thead><tbody>
-          {% for e in rl_history %}
-          <tr><td class="mono" style="font-size:0.72rem;">{{ e.created_at }}</td><td>{{ e.summary }}</td><td class="mono">{{ e.trade_count }}</td>
-            <td>{% if e.win_rate is not none %}{{ (e.win_rate * 100) | round(1) }}%{% else %}—{% endif %}</td></tr>{% endfor %}
-        </tbody></table>{% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
-      </div>
     </div>
+  </main>
 
-    <div class="card exec-health-card" id="execHealthCard">
-      <h2>🩺 Execution health</h2>
-      <div class="exec-health-grid" id="execHealthGrid">
-        <div class="exec-health-tile" id="execTileCash">
-          <div class="exec-health-tile-label">Cash</div>
-          <div class="exec-health-tile-value mono" id="execHealthCash">—</div>
-        </div>
-        <div class="exec-health-tile" id="execTileBp">
-          <div class="exec-health-tile-label">Buying power</div>
-          <div class="exec-health-tile-value mono" id="execHealthBuyingPower">—</div>
-        </div>
-        <div class="exec-health-tile" id="execTileUsable">
-          <div class="exec-health-tile-label">Usable buying power</div>
-          <div class="exec-health-tile-value mono" id="execHealthUsable">—</div>
-        </div>
-        <div class="exec-health-tile" id="execTileBlocked">
-          <div class="exec-health-tile-label">Blocked exits</div>
-          <div class="exec-health-tile-value mono" id="execHealthBlockedExits">0</div>
-        </div>
-        <div class="exec-health-tile exec-health-tile-wide" id="execTilePdt">
-          <div class="exec-health-tile-label">PDT blocked symbols</div>
-          <div class="exec-health-pdt-wrap" id="execHealthPdtBadges"><span class="muted exec-health-empty">—</span></div>
-          <span class="exec-health-tile-fallback mono" id="execHealthPdtSymbols" style="display:none;">—</span>
-        </div>
-        <div class="exec-health-tile" id="execTileStale">
-          <div class="exec-health-tile-label">Stale local positions</div>
-          <div class="exec-health-tile-value mono" id="execHealthStaleLocal">0</div>
-        </div>
-        <div class="exec-health-tile" id="execTileMismatch">
-          <div class="exec-health-tile-label">Broker/local mismatches</div>
-          <div class="exec-health-tile-value mono" id="execHealthMismatches">0</div>
-        </div>
-        <div class="exec-health-tile" id="execTileCryptoFast">
-          <div class="exec-health-tile-label">Fast crypto exits</div>
-          <div class="exec-health-tile-value mono" id="execHealthCryptoFast">—</div>
-        </div>
-        <div class="exec-health-tile" id="execTilePdtGuard">
-          <div class="exec-health-tile-label">Stock PDT guard</div>
-          <div class="exec-health-tile-value mono" id="execHealthPdtGuard">—</div>
-        </div>
-        <div class="exec-health-tile" id="execTileEligible">
-          <div class="exec-health-tile-label">Exit-eligible positions</div>
-          <div class="exec-health-tile-value mono" id="execHealthExitEligible">—</div>
-        </div>
-        <div class="exec-health-tile" id="execTileReconcile">
-          <div class="exec-health-tile-label">Last reconciliation</div>
-          <div class="exec-health-tile-value mono exec-health-tile-sm" id="execHealthLastReconcile">—</div>
+  <main id="positions-tab" class="tab-panel">
+    <div class="dashboard-wrap">
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>Open positions — detailed</h2>
+        <p class="muted" style="margin-top:0;">Each row shows broker reality, local snapshot, and whether an exit is currently allowed.</p>
+        <div style="overflow-x:auto;">
+          <table class="data-table"><thead><tr>
+            <th>Symbol</th><th>Class</th><th>Local qty</th><th>Broker qty</th><th>Entry</th><th>Current</th>
+            <th>Unrealized</th><th>P/L %</th><th>Exit status</th><th>Reason</th>
+          </tr></thead><tbody id="posDetailedBody"></tbody></table>
+          <p class="muted" id="posDetailedEmpty" style="display:none;margin-top:0.4rem;">No open positions.</p>
         </div>
       </div>
-      <p class="muted exec-health-hint">PDT blocked exits mean Alpaca refused same-day stock exits.</p>
-      <p class="muted exec-health-hint">Broker/local mismatches mean local SQLite and Alpaca position records differ.</p>
-      <details class="exec-exit-details" id="execExitDetails">
-        <summary class="exec-exit-summary">Position exit eligibility <span class="muted" id="execExitSummaryCount"></span></summary>
-        <div style="overflow-x:auto;margin-top:0.5rem;">
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>Position exit eligibility (raw rows)</h2>
+        <p class="muted" style="margin-top:0;">From <code>position_exit_rows</code> in <code>/api/dashboard</code>.</p>
+        <div style="overflow-x:auto;">
           <table class="data-table"><thead><tr>
             <th>Symbol</th><th>Class</th><th>Local qty</th><th>Broker qty</th><th>Entry</th><th>Mark</th><th>P/L %</th>
             <th>Eligibility</th><th>Block reason</th><th>PDT</th><th>Last exit try</th><th>Cooldown</th><th>Action</th>
           </tr></thead><tbody id="execExitTableBody"></tbody></table>
           <p class="muted" id="execExitEmpty" style="display:none;margin-top:0.35rem;">No position exit rows.</p>
         </div>
-      </details>
-    </div>
-
-    <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
-    <p class="last-upd" id="metaNote">Live dashboard via WebSocket (fallback poll {{ refresh_sec }}s) · clock ET</p>
+      </div>
     </div>
   </main>
 
@@ -785,6 +722,149 @@ _PAGE = """
         <details open>
           <summary><strong>Reports</strong></summary>
           <p class="muted">Use Copy/Download to export backtest or experiment context.</p>
+        </details>
+      </div>
+    </div>
+  </main>
+
+  <main id="system-tab" class="tab-panel">
+    <div class="dashboard-wrap">
+      <div class="card exec-health-card" id="execHealthCard" style="grid-column: 1 / -1;">
+        <h2>🩺 Execution health</h2>
+        <p class="muted" id="execHealthMissing" style="display:none;color:#fbbf24;margin-top:0;">Execution health payload missing.</p>
+        <div class="exec-health-grid" id="execHealthGrid">
+          <div class="exec-health-tile" id="execTileCash">
+            <div class="exec-health-tile-label">Cash</div>
+            <div class="exec-health-tile-value mono" id="execHealthCash">—</div>
+          </div>
+          <div class="exec-health-tile" id="execTileBp">
+            <div class="exec-health-tile-label">Buying power</div>
+            <div class="exec-health-tile-value mono" id="execHealthBuyingPower">—</div>
+          </div>
+          <div class="exec-health-tile" id="execTileUsable">
+            <div class="exec-health-tile-label">Usable buying power</div>
+            <div class="exec-health-tile-value mono" id="execHealthUsable">—</div>
+          </div>
+          <div class="exec-health-tile" id="execTileBlocked">
+            <div class="exec-health-tile-label">Blocked exits</div>
+            <div class="exec-health-tile-value mono" id="execHealthBlockedExits">0</div>
+          </div>
+          <div class="exec-health-tile exec-health-tile-wide" id="execTilePdt">
+            <div class="exec-health-tile-label">PDT blocked symbols</div>
+            <div class="exec-health-pdt-wrap" id="execHealthPdtBadges"><span class="muted exec-health-empty">—</span></div>
+            <span class="exec-health-tile-fallback mono" id="execHealthPdtSymbols" style="display:none;">—</span>
+          </div>
+          <div class="exec-health-tile" id="execTileStale">
+            <div class="exec-health-tile-label">Stale local positions</div>
+            <div class="exec-health-tile-value mono" id="execHealthStaleLocal">0</div>
+          </div>
+          <div class="exec-health-tile" id="execTileMismatch">
+            <div class="exec-health-tile-label">Broker/local mismatches</div>
+            <div class="exec-health-tile-value mono" id="execHealthMismatches">0</div>
+          </div>
+          <div class="exec-health-tile" id="execTileCryptoFast">
+            <div class="exec-health-tile-label">Fast crypto exits</div>
+            <div class="exec-health-tile-value mono" id="execHealthCryptoFast">—</div>
+          </div>
+          <div class="exec-health-tile" id="execTilePdtGuard">
+            <div class="exec-health-tile-label">Stock PDT guard</div>
+            <div class="exec-health-tile-value mono" id="execHealthPdtGuard">—</div>
+          </div>
+          <div class="exec-health-tile" id="execTileEligible">
+            <div class="exec-health-tile-label">Exit-eligible positions</div>
+            <div class="exec-health-tile-value mono" id="execHealthExitEligible">—</div>
+          </div>
+          <div class="exec-health-tile" id="execTileReconcile">
+            <div class="exec-health-tile-label">Last reconciliation</div>
+            <div class="exec-health-tile-value mono exec-health-tile-sm" id="execHealthLastReconcile">—</div>
+          </div>
+        </div>
+        <p class="muted exec-health-hint">PDT blocked exits mean Alpaca refused same-day stock exits.</p>
+        <p class="muted exec-health-hint">Broker/local mismatches mean local SQLite and Alpaca position records differ.</p>
+      </div>
+
+      <div class="card" id="systemMetaCard" style="grid-column: 1 / -1;">
+        <h2>System info</h2>
+        <p class="muted" style="margin-top:0;">DB: <span class="mono">{{ db }}</span></p>
+        <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
+        <p class="last-upd" id="metaNote">Live dashboard via HTTP polling (every {{ refresh_sec }}s) · clock ET</p>
+      </div>
+
+      <div class="card" style="grid-column: 1 / span 6;">
+        <h2><span>🔥</span> Social momentum</h2>
+        <p class="muted" style="margin-top:0;">Top 10 · <a href="/api/social">/api/social</a></p>
+        <div id="socialMoRoot" style="margin-top:0.5rem;"><p class="muted">Loading…</p></div>
+      </div>
+
+      <div class="card" style="grid-column: 7 / -1;">
+        <h2>📊 Signal calibration</h2>
+        {% if calibration %}
+        <table class="data-table"><thead><tr><th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th></tr></thead><tbody>
+          {% for leg, row in calibration.items()|sort %}
+          <tr class="{% if row.resolved < 1 %}muted{% elif row.accuracy > 55 %}cal-ok{% elif row.accuracy >= 45 %}cal-mid{% else %}cal-bad{% endif %}">
+            <td>{{ leg }}</td><td>{{ row.total }}</td>
+            <td>{% if row.resolved > 0 %}{{ row.accuracy }}%{% else %}—{% endif %}</td><td>{{ row.weight_suggestion }}</td>
+          </tr>{% endfor %}
+        </tbody></table>{% else %}<p class="muted">No calibration data.</p>{% endif %}
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>📈 Performance &amp; learning</h2>
+        {% if perf.closed_round_trips and perf.closed_round_trips > 0 %}
+        <p class="muted">Trades: <strong class="mono">{{ perf.total_trades }}</strong> · Round-trips: <strong class="mono">{{ perf.closed_round_trips }}</strong> · Win rate: <strong class="mono">{{ (perf.win_rate_pct | round(1)) if perf.win_rate_pct is not none else "—" }}%</strong> · Best: <strong class="mono">{{ "+" if perf.best_trade is not none and perf.best_trade >= 0 else "" }}${{ (perf.best_trade | round(2)) if perf.best_trade is not none else "—" }}</strong> · Worst: <strong class="mono">{{ "$" }}{{ (perf.worst_trade | round(2)) if perf.worst_trade is not none else "—" }}</strong></p>
+        {% else %}
+        <p class="muted">No completed round-trips yet</p>
+        {% endif %}
+        {% if rl_history %}
+        <table class="data-table"><thead><tr><th>Time</th><th>Summary</th><th>Pairs</th><th>Win%</th></tr></thead><tbody>
+          {% for e in rl_history %}
+          <tr><td class="mono" style="font-size:0.72rem;">{{ e.created_at }}</td><td>{{ e.summary }}</td><td class="mono">{{ e.trade_count }}</td>
+            <td>{% if e.win_rate is not none %}{{ (e.win_rate * 100) | round(1) }}%{% else %}—{% endif %}</td></tr>{% endfor %}
+        </tbody></table>{% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <details>
+          <summary><strong>⚙️ Advanced controls (bot parameters)</strong></summary>
+          <p class="muted" style="margin-top:0.5rem;">SQLite — worker reads each cycle. Sliders are hidden by default to keep the cockpit clean.</p>
+          <p class="muted" style="margin-top:0.4rem;">
+            Dynamic risk:
+            <label class="mono">
+              <input type="checkbox" id="cfg-dynamic-risk" {% if dynamic_risk_enabled %}checked{% endif %}/>
+              enabled
+            </label>
+          </p>
+          <table class="data-table"><thead><tr><th>Parameter</th><th>Slider</th><th>Value</th><th></th></tr></thead><tbody>
+            {% for row in bot_ui %}
+            <tr data-key="{{ row.key }}">
+              <td title="{{ row.description }}">{{ row.key }}</td>
+              <td colspan="2"><input type="range" class="cfg-range" data-key="{{ row.key }}" min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}"/></td>
+              <td style="white-space:nowrap;"><input type="number" class="cfg-num mono" data-key="{{ row.key }}" min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}" style="width:4.5rem"/>
+              <button type="button" class="cfg-save" data-key="{{ row.key }}">Save</button></td>
+            </tr>{% endfor %}
+          </tbody></table>
+          <p style="margin-top:0.75rem;"><button type="button" id="cfg-reset">Reset defaults</button></p>
+        </details>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <details>
+          <summary><strong>🧭 Roadmap</strong></summary>
+          <p class="muted" style="margin-top:0.5rem;">High-level plans. None of this is wired live yet.</p>
+          <h3 style="margin:0.6rem 0 0.2rem;">Crypto fast in/out (design)</h3>
+          <ul class="muted" style="margin:0; padding-left:1.1rem;">
+            <li>24/7 trading; no NYSE / PDT restriction.</li>
+            <li>Broker qty &gt; 0 required for any exit.</li>
+            <li>Take-profit, trailing-stop, stop-loss, max notional all read from DB config.</li>
+            <li>Every entry/exit decision recorded; dashboard shows reason.</li>
+          </ul>
+          <h3 style="margin:0.6rem 0 0.2rem;">AI intern / fund manager (staged)</h3>
+          <ol class="muted" style="margin:0; padding-left:1.1rem;">
+            <li>Observer — reads trades, missed exits, blocked exits, backtests; writes lessons only.</li>
+            <li>Advisor — suggests parameter changes; human approval required.</li>
+            <li>Paper fund manager — updates paper parameters within caps; no live trading.</li>
+            <li>Live advisor only — never auto-live without hard safety locks.</li>
+          </ol>
         </details>
       </div>
     </div>
@@ -2337,8 +2417,10 @@ _PAGE = """
   </script>
   <script>
 (function bindTabsAlways() {
+  var ALLOWED = { overview: 1, positions: 1, backtest: 1, system: 1 };
   function showTab(name) {
-    var tab = name === "backtest" ? "backtest" : "dashboard";
+    if (name === "dashboard") name = "overview";
+    var tab = ALLOWED[name] ? name : "overview";
     document.querySelectorAll(".tab-btn").forEach(function (btn) {
       btn.classList.toggle("active", btn.dataset.tab === tab);
     });
@@ -2346,7 +2428,7 @@ _PAGE = """
       panel.classList.toggle("active", panel.id === tab + "-tab");
     });
     try {
-      localStorage.setItem("quantbot_active_tab", tab === "backtest" ? "backtest" : "dashboard");
+      localStorage.setItem("quantbot_active_tab", tab);
     } catch (e) {}
     if (tab === "backtest" && typeof window.quantbotLoadBacktestRuns === "function") {
       window.quantbotLoadBacktestRuns();
@@ -2359,11 +2441,20 @@ _PAGE = """
         showTab(btn.dataset.tab);
       });
     });
+    document.querySelectorAll("[data-tab-link]").forEach(function (a) {
+      a.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        showTab(a.dataset.tabLink);
+      });
+    });
+    var allowed = { overview: 1, positions: 1, backtest: 1, system: 1 };
+    var fallback = "overview";
     try {
       var key = localStorage.getItem("quantbot_active_tab");
-      showTab(key === "backtest" ? "backtest" : "dashboard");
+      if (key === "dashboard") key = "overview";
+      showTab(allowed[key] ? key : fallback);
     } catch (e) {
-      showTab("dashboard");
+      showTab(fallback);
     }
   }
 
@@ -2489,9 +2580,157 @@ _PAGE = """
     });
   }
 
+  function fmtNumOrNA(v) {
+    if (v == null || v === "") return "N/A";
+    var n = Number(v);
+    return Number.isFinite(n) ? n.toFixed(2) : "N/A";
+  }
+
+  function fmtMoneyOrNA(v) {
+    if (v == null || v === "") return "N/A";
+    var n = Number(v);
+    return Number.isFinite(n) ? "$" + n.toFixed(2) : "N/A";
+  }
+
+  function fmtCountOrNA(v) {
+    if (v == null || v === "") return "N/A";
+    var n = Number(v);
+    return Number.isFinite(n) ? String(Math.trunc(n)) : "N/A";
+  }
+
+  function fmtToggle(v) {
+    if (v === true) return "on";
+    if (v === false) return "off";
+    return "N/A";
+  }
+
+  function explainExitFromPosition(r, marketOpen) {
+    const cls = String(r.asset_class || "").toLowerCase();
+    const broker = Number(r.broker_qty);
+    const local = Number(r.net_qty);
+    if (Number.isFinite(broker) && broker <= 0) {
+      return { status: "Blocked", reason: "Broker qty zero" };
+    }
+    if (cls === "crypto") {
+      return { status: "Can sell", reason: "Crypto trades 24/7" };
+    }
+    if (cls !== "crypto" && marketOpen === false) {
+      return { status: "Blocked", reason: "Market closed" };
+    }
+    if (Number.isFinite(local) && local <= 0) {
+      return { status: "Holding", reason: "No exit signal" };
+    }
+    return { status: "Can sell", reason: "—" };
+  }
+
+  function renderExecutionHealth(eh) {
+    const missingEl = byId("execHealthMissing");
+    if (!eh || typeof eh !== "object" || !Object.keys(eh).length) {
+      if (missingEl) missingEl.style.display = "block";
+      text("execHealthCash", "N/A");
+      text("execHealthBuyingPower", "N/A");
+      text("execHealthUsable", "N/A");
+      text("execHealthBlockedExits", "N/A");
+      text("execHealthStaleLocal", "N/A");
+      text("execHealthMismatches", "N/A");
+      text("execHealthCryptoFast", "N/A");
+      text("execHealthPdtGuard", "N/A");
+      text("execHealthExitEligible", "N/A");
+      text("execHealthLastReconcile", "N/A");
+      const pdtWrap = byId("execHealthPdtBadges");
+      if (pdtWrap) pdtWrap.innerHTML = '<span class="muted exec-health-empty">N/A</span>';
+      return;
+    }
+    if (missingEl) missingEl.style.display = "none";
+    text("execHealthCash", fmtMoneyOrNA(eh.cash));
+    text("execHealthBuyingPower", fmtMoneyOrNA(eh.buying_power));
+    text("execHealthUsable", fmtMoneyOrNA(eh.usable_buying_power));
+    text("execHealthBlockedExits", fmtCountOrNA(eh.blocked_exits_count));
+    text("execHealthStaleLocal", fmtCountOrNA(eh.stale_local_positions_count));
+    text("execHealthMismatches", fmtCountOrNA(eh.broker_local_mismatch_count));
+    text("execHealthCryptoFast", fmtToggle(eh.crypto_fast_exit_enabled));
+    text("execHealthPdtGuard", fmtToggle(eh.stock_pdt_guard_enabled));
+    text("execHealthExitEligible", fmtCountOrNA(eh.exit_eligible_positions_count));
+    text("execHealthLastReconcile", eh.last_reconciliation_at != null && eh.last_reconciliation_at !== "" ? String(eh.last_reconciliation_at) : "N/A");
+    const pdtSyms = Array.isArray(eh.pdt_blocked_symbols)
+      ? eh.pdt_blocked_symbols.map(function (s) { return String(s || "").trim(); }).filter(Boolean)
+      : [];
+    const pdtWrap = byId("execHealthPdtBadges");
+    if (pdtWrap) {
+      pdtWrap.innerHTML = pdtSyms.length
+        ? pdtSyms.map(function (s) { return '<span class="exec-health-badge">' + esc(s) + "</span>"; }).join("")
+        : '<span class="muted exec-health-empty">—</span>';
+    }
+  }
+
+  function renderPositionExitRows(rows) {
+    const tbody = byId("execExitTableBody");
+    const empty = byId("execExitEmpty");
+    const safe = Array.isArray(rows) ? rows.filter(function (r) { return r && typeof r === "object"; }) : [];
+    if (!tbody) return;
+    if (!safe.length) {
+      tbody.innerHTML = "";
+      if (empty) empty.style.display = "block";
+      return;
+    }
+    if (empty) empty.style.display = "none";
+    tbody.innerHTML = safe.map(function (r) {
+      function cellOrDash(v) { return v != null && v !== "" ? esc(String(v)) : "—"; }
+      return "<tr><td class=\"mono\">" + cellOrDash(r.symbol) + "</td>"
+        + "<td>" + cellOrDash(r.asset_class) + "</td>"
+        + "<td class=\"mono\">" + cellOrDash(r.local_qty) + "</td>"
+        + "<td class=\"mono\">" + cellOrDash(r.broker_qty) + "</td>"
+        + "<td class=\"mono\">" + cellOrDash(r.entry_price) + "</td>"
+        + "<td class=\"mono\">" + cellOrDash(r.current_price) + "</td>"
+        + "<td class=\"mono\">" + cellOrDash(r.pnl_pct) + "</td>"
+        + "<td>" + cellOrDash(r.exit_eligibility) + "</td>"
+        + "<td class=\"muted\">" + cellOrDash(r.exit_block_reason) + "</td>"
+        + "<td>" + cellOrDash(r.pdt_status) + "</td>"
+        + "<td class=\"mono\" style=\"font-size:0.68rem;\">" + cellOrDash(r.last_exit_attempt_at) + "</td>"
+        + "<td class=\"mono\">" + cellOrDash(r.cooldown_remaining) + "</td>"
+        + "<td>" + cellOrDash(r.recommended_action) + "</td></tr>";
+    }).join("");
+  }
+
+  function renderWarnings(payload) {
+    const list = byId("overviewWarningsList");
+    const wrap = byId("overviewWarnings");
+    if (!list || !wrap) return;
+    const warnings = [];
+    const eh = payload.execution_health || {};
+    const blocked = Number(eh.blocked_exits_count || 0);
+    const stale = Number(eh.stale_local_positions_count || 0);
+    const mismatch = Number(eh.broker_local_mismatch_count || 0);
+    if (Number.isFinite(blocked) && blocked > 0) warnings.push(blocked + " blocked exit(s) — see Execution health.");
+    if (Number.isFinite(stale) && stale > 0) warnings.push(stale + " stale local position(s) — broker/local out of sync.");
+    if (Number.isFinite(mismatch) && mismatch > 0) warnings.push(mismatch + " broker/local mismatch(es) — check Position exit eligibility.");
+    const sectionStatus = payload.section_status && typeof payload.section_status === "object" ? payload.section_status : {};
+    Object.keys(sectionStatus).forEach(function (key) {
+      const v = sectionStatus[key];
+      if (v && v !== "ok") warnings.push("Section " + key + ": " + String(v));
+    });
+    if (payload.degraded === true) warnings.push("Dashboard payload is degraded.");
+    if (!warnings.length) {
+      wrap.style.display = "none";
+      list.innerHTML = "";
+      return;
+    }
+    wrap.style.display = "";
+    list.innerHTML = warnings.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("");
+  }
+
   function renderDashboardPayload(payload) {
     const p = payload || {};
     const portfolio = p.portfolio || {};
+    const eh = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : null;
+    const marketOpen = typeof p.market_open === "boolean" ? p.market_open : null;
+    const exitRows = Array.isArray(p.position_exit_rows) ? p.position_exit_rows : [];
+    const exitByKey = {};
+    exitRows.forEach(function (r) {
+      if (!r || typeof r !== "object") return;
+      const key = String(r.symbol || "").replace("/", "").toUpperCase();
+      if (key) exitByKey[key] = r;
+    });
 
     text("last-sync", "Live via polling · " + new Date().toLocaleTimeString());
     const sync = byId("last-sync");
@@ -2507,6 +2746,8 @@ _PAGE = """
     text("tilePnl", dPart + " / " + pPart);
     text("tileEq", "$" + Number(portfolio.equity_total || 0).toFixed(2));
     text("tileMode", p.mode != null ? String(p.mode) : "—");
+    text("tileCash", eh ? fmtMoneyOrNA(eh.cash) : "N/A");
+    text("tileBp", eh ? fmtMoneyOrNA(eh.buying_power) : "N/A");
 
     const mkt = byId("mktLine");
     if (mkt) {
@@ -2532,6 +2773,41 @@ _PAGE = """
         '<td class="' + posClass + '">' + pnlTxt + '</td><td class="' + posClass + '">' + pnlPct + "</td>" +
         "</tr>";
     }, "posEmpty");
+
+    renderRows("posDetailedBody", p.open_positions, function (r) {
+      const cls = esc(r.asset_class || "");
+      const sym = esc(r.symbol || "");
+      const localQty = Number(r.net_qty || 0).toFixed(4);
+      const key = String(r.symbol || "").replace("/", "").toUpperCase();
+      const exitRow = exitByKey[key];
+      const brokerQty = exitRow && exitRow.broker_qty != null ? esc(String(exitRow.broker_qty)) : "—";
+      const entry = money(r.avg_entry_price);
+      const cur = money(r.current_price);
+      const rawUp = Number(r.unrealized_pnl);
+      const pnlTxt = Number.isFinite(rawUp) ? ((rawUp >= 0 ? "+$" : "-$") + Math.abs(rawUp).toFixed(2)) : "—";
+      const upp = Number(r.unrealized_pnl_pct);
+      const pnlPct = Number.isFinite(upp) ? ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%") : "—";
+      let status, reason;
+      if (exitRow && exitRow.exit_eligibility) {
+        status = String(exitRow.exit_eligibility);
+        reason = exitRow.exit_block_reason ? String(exitRow.exit_block_reason) : (exitRow.recommended_action ? String(exitRow.recommended_action) : "—");
+      } else {
+        const guess = explainExitFromPosition({ asset_class: r.asset_class, broker_qty: exitRow ? exitRow.broker_qty : r.net_qty, net_qty: r.net_qty }, marketOpen);
+        status = guess.status;
+        reason = guess.reason;
+      }
+      const posClass = Number.isFinite(rawUp) && rawUp >= 0 ? "pos" : "neg";
+      const statusCls = status === "Blocked" ? "neg" : (status === "Can sell" || status === "eligible" ? "pos" : "");
+      return "<tr>" +
+        "<td class=\"mono\">" + sym + "</td><td>" + cls + "</td>" +
+        "<td class=\"mono\">" + localQty + "</td><td class=\"mono\">" + brokerQty + "</td>" +
+        "<td class=\"mono\">" + entry + "</td><td class=\"mono\">" + cur + "</td>" +
+        '<td class="mono ' + posClass + '">' + pnlTxt + "</td>" +
+        '<td class="mono ' + posClass + '">' + pnlPct + "</td>" +
+        '<td class="' + statusCls + '">' + esc(status) + "</td>" +
+        '<td class="muted">' + esc(reason) + "</td>" +
+        "</tr>";
+    }, "posDetailedEmpty");
 
     renderRows("tradesTableBody", p.recent_trades, function (r) {
       return "<tr>" +
@@ -2562,6 +2838,10 @@ _PAGE = """
         "<td></td>" +
         "</tr>";
     }, "sigFeedEmpty");
+
+    renderExecutionHealth(eh);
+    renderPositionExitRows(exitRows);
+    renderWarnings(p);
 
     const err = byId("dash-api-error");
     if (err) {

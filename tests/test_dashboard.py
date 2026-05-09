@@ -84,6 +84,122 @@ def test_index_bind_tabs_always_footer_script(dash_app) -> None:
     assert "Footer bindTabsAlways" in body or "!window.DISABLE_OLD_DASHBOARD_LIVE" in body
 
 
+def test_index_has_four_tab_layout(dash_app) -> None:
+    """Cockpit shows Overview, Positions, Backtest, System Health tabs."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b'data-tab="overview"' in body
+    assert b'data-tab="positions"' in body
+    assert b'data-tab="backtest"' in body
+    assert b'data-tab="system"' in body
+    assert b'id="overview-tab"' in body
+    assert b'id="positions-tab"' in body
+    assert b'id="backtest-tab"' in body
+    assert b'id="system-tab"' in body
+
+
+def test_overview_tab_renders_core_metrics(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b'id="tilePnl"' in body
+    assert b'id="tileEq"' in body
+    assert b'id="tileMode"' in body
+    assert b'id="mktLine"' in body
+    assert b'id="tileCash"' in body
+    assert b'id="tileBp"' in body
+    assert b'id="overviewWarnings"' in body
+
+
+def test_positions_tab_renders_exit_status(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b'id="posDetailedBody"' in body
+    assert b">Exit status<" in body
+    assert b"renderRows(\"posDetailedBody\"" in body
+    assert b"explainExitFromPosition" in body
+
+
+def test_system_tab_renders_execution_health(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b'id="execHealthCash"' in body
+    assert b'id="execHealthBuyingPower"' in body
+    assert b'id="execHealthUsable"' in body
+    assert b'id="execHealthBlockedExits"' in body
+    assert b'id="execHealthPdtBadges"' in body
+    assert b'id="execHealthLastReconcile"' in body
+    assert b'id="execHealthMissing"' in body
+    assert b"renderExecutionHealth" in body
+    assert b"Execution health payload missing" in body
+
+
+def test_system_tab_advanced_controls_collapsed(dash_app) -> None:
+    """Sliders + raw experiment JSON live behind <details> by default."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "Advanced controls (bot parameters)" in body
+    advanced_idx = body.find("Advanced controls (bot parameters)")
+    cfg_range_idx = body.find('class="cfg-range"')
+    assert cfg_range_idx > advanced_idx, "Sliders must live inside the Advanced controls <details> block"
+    details_open = body.rfind("<details>", 0, cfg_range_idx)
+    summary_idx = body.find("Advanced controls (bot parameters)", details_open)
+    assert details_open != -1 and summary_idx != -1
+    assert "Parameter Experiments" in body
+    pe_idx = body.find("Parameter Experiments")
+    assert "<details>" in body[max(pe_idx - 200, 0):pe_idx]
+
+
+def test_backtest_strategy_dropdown_visible(dash_app) -> None:
+    """Strategy dropdown must render with explicit dark theme styling."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert '<select id="btStrategy">' in body
+    assert ".bt-setup-grid select option" in body
+
+
+def test_index_emergency_poller_handles_missing_execution_health(dash_app) -> None:
+    """renderExecutionHealth has a missing-payload branch."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "function renderExecutionHealth" in body
+    assert "execHealthMissing" in body
+    assert "renderPositionExitRows" in body
+    assert "renderWarnings" in body
+
+
+def test_api_dashboard_still_returns_200(dash_app) -> None:
+    """Backend payload contract unchanged (must include all sections the UI reads)."""
+    client = dash_app.test_client()
+    r = client.get("/api/dashboard")
+    assert r.status_code == 200
+    payload = json.loads(r.data)
+    for key in (
+        "portfolio",
+        "open_positions",
+        "recent_trades",
+        "recent_signals",
+        "equity_series",
+        "execution_health",
+        "position_exit_rows",
+        "market_open",
+    ):
+        assert key in payload, "missing payload key: " + key
+
+
 def test_index_contains_safe_render_helpers(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
@@ -235,7 +351,7 @@ def test_index_renders(dash_app) -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert b"QUANTBOT" in r.data
-    assert b"Bot parameters" in r.data
+    assert b"bot parameters" in r.data
     assert b"Performance" in r.data
     assert b"Signal calibration" in r.data
     assert b"Backtest" in r.data
