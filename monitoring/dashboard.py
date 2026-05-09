@@ -2538,6 +2538,9 @@ _PAGE = """
       var snap = readDashPayloadEl();
       if (!snap || typeof snap !== "object") return;
       if (!Object.keys(snap).length) return;
+      // #region agent log
+      fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H1',location:'monitoring/dashboard.py:2541',message:'hydrate snapshot before render',data:{keys:Object.keys(snap).length,pos:Array.isArray(snap.open_positions)?snap.open_positions.length:-1,sig:Array.isArray(snap.recent_signals)?snap.recent_signals.length:-1,eh:!!(snap.execution_health&&typeof snap.execution_health==='object')},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       renderDashboardPayload(snap);
       window.__quantbotLastDashOkMs = Date.now();
       if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
@@ -2929,6 +2932,9 @@ _PAGE = """
     const openPositions = d.positions;
     const recentTrades = d.trades;
     const recentDecisions = d.decisions;
+    // #region agent log
+    fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H2',location:'monitoring/dashboard.py:2932',message:'render payload entry',data:{positions:openPositions.length,decisions:recentDecisions.length,trades:recentTrades.length,eq:d.equitySeries.length,exitRows:exitRows.length,hasEh:!!(eh&&Object.keys(eh).length),hasPosBody:!!byId('posTableBody'),hasSigBody:!!byId('sigFeedBody')},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     const exitByKey = {};
     exitRows.forEach(function (r) {
       if (!r || typeof r !== "object") return;
@@ -3086,6 +3092,9 @@ _PAGE = """
       }
       if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
       var payload = await res.json();
+      // #region agent log
+      fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H3',location:'monitoring/dashboard.py:3089',message:'poll dashboard success',data:{http:res.status,pos:Array.isArray(payload.open_positions)?payload.open_positions.length:-1,sig:Array.isArray(payload.recent_signals)?payload.recent_signals.length:-1,eq:Array.isArray(payload.equity_series)?payload.equity_series.length:-1,hasEh:!!(payload.execution_health&&typeof payload.execution_health==='object')},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       renderDashboardPayload(payload);
       window.__quantbotLastDashOkMs = Date.now();
       if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
@@ -3094,6 +3103,9 @@ _PAGE = """
     } catch (err) {
       console.error("Emergency dashboard poll failed", err);
       var aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
+      // #region agent log
+      fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H4',location:'monitoring/dashboard.py:3099',message:'poll dashboard failure',data:{aborted:!!aborted,name:err&&err.name?String(err.name):'',msg:err&&err.message?String(err.message).slice(0,180):String(err).slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       text("last-sync", aborted ? ("Timed out (~" + Math.round(DASH_FETCH_MS / 1000) + "s) — retrying") : "Dashboard API/render error");
       text("statusApi", aborted ? "API timeout (Alpaca/DB slow or unreachable)" : "Dashboard API failed");
       text("statusUpdated", "Last updated: error");
@@ -3146,6 +3158,9 @@ _PAGE = """
   function bootEmergency() {
     if (window.__emergencyPollerBooted) return;
     window.__emergencyPollerBooted = true;
+    // #region agent log
+    fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H5',location:'monitoring/dashboard.py:3150',message:'boot emergency poller',data:{readyState:document.readyState,alreadyBooted:!!window.__emergencyPollerBooted,hasDashPayload:!!document.getElementById('dash-payload'),hasStatusApi:!!byId('statusApi')},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     hydrateFromEmbeddedSnapshot();
     if (!(typeof window.__quantbotLastDashOkMs === "number" && window.__quantbotLastDashOkMs > 0)) {
       text("last-sync", "Connecting API…");
