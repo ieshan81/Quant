@@ -799,7 +799,8 @@ _PAGE = """
     let selectedEquityRange = localStorage.getItem(EQUITY_RANGE_KEY) || "1D";
     if (!VALID_EQUITY_RANGES.includes(selectedEquityRange)) selectedEquityRange = "1D";
     let spark;
-    let lastPollMs = 0;
+    let lastSuccessfulPollMs = 0;
+    let lastPollCycleEndMs = 0;
     window.__dashWsConnected = false;
     window.__dashWsEnabled = typeof io !== "undefined";
     window.__dashPollTimer = null;
@@ -1349,11 +1350,16 @@ _PAGE = """
         lu.className = "muted sync-live";
         return;
       }
-      if (lastPollMs) {
-        const ago = Math.floor((Date.now() - lastPollMs) / 1000);
+      if (lastSuccessfulPollMs) {
+        const ago = Math.floor((Date.now() - lastSuccessfulPollMs) / 1000);
         const wsNote = window.__dashWsEnabled ? " · WS reconnecting" : "";
         lu.textContent = "Last sync: " + ago + "s ago" + wsNote;
         lu.className = "muted";
+        return;
+      }
+      if (lastPollCycleEndMs) {
+        lu.textContent = "Live API unavailable — check banner below or open /api/dashboard";
+        lu.className = "muted sync-reconnect";
         return;
       }
       if (!window.__dashWsEnabled) {
@@ -1409,8 +1415,16 @@ _PAGE = """
     }
     async function pollSocial() {
       const root = document.getElementById("socialMoRoot");
+      const SOCIAL_FETCH_MS = 15000;
       try {
-        const res = await fetch("/api/social", { cache: "no-store" });
+        const ac = new AbortController();
+        const tid = setTimeout(() => ac.abort(), SOCIAL_FETCH_MS);
+        let res;
+        try {
+          res = await fetch("/api/social", { cache: "no-store", signal: ac.signal });
+        } finally {
+          clearTimeout(tid);
+        }
         if (!res.ok) throw new Error("social HTTP " + res.status);
         const data = await res.json();
         const rows = Array.isArray(data) ? data : [];
@@ -1553,10 +1567,18 @@ _PAGE = """
 
     async function poll() {
       const errEl = document.getElementById("dash-api-error");
+      const DASH_FETCH_MS = 28000;
       try {
         const periodMap = { "1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M" };
         const eqPeriod = periodMap[selectedEquityRange] || "1D";
-        const r = await fetch("/api/dashboard?equity_period=" + encodeURIComponent(eqPeriod), { cache: "no-store" });
+        const ac = new AbortController();
+        const tid = setTimeout(() => ac.abort(), DASH_FETCH_MS);
+        let r;
+        try {
+          r = await fetch("/api/dashboard?equity_period=" + encodeURIComponent(eqPeriod), { cache: "no-store", signal: ac.signal });
+        } finally {
+          clearTimeout(tid);
+        }
         if (!r.ok) {
           if (errEl) {
             errEl.style.display = "block";
@@ -1579,7 +1601,10 @@ _PAGE = """
           errEl.style.display = "none";
           errEl.textContent = "";
         }
-        lastPollMs = Date.now();
+        if (j && j.dashboard_build_timed_out) {
+          console.warn("dashboard payload used SQLite fallback (server Alpaca build timed out)");
+        }
+        lastSuccessfulPollMs = Date.now();
         updateDashSyncStatus();
         try {
           applyLiveDashboardSurgical(j);
@@ -1592,11 +1617,17 @@ _PAGE = """
           }
         }
       } catch (e) {
+        const aborted = e && (e.name === "AbortError" || e.name === "TimeoutError");
         console.warn("poll", e);
         if (errEl) {
           errEl.style.display = "block";
-          errEl.textContent = "Dashboard refresh failed — check network.";
+          errEl.textContent = aborted
+            ? "Dashboard API timed out after " + (DASH_FETCH_MS / 1000) + "s — server may be waiting on Alpaca."
+            : "Dashboard refresh failed — check network.";
         }
+      } finally {
+        lastPollCycleEndMs = Date.now();
+        updateDashSyncStatus();
       }
     }
     if (window.__dashWsEnabled) {
@@ -1611,7 +1642,7 @@ _PAGE = """
         startHttpFallbackPoll();
       });
       dashSocket.on("dashboard_update", function (data) {
-        lastPollMs = Date.now();
+        lastSuccessfulPollMs = Date.now();
         updateDashSyncStatus();
         try {
           applyLiveDashboardSurgical(data);
@@ -2653,19 +2684,48 @@ def create_app() -> Flask:
         supplied = request.headers.get("X-Dashboard-Secret", "") or request.args.get("secret", "")
         return supplied == DASHBOARD_SECRET
 
-    def _dashboard_ws_push() -> None:
+    _DASH_PAYLOAD_BUILD_SEC = float(os.environ.get("DASHBOARD_PAYLOAD_BUILD_TIMEOUT_SEC", "14"))
+
+    def _build_dashboard_payload_safe(period: str) -> dict[str, Any]:
+        """Bounded-time dashboard payload: Alpaca sections can hang without HTTP timeouts."""
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FutTimeout
+
         from execution import stock_broker
 
+        cli = stock_broker.get_rest_client()
+
+        def _full() -> dict[str, Any]:
+            with get_connection() as conn:
+                return build_dashboard_payload(conn, rest_client=cli, equity_period=period)
+
+        def _sqlite_only() -> dict[str, Any]:
+            with get_connection() as conn:
+                return build_dashboard_payload(conn, rest_client=None, equity_period=period)
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_full)
+                return fut.result(timeout=_DASH_PAYLOAD_BUILD_SEC)
+        except FutTimeout:
+            logger.warning(
+                "[dashboard] build_dashboard_payload exceeded {:.1f}s — SQLite-only fallback",
+                _DASH_PAYLOAD_BUILD_SEC,
+            )
+            p = _sqlite_only()
+            if isinstance(p, dict):
+                p["dashboard_build_timed_out"] = True
+            return p
+        except Exception:
+            logger.exception("[dashboard] build_dashboard_payload failed — SQLite-only fallback")
+            return _sqlite_only()
+
+    def _dashboard_ws_push() -> None:
         sio = app.extensions["socketio"]
         while True:
             try:
                 with app.app_context():
-                    with get_connection() as conn:
-                        payload = build_dashboard_payload(
-                            conn,
-                            rest_client=stock_broker.get_rest_client(),
-                            equity_period="1D",
-                        )
+                    payload = _build_dashboard_payload_safe("1D")
                 sio.emit("dashboard_update", payload)
             except Exception:
                 logger.exception("[ws] push error")
@@ -2729,14 +2789,10 @@ def create_app() -> Flask:
 
     @app.get("/api/dashboard")
     def api_dashboard() -> Response:
-        from execution import stock_broker
-
         period = str(request.args.get("equity_period", "1D") or "1D")
         if period not in ("1D", "1W", "1M", "3M"):
             period = "1D"
-        cli = stock_broker.get_rest_client()
-        with get_connection() as conn:
-            payload = build_dashboard_payload(conn, rest_client=cli, equity_period=period)
+        payload = _build_dashboard_payload_safe(period)
         return Response(
             json.dumps(payload, default=str),
             mimetype="application/json",
@@ -3469,14 +3525,11 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index() -> str:
-        from execution import stock_broker
-
         period = str(request.args.get("equity_period", "1D") or "1D")
         if period not in ("1D", "1W", "1M", "3M"):
             period = "1D"
-        cli = stock_broker.get_rest_client()
+        payload = _build_dashboard_payload_safe(period)
         with get_connection() as conn:
-            payload = build_dashboard_payload(conn, rest_client=cli, equity_period=period)
             cfg_rows = data_store.fetch_all_bot_config_rows(conn)
             bot_ui = _bot_ui_rows(cfg_rows)
         latest = payload.get("portfolio") or {}
