@@ -1141,6 +1141,21 @@ def _is_pdt_risk_active_for_small_account(rt: dict[str, float] | None = None) ->
         return False
 
 
+def _us_stock_market_open_for_routed_sell() -> bool:
+    """NYSE session must agree across portfolio_limiter + market_hours (fail closed)."""
+    try:
+        if not portfolio_limiter.us_stock_market_open():
+            return False
+    except Exception:
+        return False
+    try:
+        from market_hours import nyse_regular_session_open as _nyse_open
+
+        return bool(_nyse_open())
+    except Exception:
+        return False
+
+
 def _routed_sell_preflight(
     *,
     asset_class: AssetClass,
@@ -1166,7 +1181,7 @@ def _routed_sell_preflight(
         return False, code, meta
 
     ac = str(asset_class or "").strip().lower()
-    if ac == "stock" and not portfolio_limiter.us_stock_market_open():
+    if ac == "stock" and not _us_stock_market_open_for_routed_sell():
         return False, reason_codes.MARKET_CLOSED, {**meta, "reason_detail": "stock_market_closed"}
 
     if ac == "stock" and _is_pdt_risk_active_for_small_account(rt):

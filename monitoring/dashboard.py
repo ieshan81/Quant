@@ -822,6 +822,24 @@ _PAGE = """
     function esc(s) {
       return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
     }
+    function setTextSafe(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = value != null && value !== undefined ? String(value) : "";
+    }
+    function setHtmlSafe(id, html) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.innerHTML = html != null ? String(html) : "";
+    }
+    function showDashboardRenderError(tag, err) {
+      console.error(tag, err);
+      const errEl = document.getElementById("dash-api-error");
+      if (errEl) {
+        errEl.style.display = "block";
+        errEl.textContent = "Dashboard render error — " + tag + " (see console).";
+      }
+    }
     function equityY(row) {
       if (!row) return 0;
       const n = Number(row.equity_total);
@@ -884,7 +902,8 @@ _PAGE = """
     function fmtMoney(v, d) {
       const n = Number(v);
       if (!Number.isFinite(n)) return "—";
-      return "$" + n.toFixed(d);
+      const dec = d !== undefined && d !== null && Number.isFinite(Number(d)) ? Number(d) : 2;
+      return "$" + n.toFixed(dec);
     }
     function signalMeta(s) {
       let m = s.meta;
@@ -1139,111 +1158,127 @@ _PAGE = """
     }
 
     function applyLiveDashboardSurgical(data) {
-      try {
       if (!data || typeof data !== "object") return;
-      applyLiveTiles(data);
-      _equitySeries = Array.isArray(data.equity_series) ? data.equity_series : [];
-      const ser = filterSeries(_equitySeries, selectedEquityRange);
-      updateEquityChart(ser);
-      updateSpark(ser);
-
-      const sigRows = Array.isArray(data.recent_signals) ? data.recent_signals : [];
-      const tradeRows = Array.isArray(data.recent_trades) ? data.recent_trades : [];
-      const posRows = _dedupPositionsRows(data.open_positions);
-
-      const sigEmpty = document.getElementById("sigFeedEmpty");
-      if (sigEmpty) sigEmpty.style.display = sigRows.length ? "none" : "block";
-      const trEmpty = document.getElementById("tradesEmpty");
-      if (trEmpty) trEmpty.style.display = tradeRows.length ? "none" : "block";
-      const posEmpty = document.getElementById("posEmpty");
-      if (posEmpty) posEmpty.style.display = posRows.length ? "none" : "block";
-
-      updateTable("sigFeedBody", sigRows, _renderSignalRow, (r) => r.id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.signal_name || "")), { maxRows: 50 });
-      updateTable("tradesTableBody", tradeRows, _renderTradeRow, (r) => r.id ?? (r.broker_order_id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.side || ""))), { maxRows: 50 });
-      updateTable("posTableBody", posRows, _renderPositionRow, (r) => (String(r.symbol || "").replace("/", "").toUpperCase()), { maxRows: 50 });
-      const eh = (data.execution_health && typeof data.execution_health === "object") ? data.execution_health : {};
-      const setTxt = (id, v) => { const n = document.getElementById(id); if (n) n.textContent = v; };
-      setTxt("execHealthCash", fmtMoney(eh.cash));
-      setTxt("execHealthBuyingPower", fmtMoney(eh.buying_power));
-      setTxt("execHealthUsable", fmtMoney(eh.usable_buying_power));
-      const blocked = Math.trunc(Number(eh.blocked_exits_count || 0));
-      const stale = Math.trunc(Number(eh.stale_local_positions_count || 0));
-      const mismatch = Math.trunc(Number(eh.broker_local_mismatch_count || 0));
-      setTxt("execHealthBlockedExits", String(blocked));
-      const pdtSyms = Array.isArray(eh.pdt_blocked_symbols) ? eh.pdt_blocked_symbols.map((s) => String(s || "").trim()).filter(Boolean) : [];
-      const pdtWrap = document.getElementById("execHealthPdtBadges");
-      const pdtFallback = document.getElementById("execHealthPdtSymbols");
-      if (pdtWrap) {
-        if (!pdtSyms.length) {
-          pdtWrap.innerHTML = '<span class="muted exec-health-empty">—</span>';
-        } else {
-          pdtWrap.innerHTML = pdtSyms.map((s) => '<span class="exec-health-badge">' + esc(s) + "</span>").join("");
-        }
-      }
-      if (pdtFallback) {
-        pdtFallback.style.display = "none";
-        pdtFallback.textContent = pdtSyms.join(", ") || "—";
-      }
-      setTxt("execHealthStaleLocal", String(stale));
-      setTxt("execHealthMismatches", String(mismatch));
-      const cryptoFast = eh.crypto_fast_exit_enabled;
-      const pdtGuard = eh.stock_pdt_guard_enabled;
-      setTxt("execHealthCryptoFast", cryptoFast === true ? "on" : cryptoFast === false ? "off" : "—");
-      setTxt("execHealthPdtGuard", pdtGuard === true ? "on" : pdtGuard === false ? "off" : "—");
-      const elig = eh.exit_eligible_positions_count;
-      setTxt("execHealthExitEligible", elig != null && elig !== "" ? String(elig) : "—");
-      const lr = eh.last_reconciliation_at;
-      setTxt("execHealthLastReconcile", lr != null && lr !== "" ? String(lr) : "—");
-      const warn = blocked > 0 || stale > 0 || mismatch > 0;
-      const card = document.getElementById("execHealthCard");
-      if (card) card.classList.toggle("exec-health-card-warn", warn);
-      function tileWarn(id, on) {
-        const el = document.getElementById(id);
-        if (el) el.classList.toggle("exec-health-warn", !!on);
-      }
-      tileWarn("execTileBlocked", blocked > 0);
-      tileWarn("execTileStale", stale > 0);
-      tileWarn("execTileMismatch", mismatch > 0);
-      const exitRows = Array.isArray(data.position_exit_rows) ? data.position_exit_rows : [];
-      const sumCt = document.getElementById("execExitSummaryCount");
-      if (sumCt) sumCt.textContent = exitRows.length ? "(" + exitRows.length + ")" : "";
-      const tbody = document.getElementById("execExitTableBody");
-      const exEmpty = document.getElementById("execExitEmpty");
-      if (tbody) {
-        if (!exitRows.length) {
-          tbody.innerHTML = "";
-          if (exEmpty) exEmpty.style.display = "block";
-        } else {
-          if (exEmpty) exEmpty.style.display = "none";
-          tbody.innerHTML = exitRows.map((r) => {
-            const sym = esc(String(r.symbol || ""));
-            const ac = esc(String(r.asset_class || ""));
-            const lq = r.local_qty != null ? esc(String(r.local_qty)) : "—";
-            const bq = r.broker_qty != null ? esc(String(r.broker_qty)) : "—";
-            const ep = r.entry_price != null ? esc(String(r.entry_price)) : "—";
-            const cp = r.current_price != null ? esc(String(r.current_price)) : "—";
-            const pl = r.pnl_pct != null ? esc(String(r.pnl_pct)) : "—";
-            const elg = esc(String(r.exit_eligibility || "—"));
-            const br = esc(String(r.exit_block_reason || "—"));
-            const pd = esc(String(r.pdt_status || "—"));
-            const letm = esc(String(r.last_exit_attempt_at || "—"));
-            const cd = esc(String(r.cooldown_remaining || "—"));
-            const act = esc(String(r.recommended_action || "—"));
-            const cls = String(r.asset_class || "").toLowerCase() === "crypto" ? "row-crypto" : "row-stock";
-            return "<tr class=\"" + cls + "\"><td class=\"mono\">" + sym + "</td><td>" + ac + "</td><td class=\"mono\">" + lq + "</td><td class=\"mono\">" + bq + "</td><td class=\"mono\">" + ep + "</td><td class=\"mono\">" + cp + "</td><td class=\"mono\">" + pl + "</td><td>" + elg + "</td><td class=\"muted\">" + br + "</td><td>" + pd + "</td><td class=\"mono\" style=\"font-size:0.68rem;\">" + letm + "</td><td class=\"mono\">" + cd + "</td><td>" + act + "</td></tr>";
-          }).join("");
-        }
-      }
-
-      const el = document.getElementById("dash-payload");
-      if (el) el.textContent = JSON.stringify(data);
+      const payload = data;
+      try {
+        applyLiveTiles(payload);
       } catch (e) {
-        console.error("applyLiveDashboardSurgical", e);
-        const errEl = document.getElementById("dash-api-error");
-        if (errEl) {
-          errEl.style.display = "block";
-          errEl.textContent = "Dashboard render error — see browser console.";
+        showDashboardRenderError("live tiles", e);
+      }
+
+      try {
+        _equitySeries = Array.isArray(payload.equity_series) ? payload.equity_series : [];
+        const ser = filterSeries(_equitySeries, selectedEquityRange);
+        updateEquityChart(ser);
+        updateSpark(ser);
+      } catch (e) {
+        showDashboardRenderError("equity chart", e);
+      }
+
+      try {
+        const sigRows = Array.isArray(payload.recent_signals) ? payload.recent_signals : [];
+        const tradeRows = Array.isArray(payload.recent_trades) ? payload.recent_trades : [];
+        const posRows = _dedupPositionsRows(Array.isArray(payload.open_positions) ? payload.open_positions : []);
+
+        const sigEmpty = document.getElementById("sigFeedEmpty");
+        if (sigEmpty) sigEmpty.style.display = sigRows.length ? "none" : "block";
+        const trEmpty = document.getElementById("tradesEmpty");
+        if (trEmpty) trEmpty.style.display = tradeRows.length ? "none" : "block";
+        const posEmpty = document.getElementById("posEmpty");
+        if (posEmpty) posEmpty.style.display = posRows.length ? "none" : "block";
+
+        updateTable("sigFeedBody", sigRows, _renderSignalRow, (r) => r.id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.signal_name || "")), { maxRows: 50 });
+        updateTable("tradesTableBody", tradeRows, _renderTradeRow, (r) => r.id ?? (r.broker_order_id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.side || ""))), { maxRows: 50 });
+        updateTable("posTableBody", posRows, _renderPositionRow, (r) => (String(r.symbol || "").replace("/", "").toUpperCase()), { maxRows: 50 });
+      } catch (e) {
+        showDashboardRenderError("tables", e);
+      }
+
+      const executionHealth = (payload.execution_health && typeof payload.execution_health === "object") ? payload.execution_health : {};
+      const positionExitRows = Array.isArray(payload.position_exit_rows) ? payload.position_exit_rows : [];
+
+      try {
+        const eh = executionHealth;
+        setTextSafe("execHealthCash", fmtMoney(eh.cash, 2));
+        setTextSafe("execHealthBuyingPower", fmtMoney(eh.buying_power, 2));
+        setTextSafe("execHealthUsable", fmtMoney(eh.usable_buying_power, 2));
+        const blocked = Math.trunc(Number(eh.blocked_exits_count || 0));
+        const stale = Math.trunc(Number(eh.stale_local_positions_count || 0));
+        const mismatch = Math.trunc(Number(eh.broker_local_mismatch_count || 0));
+        setTextSafe("execHealthBlockedExits", String(blocked));
+        const pdtSyms = Array.isArray(eh.pdt_blocked_symbols) ? eh.pdt_blocked_symbols.map((s) => String(s || "").trim()).filter(Boolean) : [];
+        const pdtWrap = document.getElementById("execHealthPdtBadges");
+        const pdtFallback = document.getElementById("execHealthPdtSymbols");
+        if (pdtWrap) {
+          if (!pdtSyms.length) {
+            pdtWrap.innerHTML = '<span class="muted exec-health-empty">—</span>';
+          } else {
+            pdtWrap.innerHTML = pdtSyms.map((s) => '<span class="exec-health-badge">' + esc(s) + "</span>").join("");
+          }
         }
+        if (pdtFallback) {
+          pdtFallback.style.display = "none";
+          pdtFallback.textContent = pdtSyms.join(", ") || "—";
+        }
+        setTextSafe("execHealthStaleLocal", String(stale));
+        setTextSafe("execHealthMismatches", String(mismatch));
+        const cryptoFast = eh.crypto_fast_exit_enabled;
+        const pdtGuard = eh.stock_pdt_guard_enabled;
+        setTextSafe("execHealthCryptoFast", cryptoFast === true ? "on" : cryptoFast === false ? "off" : "—");
+        setTextSafe("execHealthPdtGuard", pdtGuard === true ? "on" : pdtGuard === false ? "off" : "—");
+        const elig = eh.exit_eligible_positions_count;
+        setTextSafe("execHealthExitEligible", elig != null && elig !== "" ? String(elig) : "—");
+        const lr = eh.last_reconciliation_at;
+        setTextSafe("execHealthLastReconcile", lr != null && lr !== "" ? String(lr) : "—");
+        const warn = blocked > 0 || stale > 0 || mismatch > 0;
+        const card = document.getElementById("execHealthCard");
+        if (card) card.classList.toggle("exec-health-card-warn", warn);
+        function tileWarn(id, on) {
+          const el = document.getElementById(id);
+          if (el) el.classList.toggle("exec-health-warn", !!on);
+        }
+        tileWarn("execTileBlocked", blocked > 0);
+        tileWarn("execTileStale", stale > 0);
+        tileWarn("execTileMismatch", mismatch > 0);
+        const exitRows = positionExitRows.filter(function (row) { return row != null && typeof row === "object"; });
+        const sumCt = document.getElementById("execExitSummaryCount");
+        if (sumCt) sumCt.textContent = exitRows.length ? "(" + exitRows.length + ")" : "";
+        const tbody = document.getElementById("execExitTableBody");
+        const exEmpty = document.getElementById("execExitEmpty");
+        if (tbody) {
+          if (!exitRows.length) {
+            tbody.innerHTML = "";
+            if (exEmpty) exEmpty.style.display = "block";
+          } else {
+            if (exEmpty) exEmpty.style.display = "none";
+            tbody.innerHTML = exitRows.map((r) => {
+              const sym = esc(String(r.symbol || ""));
+              const ac = esc(String(r.asset_class || ""));
+              const lq = r.local_qty != null ? esc(String(r.local_qty)) : "—";
+              const bq = r.broker_qty != null ? esc(String(r.broker_qty)) : "—";
+              const ep = r.entry_price != null ? esc(String(r.entry_price)) : "—";
+              const cp = r.current_price != null ? esc(String(r.current_price)) : "—";
+              const pl = r.pnl_pct != null ? esc(String(r.pnl_pct)) : "—";
+              const elg = esc(String(r.exit_eligibility || "—"));
+              const br = esc(String(r.exit_block_reason || "—"));
+              const pd = esc(String(r.pdt_status || "—"));
+              const letm = esc(String(r.last_exit_attempt_at || "—"));
+              const cd = esc(String(r.cooldown_remaining || "—"));
+              const act = esc(String(r.recommended_action || "—"));
+              const cls = String(r.asset_class || "").toLowerCase() === "crypto" ? "row-crypto" : "row-stock";
+              return "<tr class=\"" + cls + "\"><td class=\"mono\">" + sym + "</td><td>" + ac + "</td><td class=\"mono\">" + lq + "</td><td class=\"mono\">" + bq + "</td><td class=\"mono\">" + ep + "</td><td class=\"mono\">" + cp + "</td><td class=\"mono\">" + pl + "</td><td>" + elg + "</td><td class=\"muted\">" + br + "</td><td>" + pd + "</td><td class=\"mono\" style=\"font-size:0.68rem;\">" + letm + "</td><td class=\"mono\">" + cd + "</td><td>" + act + "</td></tr>";
+            }).join("");
+          }
+        }
+      } catch (e) {
+        showDashboardRenderError("execution health", e);
+      }
+
+      try {
+        const el = document.getElementById("dash-payload");
+        if (el) el.textContent = JSON.stringify(payload);
+      } catch (e) {
+        console.warn("dash-payload stringify", e);
       }
     }
 
@@ -1544,9 +1579,18 @@ _PAGE = """
           errEl.style.display = "none";
           errEl.textContent = "";
         }
-        applyLiveDashboardSurgical(j);
         lastPollMs = Date.now();
         updateDashSyncStatus();
+        try {
+          applyLiveDashboardSurgical(j);
+        } catch (err) {
+          console.error("dashboard render failed", err);
+          const banner = document.getElementById("dash-api-error");
+          if (banner) {
+            banner.style.display = "block";
+            banner.textContent = "Dashboard render error — see console.";
+          }
+        }
       } catch (e) {
         console.warn("poll", e);
         if (errEl) {
@@ -1567,13 +1611,14 @@ _PAGE = """
         startHttpFallbackPoll();
       });
       dashSocket.on("dashboard_update", function (data) {
+        lastPollMs = Date.now();
+        updateDashSyncStatus();
         try {
           applyLiveDashboardSurgical(data);
         } catch (e) {
-          console.error("dashboard_update", e);
+          console.error("dashboard_update render failed", e);
+          showDashboardRenderError("websocket payload", e);
         }
-        lastPollMs = Date.now();
-        updateDashSyncStatus();
       });
     } else {
       console.warn("Socket.IO client not loaded; using HTTP poll only");

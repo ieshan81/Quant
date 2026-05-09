@@ -33,6 +33,44 @@ _cache_lock = threading.Lock()
 _cache_store: dict[str, tuple[float, Any]] = {}
 
 
+def _json_safe(obj: Any) -> Any:
+    """Coerce ops_metrics meta, numpy/Decimal/datetime, etc. to JSON-serializable values."""
+    if obj is None or isinstance(obj, (bool, str)):
+        return obj
+    if isinstance(obj, int) and not isinstance(obj, bool):
+        return int(obj)
+    if isinstance(obj, float):
+        return float(obj)
+    if isinstance(obj, datetime):
+        try:
+            return obj.isoformat()
+        except Exception:
+            return str(obj)
+    try:
+        from decimal import Decimal
+
+        if isinstance(obj, Decimal):
+            return float(obj)
+    except Exception:
+        pass
+    try:
+        import numpy as _np
+
+        if isinstance(obj, _np.generic):
+            return _json_safe(obj.item())
+        if isinstance(obj, _np.ndarray):
+            return _json_safe(obj.tolist())
+    except ImportError:
+        pass
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, set):
+        return [_json_safe(v) for v in obj]
+    return str(obj)
+
+
 def _cached(key: str, ttl: float, fn: Callable[[], _T]) -> _T:
     """Memoize an Alpaca call by ``key`` with TTL. Stale value is returned on failure."""
     now = time.monotonic()
@@ -604,39 +642,55 @@ def build_dashboard_payload(
         lambda: fetch_adaptive_changes_db("aggressive_micro_scalp", stage_name, limit=20),
     )
 
+    eh_raw = execution_health if isinstance(execution_health, dict) else {}
+    eh_safe = _json_safe(eh_raw)
+    if not isinstance(eh_safe, dict):
+        eh_safe = {}
+    pe_rows = eh_safe.get("position_exit_rows")
+    pe_clean: list[dict[str, Any]] = []
+    if isinstance(pe_rows, list):
+        for item in pe_rows:
+            ji = _json_safe(item)
+            pe_clean.append(ji if isinstance(ji, dict) else {"_raw": ji})
+    eh_safe["position_exit_rows"] = pe_clean
+
     return {
         "mode": latest.get("mode") if latest else None,
-        "portfolio": latest,
+        "portfolio": _json_safe(latest) if latest is not None else None,
         "pnl_vs_start_pct": pnl_pct,
         "pnl_vs_start_dollars": pnl_dollars,
-        "equity_series": series,
-        "open_positions": positions,
-        "recent_trades": trades,
-        "recent_signals": signals,
-        "rl_learning_history": rl_history,
-        "performance": performance,
-        "calibration": calibration,
+        "equity_series": _json_safe(series) if isinstance(series, list) else [],
+        "open_positions": _json_safe(positions) if isinstance(positions, list) else [],
+        "recent_trades": _json_safe(trades) if isinstance(trades, list) else [],
+        "recent_signals": _json_safe(signals) if isinstance(signals, list) else [],
+        "rl_learning_history": _json_safe(rl_history) if isinstance(rl_history, list) else [],
+        "performance": _json_safe(performance) if isinstance(performance, dict) else {},
+        "calibration": _json_safe(calibration) if isinstance(calibration, dict) else {},
         "market_open": market_open,
         "section_status": section_status,
         "degraded": degraded,
-        "capital_stage": capital_stage,
-        "execution_decisions": decisions,
-        "rejection_reason_counts": rejection_counts,
-        "scalp_events": scalp_events,
-        "mistakes": mistakes,
+        "capital_stage": _json_safe(capital_stage) if isinstance(capital_stage, dict) else {},
+        "execution_decisions": _json_safe(decisions) if isinstance(decisions, list) else [],
+        "rejection_reason_counts": _json_safe(rejection_counts) if isinstance(rejection_counts, dict) else {},
+        "scalp_events": _json_safe(scalp_events) if isinstance(scalp_events, list) else [],
+        "mistakes": _json_safe(mistakes) if isinstance(mistakes, list) else [],
         "ghost_position_count": ghost_count,
         "db_lock_count_24h": db_lock_count,
-        "buy_gate": buy_gate,
-        "execution_health": execution_health,
-        "position_exit_rows": list((execution_health or {}).get("position_exit_rows") or []),
-        "promotion_gates": promotion_status,
-        "live_safety": safety,
+        "buy_gate": _json_safe(buy_gate) if isinstance(buy_gate, dict) else {},
+        "execution_health": eh_safe,
+        "position_exit_rows": list(pe_clean),
+        "promotion_gates": _json_safe(promotion_status) if isinstance(promotion_status, dict) else {},
+        "live_safety": _json_safe(safety) if isinstance(safety, dict) else {},
         "scalper_paper_enabled": config.scalper_paper_enabled(),
         "scalper_live_allowed": config.scalper_live_allowed(),
         "strategy_version": "signal_combiner_v1@2026.05",
-        "strategy_parameters": strategy_parameters,
-        "strategy_effective_parameters": strategy_effective.get("effective", {}),
-        "adaptive_parameter_changes": adaptive_changes,
+        "strategy_parameters": _json_safe(strategy_parameters) if isinstance(strategy_parameters, list) else [],
+        "strategy_effective_parameters": (
+            _json_safe(strategy_effective.get("effective", {}))
+            if isinstance(strategy_effective.get("effective", {}), dict)
+            else {}
+        ),
+        "adaptive_parameter_changes": _json_safe(adaptive_changes) if isinstance(adaptive_changes, list) else [],
     }
 
 
@@ -866,7 +920,15 @@ def fetch_latest_execution_health(conn: sqlite3.Connection | None = None) -> dic
             out.update(json.loads(str(raw_meta)) or {})
         except json.JSONDecodeError:
             pass
-    return out
+    try:
+        safe = _json_safe(out)
+        return safe if isinstance(safe, dict) else {}
+    except Exception:
+        logger.warning("[dashboard] execution_health sanitize failed", exc_info=True)
+        return {
+            "usable_buying_power": float(row[0] or 0.0),
+            "created_at": row[2],
+        }
 
 
 def fetch_strategy_parameters_db(

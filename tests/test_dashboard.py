@@ -60,6 +60,14 @@ def test_index_has_execution_health_dom_ids(dash_app) -> None:
     assert b"execExitTableBody" in body
 
 
+def test_index_contains_safe_render_helpers(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b"function setTextSafe" in r.data
+    assert b"showDashboardRenderError" in r.data
+
+
 def test_api_config_get_and_post(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/api/config")
@@ -760,3 +768,23 @@ def test_backtest_parameter_and_experiment_endpoints(dash_app, monkeypatch: pyte
     r4 = client.get(f"/api/backtest/experiments/{exp_id}")
     assert r4.status_code == 200
     assert json.loads(r4.data)["ok"] is True
+
+
+def test_json_safe_coerces_decimal_and_numpy() -> None:
+    from decimal import Decimal
+
+    from monitoring import dashboard_data as dd
+
+    assert dd._json_safe(Decimal("1.25")) == 1.25
+    out = dd._json_safe({"rows": [Decimal("2"), np.float64(3.5)]})
+    assert out["rows"][0] == 2.0
+    assert out["rows"][1] == 3.5
+
+
+def test_api_dashboard_execution_health_and_exit_rows_are_safe_shapes(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/api/dashboard")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert isinstance(data.get("execution_health"), dict)
+    assert isinstance(data.get("position_exit_rows"), list)
