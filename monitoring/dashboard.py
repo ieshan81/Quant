@@ -1498,6 +1498,10 @@ _PAGE = """
       const now = new Date();
       const el = document.getElementById("clockEt");
       if (el) el.textContent = fmtEtTime(now) + " ET";
+      /* Emergency dashboard script owns last-sync + market line when legacy live path is off. */
+      if (window.DISABLE_OLD_DASHBOARD_LIVE) {
+        return;
+      }
       const open = (typeof __lastDashMarketOpen === "boolean") ? __lastDashMarketOpen : isNyseOpenAt(now);
       const line = document.getElementById("mktLine");
       const cd = document.getElementById("mktCd");
@@ -1515,6 +1519,9 @@ _PAGE = """
       updateDashSyncStatus();
     }
     function updateDashSyncStatus() {
+      if (window.DISABLE_OLD_DASHBOARD_LIVE) {
+        return;
+      }
       const lu = document.getElementById("last-sync");
       if (!lu) return;
       if (window.__dashWsConnected) {
@@ -2546,11 +2553,11 @@ _PAGE = """
   function byId(id) { return document.getElementById(id); }
   function esc(v) {
     return String(v == null ? "" : v)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
   function text(id, v) { var n = byId(id); if (n) n.textContent = v == null ? "" : String(v); }
   function html(id, v) { var n = byId(id); if (n) n.innerHTML = v == null ? "" : String(v); }
@@ -2581,6 +2588,11 @@ _PAGE = """
     var p = raw && typeof raw === "object" ? raw : {};
     var pf = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
     var eh = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : {};
+    var pfCash = pick(pf.cash);
+    var cs = toNum(pf.cash_stocks);
+    var cc = toNum(pf.cash_crypto);
+    var cashCombined =
+      pfCash != null ? pfCash : cs != null || cc != null ? (cs || 0) + (cc || 0) : pick(eh.cash);
     var positions = safeRows(p.open_positions);
     var trades = safeRows(p.recent_trades);
     var signals = safeRows(p.recent_signals);
@@ -2599,8 +2611,8 @@ _PAGE = """
         equity: pick(pf.equity_total, pf.equity),
         pnlPct: pick(p.pnl_vs_start_pct),
         pnlDol: pick(p.pnl_vs_start_dollars),
-        cash: pick(pf.cash, pf.cash_stocks, pf.cash_crypto, eh.cash),
-        bp: pick(pf.buying_power, pf.buying_power_stock, eh.buying_power),
+        cash: cashCombined,
+        bp: pick(pf.buying_power, pf.buying_power_stock, eh.buying_power, eh.usable_buying_power),
       },
       mode: String(p.mode || "paper"),
       marketOpen: typeof p.market_open === "boolean" ? p.market_open : null,
@@ -2647,6 +2659,20 @@ _PAGE = """
   }
 
   function render(payload) {
+    try {
+      renderInner(payload);
+    } catch (e) {
+      text("statusApi", "API: render error");
+      text("dbgApiStatus", "render threw");
+      var err = byId("dash-api-error");
+      if (err) {
+        err.style.display = "block";
+        err.textContent = "Dashboard render failed: " + (e && e.message ? String(e.message) : String(e));
+      }
+    }
+  }
+
+  function renderInner(payload) {
     var d = adapt(payload);
     var now = new Date().toLocaleTimeString();
     var pnlDol = toNum(d.account.pnlDol);
@@ -2661,11 +2687,17 @@ _PAGE = """
     text("tilePnl", pnlText);
     text("tileCash", moneyOrNA(d.account.cash));
     text("tileBp", moneyOrNA(d.account.bp));
-    text("statusApi", "Bot running / API connected");
+    text("statusApi", "API: connected");
     text("statusMode", "Mode: " + d.mode);
-    text("statusLive", "Live trading disabled");
+    text("statusLive", "Live trading: disabled");
     text("statusUpdated", "Last updated: " + now);
     text("last-sync", "Live via polling · " + now);
+    var ls = byId("last-sync");
+    if (ls) {
+      ls.classList.remove("sync-reconnect");
+      ls.classList.add("sync-live");
+    }
+    window.__quantbotLastDashOkMs = Date.now();
     text("systemApiStatus", "connected");
     text("systemWorkerStatus", d.raw.worker_status != null ? String(d.raw.worker_status) : "N/A");
     text("systemDbPath", d.raw.db_path != null ? String(d.raw.db_path) : "N/A");
@@ -2750,6 +2782,17 @@ _PAGE = """
     }
   }
 
+  async function parseDashboardResponse(res) {
+    var txt = await res.text();
+    if (!txt || !String(txt).trim()) return {};
+    try {
+      return JSON.parse(txt);
+    } catch (e) {
+      var head = String(txt).replace(/\s+/g, " ").slice(0, 160);
+      throw new Error("Response was not JSON (got " + head + ")");
+    }
+  }
+
   async function pollDashboard() {
     if (inFlight) return;
     inFlight = true;
@@ -2758,10 +2801,10 @@ _PAGE = """
     try {
       var res = await fetch("/api/dashboard", { cache: "no-store", signal: ac.signal });
       if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
-      var payload = await res.json();
+      var payload = await parseDashboardResponse(res);
       render(payload);
     } catch (e) {
-      text("statusApi", "Dashboard API failed");
+      text("statusApi", "API: error");
       text("systemApiStatus", "failed");
       text("dbgApiStatus", "failed");
       var err = byId("dash-api-error");

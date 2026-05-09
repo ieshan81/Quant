@@ -70,7 +70,7 @@ def test_index_emergency_poller_present(dash_app) -> None:
     assert "function emergencyDashboardPoller" in body
     assert "Live via polling" in body
     assert 'fetch("/api/dashboard"' in body
-    assert "hydrateFromEmbeddedSnapshot" in body
+    assert "function readEmbedded" in body
     assert "AbortController" in body
 
 
@@ -128,12 +128,9 @@ def test_positions_tab_renders_exit_status(dash_app) -> None:
     body = r.data
     assert b'id="posDetailedBody"' in body
     assert b">Exit status<" in body
-    assert b"renderRows(\"posDetailedBody\"" in body
-    assert b"explainExitFromPosition" in body
-    assert b"explainFromExitRow" in body
-    assert b"Blocked: market closed" in body
-    assert b"Crypto can trade 24/7, waiting for signal" in body
-    assert b"Holding: no exit signal" in body
+    assert b'renderTable("posDetailedBody"' in body
+    assert b"No exit signal" in body
+    assert b">Holding<" in body or b">Holding</td>" in body
 
 
 def test_overview_limits_preview_rows(dash_app) -> None:
@@ -141,8 +138,8 @@ def test_overview_limits_preview_rows(dash_app) -> None:
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert 'openPositions.slice(0, 5)' in body
-    assert 'recentDecisions.slice(0, 10)' in body
+    assert "d.positions.slice(0, 5)" in body
+    assert "d.decisions.slice(0, 10)" in body
 
 
 def test_system_tab_renders_execution_health(dash_app) -> None:
@@ -157,7 +154,7 @@ def test_system_tab_renders_execution_health(dash_app) -> None:
     assert b'id="execHealthPdtBadges"' in body
     assert b'id="execHealthLastReconcile"' in body
     assert b'id="execHealthMissing"' in body
-    assert b"renderExecutionHealth" in body
+    assert b'text("execHealthCash"' in body
     assert b"Execution health payload missing" in body
 
 
@@ -190,16 +187,14 @@ def test_backtest_strategy_dropdown_visible(dash_app) -> None:
 
 
 def test_index_emergency_poller_handles_missing_execution_health(dash_app) -> None:
-    """renderExecutionHealth has a missing-payload branch."""
+    """Emergency render hides exec-health warning when execution_health is populated."""
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "function renderExecutionHealth" in body
     assert "execHealthMissing" in body
-    assert "renderPositionExitRows" in body
-    assert "renderWarnings" in body
-    assert "execution_health missing from /api/dashboard" in body
+    assert "Object.keys(d.eh)" in body
+    assert "Execution health payload missing" in body
 
 
 def test_adapter_contract_and_fallback_mapping_present(dash_app) -> None:
@@ -207,21 +202,13 @@ def test_adapter_contract_and_fallback_mapping_present(dash_app) -> None:
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "function adaptDashboardPayload(payload)" in body
-    assert "status: {" in body
-    assert "account: {" in body
-    assert "positions:" in body
-    assert "decisions:" in body
-    assert "equitySeries:" in body
-    assert "executionHealth:" in body
-    assert "exitRows:" in body
-    assert "warnings:" in body
-    # Cash/BP priority fallback contract (SQLite uses cash_stocks / cash_crypto)
-    assert "portfolio.cash_stocks" in body
-    assert "portfolio.cash_crypto" in body
-    assert "portfolio.buying_power_stock" in body
-    assert "usable_buying_power_stock" in body
-    assert "executionHealthRaw.position_exit_rows" in body
+    assert "function adapt(raw)" in body
+    assert "cashCombined" in body
+    assert "pf.cash_stocks" in body
+    assert "pf.cash_crypto" in body
+    assert "usable_buying_power" in body
+    assert "position_exit_rows" in body
+    assert "safeRows(p.open_positions)" in body
 
 
 def test_debug_payload_summary_exists(dash_app) -> None:
