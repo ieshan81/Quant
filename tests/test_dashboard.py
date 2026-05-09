@@ -60,6 +60,18 @@ def test_index_has_execution_health_dom_ids(dash_app) -> None:
     assert b"execExitTableBody" in body
 
 
+def test_index_emergency_poller_present(dash_app) -> None:
+    """Emergency HTTP-only path runs when old live dashboard is disabled."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "window.DISABLE_OLD_DASHBOARD_LIVE = true" in body
+    assert "function emergencyDashboardPoller" in body
+    assert "Live via polling" in body
+    assert 'fetch("/api/dashboard"' in body
+
+
 def test_index_contains_safe_render_helpers(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")

@@ -793,6 +793,7 @@ _PAGE = """
   <div id="sym-tooltip" aria-hidden="true"></div>
   <script id="dash-payload" type="application/json">{{ dash_snapshot|tojson }}</script>
   <script>
+    window.DISABLE_OLD_DASHBOARD_LIVE = true;
     const REFRESH_MS = {{ refresh_sec }} * 1000;
     const DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
     const TZ = "America/New_York";
@@ -805,7 +806,7 @@ _PAGE = """
     let lastSuccessfulPollMs = 0;
     let lastPollCycleEndMs = 0;
     window.__dashWsConnected = false;
-    window.__dashWsEnabled = typeof io !== "undefined";
+    window.__dashWsEnabled = !window.DISABLE_OLD_DASHBOARD_LIVE && typeof io !== "undefined";
     window.__dashPollTimer = null;
     window._symbolCache = {};
     let __lastDashMarketOpen = undefined;
@@ -1408,8 +1409,10 @@ _PAGE = """
         window.__dashPollTimer = null;
       }
     }
-    setInterval(tickClock, 1000);
-    tickClock();
+    if (!window.DISABLE_OLD_DASHBOARD_LIVE) {
+      setInterval(tickClock, 1000);
+      tickClock();
+    }
 
     function renderSocial(rows) {
       const root = document.getElementById("socialMoRoot");
@@ -1467,10 +1470,12 @@ _PAGE = """
         if (root) root.innerHTML = '<p class="muted">Social feed unavailable.</p>';
       }
     }
-    try { pollSocial(); } catch (e) { console.error("pollSocial init", e); }
-    setInterval(function () {
-      try { pollSocial(); } catch (e) { console.error("pollSocial interval", e); }
-    }, 60000);
+    if (!window.DISABLE_OLD_DASHBOARD_LIVE) {
+      try { pollSocial(); } catch (e) { console.error("pollSocial init", e); }
+      setInterval(function () {
+        try { pollSocial(); } catch (e) { console.error("pollSocial interval", e); }
+      }, 60000);
+    }
 
     // buildSpark/buildChart replaced by updateSpark/updateEquityChart (no destroy).
     function bindChartRangeButtons() {
@@ -1485,7 +1490,9 @@ _PAGE = """
       });
       updateRangeButtons(selectedEquityRange);
     }
-    try { bindChartRangeButtons(); } catch (e) { console.error("bindChartRangeButtons", e); }
+    if (!window.DISABLE_OLD_DASHBOARD_LIVE) {
+      try { bindChartRangeButtons(); } catch (e) { console.error("bindChartRangeButtons", e); }
+    }
     try {
       (function syncTabFromStorage() {
         const wantBt = localStorage.getItem(ACTIVE_TAB_KEY) === "backtest";
@@ -1501,12 +1508,14 @@ _PAGE = """
     } catch (e) { console.error("syncTabFromStorage", e); }
     const boot = (function () { try { return readPayload(); } catch (e) { console.error("readPayload", e); return {}; } })();
     if (typeof boot.market_open === "boolean") __lastDashMarketOpen = boot.market_open;
-    try { tickClock(); } catch (e) { console.error("tickClock init", e); }
-    try {
-      applyLiveDashboardSurgical(boot);
-    } catch (e) {
-      console.error("applyLiveDashboardSurgical (initial)", e);
-      showDashboardRenderError("initial render", e);
+    if (!window.DISABLE_OLD_DASHBOARD_LIVE) {
+      try { tickClock(); } catch (e) { console.error("tickClock init", e); }
+      try {
+        applyLiveDashboardSurgical(boot);
+      } catch (e) {
+        console.error("applyLiveDashboardSurgical (initial)", e);
+        showDashboardRenderError("initial render", e);
+      }
     }
 
     function positionTooltip(ev, tip) {
@@ -1668,38 +1677,40 @@ _PAGE = """
       }
     }
 
-    startHttpFallbackPoll();
-    poll();
-    updateDashSyncStatus();
+    if (!window.DISABLE_OLD_DASHBOARD_LIVE) {
+      startHttpFallbackPoll();
+      poll();
+      updateDashSyncStatus();
 
-    if (window.__dashWsEnabled) {
-      try {
-        const dashSocket = io({ transports: ["websocket", "polling"] });
-        dashSocket.on("connect", function () {
-          window.__dashWsConnected = true;
-          updateDashSyncStatus();
-        });
-        dashSocket.on("disconnect", function () {
+      if (window.__dashWsEnabled) {
+        try {
+          const dashSocket = io({ transports: ["websocket", "polling"] });
+          dashSocket.on("connect", function () {
+            window.__dashWsConnected = true;
+            updateDashSyncStatus();
+          });
+          dashSocket.on("disconnect", function () {
+            window.__dashWsConnected = false;
+            updateDashSyncStatus();
+            startHttpFallbackPoll();
+          });
+          dashSocket.on("dashboard_update", function (data) {
+            lastSuccessfulPollMs = Date.now();
+            updateDashSyncStatus();
+            try {
+              applyLiveDashboardSurgical(data);
+            } catch (e) {
+              console.error("dashboard_update render failed", e);
+              showDashboardRenderError("websocket payload", e);
+            }
+          });
+        } catch (sockErr) {
+          console.error("Socket.IO init failed — using HTTP polling only", sockErr);
           window.__dashWsConnected = false;
-          updateDashSyncStatus();
-          startHttpFallbackPoll();
-        });
-        dashSocket.on("dashboard_update", function (data) {
-          lastSuccessfulPollMs = Date.now();
-          updateDashSyncStatus();
-          try {
-            applyLiveDashboardSurgical(data);
-          } catch (e) {
-            console.error("dashboard_update render failed", e);
-            showDashboardRenderError("websocket payload", e);
-          }
-        });
-      } catch (sockErr) {
-        console.error("Socket.IO init failed — using HTTP polling only", sockErr);
-        window.__dashWsConnected = false;
+        }
+      } else {
+        console.warn("Socket.IO client not loaded; using HTTP poll only");
       }
-    } else {
-      console.warn("Socket.IO client not loaded; using HTTP poll only");
     }
 
     function bindCfg() {
@@ -2319,6 +2330,263 @@ _PAGE = """
     });
     loadBacktestDefaults();
     loadParameterSets();
+  </script>
+  <script>
+(function emergencyDashboardPoller() {
+  function byId(id) { return document.getElementById(id); }
+
+  function text(id, value) {
+    const n = byId(id);
+    if (n) n.textContent = value == null ? "" : String(value);
+  }
+
+  function html(id, value) {
+    const n = byId(id);
+    if (n) n.innerHTML = value == null ? "" : String(value);
+  }
+
+  function money(v) {
+    const n = Number(v || 0);
+    return "$" + n.toFixed(2);
+  }
+
+  function pct(v) {
+    const n = Number(v || 0);
+    return n.toFixed(2) + "%";
+  }
+
+  function esc(v) {
+    return String(v == null ? "" : v)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function signalMetaObj(r) {
+    let m = r.meta;
+    if (m == null) return {};
+    if (typeof m === "string") {
+      try { m = JSON.parse(m); } catch (e) { return {}; }
+    }
+    return typeof m === "object" && m !== null ? m : {};
+  }
+
+  function renderRows(tableBodyId, rows, mapper, emptyId) {
+    const body = byId(tableBodyId);
+    if (!body) return;
+    const safeRows = Array.isArray(rows) ? rows : [];
+    if (!safeRows.length) {
+      body.innerHTML = "";
+      const empty = byId(emptyId);
+      if (empty) empty.style.display = "block";
+      return;
+    }
+    const empty = byId(emptyId);
+    if (empty) empty.style.display = "none";
+    body.innerHTML = safeRows.map(mapper).join("");
+  }
+
+  let eqChartInstance = null;
+
+  function renderEquity(series) {
+    const rows = Array.isArray(series) ? series : [];
+    const empty = byId("eqEmpty");
+    const canvas = byId("eqChart");
+    if (!canvas) return;
+
+    if (!rows.length) {
+      if (empty) {
+        empty.style.display = "block";
+        empty.textContent = "No equity data yet";
+      }
+      return;
+    }
+    if (empty) empty.style.display = "none";
+
+    if (typeof Chart === "undefined") {
+      return;
+    }
+
+    const labels = rows.map(function (r) { return r.snapshot_at || ""; });
+    const values = rows.map(function (r) { return Number(r.equity_total || 0); });
+
+    if (eqChartInstance) {
+      eqChartInstance.data.labels = labels;
+      eqChartInstance.data.datasets[0].data = values;
+      eqChartInstance.update();
+      return;
+    }
+
+    eqChartInstance = new Chart(canvas.getContext("2d"), {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [{
+          data: values,
+          borderColor: "#00ff88",
+          backgroundColor: "rgba(0,255,136,0.08)",
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.25,
+          fill: true
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { maxTicksLimit: 6 } },
+          y: { ticks: { maxTicksLimit: 5 } }
+        }
+      }
+    });
+  }
+
+  function renderDashboardPayload(payload) {
+    const p = payload || {};
+    const portfolio = p.portfolio || {};
+
+    text("last-sync", "Live via polling · " + new Date().toLocaleTimeString());
+    const sync = byId("last-sync");
+    if (sync) {
+      sync.classList.remove("sync-reconnect");
+      sync.classList.add("sync-live");
+    }
+
+    const dol = Number(p.pnl_vs_start_dollars || 0);
+    const pc = Number(p.pnl_vs_start_pct || 0);
+    const dPart = (dol >= 0 ? "+" : "-") + "$" + Math.abs(dol).toFixed(2);
+    const pPart = (pc >= 0 ? "+" : "") + pc.toFixed(2) + "%";
+    text("tilePnl", dPart + " / " + pPart);
+    text("tileEq", "$" + Number(portfolio.equity_total || 0).toFixed(2));
+    text("tileMode", p.mode != null ? String(p.mode) : "—");
+
+    const mkt = byId("mktLine");
+    if (mkt) {
+      mkt.textContent = p.market_open ? "OPEN" : "CLOSED";
+      mkt.className = p.market_open ? "market-open" : "market-closed";
+    }
+
+    renderEquity(p.equity_series);
+
+    renderRows("posTableBody", p.open_positions, function (r) {
+      const cls = esc(r.asset_class || "");
+      const sym = esc(r.symbol || "");
+      const qty = Number(r.net_qty || 0).toFixed(4);
+      const entry = money(r.avg_entry_price);
+      const cur = money(r.current_price);
+      const rawUp = Number(r.unrealized_pnl);
+      const pnlTxt = Number.isFinite(rawUp) ? ((rawUp >= 0 ? "+$" : "-$") + Math.abs(rawUp).toFixed(2)) : "—";
+      const upp = Number(r.unrealized_pnl_pct);
+      const pnlPct = Number.isFinite(upp) ? ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%") : "—";
+      const posClass = Number.isFinite(rawUp) && rawUp >= 0 ? "pos" : "neg";
+      return "<tr>" +
+        "<td>" + cls + "</td><td>" + sym + "</td><td>" + qty + "</td><td>" + entry + "</td><td>" + cur + "</td>" +
+        '<td class="' + posClass + '">' + pnlTxt + '</td><td class="' + posClass + '">' + pnlPct + "</td>" +
+        "</tr>";
+    }, "posEmpty");
+
+    renderRows("tradesTableBody", p.recent_trades, function (r) {
+      return "<tr>" +
+        "<td>" + esc(r.created_at) + "</td>" +
+        "<td>" + esc(r.symbol) + "</td>" +
+        "<td>" + esc(r.side) + "</td>" +
+        "<td>" + money(r.price) + "</td>" +
+        "<td>" + Number(r.quantity || 0).toFixed(4) + "</td>" +
+        "<td>" + money(r.notional) + "</td>" +
+        "<td>" + esc(r.status) + "</td>" +
+        "</tr>";
+    }, "tradesEmpty");
+
+    renderRows("sigFeedBody", p.recent_signals, function (r) {
+      const meta = signalMetaObj(r);
+      const dir = r.direction;
+      const dn = dir === 1 || dir === "1" ? 1 : (dir === -1 || dir === "-1" ? -1 : 0);
+      let action = meta.action != null ? String(meta.action) : "";
+      if (!action) action = dn > 0 ? "BUY" : dn < 0 ? "SELL" : "HOLD";
+      const arrow = action === "BUY" ? "▲" : action === "SELL" ? "▼" : "–";
+      return "<tr>" +
+        "<td>" + arrow + "</td>" +
+        "<td>" + esc(r.created_at) + "</td>" +
+        "<td>" + esc(r.symbol) + "</td>" +
+        "<td>" + esc(r.signal_name) + "</td>" +
+        "<td>" + esc(action) + "</td>" +
+        "<td>" + Number(r.combined_score || 0).toFixed(3) + "</td>" +
+        "<td></td>" +
+        "</tr>";
+    }, "sigFeedEmpty");
+
+    const err = byId("dash-api-error");
+    if (err) {
+      err.style.display = "none";
+      err.textContent = "";
+    }
+  }
+
+  async function pollDashboard() {
+    try {
+      const res = await fetch("/api/dashboard", { cache: "no-store" });
+      if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
+      const payload = await res.json();
+      renderDashboardPayload(payload);
+    } catch (err) {
+      console.error("Emergency dashboard poll failed", err);
+      text("last-sync", "Dashboard API/render error");
+      const box = byId("dash-api-error");
+      if (box) {
+        box.style.display = "block";
+        var msg = err && err.message ? String(err.message) : String(err);
+        box.textContent = String(msg).split(/\\r?\\n/)[0];
+      }
+    }
+  }
+
+  async function pollSocial() {
+    try {
+      const res = await fetch("/api/social", { cache: "no-store" });
+      if (!res.ok) throw new Error("/api/social HTTP " + res.status);
+      const payload = await res.json();
+      const rows = Array.isArray(payload) ? payload : (payload.rows || payload.social || payload.data || []);
+      const root = byId("socialMoRoot");
+      if (!root) return;
+      if (!rows.length) {
+        root.innerHTML = '<p class="muted">No social rows yet.</p>';
+        return;
+      }
+      root.innerHTML = '<table class="social-table"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>%Δ Mentions</th><th>Source</th></tr></thead><tbody>' +
+        rows.slice(0, 10).map(function (r) {
+          return "<tr>" +
+            "<td>" + esc(r.ticker || r.symbol || "") + "</td>" +
+            "<td>" + esc(r.mentions || "") + "</td>" +
+            "<td>" + esc(r.rank_delta || r.rank_change || "") + "</td>" +
+            "<td>" + esc(r.mentions_delta_pct || r.percent_delta || "") + "</td>" +
+            "<td>" + esc(r.source || "") + "</td>" +
+            "</tr>";
+        }).join("") +
+        "</tbody></table>";
+    } catch (err) {
+      const root = byId("socialMoRoot");
+      if (root) root.innerHTML = '<p class="muted">Social feed unavailable.</p>';
+    }
+  }
+
+  function bootEmergency() {
+    pollDashboard();
+    pollSocial();
+    setInterval(pollDashboard, 30000);
+    setInterval(pollSocial, 60000);
+  }
+
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", bootEmergency);
+  } else {
+    bootEmergency();
+  }
+})();
   </script>
 </body>
 </html>
