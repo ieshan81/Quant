@@ -1793,12 +1793,15 @@ _PAGE = """
       localStorage.setItem(ACTIVE_TAB_KEY, wantBacktest ? "backtest" : "dashboard");
       if (wantBacktest) loadBacktestRuns();
     }
-    document.querySelectorAll(".tab-nav .tab-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        switchTab(btn.dataset.tab === "backtest" ? "backtest" : "dashboard");
+    /* Footer bindTabsAlways() attaches tab clicks when DISABLE_OLD_DASHBOARD_LIVE; otherwise legacy handlers stay below. */
+    if (!window.DISABLE_OLD_DASHBOARD_LIVE) {
+      document.querySelectorAll(".tab-nav .tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          switchTab(btn.dataset.tab === "backtest" ? "backtest" : "dashboard");
+        });
       });
-    });
-    if (localStorage.getItem(ACTIVE_TAB_KEY) === "backtest") loadBacktestRuns();
+      if (localStorage.getItem(ACTIVE_TAB_KEY) === "backtest") loadBacktestRuns();
+    }
 
     function setBacktestStatus(msg, kind) {
       const el = document.getElementById("btStatus");
@@ -2154,6 +2157,7 @@ _PAGE = """
         btn.addEventListener("click", () => loadBacktestResult(btn.dataset.run));
       });
     }
+    window.quantbotLoadBacktestRuns = loadBacktestRuns;
 
     document.getElementById("btRunBtn")?.addEventListener("click", async () => {
       setBacktestBusy(true, "Running Backtest...");
@@ -2330,6 +2334,45 @@ _PAGE = """
     });
     loadBacktestDefaults();
     loadParameterSets();
+  </script>
+  <script>
+(function bindTabsAlways() {
+  function showTab(name) {
+    var tab = name === "backtest" ? "backtest" : "dashboard";
+    document.querySelectorAll(".tab-btn").forEach(function (btn) {
+      btn.classList.toggle("active", btn.dataset.tab === tab);
+    });
+    document.querySelectorAll(".tab-panel").forEach(function (panel) {
+      panel.classList.toggle("active", panel.id === tab + "-tab");
+    });
+    try {
+      localStorage.setItem("quantbot_active_tab", tab === "backtest" ? "backtest" : "dashboard");
+    } catch (e) {}
+    if (tab === "backtest" && typeof window.quantbotLoadBacktestRuns === "function") {
+      window.quantbotLoadBacktestRuns();
+    }
+  }
+
+  function bind() {
+    document.querySelectorAll(".tab-btn[data-tab]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        showTab(btn.dataset.tab);
+      });
+    });
+    try {
+      var key = localStorage.getItem("quantbot_active_tab");
+      showTab(key === "backtest" ? "backtest" : "dashboard");
+    } catch (e) {
+      showTab("dashboard");
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bind);
+  } else {
+    bind();
+  }
+})();
   </script>
   <script>
 (function emergencyDashboardPoller() {

@@ -72,6 +72,18 @@ def test_index_emergency_poller_present(dash_app) -> None:
     assert 'fetch("/api/dashboard"' in body
 
 
+def test_index_bind_tabs_always_footer_script(dash_app) -> None:
+    """Tab switching works even when DISABLE_OLD_DASHBOARD_LIVE skips legacy dashboard hooks."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "(function bindTabsAlways()" in body
+    assert "quantbotLoadBacktestRuns" in body
+    assert ".tab-panel" in body and "dataset.tab" in body
+    assert "Footer bindTabsAlways" in body or "!window.DISABLE_OLD_DASHBOARD_LIVE" in body
+
+
 def test_index_contains_safe_render_helpers(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
