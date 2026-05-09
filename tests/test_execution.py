@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -199,6 +200,36 @@ def test_get_rest_client_uses_tradeapi_rest_when_keys_present(monkeypatch: pytes
         "SECRET",
         "https://paper-api.alpaca.markets",
     )
+
+
+def test_get_rest_client_sets_requests_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[Any] = []
+
+    class DummySession:
+        def request(self, method: str, url: str, **kwargs: Any) -> None:
+            observed.append(kwargs.get("timeout"))
+
+    class DummyREST:
+        def __init__(self, key: str, secret: str, base_url: str) -> None:
+            self._session = DummySession()
+
+    class DummyTradeApi:
+        REST = DummyREST
+
+    class DummyConfig:
+        ALPACA_API_KEY = "K"
+        ALPACA_SECRET_KEY = "S"
+        ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
+
+    monkeypatch.setattr(stock_broker, "tradeapi", DummyTradeApi())
+    monkeypatch.setattr(stock_broker, "config", DummyConfig)
+    monkeypatch.setattr(stock_broker, "_rest_client_cached", None)
+    monkeypatch.setattr(stock_broker, "_alpaca_config_logged_once", False)
+    monkeypatch.setenv("ALPACA_HTTP_TIMEOUT_SEC", "9")
+    cli = stock_broker.get_rest_client()
+    assert cli is not None
+    cli._session.request("GET", "https://paper-api.alpaca.markets/v2/account")  # type: ignore[union-attr]
+    assert observed == [9.0]
 
 
 def test_get_rest_client_sanitizes_trailing_v2(monkeypatch: pytest.MonkeyPatch) -> None:

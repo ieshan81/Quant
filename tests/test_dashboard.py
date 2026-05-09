@@ -70,6 +70,8 @@ def test_index_emergency_poller_present(dash_app) -> None:
     assert "function emergencyDashboardPoller" in body
     assert "Live via polling" in body
     assert 'fetch("/api/dashboard"' in body
+    assert "hydrateFromEmbeddedSnapshot" in body
+    assert "AbortController" in body
 
 
 def test_index_bind_tabs_always_footer_script(dash_app) -> None:
@@ -214,9 +216,10 @@ def test_adapter_contract_and_fallback_mapping_present(dash_app) -> None:
     assert "executionHealth:" in body
     assert "exitRows:" in body
     assert "warnings:" in body
-    # Cash/BP priority fallback contract
-    assert "chooseFirst(portfolio.cash, account.cash" in body
-    assert "chooseFirst(portfolio.buying_power, account.buying_power" in body
+    # Cash/BP priority fallback contract (SQLite uses cash_stocks / cash_crypto)
+    assert "portfolio.cash_stocks" in body
+    assert "portfolio.cash_crypto" in body
+    assert "portfolio.buying_power_stock" in body
     assert "usable_buying_power_stock" in body
     assert "executionHealthRaw.position_exit_rows" in body
 

@@ -1492,6 +1492,14 @@ _PAGE = """
         lu.className = "muted sync-live";
         return;
       }
+      const emergencyOkMs =
+        typeof window.__quantbotLastDashOkMs === "number" ? window.__quantbotLastDashOkMs : 0;
+      if (emergencyOkMs > 0) {
+        const ago = Math.floor((Date.now() - emergencyOkMs) / 1000);
+        lu.textContent = "Last sync: " + ago + "s ago";
+        lu.className = "muted";
+        return;
+      }
       if (lastSuccessfulPollMs) {
         const ago = Math.floor((Date.now() - lastSuccessfulPollMs) / 1000);
         const wsNote = window.__dashWsEnabled ? " · WS reconnecting" : "";
@@ -1512,6 +1520,7 @@ _PAGE = """
       lu.textContent = "Reconnecting…";
       lu.className = "muted sync-reconnect";
     }
+    window.__quantbotUpdateDashSyncStatus = updateDashSyncStatus;
     function startHttpFallbackPoll() {
       if (window.__dashPollTimer) return;
       window.__dashPollTimer = setInterval(poll, REFRESH_MS);
@@ -1522,10 +1531,8 @@ _PAGE = """
         window.__dashPollTimer = null;
       }
     }
-    if (!window.DISABLE_OLD_DASHBOARD_LIVE) {
-      setInterval(tickClock, 1000);
-      tickClock();
-    }
+    setInterval(tickClock, 1000);
+    tickClock();
 
     function renderSocial(rows) {
       const root = document.getElementById("socialMoRoot");
@@ -2514,6 +2521,33 @@ _PAGE = """
     if (n) n.innerHTML = value == null ? "" : String(value);
   }
 
+  function readDashPayloadEl() {
+    try {
+      var el = document.getElementById("dash-payload");
+      var raw = el ? String(el.textContent || "").trim() : "";
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (e) {
+      console.warn("readDashPayloadEl", e);
+      return null;
+    }
+  }
+
+  function hydrateFromEmbeddedSnapshot() {
+    try {
+      var snap = readDashPayloadEl();
+      if (!snap || typeof snap !== "object") return;
+      if (!Object.keys(snap).length) return;
+      renderDashboardPayload(snap);
+      window.__quantbotLastDashOkMs = Date.now();
+      if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
+        window.__quantbotUpdateDashSyncStatus();
+      }
+    } catch (e) {
+      console.warn("hydrateFromEmbeddedSnapshot", e);
+    }
+  }
+
   function money(v) {
     const n = Number(v || 0);
     return "$" + n.toFixed(2);
@@ -2704,8 +2738,22 @@ _PAGE = """
     const equitySeries = Array.isArray(p.equity_series) ? p.equity_series.filter(function (r) { return r && typeof r === "object"; }) : [];
 
     const equity = chooseFirst(portfolio.equity_total, portfolio.equity, null);
-    const cash = chooseFirst(portfolio.cash, account.cash, executionHealthRaw ? executionHealthRaw.cash : null, "N/A");
-    const buyingPower = chooseFirst(portfolio.buying_power, account.buying_power, executionHealthRaw ? executionHealthRaw.buying_power : null, "N/A");
+    /* portfolio_state / Alpaca merge uses cash_stocks + cash_crypto; raw "cash" is often absent */
+    const cash = chooseFirst(
+      portfolio.cash,
+      portfolio.cash_stocks,
+      portfolio.cash_crypto,
+      account.cash,
+      executionHealthRaw ? executionHealthRaw.cash : null,
+      "N/A"
+    );
+    const buyingPower = chooseFirst(
+      portfolio.buying_power,
+      portfolio.buying_power_stock,
+      account.buying_power,
+      executionHealthRaw ? executionHealthRaw.buying_power : null,
+      "N/A"
+    );
     const usableBuyingPower = chooseFirst(
       executionHealthRaw ? executionHealthRaw.usable_buying_power : null,
       executionHealthRaw ? executionHealthRaw.usable_buying_power_stock : null,
@@ -3026,25 +3074,39 @@ _PAGE = """
   }
 
   async function pollDashboard() {
+    var DASH_FETCH_MS = 38000;
     try {
-      const res = await fetch("/api/dashboard", { cache: "no-store" });
+      var ac = new AbortController();
+      var tid = setTimeout(function () { ac.abort(); }, DASH_FETCH_MS);
+      var res;
+      try {
+        res = await fetch("/api/dashboard", { cache: "no-store", signal: ac.signal });
+      } finally {
+        clearTimeout(tid);
+      }
       if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
-      const payload = await res.json();
+      var payload = await res.json();
       renderDashboardPayload(payload);
+      window.__quantbotLastDashOkMs = Date.now();
+      if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
+        window.__quantbotUpdateDashSyncStatus();
+      }
     } catch (err) {
       console.error("Emergency dashboard poll failed", err);
-      text("last-sync", "Dashboard API/render error");
-      text("statusApi", "Dashboard API failed");
+      var aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
+      text("last-sync", aborted ? ("Timed out (~" + Math.round(DASH_FETCH_MS / 1000) + "s) — retrying") : "Dashboard API/render error");
+      text("statusApi", aborted ? "API timeout (Alpaca/DB slow or unreachable)" : "Dashboard API failed");
       text("statusUpdated", "Last updated: error");
       text("systemApiStatus", "failed");
       text("dbgApiStatus", "failed");
-      const box = byId("dash-api-error");
+      var box = byId("dash-api-error");
       if (box) {
         box.style.display = "block";
         var msg = err && err.message ? String(err.message) : String(err);
-        box.textContent = "Dashboard API failed: " + String(msg).split(/\\r?\\n/)[0];
+        var hint = aborted ? "Server hung past client timeout — check Railway logs and Alpaca status." : "";
+        box.textContent = (aborted ? "Dashboard API timed out. " : "Dashboard API failed: ") + String(msg).split(/\\r?\\n/)[0] + (hint ? " " + hint : "");
       }
-      const sb = byId("statusBanner");
+      var sb = byId("statusBanner");
       if (sb) {
         sb.style.borderColor = "#ef4444";
         sb.style.background = "rgba(127,29,29,0.25)";
@@ -3084,7 +3146,10 @@ _PAGE = """
   function bootEmergency() {
     if (window.__emergencyPollerBooted) return;
     window.__emergencyPollerBooted = true;
-    text("last-sync", "Connecting API…");
+    hydrateFromEmbeddedSnapshot();
+    if (!(typeof window.__quantbotLastDashOkMs === "number" && window.__quantbotLastDashOkMs > 0)) {
+      text("last-sync", "Connecting API…");
+    }
     pollDashboard();
     pollSocial();
     setInterval(function () {

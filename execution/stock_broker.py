@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -31,6 +32,31 @@ _asset_meta_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 _rest_client_lock = threading.Lock()
 _rest_client_cached: Any | None = None
 _alpaca_config_logged_once = False
+
+
+def _patch_rest_session_timeout(rest_client: Any) -> None:
+    """``alpaca_trade_api`` calls ``requests`` with no timeout; stalled sockets hang forever.
+
+    Alpaca docs recommend paper trading at ``https://paper-api.alpaca.markets`` with
+    paper API keys; mismatched keys fail fast, but network stalls still need a bound.
+    Set ``ALPACA_HTTP_TIMEOUT_SEC`` (default 12) to tune.
+    """
+    try:
+        sec = float(os.environ.get("ALPACA_HTTP_TIMEOUT_SEC", "12"))
+    except ValueError:
+        sec = 12.0
+    if sec <= 0:
+        return
+    sess = getattr(rest_client, "_session", None)
+    if sess is None:
+        return
+    orig = sess.request
+
+    def request(method: str, url: str, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.setdefault("timeout", sec)
+        return orig(method, url, **kwargs)
+
+    sess.request = request  # type: ignore[method-assign]
 
 
 def _looks_like_pdt_rejection(exc: Exception) -> bool:
@@ -97,6 +123,7 @@ def get_rest_client() -> Any | None:
             secret,
             base_url,
         )
+        _patch_rest_session_timeout(cli)
         with _rest_client_lock:
             _rest_client_cached = cli
         return cli
