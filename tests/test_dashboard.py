@@ -68,6 +68,81 @@ def test_index_contains_safe_render_helpers(dash_app) -> None:
     assert b"showDashboardRenderError" in r.data
 
 
+def test_index_contains_dom_helpers(dash_app) -> None:
+    """All safe DOM helpers exist so renderers can never null-deref."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b"function byId" in body
+    assert b"function setTextSafe" in body
+    assert b"function setHTMLSafe" in body
+    assert b"function showSafe" in body
+    assert b"function hideSafe" in body
+
+
+def test_index_render_guard_keeps_polling_alive(dash_app) -> None:
+    """A render exception must be caught so the next poll still fires."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "applyLiveDashboardSurgical(j)" in body
+    assert "applyLiveDashboardSurgical(boot)" in body
+    assert "applyLiveDashboardSurgical(data)" in body
+    assert "dashboard render failed" in body
+    assert "lastPollCycleEndMs = Date.now()" in body
+
+
+def test_index_uses_payload_field_paths(dash_app) -> None:
+    """Frontend reads the documented payload shape, not invented top-level fields."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "data.pnl_vs_start_pct" in body
+    assert "data.pnl_vs_start_dollars" in body
+    assert "data.portfolio" in body
+    assert "pf.equity_total" in body
+    assert "payload.equity_series" in body
+    assert "payload.open_positions" in body
+    assert "payload.recent_trades" in body
+    assert "payload.recent_signals" in body
+    assert "payload.execution_health" in body
+
+
+def test_index_handles_empty_equity_series(dash_app) -> None:
+    """Empty equity series renders a placeholder, not a blank chart that looks broken."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b'id="eqEmpty"' in body
+    assert b"No equity data yet" in body
+
+
+def test_index_social_unavailable_message(dash_app) -> None:
+    """Social fetch failure shows a clear message; no infinite Loading."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b"Social feed unavailable" in r.data
+
+
+def test_api_dashboard_returns_200(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/api/dashboard")
+    assert r.status_code == 200
+    payload = json.loads(r.data)
+    assert "portfolio" in payload
+    assert "equity_series" in payload
+    assert "open_positions" in payload
+    assert "recent_trades" in payload
+    assert "recent_signals" in payload
+    assert "execution_health" in payload
+    assert "market_open" in payload
+
+
 def test_api_config_get_and_post(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/api/config")

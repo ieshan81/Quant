@@ -513,7 +513,10 @@ _PAGE = """
         <button class="range-btn" data-range="1M">1M</button>
         <button class="range-btn" data-range="ALL">ALL</button>
       </div>
-      <div class="chart-wrap"><canvas id="eqChart"></canvas></div>
+      <div class="chart-wrap" style="position:relative;">
+        <canvas id="eqChart"></canvas>
+        <p class="muted" id="eqEmpty" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);margin:0;">No equity data yet</p>
+      </div>
     </div>
 
     <div class="card social-panel">
@@ -823,15 +826,29 @@ _PAGE = """
     function esc(s) {
       return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
     }
+    function byId(id) {
+      return document.getElementById(id);
+    }
     function setTextSafe(id, value) {
-      const el = document.getElementById(id);
+      const el = byId(id);
       if (!el) return;
       el.textContent = value != null && value !== undefined ? String(value) : "";
     }
-    function setHtmlSafe(id, html) {
-      const el = document.getElementById(id);
+    function setHTMLSafe(id, html) {
+      const el = byId(id);
       if (!el) return;
       el.innerHTML = html != null ? String(html) : "";
+    }
+    function setHtmlSafe(id, html) { setHTMLSafe(id, html); }
+    function showSafe(id, displayValue) {
+      const el = byId(id);
+      if (!el) return;
+      el.style.display = displayValue != null ? String(displayValue) : "";
+    }
+    function hideSafe(id) {
+      const el = byId(id);
+      if (!el) return;
+      el.style.display = "none";
     }
     function showDashboardRenderError(tag, err) {
       console.error(tag, err);
@@ -1161,6 +1178,14 @@ _PAGE = """
     function applyLiveDashboardSurgical(data) {
       if (!data || typeof data !== "object") return;
       const payload = data;
+      const portfolio = (payload.portfolio && typeof payload.portfolio === "object") ? payload.portfolio : {};
+      const openPositions = Array.isArray(payload.open_positions) ? payload.open_positions : [];
+      const recentTrades = Array.isArray(payload.recent_trades) ? payload.recent_trades : [];
+      const recentSignals = Array.isArray(payload.recent_signals) ? payload.recent_signals : [];
+      const equitySeries = Array.isArray(payload.equity_series) ? payload.equity_series : [];
+      const executionHealth = (payload.execution_health && typeof payload.execution_health === "object") ? payload.execution_health : {};
+      const positionExitRows = Array.isArray(payload.position_exit_rows) ? payload.position_exit_rows : [];
+
       try {
         applyLiveTiles(payload);
       } catch (e) {
@@ -1168,8 +1193,17 @@ _PAGE = """
       }
 
       try {
-        _equitySeries = Array.isArray(payload.equity_series) ? payload.equity_series : [];
+        _equitySeries = equitySeries;
         const ser = filterSeries(_equitySeries, selectedEquityRange);
+        const empty = byId("eqEmpty");
+        if (!ser.length) {
+          if (empty) {
+            empty.style.display = "block";
+            empty.textContent = "No equity data yet";
+          }
+        } else if (empty) {
+          empty.style.display = "none";
+        }
         updateEquityChart(ser);
         updateSpark(ser);
       } catch (e) {
@@ -1177,16 +1211,13 @@ _PAGE = """
       }
 
       try {
-        const sigRows = Array.isArray(payload.recent_signals) ? payload.recent_signals : [];
-        const tradeRows = Array.isArray(payload.recent_trades) ? payload.recent_trades : [];
-        const posRows = _dedupPositionsRows(Array.isArray(payload.open_positions) ? payload.open_positions : []);
+        const sigRows = recentSignals;
+        const tradeRows = recentTrades;
+        const posRows = _dedupPositionsRows(openPositions);
 
-        const sigEmpty = document.getElementById("sigFeedEmpty");
-        if (sigEmpty) sigEmpty.style.display = sigRows.length ? "none" : "block";
-        const trEmpty = document.getElementById("tradesEmpty");
-        if (trEmpty) trEmpty.style.display = tradeRows.length ? "none" : "block";
-        const posEmpty = document.getElementById("posEmpty");
-        if (posEmpty) posEmpty.style.display = posRows.length ? "none" : "block";
+        if (sigRows.length) hideSafe("sigFeedEmpty"); else showSafe("sigFeedEmpty", "block");
+        if (tradeRows.length) hideSafe("tradesEmpty"); else showSafe("tradesEmpty", "block");
+        if (posRows.length) hideSafe("posEmpty"); else showSafe("posEmpty", "block");
 
         updateTable("sigFeedBody", sigRows, _renderSignalRow, (r) => r.id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.signal_name || "")), { maxRows: 50 });
         updateTable("tradesTableBody", tradeRows, _renderTradeRow, (r) => r.id ?? (r.broker_order_id ?? (String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.side || ""))), { maxRows: 50 });
@@ -1194,9 +1225,6 @@ _PAGE = """
       } catch (e) {
         showDashboardRenderError("tables", e);
       }
-
-      const executionHealth = (payload.execution_health && typeof payload.execution_health === "object") ? payload.execution_health : {};
-      const positionExitRows = Array.isArray(payload.position_exit_rows) ? payload.position_exit_rows : [];
 
       try {
         const eh = executionHealth;
@@ -1439,8 +1467,10 @@ _PAGE = """
         if (root) root.innerHTML = '<p class="muted">Social feed unavailable.</p>';
       }
     }
-    pollSocial();
-    setInterval(pollSocial, 60000);
+    try { pollSocial(); } catch (e) { console.error("pollSocial init", e); }
+    setInterval(function () {
+      try { pollSocial(); } catch (e) { console.error("pollSocial interval", e); }
+    }, 60000);
 
     // buildSpark/buildChart replaced by updateSpark/updateEquityChart (no destroy).
     function bindChartRangeButtons() {
@@ -1455,22 +1485,29 @@ _PAGE = """
       });
       updateRangeButtons(selectedEquityRange);
     }
-    bindChartRangeButtons();
-    (function syncTabFromStorage() {
-      const wantBt = localStorage.getItem(ACTIVE_TAB_KEY) === "backtest";
-      document.querySelectorAll(".tab-nav .tab-btn").forEach((b) => {
-        const isBt = b.dataset.tab === "backtest";
-        b.classList.toggle("active", wantBt ? isBt : !isBt);
-      });
-      const dm = document.getElementById("dashboard-tab");
-      const bm = document.getElementById("backtest-tab");
-      if (dm) dm.classList.toggle("active", !wantBt);
-      if (bm) bm.classList.toggle("active", wantBt);
-    })();
-    const boot = readPayload();
+    try { bindChartRangeButtons(); } catch (e) { console.error("bindChartRangeButtons", e); }
+    try {
+      (function syncTabFromStorage() {
+        const wantBt = localStorage.getItem(ACTIVE_TAB_KEY) === "backtest";
+        document.querySelectorAll(".tab-nav .tab-btn").forEach((b) => {
+          const isBt = b.dataset.tab === "backtest";
+          b.classList.toggle("active", wantBt ? isBt : !isBt);
+        });
+        const dm = byId("dashboard-tab");
+        const bm = byId("backtest-tab");
+        if (dm) dm.classList.toggle("active", !wantBt);
+        if (bm) bm.classList.toggle("active", wantBt);
+      })();
+    } catch (e) { console.error("syncTabFromStorage", e); }
+    const boot = (function () { try { return readPayload(); } catch (e) { console.error("readPayload", e); return {}; } })();
     if (typeof boot.market_open === "boolean") __lastDashMarketOpen = boot.market_open;
-    tickClock();
-    try { applyLiveDashboardSurgical(boot); } catch (e) { console.error("initial dashboard render", e); }
+    try { tickClock(); } catch (e) { console.error("tickClock init", e); }
+    try {
+      applyLiveDashboardSurgical(boot);
+    } catch (e) {
+      console.error("applyLiveDashboardSurgical (initial)", e);
+      showDashboardRenderError("initial render", e);
+    }
 
     function positionTooltip(ev, tip) {
       const pad = 15;
@@ -1563,7 +1600,7 @@ _PAGE = """
         __symHoverLast = "";
       });
     }
-    setupSymbolTooltips();
+    try { setupSymbolTooltips(); } catch (e) { console.error("setupSymbolTooltips", e); }
 
     async function poll() {
       const errEl = document.getElementById("dash-api-error");
