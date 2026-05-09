@@ -2898,16 +2898,26 @@ _PAGE = """
   }
 
   function bootEmergency() {
+    if (window.__emergencyPollerBooted) return;
+    window.__emergencyPollerBooted = true;
+    text("last-sync", "Connecting API…");
     pollDashboard();
     pollSocial();
-    setInterval(pollDashboard, 30000);
-    setInterval(pollSocial, 60000);
+    setInterval(function () {
+      pollDashboard();
+    }, 30000);
+    setInterval(function () {
+      pollSocial();
+    }, 60000);
   }
 
+  /* Always try immediate boot at script evaluation time. */
+  try { bootEmergency(); } catch (e) { console.error("emergency boot immediate", e); }
+  /* Also bind DOMContentLoaded as a fallback for slow DOM parses. */
   if (document.readyState === "loading") {
-    window.addEventListener("DOMContentLoaded", bootEmergency);
-  } else {
-    bootEmergency();
+    window.addEventListener("DOMContentLoaded", function () {
+      try { bootEmergency(); } catch (e) { console.error("emergency boot domcontentloaded", e); }
+    });
   }
 })();
   </script>
