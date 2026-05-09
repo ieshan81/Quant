@@ -2557,6 +2557,14 @@ _PAGE = """
     }).catch(function () {});
     // #endregion
   }
+  dbgClient("H11", "emergency poller script loaded", { readyState: document.readyState });
+  window.addEventListener("error", function (ev) {
+    dbgClient("H12", "window error", {
+      message: ev && ev.message ? String(ev.message) : "",
+      filename: ev && ev.filename ? String(ev.filename) : "",
+      lineno: ev && typeof ev.lineno === "number" ? ev.lineno : -1
+    });
+  });
 
   function text(id, value) {
     const n = byId(id);
