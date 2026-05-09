@@ -1630,33 +1630,40 @@ _PAGE = """
         updateDashSyncStatus();
       }
     }
-    if (window.__dashWsEnabled) {
-      const dashSocket = io({ transports: ["websocket", "polling"] });
-      dashSocket.on("connect", function () {
-        window.__dashWsConnected = true;
-        updateDashSyncStatus();
-      });
-      dashSocket.on("disconnect", function () {
-        window.__dashWsConnected = false;
-        updateDashSyncStatus();
-        startHttpFallbackPoll();
-      });
-      dashSocket.on("dashboard_update", function (data) {
-        lastSuccessfulPollMs = Date.now();
-        updateDashSyncStatus();
-        try {
-          applyLiveDashboardSurgical(data);
-        } catch (e) {
-          console.error("dashboard_update render failed", e);
-          showDashboardRenderError("websocket payload", e);
-        }
-      });
-    } else {
-      console.warn("Socket.IO client not loaded; using HTTP poll only");
-    }
+
     startHttpFallbackPoll();
     poll();
     updateDashSyncStatus();
+
+    if (window.__dashWsEnabled) {
+      try {
+        const dashSocket = io({ transports: ["websocket", "polling"] });
+        dashSocket.on("connect", function () {
+          window.__dashWsConnected = true;
+          updateDashSyncStatus();
+        });
+        dashSocket.on("disconnect", function () {
+          window.__dashWsConnected = false;
+          updateDashSyncStatus();
+          startHttpFallbackPoll();
+        });
+        dashSocket.on("dashboard_update", function (data) {
+          lastSuccessfulPollMs = Date.now();
+          updateDashSyncStatus();
+          try {
+            applyLiveDashboardSurgical(data);
+          } catch (e) {
+            console.error("dashboard_update render failed", e);
+            showDashboardRenderError("websocket payload", e);
+          }
+        });
+      } catch (sockErr) {
+        console.error("Socket.IO init failed — using HTTP polling only", sockErr);
+        window.__dashWsConnected = false;
+      }
+    } else {
+      console.warn("Socket.IO client not loaded; using HTTP poll only");
+    }
 
     function bindCfg() {
       document.querySelectorAll(".cfg-range").forEach((r) => {
