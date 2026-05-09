@@ -61,29 +61,28 @@ def test_index_has_execution_health_dom_ids(dash_app) -> None:
 
 
 def test_index_emergency_poller_present(dash_app) -> None:
-    """Emergency HTTP-only path runs when old live dashboard is disabled."""
+    """HTTP polling cockpit runs when old live dashboard is disabled."""
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
     assert "window.DISABLE_OLD_DASHBOARD_LIVE = true" in body
-    assert "function emergencyDashboardPoller" in body
+    assert "bootCockpit" in body
     assert "Live via polling" in body
-    assert 'fetch("/api/dashboard"' in body
+    assert "/api/dashboard?equity_period=" in body
     assert "function readEmbedded" in body
     assert "AbortController" in body
 
 
 def test_index_bind_tabs_always_footer_script(dash_app) -> None:
-    """Tab switching works even when DISABLE_OLD_DASHBOARD_LIVE skips legacy dashboard hooks."""
+    """Tab switching is wired in the unified cockpit script."""
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "(function bindTabsAlways()" in body
+    assert "function bindTabs" in body
     assert "quantbotLoadBacktestRuns" in body
     assert ".tab-panel" in body and "dataset.tab" in body
-    assert "Footer bindTabsAlways" in body or "!window.DISABLE_OLD_DASHBOARD_LIVE" in body
 
 
 def test_index_has_four_tab_layout(dash_app) -> None:
@@ -270,51 +269,48 @@ def test_index_contains_safe_render_helpers(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
-    assert b"function setTextSafe" in r.data
-    assert b"showDashboardRenderError" in r.data
+    assert b"function text(" in r.data
+    assert b"Dashboard render failed" in r.data
 
 
 def test_index_contains_dom_helpers(dash_app) -> None:
-    """All safe DOM helpers exist so renderers can never null-deref."""
+    """Core DOM helpers exist for the cockpit renderer."""
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data
     assert b"function byId" in body
-    assert b"function setTextSafe" in body
-    assert b"function setHTMLSafe" in body
-    assert b"function showSafe" in body
-    assert b"function hideSafe" in body
+    assert b"function text(" in body
+    assert b"function html(" in body
 
 
 def test_index_render_guard_keeps_polling_alive(dash_app) -> None:
-    """A render exception must be caught so the next poll still fires."""
+    """A render exception is caught so polling continues."""
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "applyLiveDashboardSurgical(j)" in body
-    assert "applyLiveDashboardSurgical(boot)" in body
-    assert "applyLiveDashboardSurgical(data)" in body
-    assert "dashboard render failed" in body
-    assert "lastPollCycleEndMs = Date.now()" in body
+    assert "function render(payload)" in body
+    assert "renderInner(payload)" in body
+    assert "Dashboard render failed" in body
+    assert "inFlight = false" in body
 
 
 def test_index_uses_payload_field_paths(dash_app) -> None:
-    """Frontend reads the documented payload shape, not invented top-level fields."""
+    """Frontend adapt() reads the /api/dashboard payload shape."""
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "data.pnl_vs_start_pct" in body
-    assert "data.pnl_vs_start_dollars" in body
-    assert "data.portfolio" in body
+    assert "p.pnl_vs_start_pct" in body
+    assert "p.pnl_vs_start_dollars" in body
+    assert "p.portfolio" in body
     assert "pf.equity_total" in body
-    assert "payload.equity_series" in body
-    assert "payload.open_positions" in body
-    assert "payload.recent_trades" in body
-    assert "payload.recent_signals" in body
-    assert "payload.execution_health" in body
+    assert "p.equity_series" in body
+    assert "p.open_positions" in body
+    assert "p.recent_trades" in body
+    assert "p.recent_signals" in body
+    assert "p.execution_health" in body
 
 
 def test_index_handles_empty_equity_series(dash_app) -> None:
