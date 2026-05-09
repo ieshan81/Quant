@@ -2500,6 +2500,8 @@ _PAGE = """
   </script>
   <script>
 (function emergencyDashboardPoller() {
+  /* Reset guard on each page load so emergency polling cannot be stuck. */
+  window.__emergencyPollerBooted = false;
   function byId(id) { return document.getElementById(id); }
 
   function text(id, value) {
@@ -2694,7 +2696,11 @@ _PAGE = """
     const recentSignals = Array.isArray(p.recent_signals) ? p.recent_signals.filter(function (r) { return r && typeof r === "object"; }) : [];
     const executionDecisions = Array.isArray(p.execution_decisions) ? p.execution_decisions.filter(function (r) { return r && typeof r === "object"; }) : [];
     const recentTrades = Array.isArray(p.recent_trades) ? p.recent_trades.filter(function (r) { return r && typeof r === "object"; }) : [];
-    const exitRows = Array.isArray(p.position_exit_rows) ? p.position_exit_rows.filter(function (r) { return r && typeof r === "object"; }) : [];
+    const exitRows = Array.isArray(p.position_exit_rows)
+      ? p.position_exit_rows.filter(function (r) { return r && typeof r === "object"; })
+      : (executionHealthRaw && Array.isArray(executionHealthRaw.position_exit_rows)
+        ? executionHealthRaw.position_exit_rows.filter(function (r) { return r && typeof r === "object"; })
+        : []);
     const equitySeries = Array.isArray(p.equity_series) ? p.equity_series.filter(function (r) { return r && typeof r === "object"; }) : [];
 
     const equity = chooseFirst(portfolio.equity_total, portfolio.equity, null);
@@ -3091,6 +3097,9 @@ _PAGE = """
 
   /* Always try immediate boot at script evaluation time. */
   try { bootEmergency(); } catch (e) { console.error("emergency boot immediate", e); }
+  /* Retry boot briefly in case other scripts race during startup. */
+  setTimeout(function () { try { bootEmergency(); } catch (e) {} }, 500);
+  setTimeout(function () { try { bootEmergency(); } catch (e) {} }, 2000);
   /* Also bind DOMContentLoaded as a fallback for slow DOM parses. */
   if (document.readyState === "loading") {
     window.addEventListener("DOMContentLoaded", function () {

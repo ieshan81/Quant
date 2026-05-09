@@ -218,6 +218,7 @@ def test_adapter_contract_and_fallback_mapping_present(dash_app) -> None:
     assert "chooseFirst(portfolio.cash, account.cash" in body
     assert "chooseFirst(portfolio.buying_power, account.buying_power" in body
     assert "usable_buying_power_stock" in body
+    assert "executionHealthRaw.position_exit_rows" in body
 
 
 def test_debug_payload_summary_exists(dash_app) -> None:
