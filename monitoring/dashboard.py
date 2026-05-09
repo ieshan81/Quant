@@ -15,6 +15,7 @@ import dataclasses
 import math
 from pathlib import Path
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,8 @@ import config
 _REFRESH_SEC = 30
 DASHBOARD_SECRET = os.environ.get("DASHBOARD_SECRET", "")
 _DEBUG_LOG_PATH = Path("debug-22f1f6.log")
+_CLIENT_DEBUG_LOCK = threading.Lock()
+_CLIENT_DEBUG_EVENTS: list[dict[str, Any]] = []
 
 
 def _debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
@@ -43,6 +46,13 @@ def _debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
             f.write(json.dumps(rec, default=str) + "\n")
     except Exception:
         pass
+
+
+def _client_debug_add(evt: dict[str, Any]) -> None:
+    with _CLIENT_DEBUG_LOCK:
+        _CLIENT_DEBUG_EVENTS.append(evt)
+        if len(_CLIENT_DEBUG_EVENTS) > 400:
+            del _CLIENT_DEBUG_EVENTS[:-200]
 
 _PAGE = """
 <!DOCTYPE html>
@@ -2530,6 +2540,23 @@ _PAGE = """
   /* Reset guard on each page load so emergency polling cannot be stuck. */
   window.__emergencyPollerBooted = false;
   function byId(id) { return document.getElementById(id); }
+  function dbgClient(hypothesisId, message, data) {
+    // #region agent log
+    fetch("/api/client-debug", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "22f1f6",
+        runId: "run3",
+        hypothesisId: hypothesisId,
+        message: message,
+        data: data || {},
+        location: "monitoring/dashboard.py",
+        timestamp: Date.now()
+      })
+    }).catch(function () {});
+    // #endregion
+  }
 
   function text(id, value) {
     const n = byId(id);
@@ -2558,9 +2585,7 @@ _PAGE = """
       var snap = readDashPayloadEl();
       if (!snap || typeof snap !== "object") return;
       if (!Object.keys(snap).length) return;
-      // #region agent log
-      fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',mode:'no-cors',keepalive:true,headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H1',location:'monitoring/dashboard.py:2541',message:'hydrate snapshot before render',data:{keys:Object.keys(snap).length,pos:Array.isArray(snap.open_positions)?snap.open_positions.length:-1,sig:Array.isArray(snap.recent_signals)?snap.recent_signals.length:-1,eh:!!(snap.execution_health&&typeof snap.execution_health==='object')},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
+      dbgClient("H1", "hydrate snapshot before render", { keys: Object.keys(snap).length, pos: Array.isArray(snap.open_positions) ? snap.open_positions.length : -1, sig: Array.isArray(snap.recent_signals) ? snap.recent_signals.length : -1, eh: !!(snap.execution_health && typeof snap.execution_health === "object") });
       renderDashboardPayload(snap);
       window.__quantbotLastDashOkMs = Date.now();
       if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
@@ -2952,9 +2977,7 @@ _PAGE = """
     const openPositions = d.positions;
     const recentTrades = d.trades;
     const recentDecisions = d.decisions;
-    // #region agent log
-    fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',mode:'no-cors',keepalive:true,headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H2',location:'monitoring/dashboard.py:2932',message:'render payload entry',data:{positions:openPositions.length,decisions:recentDecisions.length,trades:recentTrades.length,eq:d.equitySeries.length,exitRows:exitRows.length,hasEh:!!(eh&&Object.keys(eh).length),hasPosBody:!!byId('posTableBody'),hasSigBody:!!byId('sigFeedBody')},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
+    dbgClient("H2", "render payload entry", { positions: openPositions.length, decisions: recentDecisions.length, trades: recentTrades.length, eq: d.equitySeries.length, exitRows: exitRows.length, hasEh: !!(eh && Object.keys(eh).length), hasPosBody: !!byId("posTableBody"), hasSigBody: !!byId("sigFeedBody") });
     const exitByKey = {};
     exitRows.forEach(function (r) {
       if (!r || typeof r !== "object") return;
@@ -3112,9 +3135,7 @@ _PAGE = """
       }
       if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
       var payload = await res.json();
-      // #region agent log
-      fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',mode:'no-cors',keepalive:true,headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H3',location:'monitoring/dashboard.py:3089',message:'poll dashboard success',data:{http:res.status,pos:Array.isArray(payload.open_positions)?payload.open_positions.length:-1,sig:Array.isArray(payload.recent_signals)?payload.recent_signals.length:-1,eq:Array.isArray(payload.equity_series)?payload.equity_series.length:-1,hasEh:!!(payload.execution_health&&typeof payload.execution_health==='object')},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
+      dbgClient("H3", "poll dashboard success", { http: res.status, pos: Array.isArray(payload.open_positions) ? payload.open_positions.length : -1, sig: Array.isArray(payload.recent_signals) ? payload.recent_signals.length : -1, eq: Array.isArray(payload.equity_series) ? payload.equity_series.length : -1, hasEh: !!(payload.execution_health && typeof payload.execution_health === "object") });
       renderDashboardPayload(payload);
       window.__quantbotLastDashOkMs = Date.now();
       if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
@@ -3123,9 +3144,7 @@ _PAGE = """
     } catch (err) {
       console.error("Emergency dashboard poll failed", err);
       var aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
-      // #region agent log
-      fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',mode:'no-cors',keepalive:true,headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H4',location:'monitoring/dashboard.py:3099',message:'poll dashboard failure',data:{aborted:!!aborted,name:err&&err.name?String(err.name):'',msg:err&&err.message?String(err.message).slice(0,180):String(err).slice(0,180)},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
+      dbgClient("H4", "poll dashboard failure", { aborted: !!aborted, name: err && err.name ? String(err.name) : "", msg: err && err.message ? String(err.message).slice(0, 180) : String(err).slice(0, 180) });
       text("last-sync", aborted ? ("Timed out (~" + Math.round(DASH_FETCH_MS / 1000) + "s) — retrying") : "Dashboard API/render error");
       text("statusApi", aborted ? "API timeout (Alpaca/DB slow or unreachable)" : "Dashboard API failed");
       text("statusUpdated", "Last updated: error");
@@ -3178,9 +3197,7 @@ _PAGE = """
   function bootEmergency() {
     if (window.__emergencyPollerBooted) return;
     window.__emergencyPollerBooted = true;
-    // #region agent log
-    fetch('http://127.0.0.1:7441/ingest/93383bbd-aeee-4406-ab1b-865ff48b678c',{method:'POST',mode:'no-cors',keepalive:true,headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22f1f6'},body:JSON.stringify({sessionId:'22f1f6',runId:'run1',hypothesisId:'H5',location:'monitoring/dashboard.py:3150',message:'boot emergency poller',data:{readyState:document.readyState,alreadyBooted:!!window.__emergencyPollerBooted,hasDashPayload:!!document.getElementById('dash-payload'),hasStatusApi:!!byId('statusApi')},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
+    dbgClient("H5", "boot emergency poller", { readyState: document.readyState, alreadyBooted: !!window.__emergencyPollerBooted, hasDashPayload: !!document.getElementById("dash-payload"), hasStatusApi: !!byId("statusApi") });
     hydrateFromEmbeddedSnapshot();
     if (!(typeof window.__quantbotLastDashOkMs === "number" && window.__quantbotLastDashOkMs > 0)) {
       text("last-sync", "Connecting API…");
@@ -3764,6 +3781,34 @@ def create_app() -> Flask:
             json.dumps(payload, default=str),
             mimetype="application/json",
         )
+
+    @app.post("/api/client-debug")
+    def api_client_debug_post() -> tuple[dict[str, Any], int]:
+        body = request.get_json(silent=True) or {}
+        evt = {
+            "sessionId": str(body.get("sessionId", "")),
+            "runId": str(body.get("runId", "")),
+            "hypothesisId": str(body.get("hypothesisId", "")),
+            "message": str(body.get("message", "")),
+            "location": str(body.get("location", "client")),
+            "data": body.get("data", {}),
+            "timestamp": body.get("timestamp"),
+            "server_received_ms": int(time.time() * 1000),
+        }
+        _client_debug_add(evt)
+        _debug_log("H10", "client debug event received", {"hypothesisId": evt["hypothesisId"], "message": evt["message"]})
+        return {"ok": True}, 200
+
+    @app.get("/api/client-debug")
+    def api_client_debug_get() -> Response:
+        limit_raw = request.args.get("limit", "120")
+        try:
+            limit = max(1, min(500, int(str(limit_raw))))
+        except ValueError:
+            limit = 120
+        with _CLIENT_DEBUG_LOCK:
+            rows = _CLIENT_DEBUG_EVENTS[-limit:]
+        return Response(json.dumps({"rows": rows}, default=str), mimetype="application/json")
 
     @app.get("/api/config")
     def api_config_get() -> Response:
