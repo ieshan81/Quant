@@ -2537,83 +2537,13 @@ _PAGE = """
   </script>
   <script>
 (function emergencyDashboardPoller() {
-  /* Reset guard on each page load so emergency polling cannot be stuck. */
   window.__emergencyPollerBooted = false;
+  var POLL_MS = 10000;
+  var FETCH_TIMEOUT_MS = 25000;
+  var inFlight = false;
+  var eqChart = null;
+
   function byId(id) { return document.getElementById(id); }
-  function dbgClient(hypothesisId, message, data) {
-    // #region agent log
-    fetch("/api/client-debug", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: "22f1f6",
-        runId: "run3",
-        hypothesisId: hypothesisId,
-        message: message,
-        data: data || {},
-        location: "monitoring/dashboard.py",
-        timestamp: Date.now()
-      })
-    }).catch(function () {});
-    // #endregion
-  }
-  dbgClient("H11", "emergency poller script loaded", { readyState: document.readyState });
-  window.addEventListener("error", function (ev) {
-    dbgClient("H12", "window error", {
-      message: ev && ev.message ? String(ev.message) : "",
-      filename: ev && ev.filename ? String(ev.filename) : "",
-      lineno: ev && typeof ev.lineno === "number" ? ev.lineno : -1
-    });
-  });
-
-  function text(id, value) {
-    const n = byId(id);
-    if (n) n.textContent = value == null ? "" : String(value);
-  }
-
-  function html(id, value) {
-    const n = byId(id);
-    if (n) n.innerHTML = value == null ? "" : String(value);
-  }
-
-  function readDashPayloadEl() {
-    try {
-      var el = document.getElementById("dash-payload");
-      var raw = el ? String(el.textContent || "").trim() : "";
-      if (!raw) return null;
-      return JSON.parse(raw);
-    } catch (e) {
-      console.warn("readDashPayloadEl", e);
-      return null;
-    }
-  }
-
-  function hydrateFromEmbeddedSnapshot() {
-    try {
-      var snap = readDashPayloadEl();
-      if (!snap || typeof snap !== "object") return;
-      if (!Object.keys(snap).length) return;
-      dbgClient("H1", "hydrate snapshot before render", { keys: Object.keys(snap).length, pos: Array.isArray(snap.open_positions) ? snap.open_positions.length : -1, sig: Array.isArray(snap.recent_signals) ? snap.recent_signals.length : -1, eh: !!(snap.execution_health && typeof snap.execution_health === "object") });
-      renderDashboardPayload(snap);
-      window.__quantbotLastDashOkMs = Date.now();
-      if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
-        window.__quantbotUpdateDashSyncStatus();
-      }
-    } catch (e) {
-      console.warn("hydrateFromEmbeddedSnapshot", e);
-    }
-  }
-
-  function money(v) {
-    const n = Number(v || 0);
-    return "$" + n.toFixed(2);
-  }
-
-  function pct(v) {
-    const n = Number(v || 0);
-    return n.toFixed(2) + "%";
-  }
-
   function esc(v) {
     return String(v == null ? "" : v)
       .replaceAll("&", "&amp;")
@@ -2622,508 +2552,198 @@ _PAGE = """
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
   }
-
-  function signalMetaObj(r) {
-    let m = r.meta;
-    if (m == null) return {};
-    if (typeof m === "string") {
-      try { m = JSON.parse(m); } catch (e) { return {}; }
-    }
-    return typeof m === "object" && m !== null ? m : {};
-  }
-
-  function renderRows(tableBodyId, rows, mapper, emptyId) {
-    const body = byId(tableBodyId);
-    if (!body) return;
-    const safeRows = Array.isArray(rows) ? rows.filter(function (r) { return r && typeof r === "object"; }) : [];
-    if (!safeRows.length) {
-      body.innerHTML = "";
-      const empty = byId(emptyId);
-      if (empty) empty.style.display = "block";
-      return;
-    }
-    const empty = byId(emptyId);
-    if (empty) empty.style.display = "none";
-    body.innerHTML = safeRows.map(mapper).join("");
-  }
-
-  let eqChartInstance = null;
-
-  function renderEquity(series) {
-    const rows = Array.isArray(series) ? series : [];
-    const empty = byId("eqEmpty");
-    const canvas = byId("eqChart");
-    if (!canvas) return;
-
-    if (!rows.length) {
-      if (empty) {
-        empty.style.display = "block";
-        empty.textContent = "No equity data yet";
-      }
-      return;
-    }
-    if (empty) empty.style.display = "none";
-
-    if (typeof Chart === "undefined") {
-      return;
-    }
-
-    const labels = rows.map(function (r) { return r.snapshot_at || ""; });
-    const values = rows.map(function (r) { return Number(r.equity_total || 0); });
-
-    if (eqChartInstance) {
-      eqChartInstance.data.labels = labels;
-      eqChartInstance.data.datasets[0].data = values;
-      eqChartInstance.update();
-      return;
-    }
-
-    eqChartInstance = new Chart(canvas.getContext("2d"), {
-      type: "line",
-      data: {
-        labels: labels,
-        datasets: [{
-          data: values,
-          borderColor: "#00ff88",
-          backgroundColor: "rgba(0,255,136,0.08)",
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.25,
-          fill: true
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { ticks: { maxTicksLimit: 6 } },
-          y: { ticks: { maxTicksLimit: 5 } }
-        }
-      }
-    });
-  }
-
-  function fmtNumOrNA(v) {
-    if (v == null || v === "") return "N/A";
-    var n = Number(v);
-    return Number.isFinite(n) ? n.toFixed(2) : "N/A";
-  }
-
-  function fmtMoneyOrNA(v) {
-    if (v == null || v === "") return "N/A";
-    var n = Number(v);
-    return Number.isFinite(n) ? "$" + n.toFixed(2) : "N/A";
-  }
-
-  function fmtCountOrNA(v) {
-    if (v == null || v === "") return "N/A";
-    var n = Number(v);
-    return Number.isFinite(n) ? String(Math.trunc(n)) : "N/A";
-  }
-
-  function fmtToggle(v) {
-    if (v === true) return "on";
-    if (v === false) return "off";
-    return "N/A";
-  }
-
-  function explainExitFromPosition(r, marketOpen) {
-    const cls = String(r.asset_class || "").toLowerCase();
-    const broker = Number(r.broker_qty);
-    const local = Number(r.net_qty);
-    if (Number.isFinite(broker) && broker <= 0) {
-      return { status: "Blocked", reason: "Broker qty zero" };
-    }
-    if (cls === "crypto") {
-      return { status: "Holding", reason: "Crypto can trade 24/7, waiting for signal" };
-    }
-    if (cls !== "crypto" && marketOpen === false) {
-      return { status: "Blocked", reason: "Market closed" };
-    }
-    if (Number.isFinite(local) && local <= 0) {
-      return { status: "Holding", reason: "No exit signal" };
-    }
-    return { status: "Holding", reason: "No exit decision available" };
-  }
-
-  function explainFromExitRow(exitRow) {
-    const elig = String(exitRow.exit_eligibility || "").toLowerCase();
-    const br = String(exitRow.exit_block_reason || "").toLowerCase();
-    const action = String(exitRow.recommended_action || "");
-    if (br.includes("market") && br.includes("closed")) return "Blocked: market closed";
-    if (br.includes("pdt")) return "Blocked: PDT protection";
-    if (br.includes("broker") && br.includes("qty")) return "Blocked: broker qty zero";
-    if (elig.includes("eligible")) {
-      if (String(exitRow.asset_class || "").toLowerCase() === "crypto") return "Crypto fast exit eligible";
-      return "Can sell now";
-    }
-    if (action) return action;
-    if (br) return "Blocked: " + String(exitRow.exit_block_reason);
-    return "Holding: no exit signal";
-  }
-
-  function numOrNull(v) {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  function chooseFirst() {
-    for (let i = 0; i < arguments.length; i += 1) {
-      const v = arguments[i];
+  function text(id, v) { var n = byId(id); if (n) n.textContent = v == null ? "" : String(v); }
+  function html(id, v) { var n = byId(id); if (n) n.innerHTML = v == null ? "" : String(v); }
+  function toNum(v) { var n = Number(v); return Number.isFinite(n) ? n : null; }
+  function moneyOrNA(v) { var n = toNum(v); return n == null ? "N/A" : ("$" + n.toFixed(2)); }
+  function countOrNA(v) { var n = toNum(v); return n == null ? "N/A" : String(Math.trunc(n)); }
+  function pick() {
+    for (var i = 0; i < arguments.length; i += 1) {
+      var v = arguments[i];
       if (v !== undefined && v !== null && v !== "") return v;
     }
     return null;
   }
+  function safeRows(rows) {
+    return Array.isArray(rows) ? rows.filter(function (r) { return r && typeof r === "object"; }) : [];
+  }
+  function readEmbedded() {
+    try {
+      var n = byId("dash-payload");
+      var raw = n ? String(n.textContent || "").trim() : "";
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
 
-  function adaptDashboardPayload(payload) {
-    const p = payload && typeof payload === "object" ? payload : {};
-    const portfolio = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
-    const account = p.account && typeof p.account === "object" ? p.account : {};
-    const executionHealthRaw = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : null;
-    const positions = Array.isArray(p.open_positions) ? p.open_positions.filter(function (r) { return r && typeof r === "object"; }) : [];
-    const recentSignals = Array.isArray(p.recent_signals) ? p.recent_signals.filter(function (r) { return r && typeof r === "object"; }) : [];
-    const executionDecisions = Array.isArray(p.execution_decisions) ? p.execution_decisions.filter(function (r) { return r && typeof r === "object"; }) : [];
-    const recentTrades = Array.isArray(p.recent_trades) ? p.recent_trades.filter(function (r) { return r && typeof r === "object"; }) : [];
-    const exitRows = Array.isArray(p.position_exit_rows)
-      ? p.position_exit_rows.filter(function (r) { return r && typeof r === "object"; })
-      : (executionHealthRaw && Array.isArray(executionHealthRaw.position_exit_rows)
-        ? executionHealthRaw.position_exit_rows.filter(function (r) { return r && typeof r === "object"; })
-        : []);
-    const equitySeries = Array.isArray(p.equity_series) ? p.equity_series.filter(function (r) { return r && typeof r === "object"; }) : [];
-
-    const equity = chooseFirst(portfolio.equity_total, portfolio.equity, null);
-    /* portfolio_state / Alpaca merge uses cash_stocks + cash_crypto; raw "cash" is often absent */
-    const cash = chooseFirst(
-      portfolio.cash,
-      portfolio.cash_stocks,
-      portfolio.cash_crypto,
-      account.cash,
-      executionHealthRaw ? executionHealthRaw.cash : null,
-      "N/A"
-    );
-    const buyingPower = chooseFirst(
-      portfolio.buying_power,
-      portfolio.buying_power_stock,
-      account.buying_power,
-      executionHealthRaw ? executionHealthRaw.buying_power : null,
-      "N/A"
-    );
-    const usableBuyingPower = chooseFirst(
-      executionHealthRaw ? executionHealthRaw.usable_buying_power : null,
-      executionHealthRaw ? executionHealthRaw.usable_buying_power_stock : null,
-      buyingPower,
-      "N/A"
-    );
-
-    const decisionsSource = recentSignals.length ? recentSignals : (executionDecisions.length ? executionDecisions : recentTrades);
-    const decisions = decisionsSource.map(function (r) {
-      const meta = signalMetaObj(r);
-      const dir = r.direction;
-      const dn = dir === 1 || dir === "1" ? 1 : (dir === -1 || dir === "-1" ? -1 : 0);
-      let action = meta.action != null ? String(meta.action) : "";
-      if (!action) {
-        if (r.side != null) action = String(r.side).toUpperCase();
-        else action = dn > 0 ? "BUY" : dn < 0 ? "SELL" : "HOLD";
-      }
-      const reason = meta.reason != null
-        ? String(meta.reason)
-        : (r.signal_name != null ? String(r.signal_name) : ("score " + Number(r.combined_score || 0).toFixed(3)));
-      return {
-        time: r.created_at != null ? String(r.created_at) : "N/A",
-        symbol: r.symbol != null ? String(r.symbol) : "N/A",
-        action: action || "N/A",
-        reason: reason || "N/A",
-      };
-    });
-
-    const warnings = [];
-    const sectionStatus = p.section_status && typeof p.section_status === "object" ? p.section_status : {};
-    Object.keys(sectionStatus).forEach(function (k) {
-      if (sectionStatus[k] && sectionStatus[k] !== "ok") warnings.push("Section " + k + ": " + String(sectionStatus[k]));
-    });
-    if (p.degraded === true) warnings.push("Dashboard payload is degraded.");
-    if (!positions.length) warnings.push("No positions returned by /api/dashboard");
-    if (!decisions.length) warnings.push("No recent decisions returned by /api/dashboard");
-    if (!executionHealthRaw) warnings.push("execution_health missing from /api/dashboard");
-
+  function adapt(raw) {
+    var p = raw && typeof raw === "object" ? raw : {};
+    var pf = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
+    var eh = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : {};
+    var positions = safeRows(p.open_positions);
+    var trades = safeRows(p.recent_trades);
+    var signals = safeRows(p.recent_signals);
+    var decisions = signals.length ? signals : safeRows(p.execution_decisions);
+    var exits = safeRows(p.position_exit_rows);
+    if (!exits.length && Array.isArray(eh.position_exit_rows)) exits = safeRows(eh.position_exit_rows);
     return {
-      status: {
-        apiConnected: true,
-        mode: p.mode != null ? String(p.mode) : "paper",
-        liveTradingEnabled: false,
-        lastUpdated: new Date().toLocaleTimeString(),
-        marketOpen: typeof p.market_open === "boolean" ? p.market_open : null,
-        marketLabel: typeof p.market_open === "boolean" ? (p.market_open ? "OPEN" : "CLOSED") : "N/A",
-        dbPath: p.db_path != null ? String(p.db_path) : null,
-      },
-      account: {
-        equity: equity,
-        pnlDollars: chooseFirst(p.pnl_vs_start_dollars, null),
-        pnlPct: chooseFirst(p.pnl_vs_start_pct, null),
-        cash: cash,
-        buyingPower: buyingPower,
-        usableBuyingPower: usableBuyingPower,
-      },
+      raw: p,
       positions: positions,
+      trades: trades,
       decisions: decisions,
-      trades: recentTrades,
-      equitySeries: equitySeries,
-      executionHealth: executionHealthRaw || {},
-      exitRows: exitRows,
-      warnings: warnings,
-      _raw: p,
+      equity: safeRows(p.equity_series),
+      exits: exits,
+      eh: eh,
+      account: {
+        equity: pick(pf.equity_total, pf.equity),
+        pnlPct: pick(p.pnl_vs_start_pct),
+        pnlDol: pick(p.pnl_vs_start_dollars),
+        cash: pick(pf.cash, pf.cash_stocks, pf.cash_crypto, eh.cash),
+        bp: pick(pf.buying_power, pf.buying_power_stock, eh.buying_power),
+      },
+      mode: String(p.mode || "paper"),
+      marketOpen: typeof p.market_open === "boolean" ? p.market_open : null,
     };
   }
 
-  function renderExecutionHealth(eh) {
-    const missingEl = byId("execHealthMissing");
-    if (!eh || typeof eh !== "object" || !Object.keys(eh).length) {
-      if (missingEl) {
-        missingEl.style.display = "block";
-        missingEl.textContent = "execution_health missing from /api/dashboard";
-      }
-      text("execHealthCash", "N/A");
-      text("execHealthBuyingPower", "N/A");
-      text("execHealthUsable", "N/A");
-      text("execHealthBlockedExits", "N/A");
-      text("execHealthStaleLocal", "N/A");
-      text("execHealthMismatches", "N/A");
-      text("execHealthCryptoFast", "N/A");
-      text("execHealthPdtGuard", "N/A");
-      text("execHealthExitEligible", "N/A");
-      text("execHealthLastReconcile", "N/A");
-      const pdtWrap = byId("execHealthPdtBadges");
-      if (pdtWrap) pdtWrap.innerHTML = '<span class="muted exec-health-empty">N/A</span>';
+  function renderTable(bodyId, emptyId, rows, rowToHtml) {
+    var body = byId(bodyId);
+    if (!body) return;
+    if (!rows.length) {
+      body.innerHTML = "";
+      var empty = byId(emptyId);
+      if (empty) empty.style.display = "block";
       return;
     }
-    if (missingEl) missingEl.style.display = "none";
-    text("execHealthCash", fmtMoneyOrNA(eh.cash));
-    text("execHealthBuyingPower", fmtMoneyOrNA(eh.buying_power));
-    text("execHealthUsable", fmtMoneyOrNA(eh.usable_buying_power));
-    text("execHealthBlockedExits", fmtCountOrNA(eh.blocked_exits_count));
-    text("execHealthStaleLocal", fmtCountOrNA(eh.stale_local_positions_count));
-    text("execHealthMismatches", fmtCountOrNA(eh.broker_local_mismatch_count));
-    text("execHealthCryptoFast", fmtToggle(eh.crypto_fast_exit_enabled));
-    text("execHealthPdtGuard", fmtToggle(eh.stock_pdt_guard_enabled));
-    text("execHealthExitEligible", fmtCountOrNA(eh.exit_eligible_positions_count));
-    text("execHealthLastReconcile", eh.last_reconciliation_at != null && eh.last_reconciliation_at !== "" ? String(eh.last_reconciliation_at) : "N/A");
-    const pdtSyms = Array.isArray(eh.pdt_blocked_symbols)
-      ? eh.pdt_blocked_symbols.map(function (s) { return String(s || "").trim(); }).filter(Boolean)
-      : [];
-    const pdtWrap = byId("execHealthPdtBadges");
-    if (pdtWrap) {
-      pdtWrap.innerHTML = pdtSyms.length
-        ? pdtSyms.map(function (s) { return '<span class="exec-health-badge">' + esc(s) + "</span>"; }).join("")
-        : '<span class="muted exec-health-empty">—</span>';
-    }
+    var emptyEl = byId(emptyId);
+    if (emptyEl) emptyEl.style.display = "none";
+    body.innerHTML = rows.map(rowToHtml).join("");
   }
 
-  function renderPositionExitRows(rows) {
-    const tbody = byId("execExitTableBody");
-    const empty = byId("execExitEmpty");
-    const safe = Array.isArray(rows) ? rows.filter(function (r) { return r && typeof r === "object"; }) : [];
-    if (!tbody) return;
-    if (!safe.length) {
-      tbody.innerHTML = "";
+  function renderEquity(series) {
+    var canvas = byId("eqChart");
+    var empty = byId("eqEmpty");
+    if (!canvas) return;
+    if (!series.length) {
       if (empty) empty.style.display = "block";
       return;
     }
     if (empty) empty.style.display = "none";
-    tbody.innerHTML = safe.map(function (r) {
-      function cellOrDash(v) { return v != null && v !== "" ? esc(String(v)) : "—"; }
-      return "<tr><td class=\"mono\">" + cellOrDash(r.symbol) + "</td>"
-        + "<td>" + cellOrDash(r.asset_class) + "</td>"
-        + "<td class=\"mono\">" + cellOrDash(r.local_qty) + "</td>"
-        + "<td class=\"mono\">" + cellOrDash(r.broker_qty) + "</td>"
-        + "<td class=\"mono\">" + cellOrDash(r.entry_price) + "</td>"
-        + "<td class=\"mono\">" + cellOrDash(r.current_price) + "</td>"
-        + "<td class=\"mono\">" + cellOrDash(r.pnl_pct) + "</td>"
-        + "<td>" + cellOrDash(r.exit_eligibility) + "</td>"
-        + "<td class=\"muted\">" + cellOrDash(r.exit_block_reason) + "</td>"
-        + "<td>" + cellOrDash(r.pdt_status) + "</td>"
-        + "<td class=\"mono\" style=\"font-size:0.68rem;\">" + cellOrDash(r.last_exit_attempt_at) + "</td>"
-        + "<td class=\"mono\">" + cellOrDash(r.cooldown_remaining) + "</td>"
-        + "<td>" + cellOrDash(r.recommended_action) + "</td></tr>";
-    }).join("");
-  }
-
-  function renderWarnings(payload) {
-    const list = byId("overviewWarningsList");
-    const wrap = byId("overviewWarnings");
-    if (!list || !wrap) return;
-    const warnings = [];
-    const eh = payload.execution_health || {};
-    const blocked = Number(eh.blocked_exits_count || 0);
-    const stale = Number(eh.stale_local_positions_count || 0);
-    const mismatch = Number(eh.broker_local_mismatch_count || 0);
-    if (Number.isFinite(blocked) && blocked > 0) warnings.push(blocked + " blocked exit(s) — see Execution health.");
-    if (Number.isFinite(stale) && stale > 0) warnings.push(stale + " stale local position(s) — broker/local out of sync.");
-    if (Number.isFinite(mismatch) && mismatch > 0) warnings.push(mismatch + " broker/local mismatch(es) — check Position exit eligibility.");
-    const sectionStatus = payload.section_status && typeof payload.section_status === "object" ? payload.section_status : {};
-    Object.keys(sectionStatus).forEach(function (key) {
-      const v = sectionStatus[key];
-      if (v && v !== "ok") warnings.push("Section " + key + ": " + String(v));
-    });
-    if (payload.degraded === true) warnings.push("Dashboard payload is degraded.");
-    if (!warnings.length) {
-      wrap.style.display = "none";
-      list.innerHTML = "";
+    if (typeof Chart === "undefined") return;
+    var labels = series.map(function (r) { return String(r.snapshot_at || ""); });
+    var values = series.map(function (r) { var n = toNum(r.equity_total); return n == null ? 0 : n; });
+    if (!eqChart) {
+      eqChart = new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: { labels: labels, datasets: [{ data: values, borderColor: "#00ff88", backgroundColor: "rgba(0,255,136,0.08)", fill: true, tension: 0.25, pointRadius: 0 }] },
+        options: { animation: false, responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { ticks: { maxTicksLimit: 5 } } } }
+      });
       return;
     }
-    wrap.style.display = "";
-    list.innerHTML = warnings.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("");
+    eqChart.data.labels = labels;
+    eqChart.data.datasets[0].data = values;
+    eqChart.update("none");
   }
 
-  function renderDashboardPayload(payload) {
-    const d = adaptDashboardPayload(payload);
-    const p = d._raw || {};
-    const eh = d.executionHealth && typeof d.executionHealth === "object" ? d.executionHealth : null;
-    const marketOpen = d.status.marketOpen;
-    const exitRows = d.exitRows;
-    const openPositions = d.positions;
-    const recentTrades = d.trades;
-    const recentDecisions = d.decisions;
-    dbgClient("H2", "render payload entry", { positions: openPositions.length, decisions: recentDecisions.length, trades: recentTrades.length, eq: d.equitySeries.length, exitRows: exitRows.length, hasEh: !!(eh && Object.keys(eh).length), hasPosBody: !!byId("posTableBody"), hasSigBody: !!byId("sigFeedBody") });
-    const exitByKey = {};
-    exitRows.forEach(function (r) {
-      if (!r || typeof r !== "object") return;
-      const key = String(r.symbol || "").replace("/", "").toUpperCase();
-      if (key) exitByKey[key] = r;
+  function render(payload) {
+    var d = adapt(payload);
+    var now = new Date().toLocaleTimeString();
+    var pnlDol = toNum(d.account.pnlDol);
+    var pnlPct = toNum(d.account.pnlPct);
+    var pnlText = "N/A";
+    if (pnlDol != null && pnlPct != null) {
+      var left = (pnlDol >= 0 ? "+$" : "-$") + Math.abs(pnlDol).toFixed(2);
+      var right = (pnlPct >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
+      pnlText = left + " / " + right;
+    }
+    text("tileEq", moneyOrNA(d.account.equity));
+    text("tilePnl", pnlText);
+    text("tileCash", moneyOrNA(d.account.cash));
+    text("tileBp", moneyOrNA(d.account.bp));
+    text("statusApi", "Bot running / API connected");
+    text("statusMode", "Mode: " + d.mode);
+    text("statusLive", "Live trading disabled");
+    text("statusUpdated", "Last updated: " + now);
+    text("last-sync", "Live via polling · " + now);
+    text("systemApiStatus", "connected");
+    text("systemWorkerStatus", d.raw.worker_status != null ? String(d.raw.worker_status) : "N/A");
+    text("systemDbPath", d.raw.db_path != null ? String(d.raw.db_path) : "N/A");
+    text("dbgApiStatus", "200/ok");
+    text("dbgPosLen", String(d.positions.length));
+    text("dbgSigLen", String(d.decisions.length));
+    text("dbgTradeLen", String(d.trades.length));
+    text("dbgEqLen", String(d.equity.length));
+    text("dbgEhPresent", String(!!Object.keys(d.eh).length));
+    text("dbgExitLen", String(d.exits.length));
+
+    var mkt = byId("mktLine");
+    if (mkt) {
+      var lbl = d.marketOpen === true ? "OPEN" : d.marketOpen === false ? "CLOSED" : "N/A";
+      mkt.textContent = lbl;
+      mkt.className = d.marketOpen === true ? "market-open" : "market-closed";
+    }
+
+    renderEquity(d.equity);
+
+    renderTable("posTableBody", "posEmpty", d.positions.slice(0, 5), function (r) {
+      var up = toNum(r.unrealized_pnl_pct);
+      var upTxt = up == null ? "—" : ((up >= 0 ? "+" : "") + up.toFixed(2) + "%");
+      return "<tr><td>" + esc(r.symbol || "") + "</td><td>" + esc(String(toNum(r.net_qty) == null ? 0 : toNum(r.net_qty).toFixed(4))) + "</td><td>" + moneyOrNA(r.avg_entry_price) + "</td><td>" + moneyOrNA(r.current_price) + "</td><td>" + esc(upTxt) + "</td><td>Holding</td></tr>";
     });
 
-    const nowTxt = d.status.lastUpdated || new Date().toLocaleTimeString();
-    text("last-sync", "Live via polling · " + nowTxt);
-    const sync = byId("last-sync");
-    if (sync) {
-      sync.classList.remove("sync-reconnect");
-      sync.classList.add("sync-live");
+    renderTable("sigFeedBody", "sigFeedEmpty", d.decisions.slice(0, 10), function (r) {
+      var reason = (r.meta && typeof r.meta === "object" && r.meta.reason != null) ? String(r.meta.reason) : String(r.signal_name || r.reason || "N/A");
+      var action = (r.meta && typeof r.meta === "object" && r.meta.action != null) ? String(r.meta.action) : String(r.side || "HOLD");
+      return "<tr><td>" + esc(r.created_at || r.time || "N/A") + "</td><td>" + esc(r.symbol || "N/A") + "</td><td>" + esc(action) + "</td><td>" + esc(reason) + "</td></tr>";
+    });
+
+    renderTable("posDetailedBody", "posDetailedEmpty", d.positions, function (r) {
+      var up = toNum(r.unrealized_pnl);
+      var upp = toNum(r.unrealized_pnl_pct);
+      var upTxt = up == null ? "—" : ((up >= 0 ? "+$" : "-$") + Math.abs(up).toFixed(2));
+      var uppTxt = upp == null ? "—" : ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%");
+      return "<tr><td class=\"mono\">" + esc(r.symbol || "") + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(String(toNum(r.net_qty) == null ? 0 : toNum(r.net_qty).toFixed(4))) + "</td><td class=\"mono\">—</td><td class=\"mono\">" + moneyOrNA(r.avg_entry_price) + "</td><td class=\"mono\">" + moneyOrNA(r.current_price) + "</td><td class=\"mono\">" + esc(upTxt) + "</td><td class=\"mono\">" + esc(uppTxt) + "</td><td>Holding</td><td class=\"muted\">No exit signal</td></tr>";
+    });
+
+    renderTable("execExitTableBody", "execExitEmpty", d.exits, function (r) {
+      function cell(v) { return esc(v == null || v === "" ? "—" : String(v)); }
+      return "<tr><td class=\"mono\">" + cell(r.symbol) + "</td><td>" + cell(r.asset_class) + "</td><td class=\"mono\">" + cell(r.local_qty) + "</td><td class=\"mono\">" + cell(r.broker_qty) + "</td><td class=\"mono\">" + cell(r.entry_price) + "</td><td class=\"mono\">" + cell(r.current_price) + "</td><td class=\"mono\">" + cell(r.pnl_pct) + "</td><td>" + cell(r.exit_eligibility) + "</td><td class=\"muted\">" + cell(r.exit_block_reason) + "</td><td>" + cell(r.pdt_status) + "</td><td class=\"mono\" style=\"font-size:0.68rem;\">" + cell(r.last_exit_attempt_at) + "</td><td class=\"mono\">" + cell(r.cooldown_remaining) + "</td><td>" + cell(r.recommended_action) + "</td></tr>";
+    });
+
+    text("execHealthCash", moneyOrNA(d.eh.cash));
+    text("execHealthBuyingPower", moneyOrNA(d.eh.buying_power));
+    text("execHealthUsable", moneyOrNA(d.eh.usable_buying_power));
+    text("execHealthBlockedExits", countOrNA(d.eh.blocked_exits_count));
+    text("execHealthStaleLocal", countOrNA(d.eh.stale_local_positions_count));
+    text("execHealthMismatches", countOrNA(d.eh.broker_local_mismatch_count));
+    text("execHealthCryptoFast", d.eh.crypto_fast_exit_enabled === true ? "on" : d.eh.crypto_fast_exit_enabled === false ? "off" : "N/A");
+    text("execHealthPdtGuard", d.eh.stock_pdt_guard_enabled === true ? "on" : d.eh.stock_pdt_guard_enabled === false ? "off" : "N/A");
+    text("execHealthExitEligible", countOrNA(d.eh.exit_eligible_positions_count));
+    text("execHealthLastReconcile", d.eh.last_reconciliation_at != null ? String(d.eh.last_reconciliation_at) : "N/A");
+    var pdtWrap = byId("execHealthPdtBadges");
+    if (pdtWrap) {
+      var syms = Array.isArray(d.eh.pdt_blocked_symbols) ? d.eh.pdt_blocked_symbols : [];
+      pdtWrap.innerHTML = syms.length ? syms.map(function (s) { return '<span class="exec-health-badge">' + esc(s) + "</span>"; }).join("") : '<span class="muted exec-health-empty">—</span>';
     }
+    var missing = byId("execHealthMissing");
+    if (missing) missing.style.display = Object.keys(d.eh).length ? "none" : "block";
 
-    const dol = numOrNull(d.account.pnlDollars);
-    const pc = numOrNull(d.account.pnlPct);
-    const dPart = (dol >= 0 ? "+" : "-") + "$" + Math.abs(dol).toFixed(2);
-    const pPart = (pc >= 0 ? "+" : "") + pc.toFixed(2) + "%";
-    text("tilePnl", (Number.isFinite(dol) && Number.isFinite(pc)) ? (dPart + " / " + pPart) : "N/A");
-    text("tileEq", fmtMoneyOrNA(d.account.equity));
-    text("tileCash", fmtMoneyOrNA(d.account.cash));
-    text("tileBp", fmtMoneyOrNA(d.account.buyingPower));
-    text("statusApi", d.status.apiConnected ? "Bot running / API connected" : "Dashboard API failed");
-    text("statusMode", "Mode: " + d.status.mode);
-    text("statusLive", d.status.liveTradingEnabled ? "Live trading enabled" : "Live trading disabled");
-    text("statusUpdated", "Last updated: " + nowTxt);
-    text("systemApiStatus", d.status.apiConnected ? "connected" : "failed");
-    text("systemWorkerStatus", p.worker_status != null ? String(p.worker_status) : "N/A");
-    text("systemDbPath", d.status.dbPath != null ? String(d.status.dbPath) : "N/A");
-    text("dbgApiStatus", d.status.apiConnected ? "200/ok" : "failed");
-    text("dbgPosLen", String(openPositions.length));
-    text("dbgSigLen", String(Array.isArray(p.recent_signals) ? p.recent_signals.length : 0));
-    text("dbgTradeLen", String(recentTrades.length));
-    text("dbgEqLen", String(d.equitySeries.length));
-    text("dbgEhPresent", String(!!(eh && Object.keys(eh).length)));
-    text("dbgExitLen", String(exitRows.length));
-
-    const mkt = byId("mktLine");
-    if (mkt) {
-      mkt.textContent = d.status.marketLabel || "N/A";
-      mkt.className = d.status.marketOpen === true ? "market-open" : "market-closed";
+    var warns = [];
+    var sec = d.raw.section_status && typeof d.raw.section_status === "object" ? d.raw.section_status : {};
+    Object.keys(sec).forEach(function (k) { if (sec[k] && sec[k] !== "ok") warns.push("Section " + k + ": " + String(sec[k])); });
+    if (d.raw.degraded === true) warns.push("Dashboard payload is degraded.");
+    var warnWrap = byId("overviewWarnings");
+    var warnList = byId("overviewWarningsList");
+    if (warnWrap && warnList) {
+      warnWrap.style.display = warns.length ? "" : "none";
+      warnList.innerHTML = warns.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("");
     }
+    html("overviewWarnInline", warns.length ? warns.map(function (w) { return "• " + esc(w); }).join("<br>") : "No active warnings.");
 
-    renderEquity(d.equitySeries);
-
-    renderRows("posTableBody", openPositions.slice(0, 5), function (r) {
-      const sym = esc(r.symbol || "");
-      const qty = Number(r.net_qty || 0).toFixed(4);
-      const entry = money(r.avg_entry_price);
-      const cur = money(r.current_price);
-      const upp = Number(r.unrealized_pnl_pct);
-      const pnlPct = Number.isFinite(upp) ? ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%") : "—";
-      const key = String(r.symbol || "").replace("/", "").toUpperCase();
-      const exitRow = exitByKey[key];
-      const guess = exitRow ? { status: String(exitRow.exit_eligibility || "Holding"), reason: explainFromExitRow(exitRow) } : explainExitFromPosition(r, marketOpen);
-      const posClass = Number.isFinite(upp) && upp >= 0 ? "pos" : "neg";
-      return "<tr>" +
-        "<td>" + sym + "</td><td>" + qty + "</td><td>" + entry + "</td><td>" + cur + "</td>" +
-        '<td class="' + posClass + '">' + pnlPct + '</td><td>' + esc(guess.status) + "</td>" +
-        "</tr>";
-    }, "posEmpty");
-
-    renderRows("posDetailedBody", openPositions, function (r) {
-      const cls = esc(r.asset_class || "");
-      const sym = esc(r.symbol || "");
-      const localQty = Number(r.net_qty || 0).toFixed(4);
-      const key = String(r.symbol || "").replace("/", "").toUpperCase();
-      const exitRow = exitByKey[key];
-      const brokerQty = exitRow && exitRow.broker_qty != null ? esc(String(exitRow.broker_qty)) : "—";
-      const entry = money(r.avg_entry_price);
-      const cur = money(r.current_price);
-      const rawUp = Number(r.unrealized_pnl);
-      const pnlTxt = Number.isFinite(rawUp) ? ((rawUp >= 0 ? "+$" : "-$") + Math.abs(rawUp).toFixed(2)) : "—";
-      const upp = Number(r.unrealized_pnl_pct);
-      const pnlPct = Number.isFinite(upp) ? ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%") : "—";
-      let status, reason;
-      let explanation;
-      if (exitRow && exitRow.exit_eligibility) {
-        status = String(exitRow.exit_eligibility);
-        reason = exitRow.exit_block_reason ? String(exitRow.exit_block_reason) : (exitRow.recommended_action ? String(exitRow.recommended_action) : "—");
-        explanation = explainFromExitRow(exitRow);
-      } else {
-        const guess = explainExitFromPosition({ asset_class: r.asset_class, broker_qty: exitRow ? exitRow.broker_qty : r.net_qty, net_qty: r.net_qty }, marketOpen);
-        status = guess.status;
-        reason = guess.reason;
-        explanation = guess.reason;
-      }
-      const posClass = Number.isFinite(rawUp) && rawUp >= 0 ? "pos" : "neg";
-      const statusCls = status === "Blocked" ? "neg" : (status === "Can sell" || status === "eligible" ? "pos" : "");
-      return "<tr>" +
-        "<td class=\"mono\">" + sym + "</td><td>" + cls + "</td>" +
-        "<td class=\"mono\">" + localQty + "</td><td class=\"mono\">" + brokerQty + "</td>" +
-        "<td class=\"mono\">" + entry + "</td><td class=\"mono\">" + cur + "</td>" +
-        '<td class="mono ' + posClass + '">' + pnlTxt + "</td>" +
-        '<td class="mono ' + posClass + '">' + pnlPct + "</td>" +
-        '<td class="' + statusCls + '">' + esc(status) + "</td>" +
-        '<td class="muted">' + esc(reason) + "<br><span class=\"muted\" style=\"font-size:0.72rem;\">" + esc(explanation || "N/A") + "</span></td>" +
-        "</tr>";
-    }, "posDetailedEmpty");
-
-    renderRows("tradesTableBody", recentTrades.slice(0, 10), function (r) {
-      return "<tr>" +
-        "<td>" + esc(r.created_at) + "</td>" +
-        "<td>" + esc(r.symbol) + "</td>" +
-        "<td>" + esc(r.side) + "</td>" +
-        "<td>" + money(r.price) + "</td>" +
-        "<td>" + Number(r.quantity || 0).toFixed(4) + "</td>" +
-        "<td>" + money(r.notional) + "</td>" +
-        "<td>" + esc(r.status) + "</td>" +
-        "</tr>";
-    }, "tradesEmpty");
-
-    renderRows("sigFeedBody", recentDecisions.slice(0, 10), function (r) {
-      return "<tr>"
-        + "<td>" + esc(r.time || "N/A") + "</td>"
-        + "<td>" + esc(r.symbol || "N/A") + "</td>"
-        + "<td>" + esc(r.action || "N/A") + "</td>"
-        + "<td>" + esc(r.reason || "N/A") + "</td>"
-        + "</tr>";
-    }, "sigFeedEmpty");
-
-    renderExecutionHealth(eh);
-    renderPositionExitRows(exitRows);
-    renderWarnings(p);
-    const inlineWarn = byId("overviewWarnInline");
-    if (inlineWarn) {
-      inlineWarn.innerHTML = d.warnings.length
-        ? d.warnings.slice(0, 4).map(function (w) { return "• " + esc(w); }).join("<br>")
-        : "No active warnings.";
-    }
-
-    const err = byId("dash-api-error");
-    if (err) {
-      err.style.display = "none";
-      err.textContent = "";
-    }
-    const sb = byId("statusBanner");
+    var err = byId("dash-api-error");
+    if (err) { err.style.display = "none"; err.textContent = ""; }
+    var sb = byId("statusBanner");
     if (sb) {
       sb.style.borderColor = "#1f2937";
       sb.style.background = "rgba(16,24,40,0.55)";
@@ -3131,105 +2751,63 @@ _PAGE = """
   }
 
   async function pollDashboard() {
-    var DASH_FETCH_MS = 38000;
+    if (inFlight) return;
+    inFlight = true;
+    var ac = new AbortController();
+    var tid = setTimeout(function () { ac.abort(); }, FETCH_TIMEOUT_MS);
     try {
-      var ac = new AbortController();
-      var tid = setTimeout(function () { ac.abort(); }, DASH_FETCH_MS);
-      var res;
-      try {
-        res = await fetch("/api/dashboard", { cache: "no-store", signal: ac.signal });
-      } finally {
-        clearTimeout(tid);
-      }
+      var res = await fetch("/api/dashboard", { cache: "no-store", signal: ac.signal });
       if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
       var payload = await res.json();
-      dbgClient("H3", "poll dashboard success", { http: res.status, pos: Array.isArray(payload.open_positions) ? payload.open_positions.length : -1, sig: Array.isArray(payload.recent_signals) ? payload.recent_signals.length : -1, eq: Array.isArray(payload.equity_series) ? payload.equity_series.length : -1, hasEh: !!(payload.execution_health && typeof payload.execution_health === "object") });
-      renderDashboardPayload(payload);
-      window.__quantbotLastDashOkMs = Date.now();
-      if (typeof window.__quantbotUpdateDashSyncStatus === "function") {
-        window.__quantbotUpdateDashSyncStatus();
-      }
-    } catch (err) {
-      console.error("Emergency dashboard poll failed", err);
-      var aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
-      dbgClient("H4", "poll dashboard failure", { aborted: !!aborted, name: err && err.name ? String(err.name) : "", msg: err && err.message ? String(err.message).slice(0, 180) : String(err).slice(0, 180) });
-      text("last-sync", aborted ? ("Timed out (~" + Math.round(DASH_FETCH_MS / 1000) + "s) — retrying") : "Dashboard API/render error");
-      text("statusApi", aborted ? "API timeout (Alpaca/DB slow or unreachable)" : "Dashboard API failed");
-      text("statusUpdated", "Last updated: error");
+      render(payload);
+    } catch (e) {
+      text("statusApi", "Dashboard API failed");
       text("systemApiStatus", "failed");
       text("dbgApiStatus", "failed");
-      var box = byId("dash-api-error");
-      if (box) {
-        box.style.display = "block";
-        var msg = err && err.message ? String(err.message) : String(err);
-        var hint = aborted ? "Server hung past client timeout — check Railway logs and Alpaca status." : "";
-        box.textContent = (aborted ? "Dashboard API timed out. " : "Dashboard API failed: ") + String(msg).split(/\\r?\\n/)[0] + (hint ? " " + hint : "");
+      var err = byId("dash-api-error");
+      if (err) {
+        err.style.display = "block";
+        err.textContent = "Dashboard API failed: " + (e && e.message ? String(e.message) : String(e));
       }
-      var sb = byId("statusBanner");
-      if (sb) {
-        sb.style.borderColor = "#ef4444";
-        sb.style.background = "rgba(127,29,29,0.25)";
-      }
+    } finally {
+      clearTimeout(tid);
+      inFlight = false;
     }
   }
 
   async function pollSocial() {
+    var root = byId("socialMoRoot");
+    if (!root) return;
     try {
-      const res = await fetch("/api/social", { cache: "no-store" });
-      if (!res.ok) throw new Error("/api/social HTTP " + res.status);
-      const payload = await res.json();
-      const rows = Array.isArray(payload) ? payload : (payload.rows || payload.social || payload.data || []);
-      const root = byId("socialMoRoot");
-      if (!root) return;
-      if (!rows.length) {
-        root.innerHTML = '<p class="muted">No social rows yet.</p>';
-        return;
-      }
+      var res = await fetch("/api/social", { cache: "no-store" });
+      if (!res.ok) throw new Error("social HTTP " + res.status);
+      var payload = await res.json();
+      var rows = Array.isArray(payload) ? payload : (payload.rows || payload.data || []);
+      if (!rows.length) { root.innerHTML = '<p class="muted">No social rows yet.</p>'; return; }
       root.innerHTML = '<table class="social-table"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>%Δ Mentions</th><th>Source</th></tr></thead><tbody>' +
         rows.slice(0, 10).map(function (r) {
-          return "<tr>" +
-            "<td>" + esc(r.ticker || r.symbol || "") + "</td>" +
-            "<td>" + esc(r.mentions || "") + "</td>" +
-            "<td>" + esc(r.rank_delta || r.rank_change || "") + "</td>" +
-            "<td>" + esc(r.mentions_delta_pct || r.percent_delta || "") + "</td>" +
-            "<td>" + esc(r.source || "") + "</td>" +
-            "</tr>";
-        }).join("") +
-        "</tbody></table>";
-    } catch (err) {
-      const root = byId("socialMoRoot");
-      if (root) root.innerHTML = '<p class="muted">Social feed unavailable.</p>';
+          return "<tr><td>" + esc(r.ticker || r.symbol || "") + "</td><td>" + esc(r.mentions || "") + "</td><td>" + esc(r.rank_delta || r.rank_change || "") + "</td><td>" + esc(r.mentions_delta_pct || r.percent_delta || "") + "</td><td>" + esc(r.source || "") + "</td></tr>";
+        }).join("") + "</tbody></table>";
+    } catch (e) {
+      root.innerHTML = '<p class="muted">Social feed unavailable.</p>';
     }
   }
 
-  function bootEmergency() {
+  function boot() {
     if (window.__emergencyPollerBooted) return;
     window.__emergencyPollerBooted = true;
-    dbgClient("H5", "boot emergency poller", { readyState: document.readyState, alreadyBooted: !!window.__emergencyPollerBooted, hasDashPayload: !!document.getElementById("dash-payload"), hasStatusApi: !!byId("statusApi") });
-    hydrateFromEmbeddedSnapshot();
-    if (!(typeof window.__quantbotLastDashOkMs === "number" && window.__quantbotLastDashOkMs > 0)) {
-      text("last-sync", "Connecting API…");
-    }
+    var embedded = readEmbedded();
+    if (embedded) render(embedded);
     pollDashboard();
     pollSocial();
-    setInterval(function () {
-      pollDashboard();
-    }, 30000);
-    setInterval(function () {
-      pollSocial();
-    }, 60000);
+    setInterval(pollDashboard, POLL_MS);
+    setInterval(pollSocial, 60000);
   }
 
-  /* Always try immediate boot at script evaluation time. */
-  try { bootEmergency(); } catch (e) { console.error("emergency boot immediate", e); }
-  /* Retry boot briefly in case other scripts race during startup. */
-  setTimeout(function () { try { bootEmergency(); } catch (e) {} }, 500);
-  setTimeout(function () { try { bootEmergency(); } catch (e) {} }, 2000);
-  /* Also bind DOMContentLoaded as a fallback for slow DOM parses. */
   if (document.readyState === "loading") {
-    window.addEventListener("DOMContentLoaded", function () {
-      try { bootEmergency(); } catch (e) { console.error("emergency boot domcontentloaded", e); }
-    });
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
   }
 })();
   </script>
