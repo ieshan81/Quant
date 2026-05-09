@@ -291,11 +291,11 @@ _PAGE = """
     .dashboard-wrap .stats-row {
       grid-column: 1 / -1;
       display: grid;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 1rem;
       margin-top: 0;
     }
-    .dashboard-wrap .stats-row > .card { grid-column: span 3; }
+    .dashboard-wrap .stats-row > .card { grid-column: span 1; }
     .dashboard-wrap .chart-main { grid-column: 1 / span 8; margin-top: 0 !important; }
     .dashboard-wrap .social-panel { grid-column: 9 / -1; }
     .dashboard-wrap .signal-feed { grid-column: 1 / span 8; }
@@ -398,7 +398,8 @@ _PAGE = """
     .dashboard-wrap .api-links,
     .dashboard-wrap .last-upd { grid-column: 1 / -1; margin-top: 0; }
     @media (max-width: 1100px) {
-      .dashboard-wrap .stats-row > .card { grid-column: span 6; }
+      .dashboard-wrap .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .dashboard-wrap .stats-row > .card { grid-column: span 1; }
       .dashboard-wrap .chart-main,
       .dashboard-wrap .social-panel,
       .dashboard-wrap .signal-feed,
@@ -515,14 +516,25 @@ _PAGE = """
     <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
     <button type="button" class="tab-btn" data-tab="system">System Health</button>
   </nav>
+  <div class="dashboard-wrap" style="padding-top:0.45rem;padding-bottom:0.2rem;">
+    <div class="card" id="statusBanner" style="grid-column:1/-1;padding:0.55rem 0.75rem;">
+      <div class="muted" style="display:flex;gap:0.9rem;flex-wrap:wrap;">
+        <span id="statusApi">API: connecting…</span>
+        <span id="statusMode">Mode: paper</span>
+        <span id="statusLive">Live trading: disabled</span>
+        <span id="statusUpdated">Last updated: —</span>
+      </div>
+    </div>
+  </div>
 
   <main id="overview-tab" class="tab-panel active">
     <div class="dashboard-wrap">
     <div class="stats-row">
+      <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div></div>
       <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}" id="tilePnl">{{ pnl_str }}</div></div>
-      <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div><div class="spark-wrap"><canvas id="sparkEq"></canvas></div></div>
-      <div class="card"><h2>Mode</h2><div class="big mono" id="tileMode">{{ mode_str }}</div><p class="muted" style="margin:0.35rem 0 0;">Cash: <span class="mono" id="tileCash">—</span> · BP: <span class="mono" id="tileBp">—</span></p></div>
-      <div class="card"><h2>Market (NYSE)</h2><div id="mktLine" class="market-closed">…</div><div class="countdown" id="mktCd"></div></div>
+      <div class="card"><h2>Cash</h2><div class="big mono" id="tileCash">N/A</div></div>
+      <div class="card"><h2>Buying power</h2><div class="big mono" id="tileBp">N/A</div></div>
+      <div class="card"><h2>Market status</h2><div id="mktLine" class="market-closed">N/A</div><div class="countdown" id="mktCd"></div></div>
     </div>
 
     <div class="card warning-card" id="overviewWarnings" style="display:none;">
@@ -545,25 +557,20 @@ _PAGE = """
       </div>
     </div>
 
-    <div class="card signal-feed">
-      <h2>Recent decisions</h2>
-      <p class="muted" style="margin-top:0;">Latest signals from the worker.</p>
+    <div class="card social-panel">
+      <h2>What the bot is doing now</h2>
+      <p class="muted" style="margin-top:0;">Top positions, recent decisions, and active warnings.</p>
+      <h3 style="margin:0.6rem 0 0.35rem;">Open positions (top 5)</h3>
       <div style="overflow-x:auto;">
-      <table><thead><tr><th></th><th>Time</th><th>Symbol</th><th>Type</th><th>Signal</th><th>Score</th><th></th></tr></thead><tbody id="sigFeedBody"></tbody></table>
+        <table class="data-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L %</th><th>Exit status</th></tr></thead><tbody id="posTableBody"></tbody></table>
       </div>
-      <p class="muted" id="sigFeedEmpty" style="display:none;margin-top:0.5rem;">No signals logged.</p>
-    </div>
-
-    <div class="subrow">
-      <div class="card"><h2>Open positions</h2>
-        <p class="muted" style="margin-top:0;">Quick view · full detail in <a href="#" data-tab-link="positions">Positions</a> tab.</p>
-        <table class="data-table"><thead><tr><th>Class</th><th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>Unrealized</th><th>Unrealized %</th></tr></thead><tbody id="posTableBody"></tbody></table>
-        <p class="muted" id="posEmpty" style="display:none;">No open positions.</p>
+      <p class="muted" id="posEmpty" style="display:none;">No positions returned by /api/dashboard.</p>
+      <h3 style="margin:0.8rem 0 0.35rem;">Recent decisions (top 10)</h3>
+      <div style="overflow-x:auto;">
+        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Reason / Score</th></tr></thead><tbody id="sigFeedBody"></tbody></table>
       </div>
-      <div class="card"><h2>Recent trades</h2>
-        <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Price</th><th>Qty</th><th>Notional</th><th>Status</th></tr></thead><tbody id="tradesTableBody"></tbody></table>
-        <p class="muted" id="tradesEmpty" style="display:none;">No trades yet.</p>
-      </div>
+      <p class="muted" id="sigFeedEmpty" style="display:none;margin-top:0.35rem;">No recent decisions returned by /api/dashboard.</p>
+      <div id="overviewWarnInline" class="muted" style="margin-top:0.6rem;"></div>
     </div>
     </div>
   </main>
@@ -628,28 +635,33 @@ _PAGE = """
         </div>
         <p id="btStatus" class="bt-status muted">Run or select a backtest first.</p>
       </div>
-      <div class="card bt-card-summary">
+      <details class="card bt-card-summary">
+        <summary><strong>Advanced — Results Overview</strong></summary>
         <h2>Results Overview</h2>
         <p id="btSummaryEmpty" class="mono muted">No run selected.</p>
         <div id="btSummaryCards" class="stats-row" style="margin-top:0.5rem;"></div>
         <p id="btSampleWarning" class="muted" style="display:none;color:#fbbf24;margin-top:0.6rem;"></p>
-      </div>
-      <div class="card bt-card-interpretation">
+      </details>
+      <details class="card bt-card-interpretation">
+        <summary><strong>Advanced — Interpretation</strong></summary>
         <h2>Interpretation</h2>
         <div id="btInterpretation" class="muted">No run selected.</div>
-      </div>
-      <div class="card bt-card-chart">
+      </details>
+      <details class="card bt-card-chart">
+        <summary><strong>Advanced — Backtest Equity Curve</strong></summary>
         <h2>Backtest Equity Curve</h2>
         <div class="chart-wrap" style="height:360px;"><canvas id="btChart"></canvas></div>
-      </div>
-      <div class="card bt-card-runs">
+      </details>
+      <details class="card bt-card-runs">
+        <summary><strong>Advanced — Strategy Comparison</strong></summary>
         <h2>Strategy Comparison</h2>
         <p id="btCompareEmpty" class="muted">Run comparison to populate this table.</p>
         <div style="overflow:auto;max-height:360px;">
           <table class="data-table"><thead><tr><th>Strategy</th><th>Status</th><th>Reason</th><th>Final Equity</th><th>Return %</th><th>Benchmark %</th><th>Excess %</th><th>Max Drawdown %</th><th>Closed Trades</th><th>Deployed Avg %</th><th>Rejections</th><th>Confidence</th><th>Interpretation</th></tr></thead><tbody id="btCompareBody"></tbody></table>
         </div>
-      </div>
-      <div class="card bt-card-rejections">
+      </details>
+      <details class="card bt-card-rejections">
+        <summary><strong>Advanced — Rejections</strong></summary>
         <h2>Rejections Summary</h2>
         <div id="btRejBadges" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
         <details style="margin-top:0.7rem;">
@@ -659,19 +671,22 @@ _PAGE = """
           </div>
         </details>
         <p class="muted" id="btRejectionsEmpty" style="display:none;">No rejections.</p>
-      </div>
-      <div class="card bt-card-trades">
+      </details>
+      <details class="card bt-card-trades">
+        <summary><strong>Advanced — Simulated Trades</strong></summary>
         <h2>Simulated trades</h2>
         <div style="overflow:auto;max-height:340px;">
           <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Fill</th><th>Entry reason</th><th>Exit reason</th><th>Score</th><th>Hold sec</th><th>PnL</th><th>PnL %</th></tr></thead><tbody id="btTradesBody"></tbody></table>
         </div>
         <p class="muted" id="btTradesEmpty" style="display:none;">No trades.</p>
-      </div>
-      <div class="card bt-card-runs">
+      </details>
+      <details class="card bt-card-runs">
+        <summary><strong>Advanced — Recent Runs</strong></summary>
         <h2>Recent Backtest Runs</h2>
         <table class="data-table"><thead><tr><th>ID</th><th>Created</th><th>Strategy</th><th>Status</th><th></th></tr></thead><tbody id="btRunsBody"></tbody></table>
-      </div>
-      <div class="card bt-card-runs">
+      </details>
+      <details class="card bt-card-runs">
+        <summary><strong>Advanced — Signal Events</strong></summary>
         <h2>Signal Events</h2>
         <div id="btSigBadges" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:0.6rem;"></div>
         <details>
@@ -681,15 +696,16 @@ _PAGE = """
           </div>
         </details>
         <p class="muted" id="btSignalEventsEmpty" style="display:none;">No signal events.</p>
-      </div>
-      <div class="card bt-card-assumptions">
+      </details>
+      <details class="card bt-card-assumptions">
+        <summary><strong>Advanced — Assumptions</strong></summary>
         <h2>Assumptions &amp; Data Quality</h2>
         <div id="btAssumptions" class="mono muted">—</div>
         <div id="btDataQuality" class="mono muted" style="margin-top:0.5rem;">—</div>
-        </div>
+      </details>
       <div class="card bt-card-runs">
-        <details open>
-          <summary><strong>Strategy Diagnostics</strong></summary>
+        <details>
+          <summary><strong>Advanced — Strategy Diagnostics</strong></summary>
           <div id="btStrategyDiagnostics" class="mono muted" style="margin-top:0.6rem;">Run or select a backtest to view diagnostics.</div>
         </details>
       </div>
@@ -719,7 +735,7 @@ _PAGE = """
         </details>
       </div>
       <div class="card bt-card-runs">
-        <details open>
+        <details>
           <summary><strong>Reports</strong></summary>
           <p class="muted">Use Copy/Download to export backtest or experiment context.</p>
         </details>
@@ -785,7 +801,8 @@ _PAGE = """
 
       <div class="card" id="systemMetaCard" style="grid-column: 1 / -1;">
         <h2>System info</h2>
-        <p class="muted" style="margin-top:0;">DB: <span class="mono">{{ db }}</span></p>
+        <p class="muted" style="margin-top:0;">API status: <span class="mono" id="systemApiStatus">connecting…</span> · Worker status: <span class="mono" id="systemWorkerStatus">N/A</span></p>
+        <p class="muted" style="margin-top:0.3rem;">DB: <span class="mono" id="systemDbPath">{{ db }}</span></p>
         <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
         <p class="last-upd" id="metaNote">Live dashboard via HTTP polling (every {{ refresh_sec }}s) · clock ET</p>
       </div>
@@ -865,6 +882,22 @@ _PAGE = """
             <li>Paper fund manager — updates paper parameters within caps; no live trading.</li>
             <li>Live advisor only — never auto-live without hard safety locks.</li>
           </ol>
+        </details>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <details>
+          <summary><strong>Debug payload summary</strong></summary>
+          <p class="muted" style="margin-top:0.5rem;">Quick counts from latest <code>/api/dashboard</code> payload.</p>
+          <table class="data-table"><tbody>
+            <tr><th style="text-align:left;">/api/dashboard status</th><td class="mono" id="dbgApiStatus">connecting…</td></tr>
+            <tr><th style="text-align:left;">open_positions length</th><td class="mono" id="dbgPosLen">0</td></tr>
+            <tr><th style="text-align:left;">recent_signals length</th><td class="mono" id="dbgSigLen">0</td></tr>
+            <tr><th style="text-align:left;">recent_trades length</th><td class="mono" id="dbgTradeLen">0</td></tr>
+            <tr><th style="text-align:left;">equity_series length</th><td class="mono" id="dbgEqLen">0</td></tr>
+            <tr><th style="text-align:left;">execution_health present</th><td class="mono" id="dbgEhPresent">false</td></tr>
+            <tr><th style="text-align:left;">position_exit_rows length</th><td class="mono" id="dbgExitLen">0</td></tr>
+          </tbody></table>
         </details>
       </div>
     </div>
@@ -2510,7 +2543,7 @@ _PAGE = """
   function renderRows(tableBodyId, rows, mapper, emptyId) {
     const body = byId(tableBodyId);
     if (!body) return;
-    const safeRows = Array.isArray(rows) ? rows : [];
+    const safeRows = Array.isArray(rows) ? rows.filter(function (r) { return r && typeof r === "object"; }) : [];
     if (!safeRows.length) {
       body.innerHTML = "";
       const empty = byId(emptyId);
@@ -2612,7 +2645,7 @@ _PAGE = """
       return { status: "Blocked", reason: "Broker qty zero" };
     }
     if (cls === "crypto") {
-      return { status: "Can sell", reason: "Crypto trades 24/7" };
+      return { status: "Holding", reason: "Crypto can trade 24/7, waiting for signal" };
     }
     if (cls !== "crypto" && marketOpen === false) {
       return { status: "Blocked", reason: "Market closed" };
@@ -2620,13 +2653,127 @@ _PAGE = """
     if (Number.isFinite(local) && local <= 0) {
       return { status: "Holding", reason: "No exit signal" };
     }
-    return { status: "Can sell", reason: "—" };
+    return { status: "Holding", reason: "No exit decision available" };
+  }
+
+  function explainFromExitRow(exitRow) {
+    const elig = String(exitRow.exit_eligibility || "").toLowerCase();
+    const br = String(exitRow.exit_block_reason || "").toLowerCase();
+    const action = String(exitRow.recommended_action || "");
+    if (br.includes("market") && br.includes("closed")) return "Blocked: market closed";
+    if (br.includes("pdt")) return "Blocked: PDT protection";
+    if (br.includes("broker") && br.includes("qty")) return "Blocked: broker qty zero";
+    if (elig.includes("eligible")) {
+      if (String(exitRow.asset_class || "").toLowerCase() === "crypto") return "Crypto fast exit eligible";
+      return "Can sell now";
+    }
+    if (action) return action;
+    if (br) return "Blocked: " + String(exitRow.exit_block_reason);
+    return "Holding: no exit signal";
+  }
+
+  function numOrNull(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function chooseFirst() {
+    for (let i = 0; i < arguments.length; i += 1) {
+      const v = arguments[i];
+      if (v !== undefined && v !== null && v !== "") return v;
+    }
+    return null;
+  }
+
+  function adaptDashboardPayload(payload) {
+    const p = payload && typeof payload === "object" ? payload : {};
+    const portfolio = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
+    const account = p.account && typeof p.account === "object" ? p.account : {};
+    const executionHealthRaw = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : null;
+    const positions = Array.isArray(p.open_positions) ? p.open_positions.filter(function (r) { return r && typeof r === "object"; }) : [];
+    const recentSignals = Array.isArray(p.recent_signals) ? p.recent_signals.filter(function (r) { return r && typeof r === "object"; }) : [];
+    const executionDecisions = Array.isArray(p.execution_decisions) ? p.execution_decisions.filter(function (r) { return r && typeof r === "object"; }) : [];
+    const recentTrades = Array.isArray(p.recent_trades) ? p.recent_trades.filter(function (r) { return r && typeof r === "object"; }) : [];
+    const exitRows = Array.isArray(p.position_exit_rows) ? p.position_exit_rows.filter(function (r) { return r && typeof r === "object"; }) : [];
+    const equitySeries = Array.isArray(p.equity_series) ? p.equity_series.filter(function (r) { return r && typeof r === "object"; }) : [];
+
+    const equity = chooseFirst(portfolio.equity_total, portfolio.equity, null);
+    const cash = chooseFirst(portfolio.cash, account.cash, executionHealthRaw ? executionHealthRaw.cash : null, "N/A");
+    const buyingPower = chooseFirst(portfolio.buying_power, account.buying_power, executionHealthRaw ? executionHealthRaw.buying_power : null, "N/A");
+    const usableBuyingPower = chooseFirst(
+      executionHealthRaw ? executionHealthRaw.usable_buying_power : null,
+      executionHealthRaw ? executionHealthRaw.usable_buying_power_stock : null,
+      buyingPower,
+      "N/A"
+    );
+
+    const decisionsSource = recentSignals.length ? recentSignals : (executionDecisions.length ? executionDecisions : recentTrades);
+    const decisions = decisionsSource.map(function (r) {
+      const meta = signalMetaObj(r);
+      const dir = r.direction;
+      const dn = dir === 1 || dir === "1" ? 1 : (dir === -1 || dir === "-1" ? -1 : 0);
+      let action = meta.action != null ? String(meta.action) : "";
+      if (!action) {
+        if (r.side != null) action = String(r.side).toUpperCase();
+        else action = dn > 0 ? "BUY" : dn < 0 ? "SELL" : "HOLD";
+      }
+      const reason = meta.reason != null
+        ? String(meta.reason)
+        : (r.signal_name != null ? String(r.signal_name) : ("score " + Number(r.combined_score || 0).toFixed(3)));
+      return {
+        time: r.created_at != null ? String(r.created_at) : "N/A",
+        symbol: r.symbol != null ? String(r.symbol) : "N/A",
+        action: action || "N/A",
+        reason: reason || "N/A",
+      };
+    });
+
+    const warnings = [];
+    const sectionStatus = p.section_status && typeof p.section_status === "object" ? p.section_status : {};
+    Object.keys(sectionStatus).forEach(function (k) {
+      if (sectionStatus[k] && sectionStatus[k] !== "ok") warnings.push("Section " + k + ": " + String(sectionStatus[k]));
+    });
+    if (p.degraded === true) warnings.push("Dashboard payload is degraded.");
+    if (!positions.length) warnings.push("No positions returned by /api/dashboard");
+    if (!decisions.length) warnings.push("No recent decisions returned by /api/dashboard");
+    if (!executionHealthRaw) warnings.push("execution_health missing from /api/dashboard");
+
+    return {
+      status: {
+        apiConnected: true,
+        mode: p.mode != null ? String(p.mode) : "paper",
+        liveTradingEnabled: false,
+        lastUpdated: new Date().toLocaleTimeString(),
+        marketOpen: typeof p.market_open === "boolean" ? p.market_open : null,
+        marketLabel: typeof p.market_open === "boolean" ? (p.market_open ? "OPEN" : "CLOSED") : "N/A",
+        dbPath: p.db_path != null ? String(p.db_path) : null,
+      },
+      account: {
+        equity: equity,
+        pnlDollars: chooseFirst(p.pnl_vs_start_dollars, null),
+        pnlPct: chooseFirst(p.pnl_vs_start_pct, null),
+        cash: cash,
+        buyingPower: buyingPower,
+        usableBuyingPower: usableBuyingPower,
+      },
+      positions: positions,
+      decisions: decisions,
+      trades: recentTrades,
+      equitySeries: equitySeries,
+      executionHealth: executionHealthRaw || {},
+      exitRows: exitRows,
+      warnings: warnings,
+      _raw: p,
+    };
   }
 
   function renderExecutionHealth(eh) {
     const missingEl = byId("execHealthMissing");
     if (!eh || typeof eh !== "object" || !Object.keys(eh).length) {
-      if (missingEl) missingEl.style.display = "block";
+      if (missingEl) {
+        missingEl.style.display = "block";
+        missingEl.textContent = "execution_health missing from /api/dashboard";
+      }
       text("execHealthCash", "N/A");
       text("execHealthBuyingPower", "N/A");
       text("execHealthUsable", "N/A");
@@ -2720,11 +2867,14 @@ _PAGE = """
   }
 
   function renderDashboardPayload(payload) {
-    const p = payload || {};
-    const portfolio = p.portfolio || {};
-    const eh = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : null;
-    const marketOpen = typeof p.market_open === "boolean" ? p.market_open : null;
-    const exitRows = Array.isArray(p.position_exit_rows) ? p.position_exit_rows : [];
+    const d = adaptDashboardPayload(payload);
+    const p = d._raw || {};
+    const eh = d.executionHealth && typeof d.executionHealth === "object" ? d.executionHealth : null;
+    const marketOpen = d.status.marketOpen;
+    const exitRows = d.exitRows;
+    const openPositions = d.positions;
+    const recentTrades = d.trades;
+    const recentDecisions = d.decisions;
     const exitByKey = {};
     exitRows.forEach(function (r) {
       if (!r || typeof r !== "object") return;
@@ -2732,49 +2882,63 @@ _PAGE = """
       if (key) exitByKey[key] = r;
     });
 
-    text("last-sync", "Live via polling · " + new Date().toLocaleTimeString());
+    const nowTxt = d.status.lastUpdated || new Date().toLocaleTimeString();
+    text("last-sync", "Live via polling · " + nowTxt);
     const sync = byId("last-sync");
     if (sync) {
       sync.classList.remove("sync-reconnect");
       sync.classList.add("sync-live");
     }
 
-    const dol = Number(p.pnl_vs_start_dollars || 0);
-    const pc = Number(p.pnl_vs_start_pct || 0);
+    const dol = numOrNull(d.account.pnlDollars);
+    const pc = numOrNull(d.account.pnlPct);
     const dPart = (dol >= 0 ? "+" : "-") + "$" + Math.abs(dol).toFixed(2);
     const pPart = (pc >= 0 ? "+" : "") + pc.toFixed(2) + "%";
-    text("tilePnl", dPart + " / " + pPart);
-    text("tileEq", "$" + Number(portfolio.equity_total || 0).toFixed(2));
-    text("tileMode", p.mode != null ? String(p.mode) : "—");
-    text("tileCash", eh ? fmtMoneyOrNA(eh.cash) : "N/A");
-    text("tileBp", eh ? fmtMoneyOrNA(eh.buying_power) : "N/A");
+    text("tilePnl", (Number.isFinite(dol) && Number.isFinite(pc)) ? (dPart + " / " + pPart) : "N/A");
+    text("tileEq", fmtMoneyOrNA(d.account.equity));
+    text("tileCash", fmtMoneyOrNA(d.account.cash));
+    text("tileBp", fmtMoneyOrNA(d.account.buyingPower));
+    text("statusApi", d.status.apiConnected ? "Bot running / API connected" : "Dashboard API failed");
+    text("statusMode", "Mode: " + d.status.mode);
+    text("statusLive", d.status.liveTradingEnabled ? "Live trading enabled" : "Live trading disabled");
+    text("statusUpdated", "Last updated: " + nowTxt);
+    text("systemApiStatus", d.status.apiConnected ? "connected" : "failed");
+    text("systemWorkerStatus", p.worker_status != null ? String(p.worker_status) : "N/A");
+    text("systemDbPath", d.status.dbPath != null ? String(d.status.dbPath) : "N/A");
+    text("dbgApiStatus", d.status.apiConnected ? "200/ok" : "failed");
+    text("dbgPosLen", String(openPositions.length));
+    text("dbgSigLen", String(Array.isArray(p.recent_signals) ? p.recent_signals.length : 0));
+    text("dbgTradeLen", String(recentTrades.length));
+    text("dbgEqLen", String(d.equitySeries.length));
+    text("dbgEhPresent", String(!!(eh && Object.keys(eh).length)));
+    text("dbgExitLen", String(exitRows.length));
 
     const mkt = byId("mktLine");
     if (mkt) {
-      mkt.textContent = p.market_open ? "OPEN" : "CLOSED";
-      mkt.className = p.market_open ? "market-open" : "market-closed";
+      mkt.textContent = d.status.marketLabel || "N/A";
+      mkt.className = d.status.marketOpen === true ? "market-open" : "market-closed";
     }
 
-    renderEquity(p.equity_series);
+    renderEquity(d.equitySeries);
 
-    renderRows("posTableBody", p.open_positions, function (r) {
-      const cls = esc(r.asset_class || "");
+    renderRows("posTableBody", openPositions.slice(0, 5), function (r) {
       const sym = esc(r.symbol || "");
       const qty = Number(r.net_qty || 0).toFixed(4);
       const entry = money(r.avg_entry_price);
       const cur = money(r.current_price);
-      const rawUp = Number(r.unrealized_pnl);
-      const pnlTxt = Number.isFinite(rawUp) ? ((rawUp >= 0 ? "+$" : "-$") + Math.abs(rawUp).toFixed(2)) : "—";
       const upp = Number(r.unrealized_pnl_pct);
       const pnlPct = Number.isFinite(upp) ? ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%") : "—";
-      const posClass = Number.isFinite(rawUp) && rawUp >= 0 ? "pos" : "neg";
+      const key = String(r.symbol || "").replace("/", "").toUpperCase();
+      const exitRow = exitByKey[key];
+      const guess = exitRow ? { status: String(exitRow.exit_eligibility || "Holding"), reason: explainFromExitRow(exitRow) } : explainExitFromPosition(r, marketOpen);
+      const posClass = Number.isFinite(upp) && upp >= 0 ? "pos" : "neg";
       return "<tr>" +
-        "<td>" + cls + "</td><td>" + sym + "</td><td>" + qty + "</td><td>" + entry + "</td><td>" + cur + "</td>" +
-        '<td class="' + posClass + '">' + pnlTxt + '</td><td class="' + posClass + '">' + pnlPct + "</td>" +
+        "<td>" + sym + "</td><td>" + qty + "</td><td>" + entry + "</td><td>" + cur + "</td>" +
+        '<td class="' + posClass + '">' + pnlPct + '</td><td>' + esc(guess.status) + "</td>" +
         "</tr>";
     }, "posEmpty");
 
-    renderRows("posDetailedBody", p.open_positions, function (r) {
+    renderRows("posDetailedBody", openPositions, function (r) {
       const cls = esc(r.asset_class || "");
       const sym = esc(r.symbol || "");
       const localQty = Number(r.net_qty || 0).toFixed(4);
@@ -2788,13 +2952,16 @@ _PAGE = """
       const upp = Number(r.unrealized_pnl_pct);
       const pnlPct = Number.isFinite(upp) ? ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%") : "—";
       let status, reason;
+      let explanation;
       if (exitRow && exitRow.exit_eligibility) {
         status = String(exitRow.exit_eligibility);
         reason = exitRow.exit_block_reason ? String(exitRow.exit_block_reason) : (exitRow.recommended_action ? String(exitRow.recommended_action) : "—");
+        explanation = explainFromExitRow(exitRow);
       } else {
         const guess = explainExitFromPosition({ asset_class: r.asset_class, broker_qty: exitRow ? exitRow.broker_qty : r.net_qty, net_qty: r.net_qty }, marketOpen);
         status = guess.status;
         reason = guess.reason;
+        explanation = guess.reason;
       }
       const posClass = Number.isFinite(rawUp) && rawUp >= 0 ? "pos" : "neg";
       const statusCls = status === "Blocked" ? "neg" : (status === "Can sell" || status === "eligible" ? "pos" : "");
@@ -2805,11 +2972,11 @@ _PAGE = """
         '<td class="mono ' + posClass + '">' + pnlTxt + "</td>" +
         '<td class="mono ' + posClass + '">' + pnlPct + "</td>" +
         '<td class="' + statusCls + '">' + esc(status) + "</td>" +
-        '<td class="muted">' + esc(reason) + "</td>" +
+        '<td class="muted">' + esc(reason) + "<br><span class=\"muted\" style=\"font-size:0.72rem;\">" + esc(explanation || "N/A") + "</span></td>" +
         "</tr>";
     }, "posDetailedEmpty");
 
-    renderRows("tradesTableBody", p.recent_trades, function (r) {
+    renderRows("tradesTableBody", recentTrades.slice(0, 10), function (r) {
       return "<tr>" +
         "<td>" + esc(r.created_at) + "</td>" +
         "<td>" + esc(r.symbol) + "</td>" +
@@ -2821,32 +2988,34 @@ _PAGE = """
         "</tr>";
     }, "tradesEmpty");
 
-    renderRows("sigFeedBody", p.recent_signals, function (r) {
-      const meta = signalMetaObj(r);
-      const dir = r.direction;
-      const dn = dir === 1 || dir === "1" ? 1 : (dir === -1 || dir === "-1" ? -1 : 0);
-      let action = meta.action != null ? String(meta.action) : "";
-      if (!action) action = dn > 0 ? "BUY" : dn < 0 ? "SELL" : "HOLD";
-      const arrow = action === "BUY" ? "▲" : action === "SELL" ? "▼" : "–";
-      return "<tr>" +
-        "<td>" + arrow + "</td>" +
-        "<td>" + esc(r.created_at) + "</td>" +
-        "<td>" + esc(r.symbol) + "</td>" +
-        "<td>" + esc(r.signal_name) + "</td>" +
-        "<td>" + esc(action) + "</td>" +
-        "<td>" + Number(r.combined_score || 0).toFixed(3) + "</td>" +
-        "<td></td>" +
-        "</tr>";
+    renderRows("sigFeedBody", recentDecisions.slice(0, 10), function (r) {
+      return "<tr>"
+        + "<td>" + esc(r.time || "N/A") + "</td>"
+        + "<td>" + esc(r.symbol || "N/A") + "</td>"
+        + "<td>" + esc(r.action || "N/A") + "</td>"
+        + "<td>" + esc(r.reason || "N/A") + "</td>"
+        + "</tr>";
     }, "sigFeedEmpty");
 
     renderExecutionHealth(eh);
     renderPositionExitRows(exitRows);
     renderWarnings(p);
+    const inlineWarn = byId("overviewWarnInline");
+    if (inlineWarn) {
+      inlineWarn.innerHTML = d.warnings.length
+        ? d.warnings.slice(0, 4).map(function (w) { return "• " + esc(w); }).join("<br>")
+        : "No active warnings.";
+    }
 
     const err = byId("dash-api-error");
     if (err) {
       err.style.display = "none";
       err.textContent = "";
+    }
+    const sb = byId("statusBanner");
+    if (sb) {
+      sb.style.borderColor = "#1f2937";
+      sb.style.background = "rgba(16,24,40,0.55)";
     }
   }
 
@@ -2859,11 +3028,20 @@ _PAGE = """
     } catch (err) {
       console.error("Emergency dashboard poll failed", err);
       text("last-sync", "Dashboard API/render error");
+      text("statusApi", "Dashboard API failed");
+      text("statusUpdated", "Last updated: error");
+      text("systemApiStatus", "failed");
+      text("dbgApiStatus", "failed");
       const box = byId("dash-api-error");
       if (box) {
         box.style.display = "block";
         var msg = err && err.message ? String(err.message) : String(err);
-        box.textContent = String(msg).split(/\\r?\\n/)[0];
+        box.textContent = "Dashboard API failed: " + String(msg).split(/\\r?\\n/)[0];
+      }
+      const sb = byId("statusBanner");
+      if (sb) {
+        sb.style.borderColor = "#ef4444";
+        sb.style.background = "rgba(127,29,29,0.25)";
       }
     }
   }

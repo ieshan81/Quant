@@ -107,11 +107,16 @@ def test_overview_tab_renders_core_metrics(dash_app) -> None:
     body = r.data
     assert b'id="tilePnl"' in body
     assert b'id="tileEq"' in body
-    assert b'id="tileMode"' in body
+    assert b'id="statusBanner"' in body
     assert b'id="mktLine"' in body
     assert b'id="tileCash"' in body
     assert b'id="tileBp"' in body
     assert b'id="overviewWarnings"' in body
+    assert b'id="statusApi"' in body
+    assert b'id="statusUpdated"' in body
+    assert b"What the bot is doing now" in body
+    assert b"No positions returned by /api/dashboard" in body
+    assert b"No recent decisions returned by /api/dashboard" in body
 
 
 def test_positions_tab_renders_exit_status(dash_app) -> None:
@@ -123,6 +128,19 @@ def test_positions_tab_renders_exit_status(dash_app) -> None:
     assert b">Exit status<" in body
     assert b"renderRows(\"posDetailedBody\"" in body
     assert b"explainExitFromPosition" in body
+    assert b"explainFromExitRow" in body
+    assert b"Blocked: market closed" in body
+    assert b"Crypto can trade 24/7, waiting for signal" in body
+    assert b"Holding: no exit signal" in body
+
+
+def test_overview_limits_preview_rows(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert 'openPositions.slice(0, 5)' in body
+    assert 'recentDecisions.slice(0, 10)' in body
 
 
 def test_system_tab_renders_execution_health(dash_app) -> None:
@@ -179,6 +197,63 @@ def test_index_emergency_poller_handles_missing_execution_health(dash_app) -> No
     assert "execHealthMissing" in body
     assert "renderPositionExitRows" in body
     assert "renderWarnings" in body
+    assert "execution_health missing from /api/dashboard" in body
+
+
+def test_adapter_contract_and_fallback_mapping_present(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "function adaptDashboardPayload(payload)" in body
+    assert "status: {" in body
+    assert "account: {" in body
+    assert "positions:" in body
+    assert "decisions:" in body
+    assert "equitySeries:" in body
+    assert "executionHealth:" in body
+    assert "exitRows:" in body
+    assert "warnings:" in body
+    # Cash/BP priority fallback contract
+    assert "chooseFirst(portfolio.cash, account.cash" in body
+    assert "chooseFirst(portfolio.buying_power, account.buying_power" in body
+    assert "usable_buying_power_stock" in body
+
+
+def test_debug_payload_summary_exists(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b"Debug payload summary" in body
+    assert b'id="dbgApiStatus"' in body
+    assert b'id="dbgPosLen"' in body
+    assert b'id="dbgSigLen"' in body
+    assert b'id="dbgTradeLen"' in body
+    assert b'id="dbgEqLen"' in body
+    assert b'id="dbgEhPresent"' in body
+    assert b'id="dbgExitLen"' in body
+
+
+def test_backtest_default_is_clean_and_advanced_collapsed(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert '<select id="btStrategy">' in body
+    assert 'id="btSymbols"' in body
+    assert 'id="btStart"' in body
+    assert 'id="btEnd"' in body
+    assert 'id="btTimeframe"' in body
+    assert 'id="btStartingCash"' in body
+    assert 'id="btRunBtn"' in body
+    assert 'id="btCompareBtn"' in body
+    assert 'id="btCopyReportBtn"' in body
+    assert 'id="btDownloadReportBtn"' in body
+    # Advanced sections should be <details> without open by default
+    assert "<summary><strong>Advanced — Results Overview</strong></summary>" in body
+    assert "<summary><strong>Advanced — Parameter Experiments</strong></summary>" in body or "Parameter Experiments" in body
+    assert "<summary><strong>Advanced — Strategy Diagnostics</strong></summary>" in body
 
 
 def test_api_dashboard_still_returns_200(dash_app) -> None:
