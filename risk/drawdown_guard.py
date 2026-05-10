@@ -18,10 +18,15 @@ def _drawdown_fraction() -> float:
 
 def check_kill_switch(current_balance: float, db_path: str | None = None) -> bool:
     """
-    Return True if trading must halt: current_balance < STARTING_BALANCE * KILL_SWITCH_PCT.
-    Default: stop when balance drops more than ~15% from configured starting balance.
+    Return True if trading must halt: current_balance has fallen more than KILL_SWITCH_PCT
+    below the starting balance.  Default: stop when balance drops more than ~15%.
+
+    Baseline priority:
+      1. First equity snapshot in portfolio_state (captures real starting equity)
+      2. Sum of both sleeve starting constants (PAPER_STOCKS + PAPER_CRYPTO = $200 default)
     """
-    baseline = float(config.STARTING_BALANCE)
+    # Use combined sleeve starting balance so the 15% guard fires at $170, not $85
+    baseline = float(config.PAPER_STOCKS_STARTING_CASH + config.PAPER_CRYPTO_STARTING_CASH)
     try:
         conn = sqlite3.connect(str(db_path or config.DB_PATH))
         try:
@@ -39,8 +44,16 @@ def check_kill_switch(current_balance: float, db_path: str | None = None) -> boo
 
 
 def kill_switch_threshold() -> float:
-    """Absolute balance at/under which the kill switch trips."""
-    return config.STARTING_BALANCE * (1.0 - _drawdown_fraction())
+    """Absolute balance at/under which the kill switch trips.
+
+    Uses the combined paper-trading starting balance (stocks + crypto sleeves)
+    so the 15% drawdown guard fires correctly against $200 starting equity,
+    not the per-sleeve $100 constant.
+    """
+    total_start = float(
+        config.PAPER_STOCKS_STARTING_CASH + config.PAPER_CRYPTO_STARTING_CASH
+    )
+    return total_start * (1.0 - _drawdown_fraction())
 
 
 def reset_kill_switch_alert_flag() -> None:
