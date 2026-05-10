@@ -73,6 +73,10 @@ _PAGE = """<!DOCTYPE html>
       --accent: #38bdf8;
       --good: #34d399;
       --bad: #f87171;
+      --ease-out: cubic-bezier(0.33, 1, 0.68, 1);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --dur-fast: 0.14s;
+      --dur-med: 0.22s;
     }
     * { box-sizing: border-box; }
     body {
@@ -104,7 +108,11 @@ _PAGE = """<!DOCTYPE html>
       border-radius: 6px;
       font-size: 13px;
     }
-    #dashStatus { color: var(--muted); font-size: 12px; }
+    #dashStatus {
+      color: var(--muted);
+      font-size: 12px;
+      transition: opacity var(--dur-fast) var(--ease-out);
+    }
     nav {
       display: flex;
       gap: 0.35rem;
@@ -120,8 +128,36 @@ _PAGE = """<!DOCTYPE html>
       border-radius: 6px;
       cursor: pointer;
       font-size: 13px;
+      transition:
+        border-color var(--dur-fast) var(--ease-out),
+        color var(--dur-fast) var(--ease-out),
+        background var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-fast) var(--ease-out),
+        transform var(--dur-fast) var(--ease-spring);
     }
-    nav button.active { border-color: var(--accent); color: var(--accent); }
+    nav button:hover {
+      border-color: rgba(56, 189, 248, 0.45);
+      background: rgba(56, 189, 248, 0.08);
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+      transform: translateY(-1px);
+    }
+    nav button:active {
+      transform: translateY(0);
+    }
+    nav button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    nav button.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(56, 189, 248, 0.12);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.2);
+    }
+    nav button.active:hover {
+      border-color: #7dd3fc;
+      background: rgba(56, 189, 248, 0.18);
+    }
     main { padding: 0.75rem 1rem 2rem; max-width: 1200px; margin: 0 auto; }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
@@ -136,6 +172,15 @@ _PAGE = """<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 0.55rem 0.65rem;
+      transition:
+        transform var(--dur-fast) var(--ease-spring),
+        border-color var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-med) var(--ease-out);
+    }
+    .metric:hover {
+      transform: translateY(-2px);
+      border-color: rgba(56, 189, 248, 0.35);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
     }
     .metric .lab { font-size: 11px; color: var(--muted); margin-bottom: 0.2rem; }
     .metric .val { font-size: 1rem; font-weight: 600; }
@@ -145,6 +190,13 @@ _PAGE = """<!DOCTYPE html>
       border-radius: 8px;
       padding: 0.65rem 0.75rem;
       margin-bottom: 0.75rem;
+      transition:
+        border-color var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-med) var(--ease-out);
+    }
+    .card:hover {
+      border-color: rgba(56, 189, 248, 0.22);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32);
     }
     .card h2 { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; }
     .card h3 { margin: 0.75rem 0 0.35rem; font-size: 0.85rem; color: var(--muted); font-weight: 600; }
@@ -159,6 +211,12 @@ _PAGE = """<!DOCTYPE html>
       text-align: left;
     }
     table.data th { color: var(--muted); font-weight: 600; }
+    table.data tbody tr {
+      transition: background-color var(--dur-fast) var(--ease-out);
+    }
+    table.data tbody tr:hover {
+      background: rgba(56, 189, 248, 0.07);
+    }
     .empty-hint { color: var(--muted); font-size: 13px; margin: 0.35rem 0; }
     /* Phase 1 — Execution Health (full-width; responsive tiles per execution-health-exit-safety plan) */
     .exec-health-panel {
@@ -167,6 +225,11 @@ _PAGE = """<!DOCTYPE html>
       margin-left: 0;
       margin-right: 0;
       border-left: 3px solid rgba(56,189,248,0.35);
+      transition: border-left-color var(--dur-med) var(--ease-out), box-shadow var(--dur-med) var(--ease-out);
+    }
+    .exec-health-panel:hover {
+      border-left-color: rgba(56, 189, 248, 0.65);
+      box-shadow: 4px 0 24px rgba(56, 189, 248, 0.06);
     }
     .exec-health-title-row {
       display: flex;
@@ -230,6 +293,15 @@ _PAGE = """<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 0.5rem 0.55rem;
+      transition:
+        transform var(--dur-fast) var(--ease-spring),
+        border-color var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-fast) var(--ease-out);
+    }
+    .eh-tile:hover {
+      transform: translateY(-2px);
+      border-color: rgba(148, 163, 184, 0.45);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
     }
     .eh-tile.warn {
       border-color: rgba(251,191,36,0.45);
@@ -260,12 +332,33 @@ _PAGE = """<!DOCTYPE html>
       border: 1px solid rgba(248,113,113,0.45);
       background: rgba(248,113,113,0.12);
       color: #fecaca;
+      transition:
+        transform var(--dur-fast) var(--ease-spring),
+        filter var(--dur-fast) var(--ease-out),
+        border-color var(--dur-fast) var(--ease-out);
+      cursor: default;
+    }
+    .badge:hover {
+      transform: scale(1.04);
+      filter: brightness(1.12);
+      border-color: rgba(248, 113, 113, 0.65);
     }
     .eh-details summary {
       cursor: pointer;
       font-size: 13px;
       color: var(--accent);
       margin-bottom: 0.35rem;
+      transition: color var(--dur-fast) var(--ease-out), letter-spacing var(--dur-fast) var(--ease-out);
+      list-style-position: outside;
+    }
+    .eh-details summary:hover {
+      color: #7dd3fc;
+      letter-spacing: 0.02em;
+    }
+    .eh-details summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+      border-radius: 4px;
     }
     .chart-wrap { position: relative; height: 220px; margin-top: 0.35rem; }
     .foot { font-size: 11px; color: var(--muted); margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
@@ -278,6 +371,17 @@ _PAGE = """<!DOCTYPE html>
       border: 1px solid var(--border);
       background: #0b1220;
       color: var(--text);
+      transition:
+        border-color var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-fast) var(--ease-out);
+    }
+    .bt-grid input:hover, .bt-grid select:hover {
+      border-color: rgba(56, 189, 248, 0.35);
+    }
+    .bt-grid input:focus-visible, .bt-grid select:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
     }
     .bt-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.65rem; }
     .bt-actions button {
@@ -288,10 +392,62 @@ _PAGE = """<!DOCTYPE html>
       color: var(--accent);
       cursor: pointer;
       font-size: 13px;
+      transition:
+        transform var(--dur-fast) var(--ease-spring),
+        border-color var(--dur-fast) var(--ease-out),
+        background var(--dur-fast) var(--ease-out),
+        box-shadow var(--dur-fast) var(--ease-out),
+        filter var(--dur-fast) var(--ease-out);
+    }
+    .bt-actions button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      background: rgba(56, 189, 248, 0.22);
+      box-shadow: 0 4px 16px rgba(56, 189, 248, 0.15);
+      filter: brightness(1.08);
+    }
+    .bt-actions button:active:not(:disabled) {
+      transform: translateY(0);
+    }
+    .bt-actions button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .bt-actions button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
     }
     .bt-actions button.primary { background: rgba(52,211,153,0.15); border-color: var(--good); color: var(--good); }
+    .bt-actions button.primary:hover:not(:disabled) {
+      background: rgba(52, 211, 153, 0.28);
+      box-shadow: 0 4px 16px rgba(52, 211, 153, 0.18);
+      filter: brightness(1.06);
+    }
     #btStatus { margin-top: 0.5rem; font-size: 13px; color: var(--muted); }
     pre.sec { font-size: 11px; overflow: auto; max-height: 120px; margin: 0.35rem 0 0; color: var(--muted); }
+    header h1.mono {
+      transition: color var(--dur-med) var(--ease-out), text-shadow var(--dur-med) var(--ease-out);
+    }
+    header:hover h1.mono {
+      color: #f1f5f9;
+      text-shadow: 0 0 24px rgba(56, 189, 248, 0.15);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      nav button:hover,
+      .metric:hover,
+      .card:hover,
+      .eh-tile:hover,
+      .bt-actions button:hover:not(:disabled) {
+        transform: none;
+      }
+    }
   </style>
 </head>
 <body>
