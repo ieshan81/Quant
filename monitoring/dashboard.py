@@ -845,29 +845,44 @@ _PAGE = """
 
       <div class="card" style="grid-column: 7 / -1;">
         <h2>📊 Signal calibration</h2>
-        {% if calibration %}
-        <table class="data-table"><thead><tr><th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th></tr></thead><tbody>
+        <p class="muted" id="dashCalibrationEmpty" style="display:{% if calibration %}none{% else %}block{% endif %};">No calibration data.</p>
+        <table class="data-table"><thead><tr><th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th></tr></thead><tbody id="dashCalibrationBody">
+          {% if calibration %}
           {% for leg, row in calibration.items()|sort %}
           <tr class="{% if row.resolved < 1 %}muted{% elif row.accuracy > 55 %}cal-ok{% elif row.accuracy >= 45 %}cal-mid{% else %}cal-bad{% endif %}">
             <td>{{ leg }}</td><td>{{ row.total }}</td>
             <td>{% if row.resolved > 0 %}{{ row.accuracy }}%{% else %}—{% endif %}</td><td>{{ row.weight_suggestion }}</td>
           </tr>{% endfor %}
-        </tbody></table>{% else %}<p class="muted">No calibration data.</p>{% endif %}
+          {% endif %}
+        </tbody></table>
       </div>
 
       <div class="card" style="grid-column: 1 / -1;">
         <h2>📈 Performance &amp; learning</h2>
+        <div id="dashPerfSummary" class="muted">
         {% if perf.closed_round_trips and perf.closed_round_trips > 0 %}
-        <p class="muted">Trades: <strong class="mono">{{ perf.total_trades }}</strong> · Round-trips: <strong class="mono">{{ perf.closed_round_trips }}</strong> · Win rate: <strong class="mono">{{ (perf.win_rate_pct | round(1)) if perf.win_rate_pct is not none else "—" }}%</strong> · Best: <strong class="mono">{{ "+" if perf.best_trade is not none and perf.best_trade >= 0 else "" }}${{ (perf.best_trade | round(2)) if perf.best_trade is not none else "—" }}</strong> · Worst: <strong class="mono">{{ "$" }}{{ (perf.worst_trade | round(2)) if perf.worst_trade is not none else "—" }}</strong></p>
+        <p class="muted" style="margin-top:0;">Trades: <strong class="mono">{{ perf.total_trades }}</strong> · Round-trips: <strong class="mono">{{ perf.closed_round_trips }}</strong> · Win rate: <strong class="mono">{{ (perf.win_rate_pct | round(1)) if perf.win_rate_pct is not none else "—" }}%</strong> · Best: <strong class="mono">{{ "+" if perf.best_trade is not none and perf.best_trade >= 0 else "" }}${{ (perf.best_trade | round(2)) if perf.best_trade is not none else "—" }}</strong> · Worst: <strong class="mono">{{ "$" }}{{ (perf.worst_trade | round(2)) if perf.worst_trade is not none else "—" }}</strong></p>
         {% else %}
-        <p class="muted">No completed round-trips yet</p>
+        <p class="muted" style="margin-top:0;">No completed round-trips yet</p>
         {% endif %}
-        {% if rl_history %}
-        <table class="data-table"><thead><tr><th>Time</th><th>Summary</th><th>Pairs</th><th>Win%</th></tr></thead><tbody>
+        </div>
+        <p class="muted" id="dashRlEmpty" style="display:{% if rl_history %}none{% else %}block{% endif %};margin-top:0.5rem;">No RL nudges yet.</p>
+        <table class="data-table"><thead><tr><th>Time</th><th>Summary</th><th>Pairs</th><th>Win%</th></tr></thead><tbody id="dashRlBody">
+          {% if rl_history %}
           {% for e in rl_history %}
           <tr><td class="mono" style="font-size:0.72rem;">{{ e.created_at }}</td><td>{{ e.summary }}</td><td class="mono">{{ e.trade_count }}</td>
             <td>{% if e.win_rate is not none %}{{ (e.win_rate * 100) | round(1) }}%{% else %}—{% endif %}</td></tr>{% endfor %}
-        </tbody></table>{% else %}<p class="muted">No RL nudges yet.</p>{% endif %}
+          {% endif %}
+        </tbody></table>
+      </div>
+
+      <div class="card" style="grid-column: 1 / -1;">
+        <h2>Recent trades (live)</h2>
+        <p class="muted" style="margin-top:0;">From <code>recent_trades</code> on <code>/api/dashboard</code>.</p>
+        <div style="overflow-x:auto;">
+          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Status</th></tr></thead><tbody id="dashRecentTradesBody"></tbody></table>
+        </div>
+        <p class="muted" id="dashRecentTradesEmpty" style="display:none;">No recent trades.</p>
       </div>
 
       <div class="card" style="grid-column: 1 / -1;">
@@ -943,7 +958,7 @@ _PAGE = """
   var DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
   var ACTIVE_TAB_KEY = "quantbot_active_tab";
   var EQUITY_RANGE_KEY = "quantbot_equity_range";
-  var POLL_MS = Math.min(10000, REFRESH_MS || 10000);
+  var POLL_MS = REFRESH_MS > 0 ? REFRESH_MS : 30000;
   var FETCH_TIMEOUT_MS = 25000;
   var inFlight = false;
   var eqChart = null;
@@ -983,8 +998,15 @@ _PAGE = """
       try {
         localStorage.setItem(ACTIVE_TAB_KEY, tab);
       } catch (e) {}
-      if (tab === "backtest" && typeof window.quantbotLoadBacktestRuns === "function") {
-        window.quantbotLoadBacktestRuns();
+      if (tab === "backtest") {
+        var loadRuns = function () {
+          if (typeof window.quantbotLoadBacktestRuns === "function") window.quantbotLoadBacktestRuns();
+        };
+        if (typeof window.quantbotEnsureBacktestMetaLoaded === "function") {
+          window.quantbotEnsureBacktestMetaLoaded().then(loadRuns).catch(loadRuns);
+        } else {
+          loadRuns();
+        }
       }
     }
     document.querySelectorAll(".tab-btn[data-tab]").forEach(function (btn) {
@@ -1137,7 +1159,7 @@ _PAGE = """
     );
     var positions = safeRows(p.open_positions);
     var trades = safeRows(p.recent_trades);
-    var signals = safeRows(p.recent_signals);
+    var signals = safeRows(p.signal_states || p.recent_signals);
     var decisions = signals.length ? signals : safeRows(p.execution_decisions);
     var exits = safeRows(p.position_exit_rows);
     if (!exits.length && Array.isArray(eh.position_exit_rows)) exits = safeRows(eh.position_exit_rows);
@@ -1151,8 +1173,8 @@ _PAGE = """
       eh: eh,
       account: {
         equity: pick(pf.equity_total, pf.equity),
-        pnlPct: pick(p.pnl_vs_start_pct),
-        pnlDol: pick(p.pnl_vs_start_dollars),
+        pnlPct: pick(pf.pnl_pct, p.pnl_vs_start_pct),
+        pnlDol: pick(pf.pnl_dollars, p.pnl_vs_start_dollars),
         cash: cashCombined,
         bp: bpCombined,
       },
@@ -1200,6 +1222,121 @@ _PAGE = """
     eqChart.update("none");
   }
 
+  function renderCalibrationFromPayload(cal) {
+    var tbody = byId("dashCalibrationBody");
+    var empty = byId("dashCalibrationEmpty");
+    if (!tbody) return;
+    var o = cal && typeof cal === "object" ? cal : {};
+    var legs = Object.keys(o).sort();
+    if (!legs.length) {
+      tbody.innerHTML = "";
+      if (empty) empty.style.display = "block";
+      return;
+    }
+    if (empty) empty.style.display = "none";
+    tbody.innerHTML = legs.map(function (leg) {
+      var row = o[leg] || {};
+      var acc = row.accuracy;
+      var resolved = Number(row.resolved);
+      var accStr = resolved > 0 && acc != null ? esc(String(acc)) + "%" : "—";
+      var trClass = "muted";
+      if (resolved >= 1) {
+        var an = Number(acc);
+        trClass = an > 55 ? "cal-ok" : an >= 45 ? "cal-mid" : "cal-bad";
+      }
+      return '<tr class="' + trClass + '"><td>' + esc(leg) + "</td><td>" + esc(String(row.total != null ? row.total : "")) + "</td><td>" + accStr + "</td><td>" + esc(String(row.weight_suggestion != null ? row.weight_suggestion : "")) + "</td></tr>";
+    }).join("");
+  }
+
+  function renderPerfFromPayload(perf) {
+    var el = byId("dashPerfSummary");
+    if (!el) return;
+    var p = perf && typeof perf === "object" ? perf : {};
+    var rt = toNum(p.closed_round_trips);
+    if (rt == null || rt <= 0) {
+      el.innerHTML = '<p class="muted" style="margin-top:0;">No completed round-trips yet</p>';
+      return;
+    }
+    var wt = p.win_rate_pct;
+    var wrStr = wt != null && typeof wt === "number" ? wt.toFixed(1) : "—";
+    var bt = p.best_trade;
+    var worst = p.worst_trade;
+    var bestStr = bt != null && typeof bt === "number" ? ((bt >= 0 ? "+" : "") + "$" + Math.abs(bt).toFixed(2)) : "—";
+    var worstStr = worst != null && typeof worst === "number" ? "$" + worst.toFixed(2) : "—";
+    el.innerHTML =
+      '<p class="muted" style="margin-top:0;">Trades: <strong class="mono">' +
+      esc(String(p.total_trades != null ? p.total_trades : "—")) +
+      '</strong> · Round-trips: <strong class="mono">' +
+      esc(String(rt)) +
+      '</strong> · Win rate: <strong class="mono">' +
+      esc(wrStr) +
+      '%</strong> · Best: <strong class="mono">' +
+      esc(bestStr) +
+      '</strong> · Worst: <strong class="mono">' +
+      esc(worstStr) +
+      "</strong></p>";
+  }
+
+  function renderRlFromPayload(rows) {
+    var tbody = byId("dashRlBody");
+    var empty = byId("dashRlEmpty");
+    if (!tbody) return;
+    var list = safeRows(rows);
+    if (!list.length) {
+      tbody.innerHTML = "";
+      if (empty) empty.style.display = "block";
+      return;
+    }
+    if (empty) empty.style.display = "none";
+    tbody.innerHTML = list.map(function (e) {
+      var wr = e.win_rate;
+      var wrCell = wr != null ? esc((Number(wr) * 100).toFixed(1)) + "%" : "—";
+      return (
+        '<tr><td class="mono" style="font-size:0.72rem;">' +
+        esc(e.created_at || "") +
+        "</td><td>" +
+        esc(e.summary || "") +
+        '</td><td class="mono">' +
+        esc(String(e.trade_count != null ? e.trade_count : "")) +
+        "</td><td>" +
+        wrCell +
+        "</td></tr>"
+      );
+    }).join("");
+  }
+
+  function renderRecentTradesFromPayload(rows) {
+    var tbody = byId("dashRecentTradesBody");
+    var empty = byId("dashRecentTradesEmpty");
+    if (!tbody) return;
+    var list = safeRows(rows);
+    if (!list.length) {
+      tbody.innerHTML = "";
+      if (empty) empty.style.display = "block";
+      return;
+    }
+    if (empty) empty.style.display = "none";
+    tbody.innerHTML = list.map(function (t) {
+      return (
+        '<tr><td class="mono">' +
+        esc(t.created_at || t.time || "") +
+        "</td><td>" +
+        esc(t.symbol || "") +
+        "</td><td>" +
+        esc(t.side || "") +
+        '</td><td class="mono">' +
+        esc(String(t.quantity != null ? t.quantity : "")) +
+        '</td><td class="mono">' +
+        moneyOrNA(t.price) +
+        '</td><td class="mono">' +
+        moneyOrNA(t.notional) +
+        "</td><td>" +
+        esc(t.status || "") +
+        "</td></tr>"
+      );
+    }).join("");
+  }
+
   function render(payload) {
     try {
       renderInner(payload);
@@ -1241,7 +1378,8 @@ _PAGE = """
     text("statusMode", "Mode: " + d.mode);
     text("statusLive", "Live trading: disabled");
     text("statusUpdated", "Last updated: " + now);
-    text("last-sync", "Live via polling · " + now);
+    var syncMsg = window.__quantbotDashWsConnected ? "Live via WebSocket · " + now : "Live via polling · " + now;
+    text("last-sync", syncMsg);
     var ls = byId("last-sync");
     if (ls) {
       ls.classList.remove("sync-reconnect");
@@ -1326,6 +1464,16 @@ _PAGE = """
     }
     html("overviewWarnInline", warns.length ? warns.map(function (w) { return "• " + esc(w); }).join("<br>") : "No active warnings.");
 
+    renderCalibrationFromPayload(d.raw.calibration);
+    renderPerfFromPayload(d.raw.performance);
+    renderRlFromPayload(d.raw.rl_learning_history);
+    renderRecentTradesFromPayload(d.trades);
+
+    var mn = byId("metaNote");
+    if (mn) {
+      mn.textContent = "Live dashboard · HTTP " + (window.__quantbotDashWsConnected ? "+ WebSocket" : "poll every " + Math.round(POLL_MS / 1000) + "s") + " · clock ET";
+    }
+
     var err = byId("dash-api-error");
     if (err) { err.style.display = "none"; err.textContent = ""; }
     var sb = byId("statusBanner");
@@ -1345,6 +1493,24 @@ _PAGE = """
       throw new Error("Response was not JSON (got " + head + ")");
     }
   }
+
+  function wireDashboardSocket() {
+    if (typeof io !== "function") return;
+    try {
+      var socket = io({ transports: ["websocket", "polling"], reconnection: true });
+      socket.on("dashboard_update", function (payload) {
+        if (payload && typeof payload === "object") render(payload);
+      });
+      socket.on("connect", function () {
+        window.__quantbotDashWsConnected = true;
+      });
+      socket.on("disconnect", function () {
+        window.__quantbotDashWsConnected = false;
+      });
+    } catch (e) {}
+  }
+
+  window.__quantbotDashWsConnected = false;
 
   async function pollDashboard() {
     if (inFlight) return;
@@ -1417,13 +1583,20 @@ _PAGE = """
     pollSocial();
     setInterval(pollDashboard, POLL_MS);
     setInterval(pollSocial, 60000);
+    wireDashboardSocket();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", bootCockpit);
-  } else {
-    bootCockpit();
+  function scheduleBoot() {
+    function go() {
+      bootCockpit();
+    }
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", go);
+    } else {
+      setTimeout(go, 0);
+    }
   }
+  scheduleBoot();
 })();
 </script>
 
@@ -1972,8 +2145,18 @@ _PAGE = """
         setBacktestBusy(false);
       }
     });
-    loadBacktestDefaults();
-    loadParameterSets();
+    window.quantbotEnsureBacktestMetaLoaded = async function () {
+      if (window.__quantbotBtMetaLoaded) return;
+      window.__quantbotBtMetaLoaded = true;
+      await loadBacktestDefaults();
+      await loadParameterSets();
+    };
+    try {
+      const _savedTab = localStorage.getItem(ACTIVE_TAB_KEY);
+      if (_savedTab === "backtest") {
+        window.quantbotEnsureBacktestMetaLoaded().catch(() => {});
+      }
+    } catch (e) {}
 })();
 </script>
 </body>

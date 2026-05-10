@@ -309,7 +309,7 @@ def test_index_uses_payload_field_paths(dash_app) -> None:
     assert "p.equity_series" in body
     assert "p.open_positions" in body
     assert "p.recent_trades" in body
-    assert "p.recent_signals" in body
+    assert "p.signal_states || p.recent_signals" in body
     assert "p.execution_health" in body
 
 
