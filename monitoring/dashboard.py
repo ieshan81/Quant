@@ -193,6 +193,7 @@ JS NOT STARTED
 document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN";
 console.log("TINY SCRIPT RAN");
 </script>
+  <input type="hidden" id="dash-secret-holder" value="{{ dashboard_secret|e }}"/>
   <header>
     <h1 class="mono">QuantBot</h1>
     <span id="dashStatus">Loading…</span>
@@ -317,12 +318,13 @@ console.log("TINY SCRIPT RAN");
   "use strict";
   var boot = document.getElementById("boot-debug");
   if (boot) boot.textContent = "APP JS STARTED";
-  var DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
+  var _dh = document.getElementById("dash-secret-holder");
+  var DASHBOARD_SECRET = _dh ? _dh.value : "";
   var equityChart = null;
 
   function esc(s) {
     return String(s == null ? "" : s)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/&/g, "&amp;").replace(/\x3c/g, "&lt;").replace(/\x3e/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
 

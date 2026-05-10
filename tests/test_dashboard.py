@@ -68,6 +68,8 @@ def test_index_boot_debug_diagnostic_banner(dash_app) -> None:
     assert 'id="boot-debug"' in body
     assert "JS NOT STARTED" in body
     assert 'document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN"' in body
+    assert 'id="dash-secret-holder"' in body
+    assert "_dh.value" in body or "dash-secret-holder" in body
     assert 'boot.textContent = "APP JS STARTED"' in body
     assert "function startDashboard()" in body
 
