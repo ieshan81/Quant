@@ -67,7 +67,8 @@ def test_index_boot_debug_diagnostic_banner(dash_app) -> None:
     body = r.data.decode("utf-8", errors="ignore")
     assert 'id="boot-debug"' in body
     assert "JS NOT STARTED" in body
-    assert 'document.getElementById("boot-debug").textContent = "JS SCRIPT LOADED"' in body
+    assert 'document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN"' in body
+    assert 'boot.textContent = "APP JS STARTED"' in body
     assert "function startDashboard()" in body
 
 
@@ -123,6 +124,8 @@ def test_positions_tab_columns(dash_app) -> None:
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
+    assert "tblPositionsFull" in body
+    assert "<th>Note</th>" in body
     assert "Stock exit blocked: market closed" in body
     assert "Crypto can trade 24/7" in body
     assert "positionNote" in body
@@ -135,6 +138,7 @@ def test_overview_preview_limits_in_js(dash_app) -> None:
     body = r.data.decode("utf-8", errors="ignore")
     assert ".slice(0, 5)" in body
     assert ".slice(0, 10)" in body
+    assert "function renderOverview" in body
 
 
 def test_activity_tab_tables(dash_app) -> None:
@@ -171,7 +175,7 @@ def test_mapper_uses_cash_stocks_crypto_not_execution_health(dash_app) -> None:
 
 
 def test_index_mapper_payload_paths(dash_app) -> None:
-    """mapDashboardPayload is the single place that reads raw API fields."""
+    """mapDashboardPayload reads /api/dashboard fields used by the UI."""
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
@@ -192,6 +196,8 @@ def test_index_mapper_payload_paths(dash_app) -> None:
         "p.performance",
         "p.calibration",
         "p.section_status",
+        "p.market_open",
+        "p.mode",
     ):
         assert fragment in body
 

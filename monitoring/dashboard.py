@@ -189,6 +189,10 @@ _PAGE = """<!DOCTYPE html>
 <div id="boot-debug" style="background:#300;color:#fff;padding:8px;font-family:monospace">
 JS NOT STARTED
 </div>
+<script>
+document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN";
+console.log("TINY SCRIPT RAN");
+</script>
   <header>
     <h1 class="mono">QuantBot</h1>
     <span id="dashStatus">Loading…</span>
@@ -311,42 +315,47 @@ JS NOT STARTED
 <script>
 (function () {
   "use strict";
-  document.getElementById("boot-debug").textContent = "JS SCRIPT LOADED";
+  var boot = document.getElementById("boot-debug");
+  if (boot) boot.textContent = "APP JS STARTED";
   var DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
   var equityChart = null;
-
-  function bootAppend(text) {
-    var bd = document.getElementById("boot-debug");
-    if (bd) bd.textContent = (bd.textContent || "") + text;
-  }
 
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
+
   function fmtMoney(v) {
     var n = Number(v);
-    return Number.isFinite(n) ? "$" + n.toFixed(2) : "—";
+    return n === n && Number.isFinite(n) ? "$" + n.toFixed(2) : "—";
   }
+
   function fmtPct(v) {
     var n = Number(v);
-    return Number.isFinite(n) ? n.toFixed(2) + "%" : "—";
+    return n === n && Number.isFinite(n) ? n.toFixed(2) + "%" : "—";
   }
+
   function num(v, fallback) {
     var n = Number(v);
-    return Number.isFinite(n) ? n : fallback;
+    return n === n && Number.isFinite(n) ? n : fallback;
+  }
+
+  function numOr(v, fallback) {
+    var n = Number(v);
+    return n === n && Number.isFinite(n) ? n : fallback;
   }
 
   function mapDashboardPayload(payload) {
     var p = payload && typeof payload === "object" ? payload : {};
     var pf = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
-    var cs = num(pf.cash_stocks, 0);
-    var cc = num(pf.cash_crypto, 0);
+    var cs = numOr(pf.cash_stocks, 0);
+    var cc = numOr(pf.cash_crypto, 0);
+    var eqN = Number(pf.equity_total);
+    var eqOk = pf.equity_total != null && eqN === eqN && Number.isFinite(eqN);
     return {
-      raw: p,
       mode: p.mode != null ? String(p.mode) : "—",
-      equity: num(pf.equity_total, null),
+      equity: eqOk ? eqN : null,
       cash: cs + cc,
       pnlDollars: num(p.pnl_vs_start_dollars, null),
       pnlPct: num(p.pnl_vs_start_pct, null),
@@ -359,9 +368,7 @@ JS NOT STARTED
       capitalStage: p.capital_stage && typeof p.capital_stage === "object" ? p.capital_stage : {},
       performance: p.performance && typeof p.performance === "object" ? p.performance : {},
       calibration: p.calibration && typeof p.calibration === "object" ? p.calibration : {},
-      sectionStatus: p.section_status && typeof p.section_status === "object" ? p.section_status : {},
-      fetchError: null,
-      updatedAt: null
+      sectionStatus: p.section_status && typeof p.section_status === "object" ? p.section_status : {}
     };
   }
 
@@ -372,24 +379,24 @@ JS NOT STARTED
     return "Holding / no exit shown";
   }
 
-  function renderOverview(vm) {
-    document.getElementById("mMode").textContent = vm.mode;
-    document.getElementById("mEq").textContent = vm.equity != null ? fmtMoney(vm.equity) : "—";
-    document.getElementById("mPnlD").textContent = vm.pnlDollars != null ? fmtMoney(vm.pnlDollars) : "—";
-    document.getElementById("mPnlP").textContent = vm.pnlPct != null ? fmtPct(vm.pnlPct) : "—";
-    document.getElementById("mCash").textContent = fmtMoney(vm.cash);
-    var mo = vm.marketOpen;
-    document.getElementById("mMkt").textContent = mo === true ? "OPEN" : mo === false ? "CLOSED" : "—";
-    var st = vm.capitalStage || {};
-    document.getElementById("mCap").textContent = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
-
+  function renderEquityChart(vm) {
     var series = vm.equitySeries || [];
     var canvas = document.getElementById("equityChart");
     var eqHint = document.getElementById("eqEmptyHint");
-    if (!canvas || typeof Chart === "undefined") return;
+    if (!canvas) return;
+    if (typeof Chart === "undefined") {
+      if (eqHint) {
+        eqHint.style.display = "block";
+        eqHint.textContent = "Chart.js not loaded.";
+      }
+      return;
+    }
     if (!series.length) {
       if (eqHint) eqHint.style.display = "block";
-      if (equityChart) { equityChart.destroy(); equityChart = null; }
+      if (equityChart) {
+        equityChart.destroy();
+        equityChart = null;
+      }
       return;
     }
     if (eqHint) eqHint.style.display = "none";
@@ -406,39 +413,61 @@ JS NOT STARTED
       equityChart.data.datasets[0].data = vals;
       equityChart.update("none");
     }
+  }
+
+  function renderOverview(vm) {
+    document.getElementById("mMode").textContent = vm.mode;
+    document.getElementById("mEq").textContent = vm.equity != null ? fmtMoney(vm.equity) : "—";
+    document.getElementById("mPnlD").textContent = vm.pnlDollars != null ? fmtMoney(vm.pnlDollars) : "—";
+    document.getElementById("mPnlP").textContent = vm.pnlPct != null ? fmtPct(vm.pnlPct) : "—";
+    document.getElementById("mCash").textContent = fmtMoney(vm.cash);
+    var mo = vm.marketOpen;
+    document.getElementById("mMkt").textContent = mo === true ? "OPEN" : mo === false ? "CLOSED" : "—";
+    var st = vm.capitalStage || {};
+    document.getElementById("mCap").textContent = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
+
+    renderEquityChart(vm);
 
     var top = (vm.positions || []).slice(0, 5);
     var tb = document.querySelector("#tblOverviewPositions tbody");
-    document.getElementById("posTopEmpty").style.display = top.length ? "none" : "block";
-    tb.innerHTML = top.map(function (r) {
-      var q = num(r.net_qty, null);
-      var qs = q != null ? String(q) : "—";
-      var up = num(r.unrealized_pnl_pct, null);
-      var ups = up != null ? fmtPct(up) : "—";
-      return "<tr><td>" + esc(r.symbol) + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + esc(ups) + "</td></tr>";
-    }).join("");
+    if (tb) {
+      document.getElementById("posTopEmpty").style.display = top.length ? "none" : "block";
+      tb.innerHTML = top.map(function (r) {
+        var q = num(r.net_qty, null);
+        var qs = q != null ? String(q) : "—";
+        var up = num(r.unrealized_pnl_pct, null);
+        var ups = up != null ? fmtPct(up) : "—";
+        return "<tr><td>" + esc(r.symbol) + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + esc(ups) + "</td></tr>";
+      }).join("");
+    }
 
     var decs = (vm.executionDecisions || []).slice(0, 10);
     document.getElementById("decEmpty").style.display = decs.length ? "none" : "block";
-    document.querySelector("#tblOverviewDecisions tbody").innerHTML = decs.map(function (r) {
-      var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
-      var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
-      return "<tr><td class=\"mono\">" + esc(r.created_at || "") + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + esc(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
-    }).join("");
+    var dt = document.querySelector("#tblOverviewDecisions tbody");
+    if (dt) {
+      dt.innerHTML = decs.map(function (r) {
+        var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
+        var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
+        return "<tr><td class=\"mono\">" + esc(r.created_at || "") + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + esc(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
+      }).join("");
+    }
   }
 
-  function renderPositions(vm) {
+  function renderPositionsTab(vm) {
     var rows = vm.positions || [];
     document.getElementById("posAllEmpty").style.display = rows.length ? "none" : "block";
-    document.querySelector("#tblPositionsFull tbody").innerHTML = rows.map(function (r) {
-      var q = num(r.net_qty, null);
-      var qs = q != null ? String(q) : "—";
-      var mv = num(r.market_value, null);
-      var up = num(r.unrealized_pnl, null);
-      var upp = num(r.unrealized_pnl_pct, null);
-      var note = positionNote(r, vm.marketOpen);
-      return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + (mv != null ? fmtMoney(mv) : "—") + "</td><td class=\"mono\">" + (up != null ? fmtMoney(up) : "—") + "</td><td class=\"mono\">" + (upp != null ? fmtPct(upp) : "—") + "</td><td><small>" + esc(note) + "</small></td></tr>";
-    }).join("");
+    var pb = document.querySelector("#tblPositionsFull tbody");
+    if (pb) {
+      pb.innerHTML = rows.map(function (r) {
+        var q = num(r.net_qty, null);
+        var qs = q != null ? String(q) : "—";
+        var mv = num(r.market_value, null);
+        var up = num(r.unrealized_pnl, null);
+        var upp = num(r.unrealized_pnl_pct, null);
+        var note = positionNote(r, vm.marketOpen);
+        return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + (mv != null ? fmtMoney(mv) : "—") + "</td><td class=\"mono\">" + (up != null ? fmtMoney(up) : "—") + "</td><td class=\"mono\">" + (upp != null ? fmtPct(upp) : "—") + "</td><td><small>" + esc(note) + "</small></td></tr>";
+      }).join("");
+    }
   }
 
   function renderActivity(vm) {
@@ -483,75 +512,66 @@ JS NOT STARTED
     document.getElementById("actSectionStatus").textContent = JSON.stringify(vm.sectionStatus || {}, null, 2);
   }
 
-  function renderBacktest(vm) {
-    void vm;
-    /* controls are static; lazy-load defaults handled separately */
-  }
-
   function paintViewModel(vm) {
-    var errEl = document.getElementById("dashError");
-    if (vm.fetchError) {
-      errEl.style.display = "block";
-      errEl.textContent = "API failed: " + vm.fetchError;
-    } else {
-      errEl.style.display = "none";
-      errEl.textContent = "";
-    }
-    var st = document.getElementById("dashStatus");
-    st.textContent = vm.updatedAt ? ("Updated " + vm.updatedAt + (vm.fetchError ? " (stale)" : "")) : "—";
-
     renderOverview(vm);
-    renderPositions(vm);
+    renderPositionsTab(vm);
     renderActivity(vm);
-    renderBacktest(vm);
-  }
-
-  function renderDashboard(payload) {
-    var vm = mapDashboardPayload(payload);
-    vm.fetchError = null;
-    vm.updatedAt = new Date().toLocaleString();
-    paintViewModel(vm);
   }
 
   async function fetchDashboard() {
+    var errEl = document.getElementById("dashError");
+    var st = document.getElementById("dashStatus");
     try {
-      bootAppend(" | FETCHING /api/dashboard");
       var response = await fetch("/api/dashboard", { cache: "no-store" });
       console.log("FETCH /api/dashboard status", response.status);
-      bootAppend(" | FETCH STATUS " + response.status);
       if (!response.ok) throw new Error("HTTP " + response.status);
       var payload = await response.json();
       console.log("PAYLOAD", payload);
-      bootAppend(" | JSON OK keys=" + Object.keys(payload).join(","));
-      bootAppend(" | RENDER START");
-      renderDashboard(payload);
-      bootAppend(" | RENDER DONE");
+      var vm = mapDashboardPayload(payload);
+      paintViewModel(vm);
+      if (errEl) {
+        errEl.style.display = "none";
+        errEl.textContent = "";
+      }
+      if (st) st.textContent = "Updated " + new Date().toLocaleString();
     } catch (error) {
-      bootAppend(" | ERROR: " + (error && error.message ? error.message : String(error)));
       console.error(error);
+      if (errEl) {
+        errEl.style.display = "block";
+        errEl.textContent = "API failed: " + (error && error.message ? error.message : String(error));
+      }
+      if (st) st.textContent = "—";
     }
-  }
-
-  function startDashboard() {
-    console.log("BOOT dashboard script loaded");
-    fetchDashboard();
-    setInterval(fetchDashboard, 30000);
   }
 
   function bindTabs() {
     var tabs = document.querySelectorAll(".tab-btn");
     var panels = document.querySelectorAll(".tab-panel");
     function show(name) {
-      tabs.forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tab") === name); });
-      panels.forEach(function (p) { p.classList.toggle("active", p.id === "panel-" + name); });
-      try { localStorage.setItem("quantbot_dash_tab", name); } catch (e) {}
+      var i;
+      for (i = 0; i < tabs.length; i++) {
+        tabs[i].classList.toggle("active", tabs[i].getAttribute("data-tab") === name);
+      }
+      for (i = 0; i < panels.length; i++) {
+        panels[i].classList.toggle("active", panels[i].id === "panel-" + name);
+      }
+      try {
+        localStorage.setItem("quantbot_dash_tab", name);
+      } catch (e) {}
       if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
     }
-    tabs.forEach(function (b) {
-      b.addEventListener("click", function () { show(b.getAttribute("data-tab")); });
-    });
+    var t;
+    for (t = 0; t < tabs.length; t++) {
+      (function (btn) {
+        btn.addEventListener("click", function () {
+          show(btn.getAttribute("data-tab"));
+        });
+      })(tabs[t]);
+    }
     var saved = "overview";
-    try { saved = localStorage.getItem("quantbot_dash_tab") || "overview"; } catch (e) {}
+    try {
+      saved = localStorage.getItem("quantbot_dash_tab") || "overview";
+    } catch (e2) {}
     show(saved);
   }
 
@@ -658,18 +678,17 @@ JS NOT STARTED
     });
   }
 
-  bindTabs();
-  wireBacktest();
-
-  function kickoff() {
-    bootAppend(" | DOM READY");
-    startDashboard();
+  function startDashboard() {
+    bindTabs();
+    wireBacktest();
+    fetchDashboard();
+    setInterval(fetchDashboard, 30000);
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", kickoff);
+    document.addEventListener("DOMContentLoaded", startDashboard);
   } else {
-    kickoff();
+    startDashboard();
   }
 })();
 </script>
