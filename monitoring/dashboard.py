@@ -2352,7 +2352,10 @@ def create_app() -> Flask:
     from backtesting.models import BacktestRequest
     from backtesting import runner as backtest_runner
     from backtesting import experiments as backtest_experiments
-    from monitoring.dashboard_data import build_dashboard_payload
+    from monitoring.dashboard_data import (
+        build_dashboard_payload,
+        start_alpaca_background_cache_thread,
+    )
 
     app = Flask(__name__)
 
@@ -2367,6 +2370,9 @@ def create_app() -> Flask:
         logger.exception(
             "init_schema failed; /health still OK but DB-backed routes may fail: {}", exc
         )
+
+    if not app.config.get("TESTING") and not os.environ.get("PYTEST_CURRENT_TEST"):
+        start_alpaca_background_cache_thread()
 
     from flask_socketio import SocketIO
 
@@ -2384,59 +2390,35 @@ def create_app() -> Flask:
         supplied = request.headers.get("X-Dashboard-Secret", "") or request.args.get("secret", "")
         return supplied == DASHBOARD_SECRET
 
-    _DASH_PAYLOAD_BUILD_SEC = float(os.environ.get("DASHBOARD_PAYLOAD_BUILD_TIMEOUT_SEC", "14"))
-
     def _build_dashboard_payload_safe(period: str) -> dict[str, Any]:
-        """Bounded-time dashboard payload: Alpaca sections can hang without HTTP timeouts."""
-        from concurrent.futures import ThreadPoolExecutor
-        from concurrent.futures import TimeoutError as FutTimeout
-
-        from execution import stock_broker
-
-        cli = stock_broker.get_rest_client()
+        """Dashboard JSON; broker/Alpaca slices are merged from the background cache only."""
         _debug_log(
             "H7",
             "build_dashboard_payload_safe entry",
-            {"period": period, "has_rest_client": bool(cli)},
+            {"period": period, "alpaca_from_background_cache": True},
         )
 
-        def _full() -> dict[str, Any]:
-            with get_connection() as conn:
-                return build_dashboard_payload(conn, rest_client=cli, equity_period=period)
-
-        def _sqlite_only() -> dict[str, Any]:
-            with get_connection() as conn:
-                return build_dashboard_payload(conn, rest_client=None, equity_period=period)
-
         try:
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_full)
-                payload = fut.result(timeout=_DASH_PAYLOAD_BUILD_SEC)
-                _debug_log(
-                    "H7",
-                    "build_dashboard_payload_safe success",
-                    {
-                        "has_payload": isinstance(payload, dict),
-                        "positions": len(payload.get("open_positions", []))
-                        if isinstance(payload, dict) and isinstance(payload.get("open_positions"), list)
-                        else -1,
-                    },
+            with get_connection() as conn:
+                payload = build_dashboard_payload(
+                    conn, rest_client=None, equity_period=period
                 )
-                return payload
-        except FutTimeout:
-            logger.warning(
-                "[dashboard] build_dashboard_payload exceeded {:.1f}s — SQLite-only fallback",
-                _DASH_PAYLOAD_BUILD_SEC,
+            _debug_log(
+                "H7",
+                "build_dashboard_payload_safe success",
+                {
+                    "has_payload": isinstance(payload, dict),
+                    "positions": len(payload.get("open_positions", []))
+                    if isinstance(payload, dict)
+                    and isinstance(payload.get("open_positions"), list)
+                    else -1,
+                },
             )
-            p = _sqlite_only()
-            if isinstance(p, dict):
-                p["dashboard_build_timed_out"] = True
-            _debug_log("H8", "build_dashboard_payload_safe timeout fallback", {"period": period})
-            return p
+            return payload
         except Exception:
-            logger.exception("[dashboard] build_dashboard_payload failed — SQLite-only fallback")
+            logger.exception("[dashboard] build_dashboard_payload failed — fallback open_conn")
             _debug_log("H8", "build_dashboard_payload_safe exception fallback", {"period": period})
-            return _sqlite_only()
+            return build_dashboard_payload(None, rest_client=None, equity_period=period)
 
     def _dashboard_ws_push() -> None:
         sio = app.extensions["socketio"]

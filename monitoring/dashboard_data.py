@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -97,6 +98,93 @@ def _safe_section(label: str, fallback: _T, fn: Callable[[], _T]) -> _T:
     except Exception:
         logger.warning("[dashboard] section '{}' failed", label, exc_info=True)
         return fallback
+
+
+# --- Background Alpaca cache (never call Alpaca from Flask request handlers) ---
+_ALPACA_BG_REFRESH_SEC = float(os.environ.get("ALPACA_BG_REFRESH_SEC", "30"))
+_alpaca_bg_lock = threading.Lock()
+_alpaca_bg_cache: dict[str, Any] = {
+    "portfolio": None,
+    "trades": None,
+    "positions": None,
+    "performance": None,
+    "equity_curves": {},
+    "last_updated": 0.0,
+    "last_error": None,
+}
+_alpaca_bg_thread_started = False
+
+
+def get_alpaca_background_snapshot() -> dict[str, Any]:
+    """Thread-safe read of the last background Alpaca refresh."""
+    with _alpaca_bg_lock:
+        curves = _alpaca_bg_cache.get("equity_curves") or {}
+        return {
+            "portfolio": _alpaca_bg_cache.get("portfolio"),
+            "trades": _alpaca_bg_cache.get("trades"),
+            "positions": _alpaca_bg_cache.get("positions"),
+            "performance": _alpaca_bg_cache.get("performance"),
+            "equity_curves": dict(curves) if isinstance(curves, dict) else {},
+            "last_updated": float(_alpaca_bg_cache.get("last_updated") or 0),
+            "last_error": _alpaca_bg_cache.get("last_error"),
+        }
+
+
+def _alpaca_background_refresh_once() -> None:
+    """Fetch all Alpaca slices used by the dashboard; runs only from the bg thread."""
+    try:
+        from execution import stock_broker
+
+        cli = stock_broker.get_rest_client()
+        if cli is None:
+            with _alpaca_bg_lock:
+                _alpaca_bg_cache["last_error"] = "rest_client_unavailable"
+                _alpaca_bg_cache["last_updated"] = time.time()
+            return
+
+        portfolio = _safe_section("alpaca_bg_portfolio", None, lambda: get_real_portfolio(cli))
+        trades = _safe_section("alpaca_bg_trades", None, lambda: get_real_trades(cli, limit=20))
+        positions = _safe_section("alpaca_bg_positions", None, lambda: get_real_positions(cli))
+        performance = _safe_section("alpaca_bg_performance", None, lambda: get_real_performance(cli))
+
+        curves: dict[str, list] = {}
+        for per in ("1D", "1W", "1M", "3M"):
+            cur = _safe_section(
+                f"alpaca_bg_curve_{per}",
+                None,
+                lambda p=per: get_equity_curve(cli, period=p),
+            )
+            curves[per] = cur if isinstance(cur, list) else []
+
+        with _alpaca_bg_lock:
+            _alpaca_bg_cache["portfolio"] = portfolio
+            _alpaca_bg_cache["trades"] = trades
+            _alpaca_bg_cache["positions"] = positions
+            _alpaca_bg_cache["performance"] = performance
+            _alpaca_bg_cache["equity_curves"] = curves
+            _alpaca_bg_cache["last_updated"] = time.time()
+            _alpaca_bg_cache["last_error"] = None
+    except Exception as exc:
+        logger.warning("[dashboard] Alpaca background refresh failed: {}", exc, exc_info=True)
+        with _alpaca_bg_lock:
+            _alpaca_bg_cache["last_error"] = str(exc)
+            _alpaca_bg_cache["last_updated"] = time.time()
+
+
+def _alpaca_background_loop() -> None:
+    while True:
+        _alpaca_background_refresh_once()
+        time.sleep(max(5.0, _ALPACA_BG_REFRESH_SEC))
+
+
+def start_alpaca_background_cache_thread() -> None:
+    """Start daemon thread that refreshes Alpaca data every ALPACA_BG_REFRESH_SEC (default 30)."""
+    global _alpaca_bg_thread_started
+    if _alpaca_bg_thread_started:
+        return
+    _alpaca_bg_thread_started = True
+    t = threading.Thread(target=_alpaca_background_loop, daemon=True, name="alpaca-dashboard-cache")
+    t.start()
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -463,11 +551,12 @@ def build_dashboard_payload(
     rest_client: Any | None = None,
     equity_period: str = "1D",
 ) -> dict[str, Any]:
+    """Assemble /api/dashboard JSON. Alpaca broker data is merged from a background cache only."""
     if conn is None:
         with _open_dashboard_sqlite() as local_conn:
             return build_dashboard_payload(
                 local_conn,
-                rest_client=rest_client,
+                rest_client=None,
                 equity_period=equity_period,
             )
 
@@ -495,86 +584,54 @@ def build_dashboard_payload(
     performance = _section_db("performance_db", {}, lambda: fetch_performance_summary(conn))
     calibration = _section_db("calibration", {}, lambda: get_leg_accuracies(conn))
 
+    if rest_client is not None:
+        logger.debug("[dashboard] rest_client ignored; Alpaca slices come from background cache only")
+
     pnl_pct = None
     pnl_dollars = None
-    if rest_client is not None:
-        # Each Alpaca section is independently guarded: a single failing endpoint
-        # produces a degraded section, never a 500 for the whole dashboard.
-        real_pf = _safe_section(
-            "alpaca_portfolio",
-            None,
-            lambda: _cached(
-                "alpaca_portfolio", _CACHE_TTL_PORTFOLIO_SEC, lambda: get_real_portfolio(rest_client)
-            ),
-        )
-        _record("alpaca_portfolio", real_pf is not None)
-        if real_pf is not None:
-            latest = {
-                **(latest or {}),
-                "equity_total": real_pf["equity_total"],
-                "deployed_pct": real_pf["deployed_pct"],
-                "cash_stocks": real_pf["cash"],
-                "cash_crypto": 0.0,
-                "equity_stocks": real_pf["equity_total"],
-                "equity_crypto": 0.0,
-                "mode": config.MODE,
-            }
-            pnl_pct = real_pf["pnl_pct"]
-            pnl_dollars = real_pf["pnl_dollars"]
+    snap = get_alpaca_background_snapshot()
+    real_pf = snap.get("portfolio")
+    has_pf = isinstance(real_pf, dict) and bool(real_pf)
 
-        alpaca_trades = _safe_section(
-            "alpaca_trades",
-            None,
-            lambda: _cached(
-                "alpaca_trades",
-                _CACHE_TTL_TRADES_SEC,
-                lambda: get_real_trades(rest_client, limit=20),
-            ),
-        )
-        _record("alpaca_trades", alpaca_trades is not None)
-        if alpaca_trades is not None:
-            trades = alpaca_trades
+    _record("alpaca_portfolio", has_pf)
+    if has_pf and isinstance(real_pf, dict):
+        latest = {
+            **(latest or {}),
+            "equity_total": real_pf["equity_total"],
+            "deployed_pct": real_pf["deployed_pct"],
+            "cash_stocks": real_pf["cash"],
+            "cash_crypto": 0.0,
+            "equity_stocks": real_pf["equity_total"],
+            "equity_crypto": 0.0,
+            "mode": config.MODE,
+        }
+        pnl_pct = real_pf["pnl_pct"]
+        pnl_dollars = real_pf["pnl_dollars"]
 
-        alpaca_positions = _safe_section(
-            "alpaca_positions",
-            None,
-            lambda: _cached(
-                "alpaca_positions",
-                _CACHE_TTL_POSITIONS_SEC,
-                lambda: get_real_positions(rest_client),
-            ),
-        )
-        _record("alpaca_positions", alpaca_positions is not None)
-        if alpaca_positions is not None:
-            positions = alpaca_positions
+    trades_snap = snap.get("trades")
+    _record("alpaca_trades", trades_snap is not None)
+    if trades_snap is not None:
+        trades = trades_snap
 
-        alpaca_perf = _safe_section(
-            "alpaca_performance",
-            None,
-            lambda: _cached(
-                "alpaca_performance",
-                _CACHE_TTL_PERFORMANCE_SEC,
-                lambda: get_real_performance(rest_client),
-            ),
-        )
-        _record("alpaca_performance", alpaca_perf is not None)
-        if alpaca_perf is not None:
-            performance = alpaca_perf
+    positions_snap = snap.get("positions")
+    _record("alpaca_positions", positions_snap is not None)
+    if positions_snap is not None:
+        positions = positions_snap
 
-        period = equity_period if equity_period in ("1D", "1W", "1M", "3M") else "1D"
-        alpaca_curve = _safe_section(
-            "alpaca_equity_curve",
-            None,
-            lambda: _cached(
-                f"alpaca_equity_curve:{period}",
-                _CACHE_TTL_EQUITY_CURVE_SEC,
-                lambda: get_equity_curve(rest_client, period=period),
-            ),
-        )
-        _record("alpaca_equity_curve", alpaca_curve is not None)
-        if alpaca_curve is not None:
-            series = alpaca_curve
-    elif latest:
+    perf_snap = snap.get("performance")
+    _record("alpaca_performance", isinstance(perf_snap, dict) and bool(perf_snap))
+    if isinstance(perf_snap, dict) and perf_snap:
+        performance = perf_snap
+
+    period_key = equity_period if equity_period in ("1D", "1W", "1M", "3M") else "1D"
+    curves = snap.get("equity_curves") or {}
+    curve = curves.get(period_key) if isinstance(curves, dict) else None
+    has_curve = isinstance(curve, list) and len(curve) > 0
+    _record("alpaca_equity_curve", has_curve)
+    if has_curve:
+        series = curve
+
+    if not has_pf and latest:
         try:
             current_equity = float(latest["equity_total"])
             pnl_dollars = current_equity - float(config.STARTING_BALANCE)
@@ -654,6 +711,11 @@ def build_dashboard_payload(
             pe_clean.append(ji if isinstance(ji, dict) else {"_raw": ji})
     eh_safe["position_exit_rows"] = pe_clean
 
+    snap_out = get_alpaca_background_snapshot()
+    lu_out = float(snap_out.get("last_updated") or 0)
+    alpaca_cache_age_seconds = round(time.time() - lu_out, 1) if lu_out else None
+    alpaca_cache_last_error = snap_out.get("last_error")
+
     return {
         "mode": latest.get("mode") if latest else None,
         "portfolio": _json_safe(latest) if latest is not None else None,
@@ -691,6 +753,8 @@ def build_dashboard_payload(
             else {}
         ),
         "adaptive_parameter_changes": _json_safe(adaptive_changes) if isinstance(adaptive_changes, list) else [],
+        "alpaca_cache_age_seconds": alpaca_cache_age_seconds,
+        "alpaca_cache_last_error": alpaca_cache_last_error,
     }
 
 
