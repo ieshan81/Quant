@@ -16,15 +16,12 @@ _ET = ZoneInfo("America/New_York")
 
 class TestKillSwitch:
     def test_kill_switch_trips_below_threshold(self) -> None:
-        # Patch both sleeve constants so combined starting equity = $10 000
-        # kill_switch_threshold() and check_kill_switch() both use sleeve sum as baseline
-        with patch.object(config, "PAPER_STOCKS_STARTING_CASH", 5_000.0):
-            with patch.object(config, "PAPER_CRYPTO_STARTING_CASH", 5_000.0):
-                with patch.object(config, "KILL_SWITCH_PCT", 0.85):
-                    assert drawdown_guard.kill_switch_threshold() == 8_500.0
-                    assert drawdown_guard.check_kill_switch(8_499.99) is True
-                    assert drawdown_guard.check_kill_switch(8_500.0) is False
-                    assert drawdown_guard.check_kill_switch(9_000.0) is False
+        with patch.object(config, "STARTING_BALANCE", 10_000.0):
+            with patch.object(config, "KILL_SWITCH_PCT", 0.85):
+                assert drawdown_guard.kill_switch_threshold() == 8_500.0
+                assert drawdown_guard.check_kill_switch(8_499.99) is True
+                assert drawdown_guard.check_kill_switch(8_500.0) is False
+                assert drawdown_guard.check_kill_switch(9_000.0) is False
 
     def test_mark_kill_switch_alert_sent_suppresses_notify(self) -> None:
         drawdown_guard.reset_kill_switch_alert_flag()

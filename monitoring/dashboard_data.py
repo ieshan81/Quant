@@ -412,11 +412,7 @@ def get_real_portfolio(rest_client: Any) -> dict[str, Any]:
 
     equity = _safe_float(getattr(account, "equity", 0))
     cash = _safe_float(getattr(account, "cash", 0))
-    # Use sum of both sleeve starting balances (stocks $100 + crypto $100 = $200)
-    # config.STARTING_BALANCE is per-sleeve (100); total paper starting equity is 200
-    starting_equity = float(
-        config.PAPER_STOCKS_STARTING_CASH + config.PAPER_CRYPTO_STARTING_CASH
-    )
+    starting_equity = float(config.STARTING_BALANCE)
 
     pnl_dollars = equity - starting_equity
     pnl_pct = (pnl_dollars / starting_equity) * 100.0 if starting_equity else 0.0
@@ -638,12 +634,8 @@ def build_dashboard_payload(
     if not has_pf and latest:
         try:
             current_equity = float(latest["equity_total"])
-            # Use sum of both sleeve starting balances (stocks $100 + crypto $100 = $200)
-            _total_start = float(
-                config.PAPER_STOCKS_STARTING_CASH + config.PAPER_CRYPTO_STARTING_CASH
-            )
-            pnl_dollars = current_equity - _total_start
-            pnl_pct = (pnl_dollars / _total_start) * 100.0
+            pnl_dollars = current_equity - float(config.STARTING_BALANCE)
+            pnl_pct = (pnl_dollars / float(config.STARTING_BALANCE)) * 100.0
         except (TypeError, ValueError, KeyError):
             pnl_pct = None
             pnl_dollars = None

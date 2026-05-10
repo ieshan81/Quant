@@ -50,12 +50,10 @@ def test_notify_kill_switch_drawdown() -> None:
         sent.append(msg)
         return True
 
-    # Patch both sleeve constants so combined starting equity = $10 000
-    with patch.object(config, "PAPER_STOCKS_STARTING_CASH", 5_000.0):
-        with patch.object(config, "PAPER_CRYPTO_STARTING_CASH", 5_000.0):
-            with patch.object(config, "KILL_SWITCH_PCT", 0.85):
-                with patch.object(alerts, "telegram_alerts_configured", return_value=True):
-                    with patch.object(alerts, "notify_kill_switch_triggered", side_effect=lambda *a, **k: fake_send("kill")):
-                        drawdown_guard.notify_kill_switch_if_tripped(8_000.0)
-                        drawdown_guard.notify_kill_switch_if_tripped(7_000.0)
+    with patch.object(config, "STARTING_BALANCE", 10_000.0):
+        with patch.object(config, "KILL_SWITCH_PCT", 0.85):
+            with patch.object(alerts, "telegram_alerts_configured", return_value=True):
+                with patch.object(alerts, "notify_kill_switch_triggered", side_effect=lambda *a, **k: fake_send("kill")):
+                    drawdown_guard.notify_kill_switch_if_tripped(8_000.0)
+                    drawdown_guard.notify_kill_switch_if_tripped(7_000.0)
     assert len(sent) == 1
