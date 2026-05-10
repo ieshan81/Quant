@@ -60,13 +60,24 @@ def test_index_has_core_dom_ids(dash_app) -> None:
     assert b'id="dashError"' in body
 
 
+def test_index_boot_debug_diagnostic_banner(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert 'id="boot-debug"' in body
+    assert "JS NOT STARTED" in body
+    assert 'document.getElementById("boot-debug").textContent = "JS SCRIPT LOADED"' in body
+    assert "function startDashboard()" in body
+
+
 def test_index_http_poll_only(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert 'fetch("/api/dashboard?equity_period=1D"' in body
-    assert "setInterval(tick, POLL_MS)" in body
+    assert 'fetch("/api/dashboard"' in body
+    assert "setInterval(fetchDashboard, 30000)" in body
     assert "socket.io" not in body.lower()
 
 

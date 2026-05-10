@@ -186,6 +186,9 @@ _PAGE = """<!DOCTYPE html>
   </style>
 </head>
 <body>
+<div id="boot-debug" style="background:#300;color:#fff;padding:8px;font-family:monospace">
+JS NOT STARTED
+</div>
   <header>
     <h1 class="mono">QuantBot</h1>
     <span id="dashStatus">Loading…</span>
@@ -308,9 +311,14 @@ _PAGE = """<!DOCTYPE html>
 <script>
 (function () {
   "use strict";
-  var POLL_MS = {{ refresh_sec }} * 1000;
+  document.getElementById("boot-debug").textContent = "JS SCRIPT LOADED";
   var DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
   var equityChart = null;
+
+  function bootAppend(text) {
+    var bd = document.getElementById("boot-debug");
+    if (bd) bd.textContent = (bd.textContent || "") + text;
+  }
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -480,7 +488,7 @@ _PAGE = """<!DOCTYPE html>
     /* controls are static; lazy-load defaults handled separately */
   }
 
-  function renderDashboard(vm) {
+  function paintViewModel(vm) {
     var errEl = document.getElementById("dashError");
     if (vm.fetchError) {
       errEl.style.display = "block";
@@ -498,21 +506,36 @@ _PAGE = """<!DOCTYPE html>
     renderBacktest(vm);
   }
 
+  function renderDashboard(payload) {
+    var vm = mapDashboardPayload(payload);
+    vm.fetchError = null;
+    vm.updatedAt = new Date().toLocaleString();
+    paintViewModel(vm);
+  }
+
   async function fetchDashboard() {
     try {
-      var res = await fetch("/api/dashboard?equity_period=1D", { cache: "no-store" });
-      if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
-      var payload = await res.json();
-      var vm = mapDashboardPayload(payload);
-      vm.fetchError = null;
-      vm.updatedAt = new Date().toLocaleString();
-      return vm;
-    } catch (e) {
-      var vm = mapDashboardPayload({});
-      vm.fetchError = String(e && e.message ? e.message : e);
-      vm.updatedAt = new Date().toLocaleString();
-      return vm;
+      bootAppend(" | FETCHING /api/dashboard");
+      var response = await fetch("/api/dashboard", { cache: "no-store" });
+      console.log("FETCH /api/dashboard status", response.status);
+      bootAppend(" | FETCH STATUS " + response.status);
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      var payload = await response.json();
+      console.log("PAYLOAD", payload);
+      bootAppend(" | JSON OK keys=" + Object.keys(payload).join(","));
+      bootAppend(" | RENDER START");
+      renderDashboard(payload);
+      bootAppend(" | RENDER DONE");
+    } catch (error) {
+      bootAppend(" | ERROR: " + (error && error.message ? error.message : String(error)));
+      console.error(error);
     }
+  }
+
+  function startDashboard() {
+    console.log("BOOT dashboard script loaded");
+    fetchDashboard();
+    setInterval(fetchDashboard, 30000);
   }
 
   function bindTabs() {
@@ -635,15 +658,19 @@ _PAGE = """<!DOCTYPE html>
     });
   }
 
-  async function tick() {
-    var vm = await fetchDashboard();
-    renderDashboard(vm);
-  }
-
   bindTabs();
   wireBacktest();
-  tick();
-  setInterval(tick, POLL_MS);
+
+  function kickoff() {
+    bootAppend(" | DOM READY");
+    startDashboard();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", kickoff);
+  } else {
+    kickoff();
+  }
 })();
 </script>
 </body>
