@@ -154,6 +154,7 @@ def test_overview_preview_limits_in_js(dash_app) -> None:
     assert ".slice(0, 5)" in bundle
     assert ".slice(0, 10)" in bundle
     assert "function renderOverview" in bundle
+    assert "function renderExecutionHealth" in bundle
 
 
 def test_activity_tab_tables(dash_app) -> None:
@@ -180,11 +181,21 @@ def test_backtest_minimal_controls(dash_app) -> None:
     assert "btParamGrid" not in body
 
 
-def test_mapper_uses_cash_stocks_crypto_not_execution_health(dash_app) -> None:
+def test_mapper_uses_cash_stocks_crypto_and_execution_health_ref(dash_app) -> None:
     client = dash_app.test_client()
     _, bundle, combined = _html_and_js(client)
     assert "cash_stocks" in combined and "cash_crypto" in combined
-    assert "execution_health" not in bundle
+    assert "p.execution_health" in bundle
+
+
+def test_exec_health_panel_in_overview_html(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert 'id="execHealthPanel"' in body
+    assert 'id="execHealthGrid"' in body
+    assert "Execution health" in body
 
 
 def test_index_mapper_payload_paths(dash_app) -> None:
@@ -203,6 +214,7 @@ def test_index_mapper_payload_paths(dash_app) -> None:
         "p.recent_trades",
         "p.recent_signals",
         "p.execution_decisions",
+        "p.execution_health",
         "p.capital_stage",
         "p.performance",
         "p.calibration",

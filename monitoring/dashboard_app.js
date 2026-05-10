@@ -35,10 +35,15 @@
   function mapDashboardPayload(payload) {
     var p = payload && typeof payload === "object" ? payload : {};
     var pf = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
+    var ehIn = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : {};
     var cs = numOr(pf.cash_stocks, 0);
     var cc = numOr(pf.cash_crypto, 0);
     var eqN = Number(pf.equity_total);
     var eqOk = pf.equity_total != null && eqN === eqN && Number.isFinite(eqN);
+    var pe = Array.isArray(p.position_exit_rows) ? p.position_exit_rows : [];
+    if (!pe.length && Array.isArray(ehIn.position_exit_rows)) {
+      pe = ehIn.position_exit_rows;
+    }
     return {
       mode: p.mode != null ? String(p.mode) : "—",
       equity: eqOk ? eqN : null,
@@ -54,8 +59,128 @@
       capitalStage: p.capital_stage && typeof p.capital_stage === "object" ? p.capital_stage : {},
       performance: p.performance && typeof p.performance === "object" ? p.performance : {},
       calibration: p.calibration && typeof p.calibration === "object" ? p.calibration : {},
-      sectionStatus: p.section_status && typeof p.section_status === "object" ? p.section_status : {}
+      sectionStatus: p.section_status && typeof p.section_status === "object" ? p.section_status : {},
+      executionHealth: ehIn,
+      positionExitRows: pe,
+      payloadDegraded: p.degraded === true,
+      ghostPositionCount: num(p.ghost_position_count, null),
+      dbLockCount24h: num(p.db_lock_count_24h, null),
+      alpacaCacheAgeSeconds: p.alpaca_cache_age_seconds != null ? Number(p.alpaca_cache_age_seconds) : null,
+      alpacaCacheLastError: p.alpaca_cache_last_error != null ? String(p.alpaca_cache_last_error) : ""
     };
+  }
+
+  function renderExitRows(vm) {
+    var rows = vm.positionExitRows || [];
+    var cnt = document.getElementById("exitRowsCount");
+    var empty = document.getElementById("exitRowsEmpty");
+    var tbl = document.querySelector("#tblExitRows tbody");
+    var wrap = document.getElementById("exitRowsWrap");
+    if (!cnt || !tbl || !wrap) return;
+    cnt.textContent = String(rows.length);
+    if (empty) empty.style.display = rows.length ? "none" : "block";
+    tbl.innerHTML = rows.map(function (r) {
+      var rec = r.recommended_action != null ? String(r.recommended_action) : String(r.exit_eligibility || "");
+      return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(String(r.local_qty != null ? r.local_qty : "")) + "</td><td class=\"mono\">" + esc(String(r.broker_qty != null ? r.broker_qty : "")) + "</td><td>" + esc(rec) + "</td><td>" + esc(String(r.exit_block_reason || "")) + "</td><td>" + esc(String(r.pdt_status || "")) + "</td><td class=\"mono\">" + esc(String(r.cooldown_remaining || "")) + "</td><td class=\"mono\">" + esc(String(r.pnl_pct || "")) + "</td></tr>";
+    }).join("");
+    try {
+      wrap.open = rows.length <= 12;
+    } catch (e) {}
+  }
+
+  function renderExecutionHealth(vm) {
+    var eh = vm.executionHealth || {};
+    var blocked = numOr(eh.blocked_exits_count, 0);
+    var stale = numOr(eh.stale_local_positions_count, 0);
+    var mismatch = numOr(eh.broker_local_mismatch_count, 0);
+    var degraded = vm.payloadDegraded === true;
+    var warnAny = blocked > 0 || stale > 0 || mismatch > 0 || degraded;
+    var badAny = stale > 2 || mismatch > 2 || blocked > 5;
+
+    var banner = document.getElementById("execHealthBanner");
+    var sev = document.getElementById("execHealthSeverity");
+    if (banner && sev) {
+      if (warnAny) {
+        banner.style.display = "block";
+        var parts = [];
+        if (blocked > 0) parts.push(blocked + " blocked exit(s)");
+        if (stale > 0) parts.push(stale + " stale local row(s)");
+        if (mismatch > 0) parts.push(mismatch + " broker/local mismatch(es)");
+        if (degraded) parts.push("dashboard payload degraded");
+        banner.textContent = "Attention: " + parts.join(" · ") + ".";
+        banner.className = badAny ? "eh-banner bad" : "eh-banner warn";
+        sev.style.display = "inline-block";
+        sev.textContent = badAny ? "ALERT" : "WARN";
+        sev.className = badAny ? "eh-severity warn" : "eh-severity warn";
+      } else {
+        banner.style.display = "none";
+        sev.style.display = "inline-block";
+        sev.textContent = "OK";
+        sev.className = "eh-severity ok";
+      }
+    }
+
+    var grid = document.getElementById("execHealthGrid");
+    if (grid) {
+      function tcls(n, isWarn) {
+        if (isWarn) return "warn";
+        return "";
+      }
+      function tile(cls, lab, val) {
+        return '<div class="eh-tile ' + cls + '"><div class="eh-lab">' + esc(lab) + '</div><div class="eh-val mono">' + esc(val) + '</div></div>';
+      }
+      var cash = eh.cash != null ? fmtMoney(eh.cash) : "—";
+      var bp = eh.buying_power != null ? fmtMoney(eh.buying_power) : "—";
+      var ubp = eh.usable_buying_power != null ? fmtMoney(eh.usable_buying_power) : "—";
+      var ghost = vm.ghostPositionCount != null ? String(vm.ghostPositionCount) : "—";
+      var dblk = vm.dbLockCount24h != null ? String(vm.dbLockCount24h) : "—";
+      var cacheAge = Number.isFinite(Number(vm.alpacaCacheAgeSeconds)) ? String(vm.alpacaCacheAgeSeconds) + " s" : "—";
+      var ehAt = eh.created_at != null ? String(eh.created_at) : "—";
+      var html = "";
+      html += tile(tcls(blocked, blocked > 0), "Blocked exits", String(blocked));
+      html += tile(tcls(stale, stale > 0), "Stale local rows", String(stale));
+      html += tile(tcls(mismatch, mismatch > 0), "Broker/local mismatch", String(mismatch));
+      html += tile("", "Broker cash", cash);
+      html += tile("", "Buying power", bp);
+      html += tile("", "Usable BP (buys)", ubp);
+      html += tile("", "Ghost positions", ghost);
+      html += tile("", "DB lock events (24h)", dblk);
+      html += tile("", "Alpaca cache age", cacheAge);
+      html += tile("", "EH snapshot at", ehAt);
+      grid.innerHTML = html;
+    }
+
+    var cacheErr = vm.alpacaCacheLastError ? String(vm.alpacaCacheLastError).trim() : "";
+    var helper = document.getElementById("execHealthHelper");
+    if (helper) {
+      var base = helper.getAttribute("data-base-help");
+      if (!base) {
+        base = helper.innerHTML;
+        helper.setAttribute("data-base-help", base);
+      }
+      var extra = "";
+      if (cacheErr) {
+        extra = ' <span style="color:#f87171;">Alpaca cache error: ' + esc(cacheErr) + "</span>";
+      }
+      helper.innerHTML = base + extra;
+    }
+
+    var pdtWrap = document.getElementById("pdtBadgeRowWrap");
+    var pdtRow = document.getElementById("pdtBadgeRow");
+    var syms = Array.isArray(eh.pdt_blocked_symbols) ? eh.pdt_blocked_symbols : [];
+    if (pdtWrap && pdtRow) {
+      if (syms.length) {
+        pdtWrap.style.display = "flex";
+        pdtRow.innerHTML = syms.map(function (s) {
+          return '<span class="badge mono">' + esc(String(s)) + "</span>";
+        }).join("");
+      } else {
+        pdtWrap.style.display = "none";
+        pdtRow.innerHTML = "";
+      }
+    }
+
+    renderExitRows(vm);
   }
 
   function positionNote(row, marketOpen) {
@@ -112,6 +237,7 @@
     var st = vm.capitalStage || {};
     document.getElementById("mCap").textContent = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
 
+    renderExecutionHealth(vm);
     renderEquityChart(vm);
 
     var top = (vm.positions || []).slice(0, 5);

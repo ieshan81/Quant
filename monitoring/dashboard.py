@@ -160,6 +160,113 @@ _PAGE = """<!DOCTYPE html>
     }
     table.data th { color: var(--muted); font-weight: 600; }
     .empty-hint { color: var(--muted); font-size: 13px; margin: 0.35rem 0; }
+    /* Phase 1 — Execution Health (full-width; responsive tiles per execution-health-exit-safety plan) */
+    .exec-health-panel {
+      width: 100%;
+      max-width: none;
+      margin-left: 0;
+      margin-right: 0;
+      border-left: 3px solid rgba(56,189,248,0.35);
+    }
+    .exec-health-title-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.35rem;
+    }
+    .eh-helper {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0 0 0.5rem;
+      line-height: 1.4;
+    }
+    .eh-severity {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+    }
+    .eh-severity.ok {
+      background: rgba(52,211,153,0.15);
+      color: var(--good);
+      border: 1px solid rgba(52,211,153,0.35);
+    }
+    .eh-severity.warn {
+      background: rgba(251,191,36,0.12);
+      color: #fbbf24;
+      border: 1px solid rgba(251,191,36,0.45);
+    }
+    .eh-banner {
+      font-size: 13px;
+      padding: 0.45rem 0.6rem;
+      border-radius: 6px;
+      margin-bottom: 0.6rem;
+      border: 1px solid rgba(251,191,36,0.45);
+      background: rgba(251,191,36,0.08);
+      color: #fde68a;
+    }
+    .eh-banner.bad {
+      border-color: rgba(248,113,113,0.55);
+      background: rgba(248,113,113,0.1);
+      color: #fecaca;
+    }
+    .eh-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+      gap: 0.5rem;
+      margin-bottom: 0.65rem;
+    }
+    @media (min-width: 900px) {
+      .eh-grid { grid-template-columns: repeat(4, 1fr); }
+    }
+    @media (max-width: 520px) {
+      .eh-grid { grid-template-columns: 1fr; }
+    }
+    .eh-tile {
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.5rem 0.55rem;
+    }
+    .eh-tile.warn {
+      border-color: rgba(251,191,36,0.45);
+      background: rgba(251,191,36,0.06);
+    }
+    .eh-tile.bad {
+      border-color: rgba(248,113,113,0.45);
+      background: rgba(248,113,113,0.08);
+    }
+    .eh-lab { font-size: 11px; color: var(--muted); margin-bottom: 0.2rem; }
+    .eh-val { font-size: 0.95rem; font-weight: 600; word-break: break-word; }
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin-bottom: 0.6rem;
+      align-items: center;
+    }
+    .badge-row .lbl {
+      font-size: 11px;
+      color: var(--muted);
+      margin-right: 0.25rem;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 0.2rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid rgba(248,113,113,0.45);
+      background: rgba(248,113,113,0.12);
+      color: #fecaca;
+    }
+    .eh-details summary {
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--accent);
+      margin-bottom: 0.35rem;
+    }
     .chart-wrap { position: relative; height: 220px; margin-top: 0.35rem; }
     .foot { font-size: 11px; color: var(--muted); margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
     .bt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.5rem; align-items: end; }
@@ -218,6 +325,31 @@ console.log("TINY SCRIPT RAN");
         <div class="metric"><div class="lab">Cash</div><div class="val mono" id="mCash">—</div></div>
         <div class="metric"><div class="lab">Market</div><div class="val mono" id="mMkt">—</div></div>
         <div class="metric"><div class="lab">Capital stage</div><div class="val mono" id="mCap">—</div></div>
+      </div>
+      <div class="card exec-health-panel" id="execHealthPanel">
+        <div class="exec-health-title-row">
+          <h2 style="margin:0;font-size:0.95rem;font-weight:600;">Execution health</h2>
+          <span id="execHealthSeverity" class="eh-severity ok" style="display:none;">OK</span>
+        </div>
+        <p class="eh-helper" id="execHealthHelper">
+          Broker snapshot and exit-quality counters from the last logged worker cycle (Alpaca paper/live when enabled).
+          <strong>PDT</strong> badges list symbols where same-day stock exits were deferred.
+          <strong>Stale / mismatch</strong> mean DB vs broker drift — reconcile carefully (symbol-scoped).
+        </p>
+        <div id="execHealthBanner" class="eh-banner" style="display:none;"></div>
+        <div class="eh-grid" id="execHealthGrid"></div>
+        <div class="badge-row" id="pdtBadgeRowWrap" style="display:none;">
+          <span class="lbl">PDT blocked symbols</span><span id="pdtBadgeRow"></span>
+        </div>
+        <details class="eh-details" id="exitRowsWrap">
+          <summary>Position exit rows (<span id="exitRowsCount">0</span>)</summary>
+          <p class="empty-hint" id="exitRowsEmpty" style="display:none;">No exit eligibility rows returned.</p>
+          <div style="overflow-x:auto;">
+            <table class="data" id="tblExitRows"><thead><tr>
+              <th>Symbol</th><th>Class</th><th>Local qty</th><th>Broker qty</th><th>Recommended</th><th>Block reason</th><th>PDT</th><th>Cooldown</th><th>uPnL</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
+        </details>
       </div>
       <div class="card">
         <h2>Equity</h2>

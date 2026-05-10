@@ -20,6 +20,12 @@ Constraints:
 
 This is design-only until the new dashboard layout is in place and stable.
 
+**Status (2026-05):** Phase 1 **Execution health** (Overview) is implemented: full-width
+responsive tiles, warning banner, PDT symbol badges, and a collapsible **position exit rows**
+table reading `execution_health` + `position_exit_rows` from `GET /api/dashboard` (display
+only). See `.cursor/plans/execution-health-exit-safety.plan.md` for Phase 2 (exit engine, DB,
+reconciliation).
+
 ## AI intern / fund manager (staged)
 
 We never auto-flip live trading. The AI helper rolls out in four stages:
