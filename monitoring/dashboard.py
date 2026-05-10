@@ -559,12 +559,21 @@ _PAGE = """
 
   <main id="overview-tab" class="tab-panel active">
     <div class="dashboard-wrap">
+    <div id="noDataBanner" class="card" style="grid-column:1/-1;padding:0.85rem 1rem;border-color:rgba(14,165,233,0.35);background:rgba(14,165,233,0.06);">
+      <div style="display:flex;align-items:center;gap:0.6rem;">
+        <span style="font-size:1.1rem;">⏳</span>
+        <div>
+          <div style="font-weight:600;color:#0ea5e9;font-size:0.9rem;">Waiting for first trading cycle</div>
+          <div class="muted" style="font-size:0.78rem;margin-top:0.15rem;">The worker is starting up. Portfolio data, positions, and the equity chart will appear automatically once the bot runs its first cycle.</div>
+        </div>
+      </div>
+    </div>
     <div class="stats-row">
       <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div></div>
       <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}" id="tilePnl">{{ pnl_str }}</div></div>
-      <div class="card"><h2>Cash</h2><div class="big mono" id="tileCash">N/A</div></div>
-      <div class="card"><h2>Buying power</h2><div class="big mono" id="tileBp">N/A</div></div>
-      <div class="card"><h2>Market status</h2><div id="mktLine" class="market-closed">N/A</div><div class="countdown" id="mktCd"></div></div>
+      <div class="card"><h2>Cash</h2><div class="big mono" id="tileCash">—</div></div>
+      <div class="card"><h2>Buying power</h2><div class="big mono" id="tileBp">—</div></div>
+      <div class="card"><h2>Market status</h2><div id="mktLine" class="market-closed">—</div><div class="countdown" id="mktCd"></div></div>
     </div>
 
     <div class="card warning-card" id="overviewWarnings" style="display:none;">
@@ -582,8 +591,8 @@ _PAGE = """
         <button class="range-btn" data-range="ALL">ALL</button>
       </div>
       <div class="chart-wrap" style="position:relative;">
-        <canvas id="eqChart"></canvas>
-        <p class="muted" id="eqEmpty" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);margin:0;">No equity data yet</p>
+        <canvas id="eqChart" style="display:none;"></canvas>
+        <p class="muted" id="eqEmpty" style="text-align:center;padding:2rem 0;margin:0;">No equity data yet — chart will appear after the first trading cycle.</p>
       </div>
     </div>
 
@@ -594,12 +603,12 @@ _PAGE = """
       <div style="overflow-x:auto;">
         <table class="data-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L %</th><th>Exit status</th></tr></thead><tbody id="posTableBody"></tbody></table>
       </div>
-      <p class="muted" id="posEmpty" style="display:none;">No positions returned by /api/dashboard.</p>
+      <p class="muted" id="posEmpty">No positions returned by /api/dashboard.</p>
       <h3 style="margin:0.8rem 0 0.35rem;">Recent decisions (top 10)</h3>
       <div style="overflow-x:auto;">
         <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Reason / Score</th></tr></thead><tbody id="sigFeedBody"></tbody></table>
       </div>
-      <p class="muted" id="sigFeedEmpty" style="display:none;margin-top:0.35rem;">No recent decisions returned by /api/dashboard.</p>
+      <p class="muted" id="sigFeedEmpty" style="margin-top:0.35rem;">No recent decisions returned by /api/dashboard.</p>
       <div id="overviewWarnInline" class="muted" style="margin-top:0.6rem;"></div>
     </div>
     </div>
@@ -1021,10 +1030,13 @@ _PAGE = """
       });
     });
     var fallback = "overview";
+    // "backtest" is never auto-restored — it starts empty and confuses users.
+    // Only overview / positions / system are safe to restore from localStorage.
+    var RESTORABLE = { overview: 1, positions: 1, system: 1 };
     try {
       var key = localStorage.getItem(ACTIVE_TAB_KEY);
       if (key === "dashboard") key = "overview";
-      showTab(ALLOWED[key] ? key : fallback);
+      showTab(RESTORABLE[key] ? key : fallback);
     } catch (e) {
       showTab(fallback);
     }
@@ -1202,9 +1214,11 @@ _PAGE = """
     var empty = byId("eqEmpty");
     if (!canvas) return;
     if (!series.length) {
+      canvas.style.display = "none";
       if (empty) empty.style.display = "block";
       return;
     }
+    canvas.style.display = "";
     if (empty) empty.style.display = "none";
     if (typeof Chart === "undefined") return;
     var labels = series.map(function (r) { return String(r.snapshot_at || ""); });
@@ -1374,6 +1388,12 @@ _PAGE = """
     text("tileEq", moneyOrNA(d.account.equity));
     text("tileCash", moneyOrNA(d.account.cash));
     text("tileBp", moneyOrNA(d.account.bp));
+    // Hide the startup banner once real portfolio data has arrived
+    var banner = byId("noDataBanner");
+    if (banner) {
+      var hasData = d.account.equity != null || d.positions.length > 0 || d.equity.length > 0;
+      banner.style.display = hasData ? "none" : "";
+    }
     text("statusApi", "API: connected");
     text("statusMode", "Mode: " + d.mode);
     text("statusLive", "Live trading: disabled");
