@@ -14,6 +14,17 @@ import config
 from monitoring.dashboard import create_app
 
 
+def _html_and_js(client) -> tuple[str, str, str]:
+    """Index HTML + served dashboard bundle (logic lives in /dashboard-app.js)."""
+    r = client.get("/")
+    js = client.get("/dashboard-app.js")
+    assert r.status_code == 200
+    assert js.status_code == 200
+    html = r.data.decode("utf-8", errors="ignore")
+    bundle = js.data.decode("utf-8", errors="ignore")
+    return html, bundle, html + "\n" + bundle
+
+
 @pytest.fixture()
 def dash_app(tmp_path: Path):
     db = tmp_path / "t.sqlite3"
@@ -62,37 +73,43 @@ def test_index_has_core_dom_ids(dash_app) -> None:
 
 def test_index_boot_debug_diagnostic_banner(dash_app) -> None:
     client = dash_app.test_client()
-    r = client.get("/")
+    html, bundle, combined = _html_and_js(client)
+    assert 'id="boot-debug"' in html
+    assert "JS NOT STARTED" in html
+    assert 'document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN"' in html
+    assert 'id="dash-secret-holder"' in html
+    assert 'src="/dashboard-app.js"' in html
+    assert 'boot.textContent = "APP JS STARTED"' in bundle
+    assert "_dh.value" in bundle
+    assert "function startDashboard()" in bundle
+
+
+def test_dashboard_app_js_route(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/dashboard-app.js")
     assert r.status_code == 200
+    assert "javascript" in r.headers.get("Content-Type", "").lower()
     body = r.data.decode("utf-8", errors="ignore")
-    assert 'id="boot-debug"' in body
-    assert "JS NOT STARTED" in body
-    assert 'document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN"' in body
-    assert 'id="dash-secret-holder"' in body
-    assert "_dh.value" in body or "dash-secret-holder" in body
-    assert 'boot.textContent = "APP JS STARTED"' in body
-    assert "function startDashboard()" in body
+    assert "function fetchDashboard()" in body
+    assert r.headers.get("Cache-Control") == "no-store"
 
 
 def test_index_http_poll_only(dash_app) -> None:
     client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert 'fetch("/api/dashboard"' in body
-    assert "setInterval(fetchDashboard, 30000)" in body
-    assert "socket.io" not in body.lower()
+    _, bundle, _ = _html_and_js(client)
+    assert 'fetch("/api/dashboard"' in bundle
+    assert "setInterval(fetchDashboard, 30000)" in bundle
+    html = client.get("/").data.decode("utf-8", errors="ignore")
+    assert "socket.io" not in html.lower()
 
 
 def test_index_bind_tabs_and_mapper(dash_app) -> None:
     client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert "function bindTabs()" in body
-    assert "function mapDashboardPayload(payload)" in body
-    assert "function fetchDashboard()" in body
-    assert "panel-overview" in body and "panel-activity" in body
+    html, bundle, _ = _html_and_js(client)
+    assert "function bindTabs()" in bundle
+    assert "function mapDashboardPayload(payload)" in bundle
+    assert "function fetchDashboard()" in bundle
+    assert "panel-overview" in html and "panel-activity" in html
 
 
 def test_index_four_tabs_overview_positions_activity_backtest(dash_app) -> None:
@@ -123,24 +140,20 @@ def test_overview_metrics_ids(dash_app) -> None:
 
 def test_positions_tab_columns(dash_app) -> None:
     client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert "tblPositionsFull" in body
-    assert "<th>Note</th>" in body
-    assert "Stock exit blocked: market closed" in body
-    assert "Crypto can trade 24/7" in body
-    assert "positionNote" in body
+    html, bundle, _ = _html_and_js(client)
+    assert "tblPositionsFull" in html
+    assert "<th>Note</th>" in html
+    assert "Stock exit blocked: market closed" in bundle
+    assert "Crypto can trade 24/7" in bundle
+    assert "positionNote" in bundle
 
 
 def test_overview_preview_limits_in_js(dash_app) -> None:
     client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert ".slice(0, 5)" in body
-    assert ".slice(0, 10)" in body
-    assert "function renderOverview" in body
+    _, bundle, _ = _html_and_js(client)
+    assert ".slice(0, 5)" in bundle
+    assert ".slice(0, 10)" in bundle
+    assert "function renderOverview" in bundle
 
 
 def test_activity_tab_tables(dash_app) -> None:
@@ -169,19 +182,15 @@ def test_backtest_minimal_controls(dash_app) -> None:
 
 def test_mapper_uses_cash_stocks_crypto_not_execution_health(dash_app) -> None:
     client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert "cash_stocks" in body and "cash_crypto" in body
-    assert "execution_health" not in body
+    _, bundle, combined = _html_and_js(client)
+    assert "cash_stocks" in combined and "cash_crypto" in combined
+    assert "execution_health" not in bundle
 
 
 def test_index_mapper_payload_paths(dash_app) -> None:
     """mapDashboardPayload reads /api/dashboard fields used by the UI."""
     client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
+    _, bundle, _ = _html_and_js(client)
     for fragment in (
         "p.pnl_vs_start_pct",
         "p.pnl_vs_start_dollars",
@@ -201,7 +210,7 @@ def test_index_mapper_payload_paths(dash_app) -> None:
         "p.market_open",
         "p.mode",
     ):
-        assert fragment in body
+        assert fragment in bundle
 
 
 def test_index_empty_equity_hint(dash_app) -> None:
