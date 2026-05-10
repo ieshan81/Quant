@@ -54,2129 +54,596 @@ def _client_debug_add(evt: dict[str, Any]) -> None:
         if len(_CLIENT_DEBUG_EVENTS) > 400:
             del _CLIENT_DEBUG_EVENTS[:-200]
 
-_PAGE = """
-<!DOCTYPE html>
+_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>QuantBot — Terminal</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <title>QuantBot Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js" crossorigin="anonymous"></script>
   <style>
     :root {
-      --bg-primary: #050508;
-      --bg-secondary: #050508;
-      --bg-card: #0d1117;
-      --border: #1e293b;
-      --border-bright: #1e293b;
-      --accent-blue: #0ea5e9;
-      --accent-green: #00ff88;
-      --accent-red: #ff3b5c;
-      --accent-gold: #f7931a;
-      --text-primary: #e2e8f0;
-      --text-secondary: #64748b;
-      --text-muted: #64748b;
+      --bg: #0a0e14;
+      --card: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --good: #34d399;
+      --bad: #f87171;
     }
     * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      min-height: 100vh;
-      font-family: Inter, system-ui, sans-serif;
-      color: var(--text-primary);
-      background: var(--bg-primary);
-      background-image: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0, 212, 255, 0.08), transparent 55%),
-        radial-gradient(ellipse 80% 50% at 100% 100%, rgba(0, 255, 136, 0.04), transparent 45%);
+      font-family: system-ui, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      font-size: 14px;
     }
-    .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
-    ::-webkit-scrollbar-track { background: var(--bg-secondary); }
-    ::-webkit-scrollbar-thumb { background: var(--text-muted); border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
-
-    .term-header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 0.75rem 1.25rem;
-      background: linear-gradient(180deg, rgba(15, 22, 41, 0.95), rgba(10, 14, 26, 0.98));
+    header {
+      padding: 0.75rem 1rem;
       border-bottom: 1px solid var(--border);
-      position: sticky; top: 0; z-index: 50;
-      backdrop-filter: blur(12px);
-    }
-    .brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; letter-spacing: 0.06em; }
-    .brand .mono { font-size: 1rem; color: var(--accent-blue); }
-    .live-dot {
-      width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green);
-      box-shadow: 0 0 10px var(--accent-green);
-      animation: blink 1.2s ease-in-out infinite;
-    }
-    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-    .header-center { text-align: center; flex: 1; }
-    .clock-et { font-family: "IBM Plex Mono", monospace; font-size: 1.1rem; color: var(--accent-blue); }
-    .badge-paper {
-      padding: 0.35rem 0.75rem; border-radius: 8px;
-      border: 1px solid var(--accent-gold); color: var(--accent-gold);
-      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
-    }
-
-    .stats-row {
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-top: 1rem;
-    }
-    @media (max-width: 1024px) { .stats-row { grid-template-columns: repeat(2, 1fr); } }
-    @media (max-width: 560px) { .stats-row { grid-template-columns: 1fr; } }
-
-    .card {
-      background: rgba(255, 255, 255, 0.03);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 16px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
-      padding: 1rem 1.1rem;
-      transition: border-color 0.2s ease, box-shadow 0.2s ease;
-    }
-    .card:hover { border-color: var(--border-bright); }
-    .card h2 {
-      margin: 0 0 0.5rem; font-size: 0.72rem; font-weight: 600;
-      color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.06em;
-    }
-    .big { font-size: 1.65rem; font-weight: 700; font-family: "IBM Plex Mono", monospace; }
-    .pos { color: var(--accent-green); }
-    .neg { color: var(--accent-red); }
-    .muted { color: var(--text-muted); font-size: 0.78rem; }
-    .sync-live { color: var(--accent-green) !important; font-weight: 600; }
-    .sync-reconnect { color: #ffb020 !important; font-weight: 600; }
-    .spark-wrap { height: 48px; margin-top: 0.35rem; }
-
-    .market-open { color: var(--accent-green); font-weight: 700; font-family: "IBM Plex Mono", monospace; }
-    .market-closed { color: var(--accent-red); font-weight: 700; font-family: "IBM Plex Mono", monospace; }
-    .countdown { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.35rem; font-family: "IBM Plex Mono", monospace; }
-
-    .mid-grid {
-      display: grid; grid-template-columns: 1.5fr 1fr; gap: 1rem; margin-top: 1rem; align-items: start;
-    }
-    @media (max-width: 960px) { .mid-grid { grid-template-columns: 1fr; } }
-
-    .signal-feed table, .social-table, .data-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-    .signal-feed th, .signal-feed td, .social-table th, .social-table td, .data-table th, .data-table td {
-      text-align: left; padding: 0.45rem 0.55rem; border-bottom: 1px solid var(--border);
-    }
-    .signal-feed th, .social-table th, .data-table th {
-      color: var(--text-secondary); font-weight: 600; font-size: 0.68rem; text-transform: uppercase;
-    }
-    .sig-feed-row {
-      transition: background 0.25s ease, border-color 0.2s ease;
-      border-left: 3px solid transparent;
-    }
-    .sig-feed-row.sig-buy { border-left-color: var(--accent-green); }
-    .sig-feed-row.sig-sell { border-left-color: var(--accent-red); }
-    .sig-feed-row.sig-neutral { border-left-color: rgba(255,255,255,0.15); }
-    .sig-feed-row.row-flash { animation: rowFlash 0.6s ease-out; }
-    @keyframes rowFlash { from { background: rgba(0, 212, 255, 0.12); } to { background: transparent; } }
-    .dir-up { color: var(--accent-green); font-weight: 700; }
-    .dir-down { color: var(--accent-red); font-weight: 700; }
-    .dir-flat { color: var(--text-muted); }
-    .score-cell { min-width: 120px; }
-    .score-bar-bg {
-      height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; margin-top: 0.25rem;
-    }
-    .score-bar-fill { height: 100%; border-radius: 3px; transition: width 0.35s ease; }
-    .sig-buy .score-txt { color: var(--accent-green); }
-    .sig-sell .score-txt { color: var(--accent-red); }
-    .sig-neutral .score-txt { color: var(--text-secondary); }
-    .sig-buy .score-bar-fill { background: linear-gradient(90deg, var(--accent-green), var(--accent-blue)); }
-    .sig-sell .score-bar-fill { background: linear-gradient(90deg, var(--accent-red), #ff8899); }
-    .sig-neutral .score-bar-fill { background: var(--text-muted); }
-    .action-pill {
-      display: inline-block; padding: 0.15rem 0.45rem; border-radius: 6px; font-size: 0.65rem; font-weight: 700;
-      font-family: "IBM Plex Mono", monospace;
-    }
-    .pill-buy { background: rgba(0, 255, 136, 0.15); color: var(--accent-green); }
-    .pill-sell { background: rgba(255, 68, 102, 0.15); color: var(--accent-red); }
-    .pill-hold { background: rgba(255,255,255,0.06); color: var(--text-muted); }
-
-    .social-panel h2 { display: flex; align-items: center; gap: 0.35rem; }
-    .breakout-name {
-      color: var(--accent-gold); font-weight: 700;
-      animation: pulseGold 2s ease-in-out infinite;
-    }
-    @keyframes pulseGold {
-      0%, 100% { text-shadow: 0 0 6px rgba(255, 215, 0, 0.35); }
-      50% { text-shadow: 0 0 14px rgba(255, 215, 0, 0.65); }
-    }
-    .rc-up { color: var(--accent-green); }
-    .rc-down { color: var(--accent-red); }
-
-    .bottom-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem; }
-    @media (max-width: 1100px) { .bottom-grid { grid-template-columns: 1fr; } }
-
-    .cal-ok { color: var(--accent-green); }
-    .cal-mid { color: #ffd54f; }
-    .cal-bad { color: var(--accent-red); }
-
-    .cfg-range { width: 100%; accent-color: var(--accent-blue); }
-    .cfg-save, #cfg-reset {
-      background: rgba(0, 212, 255, 0.12); border: 1px solid var(--border-bright); color: var(--accent-blue);
-      border-radius: 8px; padding: 0.35rem 0.65rem; cursor: pointer; font-weight: 600; transition: background 0.2s;
-    }
-    .cfg-save:hover, #cfg-reset:hover { background: rgba(0, 212, 255, 0.22); }
-    .api-links { margin-top: 1.25rem; font-size: 0.75rem; color: var(--text-muted); }
-    .api-links a { color: var(--accent-blue); text-decoration: none; }
-    .api-links a:hover { text-decoration: underline; }
-    .chart-wrap { height: 200px; margin-top: 0.5rem; }
-    .chart-controls { display: flex; gap: 8px; margin-bottom: 8px; }
-    .range-btn {
-      background: #1e293b; color: #64748b; border: 1px solid #1e293b;
-      padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
-    }
-    .range-btn.active {
-      background: rgba(0,255,136,0.1); color: #00ff88;
-      border-color: #00ff88;
-    }
-    .last-upd { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.5rem; font-family: "JetBrains Mono", monospace; }
-    .subrow { margin-top: 1rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-    @media (max-width: 800px) { .subrow { grid-template-columns: 1fr; } }
-    .quantbot-terminal { display: none; }
-    #sym-tooltip {
-      position: fixed; display: none; z-index: 9999; pointer-events: none;
-      background: rgba(10, 14, 26, 0.97); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-      border: 1px solid rgba(0, 212, 255, 0.3); border-radius: 12px; padding: 14px 18px;
-      min-width: 220px; max-width: 300px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
-      font-family: Inter, system-ui, sans-serif; font-size: 0.82rem;
-    }
-    #sym-tooltip .tt-name { color: #fff; font-weight: 700; }
-    #sym-tooltip .tt-type-c { color: var(--accent-green); font-size: 0.65rem; margin-left: 0.35rem; font-weight: 700; }
-    #sym-tooltip .tt-type-s { color: var(--accent-blue); font-size: 0.65rem; margin-left: 0.35rem; font-weight: 700; }
-    #sym-tooltip .tt-line2 { color: var(--accent-blue); font-size: 0.72rem; margin-top: 0.35rem; }
-    #sym-tooltip .tt-price { color: var(--accent-green); font-family: "JetBrains Mono", monospace; margin-top: 0.35rem; }
-    #sym-tooltip .tt-desc { color: var(--text-muted); font-size: 0.72rem; margin-top: 0.35rem; line-height: 1.35; }
-    .side-buy { color: var(--accent-green); font-weight: 700; }
-    .side-sell { color: var(--accent-red); font-weight: 700; }
-    .has-symbol { cursor: help; border-bottom: 1px dashed rgba(0, 212, 255, 0.35); }
-
-    .sym-legend { display: flex; align-items: center; justify-content: center; gap: 1.25rem; flex-wrap: wrap; margin-top: 0.35rem; font-size: 0.72rem; font-family: "IBM Plex Mono", monospace; }
-    .legend-stock { color: #00d4ff; font-weight: 600; }
-    .legend-crypto { color: #f7931a; font-weight: 600; }
-
-    .data-table tbody tr.row-stock { border-left: 3px solid #00d4ff; }
-    .data-table tbody tr.row-crypto { border-left: 3px solid #f7931a; }
-
-    .sym-badge { display: inline-block; margin-right: 0.28rem; font-weight: 700; vertical-align: middle; line-height: 1; }
-    .sym-badge-c { color: #f7931a; font-size: 0.72rem; }
-    .sym-badge-s { color: #00d4ff; font-size: 0.65rem; }
-    .sig-sym-crypto .sym-txt { color: #f7931a; font-weight: 700; }
-    .sig-sym-stock .sym-txt { color: #00d4ff; font-weight: 700; }
-
-    .tab-nav {
       display: flex;
-      gap: 0.5rem;
-      max-width: 1700px;
-      margin: 0 auto;
-      padding: 0.75rem 1.1rem 0;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      justify-content: space-between;
     }
-    .tab-nav .tab-btn {
-      background: #1e293b;
-      color: #94a3b8;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 6px 12px;
+    header h1 { margin: 0; font-size: 1.1rem; font-weight: 700; letter-spacing: 0.04em; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    #dashError {
+      display: none;
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      background: rgba(248,113,113,0.12);
+      border: 1px solid var(--bad);
+      color: #fecaca;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    #dashStatus { color: var(--muted); font-size: 12px; }
+    nav {
+      display: flex;
+      gap: 0.35rem;
+      padding: 0.5rem 1rem;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    nav button {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.4rem 0.85rem;
+      border-radius: 6px;
       cursor: pointer;
-      font-family: inherit;
-      font-size: 0.875rem;
+      font-size: 13px;
     }
-    .tab-nav .tab-btn.active {
-      color: #00ff88;
-      border-color: #00ff88;
-      background: rgba(0, 255, 136, 0.1);
-    }
+    nav button.active { border-color: var(--accent); color: var(--accent); }
+    main { padding: 0.75rem 1rem 2rem; max-width: 1200px; margin: 0 auto; }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
-
-    /* Dashboard grid — scoped so Backtest tab never inherits 12-col placement rules */
-    .dashboard-wrap {
-      max-width: 1700px;
-      margin: 0 auto;
-      padding: 1rem 1.1rem 1.4rem;
+    .grid-metrics {
       display: grid;
-      gap: 1rem;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 0.5rem;
+      margin-bottom: 1rem;
     }
-    #overview-tab .card,
-    #positions-tab .card,
-    #system-tab .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      box-shadow: none;
-    }
-    .warning-card {
-      grid-column: 1 / -1;
-      border-color: #fbbf24 !important;
-      background: rgba(251, 191, 36, 0.08) !important;
-    }
-    .warning-card h2 { color: #fbbf24; }
-    .dashboard-wrap .stats-row {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 1rem;
-      margin-top: 0;
-    }
-    .dashboard-wrap .stats-row > .card { grid-column: span 1; }
-    .dashboard-wrap .chart-main { grid-column: 1 / span 8; margin-top: 0 !important; }
-    .dashboard-wrap .social-panel { grid-column: 9 / -1; }
-    .dashboard-wrap .signal-feed { grid-column: 1 / span 8; }
-    .dashboard-wrap .subrow {
-      grid-column: 9 / -1;
-      margin-top: 0;
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 1rem;
-    }
-    .dashboard-wrap .bottom-grid {
-      grid-column: 1 / -1;
-      margin-top: 0;
-      display: grid;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
-      gap: 1rem;
-    }
-    .dashboard-wrap .bottom-grid > .card:nth-child(1) { grid-column: span 6; }
-    .dashboard-wrap .bottom-grid > .card:nth-child(2) { grid-column: span 6; }
-    .dashboard-wrap .bottom-grid > .card:nth-child(3) { grid-column: 1 / -1; }
-    .dashboard-wrap .exec-health-card {
-      grid-column: 1 / -1;
-      margin-top: 0;
-    }
-    .exec-health-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 0.65rem;
-      margin-top: 0.35rem;
-    }
-    @media (max-width: 1100px) {
-      .exec-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 560px) {
-      .exec-health-grid { grid-template-columns: 1fr; }
-    }
-    .exec-health-tile {
-      background: rgba(0, 0, 0, 0.22);
+    .metric {
+      background: var(--card);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 0.55rem 0.65rem;
-      min-height: 3.25rem;
     }
-    .exec-health-tile.exec-health-warn {
-      border-color: rgba(251, 191, 36, 0.55);
-      background: rgba(251, 191, 36, 0.06);
-    }
-    .exec-health-tile-wide {
-      grid-column: span 2;
-    }
-    @media (max-width: 560px) {
-      .exec-health-tile-wide { grid-column: span 1; }
-    }
-    .exec-health-tile-label {
-      font-size: 0.68rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      margin-bottom: 0.25rem;
-    }
-    .exec-health-tile-value { font-size: 1.05rem; font-weight: 600; }
-    .exec-health-tile-sm { font-size: 0.82rem; word-break: break-word; }
-    .exec-health-card.exec-health-card-warn {
-      border-color: rgba(251, 191, 36, 0.45);
-      box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12);
-    }
-    .exec-health-pdt-wrap {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.35rem;
-      align-items: center;
-      min-height: 1.35rem;
-    }
-    .exec-health-badge {
-      display: inline-block;
-      padding: 0.15rem 0.45rem;
-      border-radius: 6px;
-      font-size: 0.72rem;
-      font-weight: 700;
-      font-family: "JetBrains Mono", monospace;
-      background: rgba(251, 191, 36, 0.12);
-      border: 1px solid rgba(251, 191, 36, 0.35);
-      color: #fcd34d;
-    }
-    .exec-health-hint {
-      margin: 0.35rem 0 0;
-      font-size: 0.72rem;
-      line-height: 1.35;
-    }
-    .exec-exit-details { margin-top: 0.85rem; }
-    .exec-exit-summary {
-      cursor: pointer;
-      font-weight: 600;
-      font-size: 0.85rem;
-      color: var(--accent-blue);
-      list-style: none;
-    }
-    .exec-exit-summary::-webkit-details-marker { display: none; }
-    .exec-exit-details[open] .exec-exit-summary { margin-bottom: 0.25rem; }
-    .dashboard-wrap .api-links,
-    .dashboard-wrap .last-upd { grid-column: 1 / -1; margin-top: 0; }
-    @media (max-width: 1100px) {
-      .dashboard-wrap .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .dashboard-wrap .stats-row > .card { grid-column: span 1; }
-      .dashboard-wrap .chart-main,
-      .dashboard-wrap .social-panel,
-      .dashboard-wrap .signal-feed,
-      .dashboard-wrap .subrow,
-      .dashboard-wrap .bottom-grid > .card:nth-child(1),
-      .dashboard-wrap .bottom-grid > .card:nth-child(2),
-      .dashboard-wrap .bottom-grid > .card:nth-child(3) {
-        grid-column: 1 / -1;
-      }
-    }
-
-    .backtest-wrap {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 1rem 1.1rem 2rem;
-      display: grid;
-      grid-template-columns: repeat(12, minmax(0, 1fr));
-      gap: 1rem;
-    }
-    .backtest-wrap .card.bt-card-setup,
-    .backtest-wrap .card.bt-card-actions,
-    .backtest-wrap .card.bt-card-summary,
-    .backtest-wrap .card.bt-card-interpretation,
-    .backtest-wrap .card.bt-card-chart { grid-column: 1 / -1; }
-    .backtest-wrap .card.bt-card-trades,
-    .backtest-wrap .card.bt-card-rejections,
-    .backtest-wrap .card.bt-card-runs,
-    .backtest-wrap .card.bt-card-assumptions { grid-column: span 6; }
-    @media (max-width: 1000px) {
-      .backtest-wrap > .card { grid-column: 1 / -1 !important; }
-    }
-    .bt-action-btn {
-      background: rgba(0, 212, 255, 0.12);
-      border: 1px solid var(--border-bright);
-      color: var(--accent-blue);
-      border-radius: 8px;
-      padding: 0.48rem 0.85rem;
-      cursor: pointer;
-      font-weight: 600;
-    }
-    .bt-action-btn:disabled { opacity: 0.55; cursor: not-allowed; }
-    .bt-action-btn.bt-primary {
-      background: linear-gradient(180deg, rgba(0, 255, 136, 0.20), rgba(0, 255, 136, 0.1));
-      color: #e8fff5;
-      border-color: #00ff88;
-      font-size: 1rem;
-      padding: 0.7rem 1rem;
-    }
-    .bt-action-btn.bt-primary:hover { filter: brightness(1.1); }
-    .bt-setup-grid {
-      display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
-      gap: 0.6rem;
-    }
-    .bt-setup-grid label { font-size: 0.75rem; color: var(--text-secondary); display: block; }
-    .bt-setup-grid input, .bt-setup-grid select {
-      width: 100%;
-      background: #0b1220; color: var(--text-primary);
-      border: 1px solid var(--border); border-radius: 8px; padding: 0.45rem 0.55rem;
-      font-family: inherit;
-      font-size: 0.85rem;
-      appearance: none;
-      -webkit-appearance: none;
-      background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%), linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
-      background-position: calc(100% - 18px) 50%, calc(100% - 12px) 50%;
-      background-size: 6px 6px;
-      background-repeat: no-repeat;
-      padding-right: 28px;
-    }
-    .bt-setup-grid input { background-image: none; padding-right: 0.55rem; }
-    .bt-setup-grid select option { background: #0b1220; color: var(--text-primary); }
-    .bt-actions-row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
-    .bt-status { margin-top: 0.5rem; font-size: 0.85rem; }
-    .bt-status.ok { color: #22c55e; }
-    .bt-status.err { color: #ef4444; }
-    .bt-mini-card {
-      background: rgba(15, 23, 42, 0.55);
+    .metric .lab { font-size: 11px; color: var(--muted); margin-bottom: 0.2rem; }
+    .metric .val { font-size: 1rem; font-weight: 600; }
+    .card {
+      background: var(--card);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 0.45rem 0.55rem;
-      min-width: 140px;
+      padding: 0.65rem 0.75rem;
+      margin-bottom: 0.75rem;
     }
-    .bt-mini-card .label {
-      color: var(--text-secondary);
-      font-size: 0.7rem;
-      margin-bottom: 0.2rem;
+    .card h2 { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600; }
+    .card h3 { margin: 0.75rem 0 0.35rem; font-size: 0.85rem; color: var(--muted); font-weight: 600; }
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
     }
-    .bt-mini-card .value {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.92rem;
-      color: var(--text-main);
+    table.data th, table.data td {
+      border-bottom: 1px solid var(--border);
+      padding: 0.35rem 0.45rem;
+      text-align: left;
     }
-    .dash-api-err { max-width: 42rem; line-height: 1.35; }
+    table.data th { color: var(--muted); font-weight: 600; }
+    .empty-hint { color: var(--muted); font-size: 13px; margin: 0.35rem 0; }
+    .chart-wrap { position: relative; height: 220px; margin-top: 0.35rem; }
+    .foot { font-size: 11px; color: var(--muted); margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+    .bt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.5rem; align-items: end; }
+    .bt-grid label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 0.2rem; }
+    .bt-grid input, .bt-grid select {
+      width: 100%;
+      padding: 0.35rem 0.45rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #0b1220;
+      color: var(--text);
+    }
+    .bt-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.65rem; }
+    .bt-actions button {
+      padding: 0.45rem 0.75rem;
+      border-radius: 6px;
+      border: 1px solid var(--accent);
+      background: rgba(56,189,248,0.12);
+      color: var(--accent);
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .bt-actions button.primary { background: rgba(52,211,153,0.15); border-color: var(--good); color: var(--good); }
+    #btStatus { margin-top: 0.5rem; font-size: 13px; color: var(--muted); }
+    pre.sec { font-size: 11px; overflow: auto; max-height: 120px; margin: 0.35rem 0 0; color: var(--muted); }
   </style>
 </head>
-<body data-terminal="1">
-  <span class="quantbot-terminal"></span>
-  <header class="term-header">
-    <div class="brand"><span class="live-dot" title="live"></span><span class="mono">⚡ QUANTBOT</span></div>
-    <div class="header-center">
-      <div class="clock-et" id="clockEt">—</div>
-      <div class="muted sync-reconnect" id="last-sync" style="font-size:0.68rem;margin-top:0.2rem;">Starting…</div>
-      <div id="dash-api-error" class="dash-api-err" style="display:none;font-size:0.68rem;color:#f87171;margin-top:0.15rem;"></div>
-      <div class="sym-legend muted" title="Symbol coloring in tables below">
-        <span class="legend-stock">● STOCK</span>
-        <span class="legend-crypto">● CRYPTO</span>
-      </div>
-    </div>
-    <div class="badge-paper">PAPER TRADING</div>
+<body>
+  <header>
+    <h1 class="mono">QuantBot</h1>
+    <span id="dashStatus">Loading…</span>
+    <div id="dashError" role="alert"></div>
   </header>
-  <nav class="tab-nav" aria-label="Primary">
+  <nav aria-label="Tabs">
     <button type="button" class="tab-btn active" data-tab="overview">Overview</button>
     <button type="button" class="tab-btn" data-tab="positions">Positions</button>
+    <button type="button" class="tab-btn" data-tab="activity">Activity</button>
     <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
-    <button type="button" class="tab-btn" data-tab="system">System Health</button>
   </nav>
-  <div class="dashboard-wrap" style="padding-top:0.45rem;padding-bottom:0.2rem;">
-    <div class="card" id="statusBanner" style="grid-column:1/-1;padding:0.55rem 0.75rem;">
-      <div class="muted" style="display:flex;gap:0.9rem;flex-wrap:wrap;">
-        <span id="statusApi">API: connecting…</span>
-        <span id="statusMode">Mode: paper</span>
-        <span id="statusLive">Live trading: disabled</span>
-        <span id="statusUpdated">Last updated: —</span>
-      </div>
-    </div>
-  </div>
 
-  <main id="overview-tab" class="tab-panel active">
-    <div class="dashboard-wrap">
-    <div id="noDataBanner" class="card" style="grid-column:1/-1;padding:0.85rem 1rem;border-color:rgba(14,165,233,0.35);background:rgba(14,165,233,0.06);">
-      <div style="display:flex;align-items:center;gap:0.6rem;">
-        <span style="font-size:1.1rem;">⏳</span>
-        <div>
-          <div style="font-weight:600;color:#0ea5e9;font-size:0.9rem;">Waiting for first trading cycle</div>
-          <div class="muted" style="font-size:0.78rem;margin-top:0.15rem;">The worker is starting up. Portfolio data, positions, and the equity chart will appear automatically once the bot runs its first cycle.</div>
-        </div>
+  <main>
+    <section id="panel-overview" class="tab-panel active">
+      <div class="grid-metrics">
+        <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mMode">—</div></div>
+        <div class="metric"><div class="lab">Total equity</div><div class="val mono" id="mEq">—</div></div>
+        <div class="metric"><div class="lab">Live P&amp;L ($)</div><div class="val mono" id="mPnlD">—</div></div>
+        <div class="metric"><div class="lab">Live P&amp;L (%)</div><div class="val mono" id="mPnlP">—</div></div>
+        <div class="metric"><div class="lab">Cash</div><div class="val mono" id="mCash">—</div></div>
+        <div class="metric"><div class="lab">Market</div><div class="val mono" id="mMkt">—</div></div>
+        <div class="metric"><div class="lab">Capital stage</div><div class="val mono" id="mCap">—</div></div>
       </div>
-    </div>
-    <div class="stats-row">
-      <div class="card"><h2>Total equity</h2><div class="big mono" id="tileEq">{{ eq_str }}</div></div>
-      <div class="card"><h2>Live P&amp;L</h2><div class="big {{ pnl_class }}" id="tilePnl">{{ pnl_str }}</div></div>
-      <div class="card"><h2>Cash</h2><div class="big mono" id="tileCash">—</div></div>
-      <div class="card"><h2>Buying power</h2><div class="big mono" id="tileBp">—</div></div>
-      <div class="card"><h2>Market status</h2><div id="mktLine" class="market-closed">—</div><div class="countdown" id="mktCd"></div></div>
-    </div>
+      <div class="card">
+        <h2>Equity</h2>
+        <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+        <p class="empty-hint" id="eqEmptyHint" style="display:none;">No equity series returned.</p>
+      </div>
+      <div class="card">
+        <h2>Top open positions (5)</h2>
+        <p class="empty-hint" id="posTopEmpty" style="display:none;">No positions returned.</p>
+        <table class="data" id="tblOverviewPositions"><thead><tr>
+          <th>Symbol</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uPnL %</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Last execution decisions (10)</h2>
+        <p class="empty-hint" id="decEmpty" style="display:none;">No decisions returned.</p>
+        <table class="data" id="tblOverviewDecisions"><thead><tr>
+          <th>Time</th><th>Symbol</th><th>Side</th><th>Decision</th><th>Reason</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </section>
 
-    <div class="card warning-card" id="overviewWarnings" style="display:none;">
-      <h2>⚠️ Warnings</h2>
-      <ul id="overviewWarningsList" style="margin:0.4rem 0 0; padding-left:1.1rem;"></ul>
-    </div>
-
-    <div class="card chart-main">
-      <h2>Equity curve</h2>
-      <div class="chart-controls">
-        <button class="range-btn" data-range="1D">1D</button>
-        <button class="range-btn" data-range="5D">5D</button>
-        <button class="range-btn" data-range="1W">1W</button>
-        <button class="range-btn" data-range="1M">1M</button>
-        <button class="range-btn" data-range="ALL">ALL</button>
-      </div>
-      <div class="chart-wrap" style="position:relative;">
-        <canvas id="eqChart" style="display:none;"></canvas>
-        <p class="muted" id="eqEmpty" style="text-align:center;padding:2rem 0;margin:0;">No equity data yet — chart will appear after the first trading cycle.</p>
-      </div>
-    </div>
-
-    <div class="card social-panel">
-      <h2>What the bot is doing now</h2>
-      <p class="muted" style="margin-top:0;">Top positions, recent decisions, and active warnings.</p>
-      <h3 style="margin:0.6rem 0 0.35rem;">Open positions (top 5)</h3>
-      <div style="overflow-x:auto;">
-        <table class="data-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>P/L %</th><th>Exit status</th></tr></thead><tbody id="posTableBody"></tbody></table>
-      </div>
-      <p class="muted" id="posEmpty">No positions returned by /api/dashboard.</p>
-      <h3 style="margin:0.8rem 0 0.35rem;">Recent decisions (top 10)</h3>
-      <div style="overflow-x:auto;">
-        <table><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Reason / Score</th></tr></thead><tbody id="sigFeedBody"></tbody></table>
-      </div>
-      <p class="muted" id="sigFeedEmpty" style="margin-top:0.35rem;">No recent decisions returned by /api/dashboard.</p>
-      <div id="overviewWarnInline" class="muted" style="margin-top:0.6rem;"></div>
-    </div>
-    </div>
-  </main>
-
-  <main id="positions-tab" class="tab-panel">
-    <div class="dashboard-wrap">
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>Open positions — detailed</h2>
-        <p class="muted" style="margin-top:0;">Each row shows broker reality, local snapshot, and whether an exit is currently allowed.</p>
+    <section id="panel-positions" class="tab-panel">
+      <div class="card">
+        <h2>All open positions</h2>
+        <p class="empty-hint" id="posAllEmpty" style="display:none;">No positions returned.</p>
         <div style="overflow-x:auto;">
-          <table class="data-table"><thead><tr>
-            <th>Symbol</th><th>Class</th><th>Local qty</th><th>Broker qty</th><th>Entry</th><th>Current</th>
-            <th>Unrealized</th><th>P/L %</th><th>Exit status</th><th>Reason</th>
-          </tr></thead><tbody id="posDetailedBody"></tbody></table>
-          <p class="muted" id="posDetailedEmpty" style="display:none;margin-top:0.4rem;">No open positions.</p>
+          <table class="data" id="tblPositionsFull"><thead><tr>
+            <th>Symbol</th><th>Class</th><th>Qty</th><th>Entry</th><th>Current</th><th>Mkt value</th><th>uPnL</th><th>uPnL %</th><th>Note</th>
+          </tr></thead><tbody></tbody></table>
         </div>
       </div>
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>Position exit eligibility (raw rows)</h2>
-        <p class="muted" style="margin-top:0;">From <code>position_exit_rows</code> in <code>/api/dashboard</code>.</p>
-        <div style="overflow-x:auto;">
-          <table class="data-table"><thead><tr>
-            <th>Symbol</th><th>Class</th><th>Local qty</th><th>Broker qty</th><th>Entry</th><th>Mark</th><th>P/L %</th>
-            <th>Eligibility</th><th>Block reason</th><th>PDT</th><th>Last exit try</th><th>Cooldown</th><th>Action</th>
-          </tr></thead><tbody id="execExitTableBody"></tbody></table>
-          <p class="muted" id="execExitEmpty" style="display:none;margin-top:0.35rem;">No position exit rows.</p>
-        </div>
+    </section>
+
+    <section id="panel-activity" class="tab-panel">
+      <div class="card">
+        <h2>Recent trades</h2>
+        <p class="empty-hint" id="actTradesEmpty" style="display:none;">No trades returned.</p>
+        <div style="overflow-x:auto;"><table class="data" id="tblActivityTrades"><thead><tr>
+          <th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Status</th>
+        </tr></thead><tbody></tbody></table></div>
       </div>
-    </div>
+      <div class="card">
+        <h2>Recent signals</h2>
+        <p class="empty-hint" id="actSigEmpty" style="display:none;">No signals returned.</p>
+        <div style="overflow-x:auto;"><table class="data" id="tblActivitySignals"><thead><tr>
+          <th>Time</th><th>Symbol</th><th>Name</th><th>Dir</th><th>Value</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h2>Execution decisions</h2>
+        <p class="empty-hint" id="actDecEmpty" style="display:none;">No execution decisions returned.</p>
+        <div style="overflow-x:auto;"><table class="data" id="tblActivityDecisions"><thead><tr>
+          <th>Time</th><th>Symbol</th><th>Side</th><th>Decision</th><th>Reason</th><th>Score</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h2>Performance</h2>
+        <p class="mono" id="actPerfLine">—</p>
+      </div>
+      <div class="card">
+        <h2>Calibration</h2>
+        <p class="empty-hint" id="actCalEmpty" style="display:none;">No calibration rows.</p>
+        <table class="data" id="tblCalibration"><thead><tr>
+          <th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Section status</h2>
+        <pre class="sec mono" id="actSectionStatus">—</pre>
+      </div>
+    </section>
+
+    <section id="panel-backtest" class="tab-panel">
+      <div class="card">
+        <h2>Backtest</h2>
+        <div class="bt-grid">
+          <div><label for="btStrategy">Strategy</label><select id="btStrategy"></select></div>
+          <div style="grid-column: span 2;"><label for="btSymbols">Symbols (CSV)</label><input id="btSymbols" value="AAPL,MSFT"/></div>
+          <div><label for="btStart">Start</label><input id="btStart" type="date" value="2025-01-01"/></div>
+          <div><label for="btEnd">End</label><input id="btEnd" type="date" value="2026-01-01"/></div>
+          <div><label for="btTimeframe">Timeframe</label><select id="btTimeframe"><option value="1Day">1Day</option><option value="1H">1H</option></select></div>
+          <div><label for="btStartingCash">Starting cash</label><input id="btStartingCash" type="number" step="0.01" value="100"/></div>
+        </div>
+        <div class="bt-actions">
+          <button type="button" class="primary" id="btRunBtn">Run Backtest</button>
+          <button type="button" id="btCompareBtn">Compare Strategies</button>
+          <button type="button" id="btCopyReportBtn" disabled>Copy Report</button>
+          <button type="button" id="btDownloadReportBtn" disabled>Download Report</button>
+        </div>
+        <p id="btStatus">Load defaults when you open this tab.</p>
+      </div>
+    </section>
+
+    <p class="foot mono">DB: {{ db }} · Poll every {{ refresh_sec }}s · <span id="pollFoot">HTTP only</span></p>
   </main>
 
-  <main id="backtest-tab" class="tab-panel">
-    <div class="backtest-wrap">
-      <div class="card bt-card-setup">
-        <h2>Backtest Setup</h2>
-        <div class="bt-setup-grid">
-          <div><label>Strategy</label><select id="btStrategy"></select></div>
-          <div><label>Symbols (CSV)</label><input id="btSymbols" value="AAPL,MSFT,BTC/USD" /></div>
-          <div><label>Start date</label><input id="btStart" type="date" value="2025-01-01" /></div>
-          <div><label>End date</label><input id="btEnd" type="date" value="2026-01-01" /></div>
-          <div><label>Timeframe</label><select id="btTimeframe"><option value="1Day">1Day</option><option value="1H">1H</option></select></div>
-          <div><label>Starting cash</label><input id="btStartingCash" type="number" step="0.01" value="100.00" /></div>
-          <div style="grid-column: span 2;"><label>Cost assumptions</label><input id="btCostsView" value="fee=5, spread=20, slippage=10" readonly /></div>
-          <div style="display:flex;align-items:end;"><label style="display:flex;align-items:center;gap:6px;"><input id="btPyramiding" type="checkbox" />Pyramiding enabled</label></div>
-        </div>
-        <p class="muted mono" id="btThresholds" style="margin-top:0.6rem;">loading configured thresholds…</p>
-        <div class="bt-actions-row" style="margin-top:0.6rem;">
-          <span class="muted" style="margin-right:0.4rem;">Presets:</span>
-          <button id="btPresetSanity" class="bt-action-btn" type="button">Small sanity test</button>
-          <button id="btPresetCrypto" class="bt-action-btn" type="button">Crypto only</button>
-          <button id="btPresetHoldings" class="bt-action-btn" type="button">Current holdings</button>
-          <button id="btPresetStress" class="bt-action-btn" type="button">Stress test</button>
-        </div>
-      </div>
-      <div class="card bt-card-actions">
-        <h2>Primary Actions</h2>
-        <div class="bt-actions-row">
-          <button id="btRunBtn" class="bt-action-btn bt-primary" type="button">▶ Run Backtest</button>
-          <button id="btCompareBtn" class="bt-action-btn" type="button">⚖ Compare Strategies</button>
-          <button id="btCopyReportBtn" class="bt-action-btn" type="button" disabled>📋 Copy Backtest Report</button>
-          <button id="btDownloadReportBtn" class="bt-action-btn" type="button" disabled>⬇ Download Backtest Report</button>
-        </div>
-        <p id="btStatus" class="bt-status muted">Run or select a backtest first.</p>
-      </div>
-      <details class="card bt-card-summary">
-        <summary><strong>Advanced — Results Overview</strong></summary>
-        <h2>Results Overview</h2>
-        <p id="btSummaryEmpty" class="mono muted">No run selected.</p>
-        <div id="btSummaryCards" class="stats-row" style="margin-top:0.5rem;"></div>
-        <p id="btSampleWarning" class="muted" style="display:none;color:#fbbf24;margin-top:0.6rem;"></p>
-      </details>
-      <details class="card bt-card-interpretation">
-        <summary><strong>Advanced — Interpretation</strong></summary>
-        <h2>Interpretation</h2>
-        <div id="btInterpretation" class="muted">No run selected.</div>
-      </details>
-      <details class="card bt-card-chart">
-        <summary><strong>Advanced — Backtest Equity Curve</strong></summary>
-        <h2>Backtest Equity Curve</h2>
-        <div class="chart-wrap" style="height:360px;"><canvas id="btChart"></canvas></div>
-      </details>
-      <details class="card bt-card-runs">
-        <summary><strong>Advanced — Strategy Comparison</strong></summary>
-        <h2>Strategy Comparison</h2>
-        <p id="btCompareEmpty" class="muted">Run comparison to populate this table.</p>
-        <div style="overflow:auto;max-height:360px;">
-          <table class="data-table"><thead><tr><th>Strategy</th><th>Status</th><th>Reason</th><th>Final Equity</th><th>Return %</th><th>Benchmark %</th><th>Excess %</th><th>Max Drawdown %</th><th>Closed Trades</th><th>Deployed Avg %</th><th>Rejections</th><th>Confidence</th><th>Interpretation</th></tr></thead><tbody id="btCompareBody"></tbody></table>
-        </div>
-      </details>
-      <details class="card bt-card-rejections">
-        <summary><strong>Advanced — Rejections</strong></summary>
-        <h2>Rejections Summary</h2>
-        <div id="btRejBadges" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
-        <details style="margin-top:0.7rem;">
-          <summary class="muted">Details (latest configured rows)</summary>
-          <div style="overflow:auto;max-height:300px;margin-top:0.5rem;">
-            <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Reason</th></tr></thead><tbody id="btRejectionsBody"></tbody></table>
-          </div>
-        </details>
-        <p class="muted" id="btRejectionsEmpty" style="display:none;">No rejections.</p>
-      </details>
-      <details class="card bt-card-trades">
-        <summary><strong>Advanced — Simulated Trades</strong></summary>
-        <h2>Simulated trades</h2>
-        <div style="overflow:auto;max-height:340px;">
-          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Fill</th><th>Entry reason</th><th>Exit reason</th><th>Score</th><th>Hold sec</th><th>PnL</th><th>PnL %</th></tr></thead><tbody id="btTradesBody"></tbody></table>
-        </div>
-        <p class="muted" id="btTradesEmpty" style="display:none;">No trades.</p>
-      </details>
-      <details class="card bt-card-runs">
-        <summary><strong>Advanced — Recent Runs</strong></summary>
-        <h2>Recent Backtest Runs</h2>
-        <table class="data-table"><thead><tr><th>ID</th><th>Created</th><th>Strategy</th><th>Status</th><th></th></tr></thead><tbody id="btRunsBody"></tbody></table>
-      </details>
-      <details class="card bt-card-runs">
-        <summary><strong>Advanced — Signal Events</strong></summary>
-        <h2>Signal Events</h2>
-        <div id="btSigBadges" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:0.6rem;"></div>
-        <details>
-          <summary class="muted">Details (latest configured rows)</summary>
-          <div style="overflow:auto;max-height:300px;margin-top:0.5rem;">
-          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Action</th><th>Class</th><th>Reason</th><th>Score</th></tr></thead><tbody id="btSignalEventsBody"></tbody></table>
-          </div>
-        </details>
-        <p class="muted" id="btSignalEventsEmpty" style="display:none;">No signal events.</p>
-      </details>
-      <details class="card bt-card-assumptions">
-        <summary><strong>Advanced — Assumptions</strong></summary>
-        <h2>Assumptions &amp; Data Quality</h2>
-        <div id="btAssumptions" class="mono muted">—</div>
-        <div id="btDataQuality" class="mono muted" style="margin-top:0.5rem;">—</div>
-      </details>
-      <div class="card bt-card-runs">
-        <details>
-          <summary><strong>Advanced — Strategy Diagnostics</strong></summary>
-          <div id="btStrategyDiagnostics" class="mono muted" style="margin-top:0.6rem;">Run or select a backtest to view diagnostics.</div>
-        </details>
-      </div>
-      <div class="card bt-card-runs">
-        <details>
-          <summary><strong>Parameter Experiments</strong></summary>
-          <div style="margin-top:0.6rem;">
-            <div class="bt-setup-grid">
-              <div><label>Base parameter set</label><select id="btParamSetSelect"><option value="">defaults</option></select></div>
-              <div style="grid-column: span 3;"><label>Parameter grid (JSON)</label><input id="btParamGrid" value='{"buy_score_threshold":[0.5,0.6],"sell_score_threshold":[-0.5,-0.4]}' /></div>
-              <div><label>Walk-forward</label><label style="display:flex;align-items:center;gap:6px;"><input id="btWalkForwardEnabled" type="checkbox" />Enable one split</label></div>
-            </div>
-            <div class="bt-actions-row" style="margin-top:0.6rem;">
-              <button id="btRunExperimentBtn" class="bt-action-btn" type="button">🧪 Run Experiment</button>
-            </div>
-            <p id="btExperimentStatus" class="bt-status muted">No experiment run yet.</p>
-          </div>
-        </details>
-      </div>
-      <div class="card bt-card-runs">
-        <details>
-          <summary><strong>Experiment Results</strong></summary>
-          <p id="btExperimentEmpty" class="muted">Run a parameter experiment to populate this table.</p>
-          <div style="overflow:auto;max-height:320px;">
-            <table class="data-table"><thead><tr><th>Rank</th><th>Status</th><th>Params</th><th>Return %</th><th>Benchmark %</th><th>Excess %</th><th>Drawdown %</th><th>Closed</th><th>Deployed Avg %</th><th>Rejections</th><th>Confidence</th><th>Score</th><th></th></tr></thead><tbody id="btExperimentBody"></tbody></table>
-          </div>
-        </details>
-      </div>
-      <div class="card bt-card-runs">
-        <details>
-          <summary><strong>Reports</strong></summary>
-          <p class="muted">Use Copy/Download to export backtest or experiment context.</p>
-        </details>
-      </div>
-    </div>
-  </main>
-
-  <main id="system-tab" class="tab-panel">
-    <div class="dashboard-wrap">
-      <div class="card exec-health-card" id="execHealthCard" style="grid-column: 1 / -1;">
-        <h2>🩺 Execution health</h2>
-        <p class="muted" id="execHealthMissing" style="display:none;color:#fbbf24;margin-top:0;">Execution health payload missing.</p>
-        <div class="exec-health-grid" id="execHealthGrid">
-          <div class="exec-health-tile" id="execTileCash">
-            <div class="exec-health-tile-label">Cash</div>
-            <div class="exec-health-tile-value mono" id="execHealthCash">—</div>
-          </div>
-          <div class="exec-health-tile" id="execTileBp">
-            <div class="exec-health-tile-label">Buying power</div>
-            <div class="exec-health-tile-value mono" id="execHealthBuyingPower">—</div>
-          </div>
-          <div class="exec-health-tile" id="execTileUsable">
-            <div class="exec-health-tile-label">Usable buying power</div>
-            <div class="exec-health-tile-value mono" id="execHealthUsable">—</div>
-          </div>
-          <div class="exec-health-tile" id="execTileBlocked">
-            <div class="exec-health-tile-label">Blocked exits</div>
-            <div class="exec-health-tile-value mono" id="execHealthBlockedExits">0</div>
-          </div>
-          <div class="exec-health-tile exec-health-tile-wide" id="execTilePdt">
-            <div class="exec-health-tile-label">PDT blocked symbols</div>
-            <div class="exec-health-pdt-wrap" id="execHealthPdtBadges"><span class="muted exec-health-empty">—</span></div>
-            <span class="exec-health-tile-fallback mono" id="execHealthPdtSymbols" style="display:none;">—</span>
-          </div>
-          <div class="exec-health-tile" id="execTileStale">
-            <div class="exec-health-tile-label">Stale local positions</div>
-            <div class="exec-health-tile-value mono" id="execHealthStaleLocal">0</div>
-          </div>
-          <div class="exec-health-tile" id="execTileMismatch">
-            <div class="exec-health-tile-label">Broker/local mismatches</div>
-            <div class="exec-health-tile-value mono" id="execHealthMismatches">0</div>
-          </div>
-          <div class="exec-health-tile" id="execTileCryptoFast">
-            <div class="exec-health-tile-label">Fast crypto exits</div>
-            <div class="exec-health-tile-value mono" id="execHealthCryptoFast">—</div>
-          </div>
-          <div class="exec-health-tile" id="execTilePdtGuard">
-            <div class="exec-health-tile-label">Stock PDT guard</div>
-            <div class="exec-health-tile-value mono" id="execHealthPdtGuard">—</div>
-          </div>
-          <div class="exec-health-tile" id="execTileEligible">
-            <div class="exec-health-tile-label">Exit-eligible positions</div>
-            <div class="exec-health-tile-value mono" id="execHealthExitEligible">—</div>
-          </div>
-          <div class="exec-health-tile" id="execTileReconcile">
-            <div class="exec-health-tile-label">Last reconciliation</div>
-            <div class="exec-health-tile-value mono exec-health-tile-sm" id="execHealthLastReconcile">—</div>
-          </div>
-        </div>
-        <p class="muted exec-health-hint">PDT blocked exits mean Alpaca refused same-day stock exits.</p>
-        <p class="muted exec-health-hint">Broker/local mismatches mean local SQLite and Alpaca position records differ.</p>
-      </div>
-
-      <div class="card" id="systemMetaCard" style="grid-column: 1 / -1;">
-        <h2>System info</h2>
-        <p class="muted" style="margin-top:0;">API status: <span class="mono" id="systemApiStatus">connecting…</span> · Worker status: <span class="mono" id="systemWorkerStatus">N/A</span></p>
-        <p class="muted" style="margin-top:0.3rem;">DB: <span class="mono" id="systemDbPath">{{ db }}</span></p>
-        <p class="api-links">JSON: <a href="/api/dashboard">/api/dashboard</a> · <a href="/api/config">/api/config</a> · <a href="/api/calibration">/api/calibration</a> · <a href="/api/social">/api/social</a> · <a href="/api/backtest/runs">/api/backtest/runs</a> · <span class="muted">POST</span> <code>/api/sync-alpaca</code></p>
-        <p class="last-upd" id="metaNote">Live dashboard via HTTP polling (every {{ refresh_sec }}s) · clock ET</p>
-      </div>
-
-      <div class="card" style="grid-column: 1 / span 6;">
-        <h2><span>🔥</span> Social momentum</h2>
-        <p class="muted" style="margin-top:0;">Top 10 · <a href="/api/social">/api/social</a></p>
-        <div id="socialMoRoot" style="margin-top:0.5rem;"><p class="muted">Loading…</p></div>
-      </div>
-
-      <div class="card" style="grid-column: 7 / -1;">
-        <h2>📊 Signal calibration</h2>
-        <p class="muted" id="dashCalibrationEmpty" style="display:{% if calibration %}none{% else %}block{% endif %};">No calibration data.</p>
-        <table class="data-table"><thead><tr><th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th></tr></thead><tbody id="dashCalibrationBody">
-          {% if calibration %}
-          {% for leg, row in calibration.items()|sort %}
-          <tr class="{% if row.resolved < 1 %}muted{% elif row.accuracy > 55 %}cal-ok{% elif row.accuracy >= 45 %}cal-mid{% else %}cal-bad{% endif %}">
-            <td>{{ leg }}</td><td>{{ row.total }}</td>
-            <td>{% if row.resolved > 0 %}{{ row.accuracy }}%{% else %}—{% endif %}</td><td>{{ row.weight_suggestion }}</td>
-          </tr>{% endfor %}
-          {% endif %}
-        </tbody></table>
-      </div>
-
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>📈 Performance &amp; learning</h2>
-        <div id="dashPerfSummary" class="muted">
-        {% if perf.closed_round_trips and perf.closed_round_trips > 0 %}
-        <p class="muted" style="margin-top:0;">Trades: <strong class="mono">{{ perf.total_trades }}</strong> · Round-trips: <strong class="mono">{{ perf.closed_round_trips }}</strong> · Win rate: <strong class="mono">{{ (perf.win_rate_pct | round(1)) if perf.win_rate_pct is not none else "—" }}%</strong> · Best: <strong class="mono">{{ "+" if perf.best_trade is not none and perf.best_trade >= 0 else "" }}${{ (perf.best_trade | round(2)) if perf.best_trade is not none else "—" }}</strong> · Worst: <strong class="mono">{{ "$" }}{{ (perf.worst_trade | round(2)) if perf.worst_trade is not none else "—" }}</strong></p>
-        {% else %}
-        <p class="muted" style="margin-top:0;">No completed round-trips yet</p>
-        {% endif %}
-        </div>
-        <p class="muted" id="dashRlEmpty" style="display:{% if rl_history %}none{% else %}block{% endif %};margin-top:0.5rem;">No RL nudges yet.</p>
-        <table class="data-table"><thead><tr><th>Time</th><th>Summary</th><th>Pairs</th><th>Win%</th></tr></thead><tbody id="dashRlBody">
-          {% if rl_history %}
-          {% for e in rl_history %}
-          <tr><td class="mono" style="font-size:0.72rem;">{{ e.created_at }}</td><td>{{ e.summary }}</td><td class="mono">{{ e.trade_count }}</td>
-            <td>{% if e.win_rate is not none %}{{ (e.win_rate * 100) | round(1) }}%{% else %}—{% endif %}</td></tr>{% endfor %}
-          {% endif %}
-        </tbody></table>
-      </div>
-
-      <div class="card" style="grid-column: 1 / -1;">
-        <h2>Recent trades (live)</h2>
-        <p class="muted" style="margin-top:0;">From <code>recent_trades</code> on <code>/api/dashboard</code>.</p>
-        <div style="overflow-x:auto;">
-          <table class="data-table"><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Status</th></tr></thead><tbody id="dashRecentTradesBody"></tbody></table>
-        </div>
-        <p class="muted" id="dashRecentTradesEmpty" style="display:none;">No recent trades.</p>
-      </div>
-
-      <div class="card" style="grid-column: 1 / -1;">
-        <details>
-          <summary><strong>⚙️ Advanced controls (bot parameters)</strong></summary>
-          <p class="muted" style="margin-top:0.5rem;">SQLite — worker reads each cycle. Sliders are hidden by default to keep the cockpit clean.</p>
-          <p class="muted" style="margin-top:0.4rem;">
-            Dynamic risk:
-            <label class="mono">
-              <input type="checkbox" id="cfg-dynamic-risk" {% if dynamic_risk_enabled %}checked{% endif %}/>
-              enabled
-            </label>
-          </p>
-          <table class="data-table"><thead><tr><th>Parameter</th><th>Slider</th><th>Value</th><th></th></tr></thead><tbody>
-            {% for row in bot_ui %}
-            <tr data-key="{{ row.key }}">
-              <td title="{{ row.description }}">{{ row.key }}</td>
-              <td colspan="2"><input type="range" class="cfg-range" data-key="{{ row.key }}" min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}"/></td>
-              <td style="white-space:nowrap;"><input type="number" class="cfg-num mono" data-key="{{ row.key }}" min="{{ row.min }}" max="{{ row.max }}" step="{{ row.step }}" value="{{ row.value }}" style="width:4.5rem"/>
-              <button type="button" class="cfg-save" data-key="{{ row.key }}">Save</button></td>
-            </tr>{% endfor %}
-          </tbody></table>
-          <p style="margin-top:0.75rem;"><button type="button" id="cfg-reset">Reset defaults</button></p>
-        </details>
-      </div>
-
-      <div class="card" style="grid-column: 1 / -1;">
-        <details>
-          <summary><strong>🧭 Roadmap</strong></summary>
-          <p class="muted" style="margin-top:0.5rem;">High-level plans. None of this is wired live yet.</p>
-          <h3 style="margin:0.6rem 0 0.2rem;">Crypto fast in/out (design)</h3>
-          <ul class="muted" style="margin:0; padding-left:1.1rem;">
-            <li>24/7 trading; no NYSE / PDT restriction.</li>
-            <li>Broker qty &gt; 0 required for any exit.</li>
-            <li>Take-profit, trailing-stop, stop-loss, max notional all read from DB config.</li>
-            <li>Every entry/exit decision recorded; dashboard shows reason.</li>
-          </ul>
-          <h3 style="margin:0.6rem 0 0.2rem;">AI intern / fund manager (staged)</h3>
-          <ol class="muted" style="margin:0; padding-left:1.1rem;">
-            <li>Observer — reads trades, missed exits, blocked exits, backtests; writes lessons only.</li>
-            <li>Advisor — suggests parameter changes; human approval required.</li>
-            <li>Paper fund manager — updates paper parameters within caps; no live trading.</li>
-            <li>Live advisor only — never auto-live without hard safety locks.</li>
-          </ol>
-        </details>
-      </div>
-
-      <div class="card" style="grid-column: 1 / -1;">
-        <details>
-          <summary><strong>Debug payload summary</strong></summary>
-          <p class="muted" style="margin-top:0.5rem;">Quick counts from latest <code>/api/dashboard</code> payload.</p>
-          <table class="data-table"><tbody>
-            <tr><th style="text-align:left;">/api/dashboard status</th><td class="mono" id="dbgApiStatus">connecting…</td></tr>
-            <tr><th style="text-align:left;">open_positions length</th><td class="mono" id="dbgPosLen">0</td></tr>
-            <tr><th style="text-align:left;">recent_signals length</th><td class="mono" id="dbgSigLen">0</td></tr>
-            <tr><th style="text-align:left;">recent_trades length</th><td class="mono" id="dbgTradeLen">0</td></tr>
-            <tr><th style="text-align:left;">equity_series length</th><td class="mono" id="dbgEqLen">0</td></tr>
-            <tr><th style="text-align:left;">execution_health present</th><td class="mono" id="dbgEhPresent">false</td></tr>
-            <tr><th style="text-align:left;">position_exit_rows length</th><td class="mono" id="dbgExitLen">0</td></tr>
-          </tbody></table>
-        </details>
-      </div>
-    </div>
-  </main>
-
-  <div id="sym-tooltip" aria-hidden="true"></div>
-  <script id="dash-payload" type="application/json">{{ dash_snapshot|tojson }}</script>
 <script>
 (function () {
   "use strict";
-  window.DISABLE_OLD_DASHBOARD_LIVE = true;
-  var REFRESH_MS = {{ refresh_sec }} * 1000;
+  var POLL_MS = {{ refresh_sec }} * 1000;
   var DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
-  var ACTIVE_TAB_KEY = "quantbot_active_tab";
-  var EQUITY_RANGE_KEY = "quantbot_equity_range";
-  var POLL_MS = REFRESH_MS > 0 ? REFRESH_MS : 30000;
-  var FETCH_TIMEOUT_MS = 25000;
-  var inFlight = false;
-  var eqChart = null;
+  var equityChart = null;
 
-  function tickClockEt() {
-    var el = document.getElementById("clockEt");
-    if (!el) return;
-    var parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/New_York",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    }).formatToParts(new Date());
-    var H = "", M = "", S = "";
-    parts.forEach(function (p) {
-      if (p.type === "hour") H = p.value;
-      if (p.type === "minute") M = p.value;
-      if (p.type === "second") S = p.value;
-    });
-    el.textContent = H + ":" + M + ":" + S + " ET";
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
-  setInterval(tickClockEt, 1000);
-  tickClockEt();
-
-  function bindTabs() {
-    var ALLOWED = { overview: 1, positions: 1, backtest: 1, system: 1 };
-    function showTab(name) {
-      if (name === "dashboard") name = "overview";
-      var tab = ALLOWED[name] ? name : "overview";
-      document.querySelectorAll(".tab-btn").forEach(function (btn) {
-        btn.classList.toggle("active", btn.dataset.tab === tab);
-      });
-      document.querySelectorAll(".tab-panel").forEach(function (panel) {
-        panel.classList.toggle("active", panel.id === tab + "-tab");
-      });
-      try {
-        localStorage.setItem(ACTIVE_TAB_KEY, tab);
-      } catch (e) {}
-      if (tab === "backtest") {
-        var loadRuns = function () {
-          if (typeof window.quantbotLoadBacktestRuns === "function") window.quantbotLoadBacktestRuns();
-        };
-        if (typeof window.quantbotEnsureBacktestMetaLoaded === "function") {
-          window.quantbotEnsureBacktestMetaLoaded().then(loadRuns).catch(loadRuns);
-        } else {
-          loadRuns();
-        }
-      }
-    }
-    document.querySelectorAll(".tab-btn[data-tab]").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        showTab(btn.dataset.tab);
-      });
-    });
-    document.querySelectorAll("[data-tab-link]").forEach(function (a) {
-      a.addEventListener("click", function (ev) {
-        ev.preventDefault();
-        showTab(a.dataset.tabLink);
-      });
-    });
-    var fallback = "overview";
-    // "backtest" is never auto-restored — it starts empty and confuses users.
-    // Only overview / positions / system are safe to restore from localStorage.
-    var RESTORABLE = { overview: 1, positions: 1, system: 1 };
-    try {
-      var key = localStorage.getItem(ACTIVE_TAB_KEY);
-      if (key === "dashboard") key = "overview";
-      showTab(RESTORABLE[key] ? key : fallback);
-    } catch (e) {
-      showTab(fallback);
-    }
+  function fmtMoney(v) {
+    var n = Number(v);
+    return Number.isFinite(n) ? "$" + n.toFixed(2) : "—";
+  }
+  function fmtPct(v) {
+    var n = Number(v);
+    return Number.isFinite(n) ? n.toFixed(2) + "%" : "—";
+  }
+  function num(v, fallback) {
+    var n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
   }
 
-  function bindCfg() {
-    document.querySelectorAll(".cfg-range").forEach(function (r) {
-      r.oninput = function () {
-        var k = r.dataset.key;
-        var n = document.querySelector('.cfg-num[data-key="' + k + '"]');
-        if (n) n.value = r.value;
-      };
-    });
-    document.querySelectorAll(".cfg-num").forEach(function (n) {
-      n.oninput = function () {
-        var k = n.dataset.key;
-        var r = document.querySelector('.cfg-range[data-key="' + k + '"]');
-        if (r) r.value = n.value;
-      };
-    });
-    document.querySelectorAll("#system-tab .cfg-save, .cfg-save").forEach(function (btn) {
-      btn.onclick = async function () {
-        var k = btn.dataset.key;
-        var n = document.querySelector('.cfg-num[data-key="' + k + '"]');
-        var v = parseFloat(n && n.value);
-        var res = await fetch("/api/config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-          body: JSON.stringify({ key: k, value: v }),
-        });
-        if (res.ok) {
-          btn.textContent = "Saved";
-          setTimeout(function () { btn.textContent = "Save"; }, 1200);
-        }
-      };
-    });
-    var rst = document.getElementById("cfg-reset");
-    if (rst) {
-      rst.onclick = async function () {
-        if (!confirm("Reset all bot parameters to defaults?")) return;
-        await fetch("/api/config/reset", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-        });
-        location.reload();
-      };
-    }
-    var dr = document.getElementById("cfg-dynamic-risk");
-    if (dr) {
-      dr.onchange = async function () {
-        var v = dr.checked ? 1 : 0;
-        var res = await fetch("/api/config", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-          body: JSON.stringify({ key: "dynamic_risk_enabled", value: v }),
-        });
-        if (!res.ok) dr.checked = !dr.checked;
-      };
-    }
-  }
-
-  function mapUiToApiPeriod(ui) {
-    var m = { "1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M" };
-    return m[ui] || "1D";
-  }
-  function getStoredUiRange() {
-    try {
-      var v = localStorage.getItem(EQUITY_RANGE_KEY) || "1D";
-      return ["1D", "5D", "1W", "1M", "ALL"].indexOf(v) >= 0 ? v : "1D";
-    } catch (e) {
-      return "1D";
-    }
-  }
-  function highlightRangeButtons() {
-    var cur = getStoredUiRange();
-    document.querySelectorAll(".range-btn").forEach(function (btn) {
-      btn.classList.toggle("active", btn.getAttribute("data-range") === cur);
-    });
-  }
-
-  function byId(id) { return document.getElementById(id); }
-  function esc(v) {
-    return String(v == null ? "" : v)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
-  function text(id, v) { var n = byId(id); if (n) n.textContent = v == null ? "" : String(v); }
-  function html(id, v) { var n = byId(id); if (n) n.innerHTML = v == null ? "" : String(v); }
-  function toNum(v) { var n = Number(v); return Number.isFinite(n) ? n : null; }
-  function moneyOrNA(v) { var n = toNum(v); return n == null ? "N/A" : ("$" + n.toFixed(2)); }
-  function countOrNA(v) { var n = toNum(v); return n == null ? "N/A" : String(Math.trunc(n)); }
-  function pick() {
-    for (var i = 0; i < arguments.length; i += 1) {
-      var v = arguments[i];
-      if (v !== undefined && v !== null && v !== "") return v;
-    }
-    return null;
-  }
-  function safeRows(rows) {
-    return Array.isArray(rows) ? rows.filter(function (r) { return r && typeof r === "object"; }) : [];
-  }
-  function readEmbedded() {
-    try {
-      var n = byId("dash-payload");
-      var raw = n ? String(n.textContent || "").trim() : "";
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function adapt(raw) {
-    var p = raw && typeof raw === "object" ? raw : {};
+  function mapDashboardPayload(payload) {
+    var p = payload && typeof payload === "object" ? payload : {};
     var pf = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
-    var eh = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : {};
-    var bg = p.buy_gate && typeof p.buy_gate === "object" ? p.buy_gate : {};
-    var pfCash = pick(pf.cash);
-    var cs = toNum(pf.cash_stocks);
-    var cc = toNum(pf.cash_crypto);
-    var cashCombined =
-      pfCash != null ? pfCash : cs != null || cc != null ? (cs || 0) + (cc || 0) : pick(eh.cash, bg.cash);
-    var bpCombined = pick(
-      pf.buying_power,
-      pf.buying_power_stock,
-      eh.buying_power,
-      eh.usable_buying_power,
-      bg.buying_power,
-      bg.usable_buying_power
-    );
-    var positions = safeRows(p.open_positions);
-    var trades = safeRows(p.recent_trades);
-    var signals = safeRows(p.signal_states || p.recent_signals);
-    var decisions = signals.length ? signals : safeRows(p.execution_decisions);
-    var exits = safeRows(p.position_exit_rows);
-    if (!exits.length && Array.isArray(eh.position_exit_rows)) exits = safeRows(eh.position_exit_rows);
+    var cs = num(pf.cash_stocks, 0);
+    var cc = num(pf.cash_crypto, 0);
     return {
       raw: p,
-      positions: positions,
-      trades: trades,
-      decisions: decisions,
-      equity: safeRows(p.equity_series),
-      exits: exits,
-      eh: eh,
-      account: {
-        equity: pick(pf.equity_total, pf.equity),
-        pnlPct: pick(pf.pnl_pct, p.pnl_vs_start_pct),
-        pnlDol: pick(pf.pnl_dollars, p.pnl_vs_start_dollars),
-        cash: cashCombined,
-        bp: bpCombined,
-      },
-      mode: String(p.mode || "paper"),
+      mode: p.mode != null ? String(p.mode) : "—",
+      equity: num(pf.equity_total, null),
+      cash: cs + cc,
+      pnlDollars: num(p.pnl_vs_start_dollars, null),
+      pnlPct: num(p.pnl_vs_start_pct, null),
       marketOpen: typeof p.market_open === "boolean" ? p.market_open : null,
+      equitySeries: Array.isArray(p.equity_series) ? p.equity_series : [],
+      positions: Array.isArray(p.open_positions) ? p.open_positions : [],
+      recentTrades: Array.isArray(p.recent_trades) ? p.recent_trades : [],
+      recentSignals: Array.isArray(p.recent_signals) ? p.recent_signals : [],
+      executionDecisions: Array.isArray(p.execution_decisions) ? p.execution_decisions : [],
+      capitalStage: p.capital_stage && typeof p.capital_stage === "object" ? p.capital_stage : {},
+      performance: p.performance && typeof p.performance === "object" ? p.performance : {},
+      calibration: p.calibration && typeof p.calibration === "object" ? p.calibration : {},
+      sectionStatus: p.section_status && typeof p.section_status === "object" ? p.section_status : {},
+      fetchError: null,
+      updatedAt: null
     };
   }
 
-  function renderTable(bodyId, emptyId, rows, rowToHtml) {
-    var body = byId(bodyId);
-    if (!body) return;
-    if (!rows.length) {
-      body.innerHTML = "";
-      var empty = byId(emptyId);
-      if (empty) empty.style.display = "block";
-      return;
-    }
-    var emptyEl = byId(emptyId);
-    if (emptyEl) emptyEl.style.display = "none";
-    body.innerHTML = rows.map(rowToHtml).join("");
+  function positionNote(row, marketOpen) {
+    var ac = String(row.asset_class || "").toLowerCase();
+    if (ac === "crypto") return "Crypto can trade 24/7, waiting for signal";
+    if (ac === "stock" && marketOpen === false) return "Stock exit blocked: market closed";
+    return "Holding / no exit shown";
   }
 
-  function renderEquity(series) {
-    var canvas = byId("eqChart");
-    var empty = byId("eqEmpty");
-    if (!canvas) return;
+  function renderOverview(vm) {
+    document.getElementById("mMode").textContent = vm.mode;
+    document.getElementById("mEq").textContent = vm.equity != null ? fmtMoney(vm.equity) : "—";
+    document.getElementById("mPnlD").textContent = vm.pnlDollars != null ? fmtMoney(vm.pnlDollars) : "—";
+    document.getElementById("mPnlP").textContent = vm.pnlPct != null ? fmtPct(vm.pnlPct) : "—";
+    document.getElementById("mCash").textContent = fmtMoney(vm.cash);
+    var mo = vm.marketOpen;
+    document.getElementById("mMkt").textContent = mo === true ? "OPEN" : mo === false ? "CLOSED" : "—";
+    var st = vm.capitalStage || {};
+    document.getElementById("mCap").textContent = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
+
+    var series = vm.equitySeries || [];
+    var canvas = document.getElementById("equityChart");
+    var eqHint = document.getElementById("eqEmptyHint");
+    if (!canvas || typeof Chart === "undefined") return;
     if (!series.length) {
-      canvas.style.display = "none";
-      if (empty) empty.style.display = "block";
+      if (eqHint) eqHint.style.display = "block";
+      if (equityChart) { equityChart.destroy(); equityChart = null; }
       return;
     }
-    canvas.style.display = "";
-    if (empty) empty.style.display = "none";
-    if (typeof Chart === "undefined") return;
+    if (eqHint) eqHint.style.display = "none";
     var labels = series.map(function (r) { return String(r.snapshot_at || ""); });
-    var values = series.map(function (r) { var n = toNum(r.equity_total); return n == null ? 0 : n; });
-    if (!eqChart) {
-      eqChart = new Chart(canvas.getContext("2d"), {
+    var vals = series.map(function (r) { return num(r.equity_total, 0); });
+    if (!equityChart) {
+      equityChart = new Chart(canvas.getContext("2d"), {
         type: "line",
-        data: { labels: labels, datasets: [{ data: values, borderColor: "#00ff88", backgroundColor: "rgba(0,255,136,0.08)", fill: true, tension: 0.25, pointRadius: 0 }] },
-        options: { animation: false, responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { ticks: { maxTicksLimit: 5 } } } }
+        data: { labels: labels, datasets: [{ data: vals, borderColor: "#34d399", tension: 0.2, pointRadius: 0 }] },
+        options: { animation: false, responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
       });
-      return;
-    }
-    eqChart.data.labels = labels;
-    eqChart.data.datasets[0].data = values;
-    eqChart.update("none");
-  }
-
-  function renderCalibrationFromPayload(cal) {
-    var tbody = byId("dashCalibrationBody");
-    var empty = byId("dashCalibrationEmpty");
-    if (!tbody) return;
-    var o = cal && typeof cal === "object" ? cal : {};
-    var legs = Object.keys(o).sort();
-    if (!legs.length) {
-      tbody.innerHTML = "";
-      if (empty) empty.style.display = "block";
-      return;
-    }
-    if (empty) empty.style.display = "none";
-    tbody.innerHTML = legs.map(function (leg) {
-      var row = o[leg] || {};
-      var acc = row.accuracy;
-      var resolved = Number(row.resolved);
-      var accStr = resolved > 0 && acc != null ? esc(String(acc)) + "%" : "—";
-      var trClass = "muted";
-      if (resolved >= 1) {
-        var an = Number(acc);
-        trClass = an > 55 ? "cal-ok" : an >= 45 ? "cal-mid" : "cal-bad";
-      }
-      return '<tr class="' + trClass + '"><td>' + esc(leg) + "</td><td>" + esc(String(row.total != null ? row.total : "")) + "</td><td>" + accStr + "</td><td>" + esc(String(row.weight_suggestion != null ? row.weight_suggestion : "")) + "</td></tr>";
-    }).join("");
-  }
-
-  function renderPerfFromPayload(perf) {
-    var el = byId("dashPerfSummary");
-    if (!el) return;
-    var p = perf && typeof perf === "object" ? perf : {};
-    var rt = toNum(p.closed_round_trips);
-    if (rt == null || rt <= 0) {
-      el.innerHTML = '<p class="muted" style="margin-top:0;">No completed round-trips yet</p>';
-      return;
-    }
-    var wt = p.win_rate_pct;
-    var wrStr = wt != null && typeof wt === "number" ? wt.toFixed(1) : "—";
-    var bt = p.best_trade;
-    var worst = p.worst_trade;
-    var bestStr = bt != null && typeof bt === "number" ? ((bt >= 0 ? "+" : "") + "$" + Math.abs(bt).toFixed(2)) : "—";
-    var worstStr = worst != null && typeof worst === "number" ? "$" + worst.toFixed(2) : "—";
-    el.innerHTML =
-      '<p class="muted" style="margin-top:0;">Trades: <strong class="mono">' +
-      esc(String(p.total_trades != null ? p.total_trades : "—")) +
-      '</strong> · Round-trips: <strong class="mono">' +
-      esc(String(rt)) +
-      '</strong> · Win rate: <strong class="mono">' +
-      esc(wrStr) +
-      '%</strong> · Best: <strong class="mono">' +
-      esc(bestStr) +
-      '</strong> · Worst: <strong class="mono">' +
-      esc(worstStr) +
-      "</strong></p>";
-  }
-
-  function renderRlFromPayload(rows) {
-    var tbody = byId("dashRlBody");
-    var empty = byId("dashRlEmpty");
-    if (!tbody) return;
-    var list = safeRows(rows);
-    if (!list.length) {
-      tbody.innerHTML = "";
-      if (empty) empty.style.display = "block";
-      return;
-    }
-    if (empty) empty.style.display = "none";
-    tbody.innerHTML = list.map(function (e) {
-      var wr = e.win_rate;
-      var wrCell = wr != null ? esc((Number(wr) * 100).toFixed(1)) + "%" : "—";
-      return (
-        '<tr><td class="mono" style="font-size:0.72rem;">' +
-        esc(e.created_at || "") +
-        "</td><td>" +
-        esc(e.summary || "") +
-        '</td><td class="mono">' +
-        esc(String(e.trade_count != null ? e.trade_count : "")) +
-        "</td><td>" +
-        wrCell +
-        "</td></tr>"
-      );
-    }).join("");
-  }
-
-  function renderRecentTradesFromPayload(rows) {
-    var tbody = byId("dashRecentTradesBody");
-    var empty = byId("dashRecentTradesEmpty");
-    if (!tbody) return;
-    var list = safeRows(rows);
-    if (!list.length) {
-      tbody.innerHTML = "";
-      if (empty) empty.style.display = "block";
-      return;
-    }
-    if (empty) empty.style.display = "none";
-    tbody.innerHTML = list.map(function (t) {
-      return (
-        '<tr><td class="mono">' +
-        esc(t.created_at || t.time || "") +
-        "</td><td>" +
-        esc(t.symbol || "") +
-        "</td><td>" +
-        esc(t.side || "") +
-        '</td><td class="mono">' +
-        esc(String(t.quantity != null ? t.quantity : "")) +
-        '</td><td class="mono">' +
-        moneyOrNA(t.price) +
-        '</td><td class="mono">' +
-        moneyOrNA(t.notional) +
-        "</td><td>" +
-        esc(t.status || "") +
-        "</td></tr>"
-      );
-    }).join("");
-  }
-
-  function render(payload) {
-    try {
-      renderInner(payload);
-    } catch (e) {
-      text("statusApi", "API: render error");
-      text("dbgApiStatus", "render threw");
-      var err = byId("dash-api-error");
-      if (err) {
-        err.style.display = "block";
-        err.textContent = "Dashboard render failed: " + (e && e.message ? String(e.message) : String(e));
-      }
-    }
-  }
-
-  function renderInner(payload) {
-    var d = adapt(payload);
-    var now = new Date().toLocaleTimeString();
-    var pnlDol = toNum(d.account.pnlDol);
-    var pnlPct = toNum(d.account.pnlPct);
-    var pnlText = "N/A";
-    if (pnlDol != null && pnlPct != null) {
-      var left = (pnlDol >= 0 ? "+$" : "-$") + Math.abs(pnlDol).toFixed(2);
-      var right = (pnlPct >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
-      pnlText = left + " / " + right;
-    }
-    var pnlEl = byId("tilePnl");
-    if (pnlEl) {
-      pnlEl.textContent = pnlText;
-      if (pnlDol != null && pnlPct != null) {
-        pnlEl.className = "big " + (pnlPct >= 0 ? "pos" : "neg");
-      } else {
-        pnlEl.className = "big";
-      }
-    }
-    text("tileEq", moneyOrNA(d.account.equity));
-    text("tileCash", moneyOrNA(d.account.cash));
-    text("tileBp", moneyOrNA(d.account.bp));
-    // Hide the startup banner once real portfolio data has arrived
-    var banner = byId("noDataBanner");
-    if (banner) {
-      var hasData = d.account.equity != null || d.positions.length > 0 || d.equity.length > 0;
-      banner.style.display = hasData ? "none" : "";
-    }
-    text("statusApi", "API: connected");
-    text("statusMode", "Mode: " + d.mode);
-    text("statusLive", "Live trading: disabled");
-    text("statusUpdated", "Last updated: " + now);
-    var syncMsg = window.__quantbotDashWsConnected ? "Live via WebSocket · " + now : "Live via polling · " + now;
-    text("last-sync", syncMsg);
-    var ls = byId("last-sync");
-    if (ls) {
-      ls.classList.remove("sync-reconnect");
-      ls.classList.add("sync-live");
-    }
-    window.__quantbotLastDashOkMs = Date.now();
-    text("systemApiStatus", "connected");
-    text("systemWorkerStatus", d.raw.worker_status != null ? String(d.raw.worker_status) : "N/A");
-    text("systemDbPath", d.raw.db_path != null ? String(d.raw.db_path) : "N/A");
-    text("dbgApiStatus", "200/ok");
-    text("dbgPosLen", String(d.positions.length));
-    text("dbgSigLen", String(d.decisions.length));
-    text("dbgTradeLen", String(d.trades.length));
-    text("dbgEqLen", String(d.equity.length));
-    text("dbgEhPresent", String(!!Object.keys(d.eh).length));
-    text("dbgExitLen", String(d.exits.length));
-
-    var mkt = byId("mktLine");
-    if (mkt) {
-      var lbl = d.marketOpen === true ? "OPEN" : d.marketOpen === false ? "CLOSED" : "N/A";
-      mkt.textContent = lbl;
-      mkt.className = d.marketOpen === true ? "market-open" : "market-closed";
-    }
-
-    renderEquity(d.equity);
-
-    renderTable("posTableBody", "posEmpty", d.positions.slice(0, 5), function (r) {
-      var up = toNum(r.unrealized_pnl_pct);
-      var upTxt = up == null ? "—" : ((up >= 0 ? "+" : "") + up.toFixed(2) + "%");
-      return "<tr><td>" + esc(r.symbol || "") + "</td><td>" + esc(String(toNum(r.net_qty) == null ? 0 : toNum(r.net_qty).toFixed(4))) + "</td><td>" + moneyOrNA(r.avg_entry_price) + "</td><td>" + moneyOrNA(r.current_price) + "</td><td>" + esc(upTxt) + "</td><td>Holding</td></tr>";
-    });
-
-    renderTable("sigFeedBody", "sigFeedEmpty", d.decisions.slice(0, 10), function (r) {
-      var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
-      var reason = meta.reason != null ? String(meta.reason) : String(r.signal_name || r.reason_code || r.reason || "—");
-      var action = meta.action != null ? String(meta.action) : String(r.side || "HOLD");
-      var score = r.combined_score != null ? String(r.combined_score) : "";
-      var reasonCol = reason + (score !== "" ? " · score " + score : "");
-      return "<tr><td>" + esc(r.created_at || r.time || "—") + "</td><td>" + esc(r.symbol || "—") + "</td><td>" + esc(action) + "</td><td>" + esc(reasonCol) + "</td></tr>";
-    });
-
-    renderTable("posDetailedBody", "posDetailedEmpty", d.positions, function (r) {
-      var up = toNum(r.unrealized_pnl);
-      var upp = toNum(r.unrealized_pnl_pct);
-      var upTxt = up == null ? "—" : ((up >= 0 ? "+$" : "-$") + Math.abs(up).toFixed(2));
-      var uppTxt = upp == null ? "—" : ((upp >= 0 ? "+" : "") + upp.toFixed(2) + "%");
-      return "<tr><td class=\"mono\">" + esc(r.symbol || "") + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(String(toNum(r.net_qty) == null ? 0 : toNum(r.net_qty).toFixed(4))) + "</td><td class=\"mono\">—</td><td class=\"mono\">" + moneyOrNA(r.avg_entry_price) + "</td><td class=\"mono\">" + moneyOrNA(r.current_price) + "</td><td class=\"mono\">" + esc(upTxt) + "</td><td class=\"mono\">" + esc(uppTxt) + "</td><td>Holding</td><td class=\"muted\">No exit signal</td></tr>";
-    });
-
-    renderTable("execExitTableBody", "execExitEmpty", d.exits, function (r) {
-      function cell(v) { return esc(v == null || v === "" ? "—" : String(v)); }
-      return "<tr><td class=\"mono\">" + cell(r.symbol) + "</td><td>" + cell(r.asset_class) + "</td><td class=\"mono\">" + cell(r.local_qty) + "</td><td class=\"mono\">" + cell(r.broker_qty) + "</td><td class=\"mono\">" + cell(r.entry_price) + "</td><td class=\"mono\">" + cell(r.current_price) + "</td><td class=\"mono\">" + cell(r.pnl_pct) + "</td><td>" + cell(r.exit_eligibility) + "</td><td class=\"muted\">" + cell(r.exit_block_reason) + "</td><td>" + cell(r.pdt_status) + "</td><td class=\"mono\" style=\"font-size:0.68rem;\">" + cell(r.last_exit_attempt_at) + "</td><td class=\"mono\">" + cell(r.cooldown_remaining) + "</td><td>" + cell(r.recommended_action) + "</td></tr>";
-    });
-
-    text("execHealthCash", moneyOrNA(d.eh.cash));
-    text("execHealthBuyingPower", moneyOrNA(d.eh.buying_power));
-    text("execHealthUsable", moneyOrNA(d.eh.usable_buying_power));
-    text("execHealthBlockedExits", countOrNA(d.eh.blocked_exits_count));
-    text("execHealthStaleLocal", countOrNA(d.eh.stale_local_positions_count));
-    text("execHealthMismatches", countOrNA(d.eh.broker_local_mismatch_count));
-    text("execHealthCryptoFast", d.eh.crypto_fast_exit_enabled === true ? "on" : d.eh.crypto_fast_exit_enabled === false ? "off" : "N/A");
-    text("execHealthPdtGuard", d.eh.stock_pdt_guard_enabled === true ? "on" : d.eh.stock_pdt_guard_enabled === false ? "off" : "N/A");
-    text("execHealthExitEligible", countOrNA(d.eh.exit_eligible_positions_count));
-    text("execHealthLastReconcile", d.eh.last_reconciliation_at != null ? String(d.eh.last_reconciliation_at) : "N/A");
-    var pdtWrap = byId("execHealthPdtBadges");
-    if (pdtWrap) {
-      var syms = Array.isArray(d.eh.pdt_blocked_symbols) ? d.eh.pdt_blocked_symbols : [];
-      pdtWrap.innerHTML = syms.length ? syms.map(function (s) { return '<span class="exec-health-badge">' + esc(s) + "</span>"; }).join("") : '<span class="muted exec-health-empty">—</span>';
-    }
-    var missing = byId("execHealthMissing");
-    if (missing) missing.style.display = Object.keys(d.eh).length ? "none" : "block";
-
-    var warns = [];
-    var sec = d.raw.section_status && typeof d.raw.section_status === "object" ? d.raw.section_status : {};
-    Object.keys(sec).forEach(function (k) { if (sec[k] && sec[k] !== "ok") warns.push("Section " + k + ": " + String(sec[k])); });
-    if (d.raw.degraded === true) warns.push("Dashboard payload is degraded.");
-    var warnWrap = byId("overviewWarnings");
-    var warnList = byId("overviewWarningsList");
-    if (warnWrap && warnList) {
-      warnWrap.style.display = warns.length ? "" : "none";
-      warnList.innerHTML = warns.map(function (w) { return "<li>" + esc(w) + "</li>"; }).join("");
-    }
-    html("overviewWarnInline", warns.length ? warns.map(function (w) { return "• " + esc(w); }).join("<br>") : "No active warnings.");
-
-    renderCalibrationFromPayload(d.raw.calibration);
-    renderPerfFromPayload(d.raw.performance);
-    renderRlFromPayload(d.raw.rl_learning_history);
-    renderRecentTradesFromPayload(d.trades);
-
-    var mn = byId("metaNote");
-    if (mn) {
-      mn.textContent = "Live dashboard · HTTP " + (window.__quantbotDashWsConnected ? "+ WebSocket" : "poll every " + Math.round(POLL_MS / 1000) + "s") + " · clock ET";
-    }
-
-    var err = byId("dash-api-error");
-    if (err) { err.style.display = "none"; err.textContent = ""; }
-    var sb = byId("statusBanner");
-    if (sb) {
-      sb.style.borderColor = "#1f2937";
-      sb.style.background = "rgba(16,24,40,0.55)";
-    }
-  }
-
-  async function parseDashboardResponse(res) {
-    var txt = await res.text();
-    if (!txt || !String(txt).trim()) return {};
-    try {
-      return JSON.parse(txt);
-    } catch (e) {
-      var head = String(txt).replace(/\s+/g, " ").slice(0, 160);
-      throw new Error("Response was not JSON (got " + head + ")");
-    }
-  }
-
-  function wireDashboardSocket() {
-    if (typeof io !== "function") return;
-    try {
-      var socket = io({ transports: ["websocket", "polling"], reconnection: true });
-      socket.on("dashboard_update", function (payload) {
-        if (payload && typeof payload === "object") render(payload);
-      });
-      socket.on("connect", function () {
-        window.__quantbotDashWsConnected = true;
-      });
-      socket.on("disconnect", function () {
-        window.__quantbotDashWsConnected = false;
-      });
-    } catch (e) {}
-  }
-
-  window.__quantbotDashWsConnected = false;
-
-  async function pollDashboard() {
-    if (inFlight) return;
-    inFlight = true;
-    var ac = new AbortController();
-    var tid = setTimeout(function () { ac.abort(); }, FETCH_TIMEOUT_MS);
-    try {
-      var period = mapUiToApiPeriod(getStoredUiRange());
-      var url = "/api/dashboard?equity_period=" + encodeURIComponent(period);
-      var res = await fetch(url, { cache: "no-store", signal: ac.signal });
-      if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
-      var payload = await parseDashboardResponse(res);
-      render(payload);
-    } catch (e) {
-      text("statusApi", "API: error");
-      text("systemApiStatus", "failed");
-      text("dbgApiStatus", "failed");
-      var err = byId("dash-api-error");
-      if (err) {
-        err.style.display = "block";
-        err.textContent = "Dashboard API failed: " + (e && e.message ? String(e.message) : String(e));
-      }
-    } finally {
-      clearTimeout(tid);
-      inFlight = false;
-    }
-  }
-
-  async function pollSocial() {
-    var root = byId("socialMoRoot");
-    if (!root) return;
-    try {
-      var res = await fetch("/api/social", { cache: "no-store" });
-      if (!res.ok) throw new Error("social HTTP " + res.status);
-      var payload = await res.json();
-      var rows = Array.isArray(payload) ? payload : (payload.rows || payload.data || []);
-      if (!rows.length) { root.innerHTML = '<p class="muted">No social rows yet.</p>'; return; }
-      root.innerHTML = '<table class="social-table"><thead><tr><th>Ticker</th><th>Mentions</th><th>Rank Δ</th><th>%Δ Mentions</th><th>Source</th></tr></thead><tbody>' +
-        rows.slice(0, 10).map(function (r) {
-          return "<tr><td>" + esc(r.ticker || r.symbol || "") + "</td><td>" + esc(r.mentions || "") + "</td><td>" + esc(r.rank_delta || r.rank_change || "") + "</td><td>" + esc(r.mentions_delta_pct || r.percent_delta || "") + "</td><td>" + esc(r.source || "") + "</td></tr>";
-        }).join("") + "</tbody></table>";
-    } catch (e) {
-      root.innerHTML = '<p class="muted">Social feed unavailable.</p>';
-    }
-  }
-
-  function bindEquityRangeButtons() {
-    document.querySelectorAll(".range-btn").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        var r = btn.getAttribute("data-range") || "1D";
-        try { localStorage.setItem(EQUITY_RANGE_KEY, r); } catch (e) {}
-        highlightRangeButtons();
-        pollDashboard();
-      });
-    });
-    highlightRangeButtons();
-  }
-
-  window.__quantbotRefreshDashboard = pollDashboard;
-
-  function bootCockpit() {
-    if (window.__quantbotCockpitBooted) return;
-    window.__quantbotCockpitBooted = true;
-    bindTabs();
-    bindCfg();
-    bindEquityRangeButtons();
-    var embedded = readEmbedded();
-    if (embedded) render(embedded);
-    pollDashboard();
-    pollSocial();
-    setInterval(pollDashboard, POLL_MS);
-    setInterval(pollSocial, 60000);
-    wireDashboardSocket();
-  }
-
-  function scheduleBoot() {
-    function go() {
-      bootCockpit();
-    }
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", go);
     } else {
-      setTimeout(go, 0);
+      equityChart.data.labels = labels;
+      equityChart.data.datasets[0].data = vals;
+      equityChart.update("none");
     }
+
+    var top = (vm.positions || []).slice(0, 5);
+    var tb = document.querySelector("#tblOverviewPositions tbody");
+    document.getElementById("posTopEmpty").style.display = top.length ? "none" : "block";
+    tb.innerHTML = top.map(function (r) {
+      var q = num(r.net_qty, null);
+      var qs = q != null ? String(q) : "—";
+      var up = num(r.unrealized_pnl_pct, null);
+      var ups = up != null ? fmtPct(up) : "—";
+      return "<tr><td>" + esc(r.symbol) + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + esc(ups) + "</td></tr>";
+    }).join("");
+
+    var decs = (vm.executionDecisions || []).slice(0, 10);
+    document.getElementById("decEmpty").style.display = decs.length ? "none" : "block";
+    document.querySelector("#tblOverviewDecisions tbody").innerHTML = decs.map(function (r) {
+      var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
+      var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
+      return "<tr><td class=\"mono\">" + esc(r.created_at || "") + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + esc(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
+    }).join("");
   }
-  scheduleBoot();
-})();
-</script>
 
-<script>
-(function () {
-  "use strict";
-  const ACTIVE_TAB_KEY = "quantbot_active_tab";
-  const DASHBOARD_SECRET = {{ dashboard_secret|tojson }};
-  function esc(s) {
-    return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  function renderPositions(vm) {
+    var rows = vm.positions || [];
+    document.getElementById("posAllEmpty").style.display = rows.length ? "none" : "block";
+    document.querySelector("#tblPositionsFull tbody").innerHTML = rows.map(function (r) {
+      var q = num(r.net_qty, null);
+      var qs = q != null ? String(q) : "—";
+      var mv = num(r.market_value, null);
+      var up = num(r.unrealized_pnl, null);
+      var upp = num(r.unrealized_pnl_pct, null);
+      var note = positionNote(r, vm.marketOpen);
+      return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + (mv != null ? fmtMoney(mv) : "—") + "</td><td class=\"mono\">" + (up != null ? fmtMoney(up) : "—") + "</td><td class=\"mono\">" + (upp != null ? fmtPct(upp) : "—") + "</td><td><small>" + esc(note) + "</small></td></tr>";
+    }).join("");
   }
-    let btChart = null;
-    let btDefaults = null;
-    let btSelectedRunId = null;
-    let btCompareRows = [];
-    let btCompareState = { status: "not_run", rows: [], error: "" };
-    let btExperimentRows = [];
-    let btParameterSets = [];
-    const BT_DEBUG = localStorage.getItem("quantbot_bt_debug") === "1";
-    function setBacktestStatus(msg, kind) {
-      const el = document.getElementById("btStatus");
-      if (!el) return;
-      el.textContent = msg || "";
-      el.className = "bt-status " + (kind || "muted");
-    }
-    function setBacktestBusy(on, label) {
-      const ids = ["btRunBtn","btCompareBtn","btCopyReportBtn","btDownloadReportBtn","btPresetSanity","btPresetCrypto","btPresetHoldings","btPresetStress"];
-      ids.forEach((id) => {
-        const btn = document.getElementById(id);
-        if (btn) btn.disabled = !!on;
-      });
-      if (on && label) setBacktestStatus(label, "muted");
-    }
-    function cfgInt(key, fallback) {
-      const cfg = (btDefaults && btDefaults.backtest_config) || {};
-      const n = Number(cfg[key]);
-      return Number.isFinite(n) ? Math.trunc(n) : fallback;
-    }
-    function renderBacktestChart(points) {
-      const canvas = document.getElementById("btChart");
-      if (!canvas) return;
-      const labels = (points || []).map(p => p.timestamp);
-      const data = (points || []).map(p => Number(p.equity || 0));
-      const looksIntraday = labels.some((ts) => String(ts || "").includes(":"));
-      const maxTicks = cfgInt("backtest_chart_max_ticks", 10);
-      if (!btChart) {
-        btChart = new Chart(canvas.getContext("2d"), {
-          type: "line",
-          data: { labels, datasets: [{ data, borderColor: "#00ff88", pointRadius: 0, tension: 0.2 }] },
-          options: {
-            animation: false,
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-              x: {
-                ticks: {
-                  autoSkip: true,
-                  maxTicksLimit: maxTicks,
-                  maxRotation: 0,
-                  callback: function(value, idx) {
-                    const raw = String((this.getLabelForValue ? this.getLabelForValue(value) : labels[idx]) || "");
-                    const d = new Date(raw.replace(" ", "T"));
-                    if (Number.isNaN(d.getTime())) return raw.slice(0, 10);
-                    return looksIntraday
-                      ? d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
-                      : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-                  }
-                }
-              }
-            }
-          }
-        });
-        return;
-      }
-      btChart.data.labels = labels;
-      btChart.data.datasets[0].data = data;
-      btChart.update("none");
-    }
 
-    function fmtMoney(v) {
-      const n = Number(v || 0);
-      return Number.isFinite(n) ? n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 }) : "—";
-    }
-    function fmtPct(v) {
-      const n = Number(v);
-      return Number.isFinite(n) ? `${n.toFixed(2)}%` : "—";
-    }
-    function fmtPlain(v) {
-      const n = Number(v);
-      return Number.isFinite(n) ? n.toFixed(2) : "—";
-    }
-    function renderMiniCards(rootId, items) {
-      const root = document.getElementById(rootId);
-      if (!root) return;
-      root.innerHTML = items.map((i) => (
-        `<div class="bt-mini-card"><div class="label">${esc(i.label)}</div><div class="value">${esc(i.value)}</div></div>`
-      )).join("");
-    }
-    function renderBacktestSummary(summary, rejectionSummary) {
-      const empty = document.getElementById("btSummaryEmpty");
-      if (empty) empty.style.display = "none";
-      const closedTrades = Number(summary.closed_trades || 0);
-      const confidence = String(summary.confidence_label || "—");
-      renderMiniCards("btSummaryCards", [
-        { label: "Starting Cash", value: fmtMoney(summary.starting_cash) },
-        { label: "Final Equity", value: fmtMoney(summary.final_equity) },
-        { label: "P&L", value: fmtMoney(summary.pnl) },
-        { label: "Return %", value: fmtPct(summary.return_pct) },
-        { label: "Max Drawdown %", value: fmtPct(summary.max_drawdown_pct) },
-        { label: "Total Trades", value: String(summary.trades_total ?? 0) },
-        { label: "Closed Trades", value: String(summary.closed_trades ?? 0) },
-        { label: "Win Rate", value: fmtPct(summary.win_rate_pct) },
-        { label: "Profit Factor", value: fmtPlain(summary.profit_factor) },
-        { label: "Expectancy", value: fmtMoney(summary.expectancy) },
-        { label: "Rejections Total", value: String(summary.rejections_total ?? 0) },
-        { label: "Confidence Label", value: confidence },
-        { label: "Strategy Return", value: fmtPct(summary.strategy_return_pct) },
-        { label: "Buy & Hold Return", value: fmtPct(summary.equal_weight_buy_and_hold_return_pct) },
-        { label: "Excess Return", value: fmtPct(summary.excess_return_pct) },
-      ]);
-      const warn = document.getElementById("btSampleWarning");
-      if (warn) {
-        warn.style.display = "none";
-        const rationale = summary.confidence_rationale || {};
-        const thr = rationale.thresholds || {};
-        const lowMin = Number(thr.confidence_low_min_closed_trades || 0);
-        if (closedTrades === 0) warn.textContent = "No completed round trips. Return may reflect open/unrealized positions only.";
-        else if (closedTrades < lowMin) warn.textContent = "Sample is below configured confidence minimum; reliability is low.";
-        if (warn.textContent) warn.style.display = "block";
-      }
-      const assumptions = summary.assumptions || {};
-      const dataQuality = summary.data_quality || {};
-      const diagEl = document.getElementById("btStrategyDiagnostics");
-      if (diagEl) {
-        diagEl.textContent =
-          `capital_deployed_avg_pct: ${fmtPct(summary.capital_deployed_avg_pct)}\n` +
-          `capital_deployed_max_pct: ${fmtPct(summary.capital_deployed_max_pct)}\n` +
-          `idle_cash_avg_pct: ${fmtPct(summary.idle_cash_avg_pct)}\n` +
-          `idle_cash_max_pct: ${fmtPct(summary.idle_cash_max_pct)}\n` +
-          `time_in_market_pct: ${fmtPct(summary.time_in_market_pct)}\n` +
-          `capital_turnover: ${fmtPlain(summary.capital_turnover)}\n` +
-          `open_positions_end: ${String(summary.open_positions_end ?? 0)}\n` +
-          `benchmark_return_pct: ${fmtPct(summary.equal_weight_buy_and_hold_return_pct)}\n` +
-          `excess_return_pct: ${fmtPct(summary.excess_return_pct)}`;
-      }
-      const aEl = document.getElementById("btAssumptions");
-      if (aEl) {
-        aEl.textContent =
-          `Assumptions\n` +
-          `execution model: ${assumptions.execution_model || "—"}\n` +
-          `fill model: ${assumptions.fills || "—"}\n` +
-          `market hours enforced: ${String(assumptions.market_hours_enforced)}\n` +
-          `fractionability enforced: ${String(assumptions.fractionability_rules_enforced)}\n` +
-          `data source: ${assumptions.data_source || "—"}\n` +
-          `fee bps: ${assumptions.fee_bps ?? "—"}\n` +
-          `spread bps: ${assumptions.spread_bps ?? "—"}\n` +
-          `slippage bps: ${assumptions.slippage_bps ?? "—"}`;
-      }
-      const dEl = document.getElementById("btDataQuality");
-      if (dEl) {
-        dEl.textContent =
-          `Data Quality\n` +
-          `symbols loaded: ${dataQuality.symbols_loaded ?? "—"}\n` +
-          `points by symbol: ${JSON.stringify(dataQuality.points_by_symbol || {})}\n` +
-          `warnings count: ${dataQuality.warnings_count ?? 0}\n` +
-          `candle count: ${dataQuality.candle_count ?? 0}\n` +
-          `provider warnings: ${JSON.stringify(dataQuality.provider_warnings || [])}`;
-      }
-      const rejPairs = Object.entries(rejectionSummary || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
-      renderMiniCards("btRejBadges", rejPairs.map(([k, v]) => ({ label: k, value: String(v) })));
-      const tEl = document.getElementById("btThresholds");
-      if (tEl) {
-        const thr = ((summary.confidence_rationale || {}).thresholds || {});
-        tEl.textContent =
-          `confidence thresholds: low>=${thr.confidence_low_min_closed_trades ?? "—"}, medium>=${thr.confidence_medium_min_closed_trades ?? "—"}, high>=${thr.confidence_high_min_closed_trades ?? "—"}, warning_downgrade=${String(thr.confidence_warning_downgrade_enabled)}`;
-      }
-      const interpEl = document.getElementById("btInterpretation");
-      if (interpEl) {
-        const lines = [];
-        const excess = Number(summary.excess_return_pct || 0);
-        const rejTotal = Number(summary.rejections_total || 0);
-        if (excess >= 0) lines.push("Strategy beat benchmark on excess return.");
-        else lines.push("Strategy underperformed benchmark; profit alone can be misleading.");
-        if (confidence === "low") lines.push("Confidence is low based on configured sample thresholds and warnings.");
-        if (rejTotal > 0) lines.push("Execution rules blocked many actions; inspect rejection and signal-event summaries.");
-        interpEl.innerHTML = lines.map((x) => `<p style="margin:0.25rem 0;">• ${esc(x)}</p>`).join("");
-      }
-    }
+  function renderActivity(vm) {
+    var tr = vm.recentTrades || [];
+    document.getElementById("actTradesEmpty").style.display = tr.length ? "none" : "block";
+    document.querySelector("#tblActivityTrades tbody").innerHTML = tr.map(function (t) {
+      return "<tr><td class=\"mono\">" + esc(t.created_at || "") + "</td><td>" + esc(t.symbol || "") + "</td><td>" + esc(t.side || "") + "</td><td class=\"mono\">" + esc(String(t.quantity != null ? t.quantity : "")) + "</td><td class=\"mono\">" + fmtMoney(t.price) + "</td><td class=\"mono\">" + fmtMoney(t.notional) + "</td><td>" + esc(t.status || "") + "</td></tr>";
+    }).join("");
 
-    async function loadBacktestResult(runId) {
-      const r = await fetch("/api/backtest/result/" + encodeURIComponent(runId), { cache: "no-store" });
-      const j = await r.json();
-      btSelectedRunId = Number(j.id || runId);
-      const summary = (j.summary_json && typeof j.summary_json === "object") ? j.summary_json : {};
-      const rejectionSummary = (j.rejection_summary_json && typeof j.rejection_summary_json === "object") ? j.rejection_summary_json : {};
-      renderBacktestSummary(summary, rejectionSummary);
-      renderBacktestChart(j.equity_curve || []);
-      const trades = Array.isArray(j.trades) ? j.trades : [];
-      const rejects = Array.isArray(j.rejections) ? j.rejections : [];
-      const signalEvents = Array.isArray(j.signal_events) ? j.signal_events : [];
-      const maxTrades = cfgInt("backtest_max_report_trades", 80);
-      const maxRejects = cfgInt("backtest_max_report_rejections", 100);
-      const maxSignals = cfgInt("backtest_max_report_signal_events", 100);
-      const tbTr = document.getElementById("btTradesBody");
-      const tbRej = document.getElementById("btRejectionsBody");
-      const tbSig = document.getElementById("btSignalEventsBody");
-      const emptyTr = document.getElementById("btTradesEmpty");
-      const emptyRej = document.getElementById("btRejectionsEmpty");
-      const emptySig = document.getElementById("btSignalEventsEmpty");
-      if (tbTr) {
-        tbTr.innerHTML = trades.slice(-maxTrades).reverse().map((t) => {
-          const ts = esc(t.timestamp || "");
-          const sym = esc(t.symbol || "");
-          const side = esc(t.side || "");
-          const qn = Number(t.qty);
-          const qty = esc(Number.isFinite(qn) ? (Math.abs(qn) < 1 ? qn.toFixed(6) : qn.toFixed(3)) : String(t.qty != null ? t.qty : ""));
-          const fp = esc(String(t.fill_price != null ? t.fill_price : ""));
-          const entryReason = esc(String((t.meta_json || {}).entry_reason || ""));
-          const exitReason = esc(String((t.meta_json || {}).exit_reason || ""));
-          const score = esc(String((t.meta_json || {}).strategy_score ?? ""));
-          const hold = esc(String(t.hold_seconds != null ? t.hold_seconds : ""));
-          const pnl = esc(String(t.pnl != null ? t.pnl : ""));
-          const pnlPct = esc(String(t.pnl_pct != null ? t.pnl_pct : ""));
-          return `<tr><td class="mono">${ts}</td><td class="mono">${sym}</td><td>${side}</td><td class="mono">${qty}</td><td class="mono">${fp}</td><td>${entryReason}</td><td>${exitReason}</td><td class="mono">${score}</td><td class="mono">${hold}</td><td class="mono">${pnl}</td><td class="mono">${pnlPct}</td></tr>`;
-        }).join("");
-      }
-      if (tbRej) {
-        tbRej.innerHTML = rejects.slice(-maxRejects).reverse().map((x) => {
-          return `<tr><td class="mono">${esc(x.timestamp || "")}</td><td class="mono">${esc(x.symbol || "")}</td><td>${esc(x.reason_code || "")}</td></tr>`;
-        }).join("");
-      }
-      if (emptyTr) emptyTr.style.display = trades.length ? "none" : "block";
-      if (emptyRej) emptyRej.style.display = rejects.length ? "none" : "block";
-      if (tbSig) {
-        tbSig.innerHTML = signalEvents.slice(-maxSignals).reverse().map((x) => {
-          return `<tr><td class="mono">${esc(x.timestamp || "")}</td><td class="mono">${esc(x.symbol || "")}</td><td>${esc(x.strategy_action || "")}</td><td>${esc(x.classification || "")}</td><td>${esc(x.reason_code || "")}</td><td class="mono">${esc(String(x.score != null ? x.score : ""))}</td></tr>`;
-        }).join("");
-      }
-      const sigCounts = {};
-      signalEvents.forEach((x) => {
-        const k = String(x.reason_code || "UNKNOWN");
-        sigCounts[k] = (sigCounts[k] || 0) + 1;
-      });
-      renderMiniCards("btSigBadges", Object.entries(sigCounts).map(([k, v]) => ({ label: k, value: String(v) })));
-      if (emptySig) emptySig.style.display = signalEvents.length ? "none" : "block";
-      const copyBtn = document.getElementById("btCopyReportBtn");
-      const dlBtn = document.getElementById("btDownloadReportBtn");
-      if (copyBtn) copyBtn.disabled = false;
-      if (dlBtn) dlBtn.disabled = false;
-      setBacktestStatus("Backtest run loaded.", "ok");
-    }
+    var sig = vm.recentSignals || [];
+    document.getElementById("actSigEmpty").style.display = sig.length ? "none" : "block";
+    document.querySelector("#tblActivitySignals tbody").innerHTML = sig.map(function (s) {
+      return "<tr><td class=\"mono\">" + esc(s.created_at || "") + "</td><td>" + esc(s.symbol || "") + "</td><td>" + esc(s.signal_name || "") + "</td><td>" + esc(s.direction || "") + "</td><td class=\"mono\">" + esc(String(s.raw_value != null ? s.raw_value : "")) + "</td></tr>";
+    }).join("");
 
-    function setBacktestPreset(kind) {
-      const tf = document.getElementById("btTimeframe");
-      if (kind === "sanity") {
-        document.getElementById("btSymbols").value = "AAPL,MSFT,BTC/USD";
-        if (tf) tf.value = "1Day";
-      } else if (kind === "crypto") {
-        document.getElementById("btSymbols").value = "BTC/USD,ETH/USD";
-        if (tf) tf.value = "1H";
-      } else if (kind === "holdings") {
-        document.getElementById("btSymbols").value = "ACHR,AMPX,FSLY";
-      } else if (kind === "stress") {
-        document.getElementById("btSymbols").value = "AAPL,MSFT,SPY,BTC/USD,ETH/USD";
-        if (tf) tf.value = "1H";
-      }
-    }
+    var ed = vm.executionDecisions || [];
+    document.getElementById("actDecEmpty").style.display = ed.length ? "none" : "block";
+    document.querySelector("#tblActivityDecisions tbody").innerHTML = ed.map(function (r) {
+      var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
+      var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
+      return "<tr><td class=\"mono\">" + esc(r.created_at || "") + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + esc(r.decision || "") + "</td><td>" + esc(reason) + "</td><td class=\"mono\">" + esc(String(r.score != null ? r.score : "")) + "</td></tr>";
+    }).join("");
 
-    async function loadBacktestDefaults() {
-      try {
-        const r = await fetch("/api/backtest/defaults", { cache: "no-store" });
-        btDefaults = await r.json();
-        const strat = document.getElementById("btStrategy");
-        if (strat && Array.isArray(btDefaults.strategies)) {
-          strat.innerHTML = btDefaults.strategies.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
-          strat.value = "current_adaptive";
-        }
-        const tf = document.getElementById("btTimeframe");
-        if (tf && btDefaults && btDefaults.default_timeframe) tf.value = btDefaults.default_timeframe;
-        const sym = document.getElementById("btSymbols");
-        if (sym && Array.isArray(btDefaults.symbols)) sym.value = btDefaults.symbols.join(",");
-        const costs = (btDefaults && btDefaults.costs) || {};
-        const costsView = document.getElementById("btCostsView");
-        if (costsView) costsView.value = `fee=${costs.fee_bps ?? "—"}, spread=${costs.spread_bps ?? "—"}, slippage=${costs.slippage_bps ?? "—"}`;
-        const tEl = document.getElementById("btThresholds");
-        const cfg = (btDefaults && btDefaults.backtest_config) || {};
-        if (tEl) {
-          tEl.textContent =
-            `confidence thresholds: low>=${cfg.confidence_low_min_closed_trades ?? "—"}, medium>=${cfg.confidence_medium_min_closed_trades ?? "—"}, high>=${cfg.confidence_high_min_closed_trades ?? "—"}, warning_downgrade=${String(cfg.confidence_warning_downgrade_enabled)}`;
-        }
-        const gridEl = document.getElementById("btParamGrid");
-        if (gridEl && btDefaults && btDefaults.parameter_defaults) {
-          const d = btDefaults.parameter_defaults || {};
-          const grid = {
-            buy_score_threshold: [d.buy_score_threshold],
-            sell_score_threshold: [d.sell_score_threshold],
-            max_position_notional_pct: [d.max_position_notional_pct],
-            take_profit_pct: [d.take_profit_pct],
-            stop_loss_pct: [d.stop_loss_pct],
-            cooldown_bars: [d.cooldown_bars],
-          };
-          gridEl.value = JSON.stringify(grid);
-        }
-      } catch (_) {
-        setBacktestStatus("Failed to load backtest defaults.", "err");
-      }
-    }
+    var perf = vm.performance || {};
+    var parts = [];
+    if (perf.total_trades != null) parts.push("total_trades=" + perf.total_trades);
+    if (perf.closed_round_trips != null) parts.push("closed_round_trips=" + perf.closed_round_trips);
+    if (perf.win_rate_pct != null) parts.push("win_rate_pct=" + perf.win_rate_pct);
+    document.getElementById("actPerfLine").textContent = parts.length ? parts.join(" · ") : "No performance summary.";
 
-    async function loadParameterSets() {
-      try {
-        const strategyName = (document.getElementById("btStrategy") || {}).value || "";
-        const r = await fetch(`/api/backtest/parameter-sets?strategy_name=${encodeURIComponent(strategyName)}`, { cache: "no-store" });
-        const j = await r.json();
-        btParameterSets = Array.isArray(j.rows) ? j.rows : [];
-        const sel = document.getElementById("btParamSetSelect");
-        if (!sel) return;
-        sel.innerHTML = `<option value="">defaults</option>` + btParameterSets.map((x) => `<option value="${esc(String(x.id))}">${esc(String(x.name || `set-${x.id}`))}</option>`).join("");
-      } catch (_) {}
-    }
+    var cal = vm.calibration || {};
+    var legs = Object.keys(cal).sort();
+    document.getElementById("actCalEmpty").style.display = legs.length ? "none" : "block";
+    document.querySelector("#tblCalibration tbody").innerHTML = legs.map(function (leg) {
+      var row = cal[leg] || {};
+      var acc = row.accuracy;
+      var res = Number(row.resolved);
+      var accStr = res > 0 && acc != null ? String(acc) + "%" : "—";
+      return "<tr><td>" + esc(leg) + "</td><td>" + esc(String(row.total != null ? row.total : "")) + "</td><td>" + esc(accStr) + "</td><td>" + esc(String(row.weight_suggestion != null ? row.weight_suggestion : "")) + "</td></tr>";
+    }).join("");
 
-    function renderExperimentRows(rows) {
-      const body = document.getElementById("btExperimentBody");
-      const empty = document.getElementById("btExperimentEmpty");
-      if (!body) return;
-      btExperimentRows = Array.isArray(rows) ? rows : [];
-      body.innerHTML = btExperimentRows.map((r, idx) => {
-        const m = r.metrics || {};
-        const params = r.params || {};
-        const paramSetText = Object.keys(params).length ? JSON.stringify(params) : "{}";
-        const setId = Number(r.parameter_set_id || 0);
-        const promoteBtn = setId > 0
-          ? `<button type="button" class="bt-action-btn" data-promote="${setId}">Promote</button>`
-          : "";
-        return `<tr><td class="mono">${idx + 1}</td><td>${esc(String(r.status || ""))}</td><td class="mono">${esc(paramSetText)}</td><td class="mono">${esc(String(m.return_pct ?? ""))}</td><td class="mono">${esc(String(m.benchmark_return_pct ?? ""))}</td><td class="mono">${esc(String(m.excess_return_pct ?? ""))}</td><td class="mono">${esc(String(m.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(m.closed_trades ?? ""))}</td><td class="mono">${esc(String(m.capital_deployed_avg_pct ?? ""))}</td><td class="mono">${esc(String(m.rejections_total ?? ""))}</td><td>${esc(String(m.confidence_label ?? ""))}</td><td class="mono">${esc(String(r.rank_score ?? ""))}</td><td>${promoteBtn}</td></tr>`;
-      }).join("");
-      if (empty) {
-        empty.style.display = btExperimentRows.length ? "none" : "block";
-      }
-      body.querySelectorAll("button[data-promote]").forEach((btn) => {
-        btn.addEventListener("click", async () => {
-          const id = Number(btn.getAttribute("data-promote"));
-          if (!Number.isFinite(id) || id <= 0) return;
-          const rr = await fetch(`/api/backtest/parameter-sets/${id}/mark-paper-candidate`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-          });
-          const jj = await rr.json();
-          if (!rr.ok || !jj.ok) {
-            setBacktestStatus(`Promote failed: ${String(jj.error || rr.status)}`, "err");
-            return;
-          }
-          setBacktestStatus("Candidate marked for paper trial metadata.", "ok");
-          await loadParameterSets();
-        });
-      });
-    }
+    document.getElementById("actSectionStatus").textContent = JSON.stringify(vm.sectionStatus || {}, null, 2);
+  }
 
-    async function loadBacktestRuns() {
-      const r = await fetch("/api/backtest/runs?limit=20", { cache: "no-store" });
-      const rows = await r.json();
-      const body = document.getElementById("btRunsBody");
-      if (!body) return;
-      body.innerHTML = "";
-      for (const row of rows) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `<td class="mono">${row.id}</td><td class="mono">${esc(row.created_at || "")}</td><td>${esc(row.strategy_name || "")}</td><td>${esc(row.status || "")}</td><td><button type="button" class="bt-action-btn" data-run="${row.id}">View</button></td>`;
-        body.appendChild(tr);
-      }
-      body.querySelectorAll("button[data-run]").forEach((btn) => {
-        btn.addEventListener("click", () => loadBacktestResult(btn.dataset.run));
-      });
-    }
-    window.quantbotLoadBacktestRuns = loadBacktestRuns;
+  function renderBacktest(vm) {
+    void vm;
+    /* controls are static; lazy-load defaults handled separately */
+  }
 
-    document.getElementById("btRunBtn")?.addEventListener("click", async () => {
-      setBacktestBusy(true, "Running Backtest...");
-      const payload = {
-        strategy_name: (document.getElementById("btStrategy") || {}).value || "current_adaptive",
-        starting_cash: Number((document.getElementById("btStartingCash") || {}).value || 100),
-        symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
-        start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
-        end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
-        timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
-        pyramiding_enabled: !!((document.getElementById("btPyramiding") || {}).checked),
-      };
-      try {
-        const r = await fetch("/api/backtest/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-          body: JSON.stringify(payload),
-        });
-        const j = await r.json();
-        if (!r.ok || !j || !j.run_id) throw new Error(j.error || "Run failed");
-        await loadBacktestRuns();
-        await loadBacktestResult(j.run_id);
-      } catch (e) {
-        setBacktestStatus(`Backtest run failed: ${String(e && e.message ? e.message : e)}`, "err");
-      } finally {
-        setBacktestBusy(false);
-      }
-    });
-    document.getElementById("btPresetSanity")?.addEventListener("click", () => setBacktestPreset("sanity"));
-    document.getElementById("btPresetCrypto")?.addEventListener("click", () => setBacktestPreset("crypto"));
-    document.getElementById("btPresetHoldings")?.addEventListener("click", () => setBacktestPreset("holdings"));
-    document.getElementById("btPresetStress")?.addEventListener("click", () => setBacktestPreset("stress"));
-    document.getElementById("btStrategy")?.addEventListener("change", () => { loadParameterSets(); });
-    document.getElementById("btCompareBtn")?.addEventListener("click", async () => {
-      setBacktestBusy(true, "Comparing Strategies...");
-      const payload = {
-        strategy_names: ((btDefaults && btDefaults.backtest_config && btDefaults.backtest_config.backtest_ui_compare_strategies) || ["current_adaptive", "simple_momentum", "crypto_scalper", "aggressive_micro_scalp"]),
-        starting_cash: Number((document.getElementById("btStartingCash") || {}).value || 100),
-        symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
-        start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
-        end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
-        timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
-        pyramiding_enabled: !!((document.getElementById("btPyramiding") || {}).checked),
-      };
-      try {
-        const r = await fetch("/api/backtest/compare", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-          body: JSON.stringify(payload),
-        });
-        const j = await r.json();
-        if (!r.ok || !j.ok) throw new Error(j.error || "Compare failed");
-        if (!Array.isArray(j.rows) || !j.rows.every((x) => x && typeof x === "object" && !Array.isArray(x))) {
-          if (BT_DEBUG) console.debug("Invalid compare shape", j);
-          throw new Error("Invalid comparison response shape");
-        }
-        const body = document.getElementById("btCompareBody");
-        const empty = document.getElementById("btCompareEmpty");
-        btCompareRows = Array.isArray(j.rows) ? j.rows : [];
-        btCompareState = { status: "ok", rows: btCompareRows, error: "" };
-        if (body) {
-          body.innerHTML = btCompareRows.map((x) => {
-            return `<tr><td>${esc(x.strategy || "")}</td><td>${esc(String(x.status || ""))}</td><td>${esc(String(x.reason || ""))}</td><td class="mono">${esc(String(x.final_equity ?? ""))}</td><td class="mono">${esc(String(x.return_pct ?? ""))}</td><td class="mono">${esc(String(x.benchmark_return_pct ?? x.buy_and_hold_return_pct ?? ""))}</td><td class="mono">${esc(String(x.excess_return_pct ?? ""))}</td><td class="mono">${esc(String(x.max_drawdown_pct ?? ""))}</td><td class="mono">${esc(String(x.closed_trades ?? ""))}</td><td class="mono">${esc(String(x.capital_deployed_avg_pct ?? ""))}</td><td class="mono">${esc(String(x.rejections_total ?? ""))}</td><td>${esc(String(x.confidence_label || ""))}</td><td>${esc(String(x.interpretation || ""))}</td></tr>`;
-          }).join("");
-        }
-        if (empty) {
-          empty.textContent = btCompareRows.length ? "" : "No comparison rows returned.";
-          empty.style.display = btCompareRows.length ? "none" : "block";
-        }
-        setBacktestStatus("Comparison complete.", "ok");
-      } catch (e) {
-        btCompareState = { status: "error", rows: [], error: String(e && e.message ? e.message : e) };
-        const empty = document.getElementById("btCompareEmpty");
-        if (empty) {
-          const msg = String(e && e.message ? e.message : e);
-          empty.textContent = msg.includes("Invalid comparison response shape")
-            ? "Invalid comparison response."
-            : "Comparison failed. See status message.";
-          empty.style.display = "block";
-        }
-        setBacktestStatus(`Comparison failed: ${String(e && e.message ? e.message : e)}`, "err");
-      } finally {
-        setBacktestBusy(false);
-      }
-    });
-    document.getElementById("btCopyReportBtn")?.addEventListener("click", async () => {
-      if (!btSelectedRunId) return setBacktestStatus("Run or select a backtest first.", "err");
-      setBacktestBusy(true, "Copying Report...");
-      try {
-        const r = await fetch(`/api/backtest/report/${encodeURIComponent(btSelectedRunId)}?format=markdown`, { cache: "no-store" });
-        let md = await r.text();
-        if (!r.ok) throw new Error(md || "Report fetch failed");
-        if (btCompareState.status === "ok") {
-          md += `\n\n## Strategy Comparison\n${JSON.stringify(btCompareState.rows, null, 2)}\n`;
-        } else if (btCompareState.status === "error") {
-          md += `\n\n## Strategy Comparison\nComparison failed: ${btCompareState.error}\n`;
-        } else {
-          md += `\n\n## Strategy Comparison\nStrategy comparison was not run.\n`;
-        }
-        await navigator.clipboard.writeText(md);
-        setBacktestStatus("Backtest report copied to clipboard.", "ok");
-      } catch (e) {
-        setBacktestStatus(`Copy failed: ${String(e && e.message ? e.message : e)}`, "err");
-      } finally {
-        setBacktestBusy(false);
-      }
-    });
-    document.getElementById("btDownloadReportBtn")?.addEventListener("click", async () => {
-      if (!btSelectedRunId) return setBacktestStatus("Run or select a backtest first.", "err");
-      setBacktestBusy(true, "Preparing Report Download...");
-      try {
-        const r = await fetch(`/api/backtest/report/${encodeURIComponent(btSelectedRunId)}?format=markdown`, { cache: "no-store" });
-        let md = await r.text();
-        if (!r.ok) throw new Error(md || "Report fetch failed");
-        if (btCompareState.status === "ok") {
-          md += `\n\n## Strategy Comparison\n${JSON.stringify(btCompareState.rows, null, 2)}\n`;
-        } else if (btCompareState.status === "error") {
-          md += `\n\n## Strategy Comparison\nComparison failed: ${btCompareState.error}\n`;
-        } else {
-          md += `\n\n## Strategy Comparison\nStrategy comparison was not run.\n`;
-        }
-        const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `quantbot_backtest_run_${btSelectedRunId}.md`;
-        a.click();
-        URL.revokeObjectURL(url);
-        setBacktestStatus("Backtest report downloaded.", "ok");
-      } catch (e) {
-        setBacktestStatus(`Download failed: ${String(e && e.message ? e.message : e)}`, "err");
-      } finally {
-        setBacktestBusy(false);
-      }
-    });
-    document.getElementById("btRunExperimentBtn")?.addEventListener("click", async () => {
-      setBacktestBusy(true, "Running parameter experiment...");
-      const statusEl = document.getElementById("btExperimentStatus");
-      try {
-        let grid = {};
-        try {
-          grid = JSON.parse(String((document.getElementById("btParamGrid") || {}).value || "{}"));
-        } catch (_) {
-          throw new Error("Invalid parameter grid JSON");
-        }
-        const payload = {
-          name: `exp-${Date.now()}`,
-          strategy_name: (document.getElementById("btStrategy") || {}).value || "current_adaptive",
-          symbols: String((document.getElementById("btSymbols") || {}).value || "AAPL").split(",").map(s => s.trim()).filter(Boolean),
-          start_date: (document.getElementById("btStart") || {}).value || "2025-01-01",
-          end_date: (document.getElementById("btEnd") || {}).value || "2026-01-01",
-          timeframe: (document.getElementById("btTimeframe") || {}).value || ((btDefaults || {}).default_timeframe || "1Day"),
-          starting_cash: Number((document.getElementById("btStartingCash") || {}).value || 100),
-          parameter_grid_json: grid,
-          walk_forward: { enabled: !!((document.getElementById("btWalkForwardEnabled") || {}).checked) },
-        };
-        const r = await fetch("/api/backtest/experiments/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-          body: JSON.stringify(payload),
-        });
-        const j = await r.json();
-        if (!r.ok || !j.ok) throw new Error(j.error || "Experiment failed");
-        renderExperimentRows(Array.isArray(j.top_results) ? j.top_results : []);
-        if (statusEl) statusEl.textContent = `Experiment ${j.experiment_id} completed.`;
-        setBacktestStatus("Parameter experiment complete.", "ok");
-      } catch (e) {
-        const msg = String(e && e.message ? e.message : e);
-        if (statusEl) statusEl.textContent = msg;
-        setBacktestStatus(`Experiment failed: ${msg}`, "err");
-      } finally {
-        setBacktestBusy(false);
-      }
-    });
-    window.quantbotEnsureBacktestMetaLoaded = async function () {
-      if (window.__quantbotBtMetaLoaded) return;
-      window.__quantbotBtMetaLoaded = true;
-      await loadBacktestDefaults();
-      await loadParameterSets();
-    };
+  function renderDashboard(vm) {
+    var errEl = document.getElementById("dashError");
+    if (vm.fetchError) {
+      errEl.style.display = "block";
+      errEl.textContent = "API failed: " + vm.fetchError;
+    } else {
+      errEl.style.display = "none";
+      errEl.textContent = "";
+    }
+    var st = document.getElementById("dashStatus");
+    st.textContent = vm.updatedAt ? ("Updated " + vm.updatedAt + (vm.fetchError ? " (stale)" : "")) : "—";
+
+    renderOverview(vm);
+    renderPositions(vm);
+    renderActivity(vm);
+    renderBacktest(vm);
+  }
+
+  async function fetchDashboard() {
     try {
-      const _savedTab = localStorage.getItem(ACTIVE_TAB_KEY);
-      if (_savedTab === "backtest") {
-        window.quantbotEnsureBacktestMetaLoaded().catch(() => {});
+      var res = await fetch("/api/dashboard?equity_period=1D", { cache: "no-store" });
+      if (!res.ok) throw new Error("/api/dashboard HTTP " + res.status);
+      var payload = await res.json();
+      var vm = mapDashboardPayload(payload);
+      vm.fetchError = null;
+      vm.updatedAt = new Date().toLocaleString();
+      return vm;
+    } catch (e) {
+      var vm = mapDashboardPayload({});
+      vm.fetchError = String(e && e.message ? e.message : e);
+      vm.updatedAt = new Date().toLocaleString();
+      return vm;
+    }
+  }
+
+  function bindTabs() {
+    var tabs = document.querySelectorAll(".tab-btn");
+    var panels = document.querySelectorAll(".tab-panel");
+    function show(name) {
+      tabs.forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tab") === name); });
+      panels.forEach(function (p) { p.classList.toggle("active", p.id === "panel-" + name); });
+      try { localStorage.setItem("quantbot_dash_tab", name); } catch (e) {}
+      if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
+    }
+    tabs.forEach(function (b) {
+      b.addEventListener("click", function () { show(b.getAttribute("data-tab")); });
+    });
+    var saved = "overview";
+    try { saved = localStorage.getItem("quantbot_dash_tab") || "overview"; } catch (e) {}
+    show(saved);
+  }
+
+  var btRunId = null;
+  async function loadBacktestDefaultsOnce() {
+    if (window.__btDefaultsLoaded) return;
+    try {
+      var r = await fetch("/api/backtest/defaults", { cache: "no-store" });
+      var j = await r.json();
+      var sel = document.getElementById("btStrategy");
+      if (sel && Array.isArray(j.strategies)) {
+        sel.innerHTML = j.strategies.map(function (s) { return "<option value=\"" + esc(s) + "\">" + esc(s) + "</option>"; }).join("");
       }
-    } catch (e) {}
+      if (j.default_timeframe) document.getElementById("btTimeframe").value = j.default_timeframe;
+      if (Array.isArray(j.symbols)) document.getElementById("btSymbols").value = j.symbols.join(",");
+      document.getElementById("btStatus").textContent = "Defaults loaded.";
+      window.__btDefaultsLoaded = true;
+    } catch (e) {
+      document.getElementById("btStatus").textContent = "Could not load backtest defaults.";
+    }
+  }
+
+  function wireBacktest() {
+    document.getElementById("btRunBtn").addEventListener("click", async function () {
+      document.getElementById("btStatus").textContent = "Running…";
+      var payload = {
+        strategy_name: (document.getElementById("btStrategy") || {}).value || "current_adaptive",
+        starting_cash: Number(document.getElementById("btStartingCash").value || 100),
+        symbols: String(document.getElementById("btSymbols").value || "").split(",").map(function (s) { return s.trim(); }).filter(Boolean),
+        start_date: document.getElementById("btStart").value,
+        end_date: document.getElementById("btEnd").value,
+        timeframe: document.getElementById("btTimeframe").value,
+        pyramiding_enabled: false
+      };
+      try {
+        var r = await fetch("/api/backtest/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          body: JSON.stringify(payload)
+        });
+        var j = await r.json();
+        if (!r.ok || !j.run_id) throw new Error(j.error || "run failed");
+        btRunId = j.run_id;
+        document.getElementById("btCopyReportBtn").disabled = false;
+        document.getElementById("btDownloadReportBtn").disabled = false;
+        document.getElementById("btStatus").textContent = "Run complete. id=" + j.run_id;
+      } catch (e) {
+        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+      }
+    });
+    document.getElementById("btCompareBtn").addEventListener("click", async function () {
+      document.getElementById("btStatus").textContent = "Comparing…";
+      try {
+        var r = await fetch("/api/backtest/compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          body: JSON.stringify({
+            strategy_names: ["current_adaptive", "simple_momentum"],
+            starting_cash: Number(document.getElementById("btStartingCash").value || 100),
+            symbols: String(document.getElementById("btSymbols").value || "AAPL").split(",").map(function (s) { return s.trim(); }).filter(Boolean),
+            start_date: document.getElementById("btStart").value,
+            end_date: document.getElementById("btEnd").value,
+            timeframe: document.getElementById("btTimeframe").value,
+            pyramiding_enabled: false
+          })
+        });
+        var j = await r.json();
+        if (!r.ok || !j.ok) throw new Error(j.error || "compare failed");
+        document.getElementById("btStatus").textContent = "Compare finished (" + (j.rows || []).length + " rows).";
+      } catch (e) {
+        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+      }
+    });
+    async function getReportMd() {
+      if (!btRunId) throw new Error("Run a backtest first.");
+      var r = await fetch("/api/backtest/report/" + encodeURIComponent(btRunId) + "?format=markdown", { cache: "no-store" });
+      var t = await r.text();
+      if (!r.ok) throw new Error(t || "report failed");
+      return t;
+    }
+    document.getElementById("btCopyReportBtn").addEventListener("click", async function () {
+      try {
+        var md = await getReportMd();
+        await navigator.clipboard.writeText(md);
+        document.getElementById("btStatus").textContent = "Report copied.";
+      } catch (e) {
+        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+      }
+    });
+    document.getElementById("btDownloadReportBtn").addEventListener("click", async function () {
+      try {
+        var md = await getReportMd();
+        var blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+        var u = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = u;
+        a.download = "quantbot_backtest_" + btRunId + ".md";
+        a.click();
+        URL.revokeObjectURL(u);
+        document.getElementById("btStatus").textContent = "Download started.";
+      } catch (e) {
+        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+      }
+    });
+  }
+
+  async function tick() {
+    var vm = await fetchDashboard();
+    renderDashboard(vm);
+  }
+
+  bindTabs();
+  wireBacktest();
+  tick();
+  setInterval(tick, POLL_MS);
 })();
 </script>
 </body>
@@ -2623,20 +1090,8 @@ def create_app() -> Flask:
             _debug_log("H8", "build_dashboard_payload_safe exception fallback", {"period": period})
             return build_dashboard_payload(None, rest_client=None, equity_period=period)
 
-    def _dashboard_ws_push() -> None:
-        sio = app.extensions["socketio"]
-        while True:
-            try:
-                with app.app_context():
-                    payload = _build_dashboard_payload_safe("1D")
-                sio.emit("dashboard_update", payload)
-            except Exception:
-                logger.exception("[ws] push error")
-            sio.sleep(2)
-
     app.extensions["socketio"] = socketio
-    if not app.config.get("TESTING"):
-        socketio.start_background_task(_dashboard_ws_push)
+    # WebSocket push disabled — dashboard uses HTTP polling only.
 
     @app.get("/health/ready")
     def health_ready():
@@ -3473,76 +1928,11 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index() -> str:
-        period = str(request.args.get("equity_period", "1D") or "1D")
-        if period not in ("1D", "1W", "1M", "3M"):
-            period = "1D"
-        payload = _build_dashboard_payload_safe(period)
-        _debug_log(
-            "H9",
-            "index render summary",
-            {
-                "period": period,
-                "positions": len(payload.get("open_positions", []))
-                if isinstance(payload.get("open_positions"), list)
-                else -1,
-                "signals": len(payload.get("recent_signals", []))
-                if isinstance(payload.get("recent_signals"), list)
-                else -1,
-                "eq": len(payload.get("equity_series", []))
-                if isinstance(payload.get("equity_series"), list)
-                else -1,
-                "has_eh": isinstance(payload.get("execution_health"), dict),
-            },
-        )
-        with get_connection() as conn:
-            cfg_rows = data_store.fetch_all_bot_config_rows(conn)
-            bot_ui = _bot_ui_rows(cfg_rows)
-        latest = payload.get("portfolio") or {}
-        pnl = payload.get("pnl_vs_start_pct")
-        pnl_d = payload.get("pnl_vs_start_dollars")
-        pnl_str = (
-            f"{pnl_d:+.2f}".replace("+", "+$").replace("-", "-$") + f" / {pnl:+.2f}%"
-            if pnl is not None and pnl_d is not None
-            else "—"
-        )
-        pnl_class = ""
-        if pnl is not None:
-            pnl_class = "pos" if pnl >= 0 else "neg"
-        try:
-            eq = float(latest["equity_total"]) if latest.get("equity_total") is not None else None
-        except (TypeError, ValueError):
-            eq = None
-        eq_str = f"{eq:.2f}" if eq is not None else "—"
-        try:
-            dep = float(latest["deployed_pct"]) if latest.get("deployed_pct") is not None else None
-        except (TypeError, ValueError):
-            dep = None
-        dep_str = f"{dep:.1f}%" if dep is not None else "—"
-        mode_str = str(payload.get("mode") or latest.get("mode") or "—")
-        dash_snapshot = dict(payload)
-        perf = payload.get("performance") or {}
-        rl_history = payload.get("rl_learning_history") or []
-        calibration = payload.get("calibration") or {}
+        """Static shell; live data from GET /api/dashboard (browser polling)."""
         return render_template_string(
             _PAGE,
             refresh_sec=_REFRESH_SEC,
             db=str(config.DB_PATH),
-            pnl_str=pnl_str,
-            pnl_class=pnl_class,
-            eq_str=eq_str,
-            mode_str=mode_str,
-            dep_str=dep_str,
-            positions=_fmt_positions(payload.get("open_positions") or []),
-            trades=_fmt_trades(payload.get("recent_trades") or []),
-            signals=_fmt_signals(payload.get("recent_signals") or []),
-            dash_snapshot=dash_snapshot,
-            bot_ui=bot_ui,
-            perf=perf,
-            rl_history=rl_history,
-            calibration=calibration,
-            dynamic_risk_enabled=bool(
-                next((float(r.get("value", 1.0)) for r in cfg_rows if r.get("key") == "dynamic_risk_enabled"), 1.0)
-            ),
             dashboard_secret=DASHBOARD_SECRET,
         )
 

@@ -50,200 +50,157 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert isinstance(data["position_exit_rows"], list)
 
 
-def test_index_has_execution_health_dom_ids(dash_app) -> None:
+def test_index_has_core_dom_ids(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data
-    assert b"execHealthCash" in body
-    assert b"execHealthCard" in body
-    assert b"execExitTableBody" in body
+    assert b'id="mEq"' in body
+    assert b'id="tblPositionsFull"' in body
+    assert b'id="dashError"' in body
 
 
-def test_index_emergency_poller_present(dash_app) -> None:
-    """HTTP polling cockpit runs when old live dashboard is disabled."""
+def test_index_http_poll_only(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "window.DISABLE_OLD_DASHBOARD_LIVE = true" in body
-    assert "bootCockpit" in body
-    assert "Live via polling" in body
-    assert "/api/dashboard?equity_period=" in body
-    assert "function readEmbedded" in body
-    assert "AbortController" in body
+    assert 'fetch("/api/dashboard?equity_period=1D"' in body
+    assert "setInterval(tick, POLL_MS)" in body
+    assert "socket.io" not in body.lower()
 
 
-def test_index_bind_tabs_always_footer_script(dash_app) -> None:
-    """Tab switching is wired in the unified cockpit script."""
+def test_index_bind_tabs_and_mapper(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "function bindTabs" in body
-    assert "quantbotLoadBacktestRuns" in body
-    assert ".tab-panel" in body and "dataset.tab" in body
+    assert "function bindTabs()" in body
+    assert "function mapDashboardPayload(payload)" in body
+    assert "function fetchDashboard()" in body
+    assert "panel-overview" in body and "panel-activity" in body
 
 
-def test_index_has_four_tab_layout(dash_app) -> None:
-    """Cockpit shows Overview, Positions, Backtest, System Health tabs."""
+def test_index_four_tabs_overview_positions_activity_backtest(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data
     assert b'data-tab="overview"' in body
     assert b'data-tab="positions"' in body
+    assert b'data-tab="activity"' in body
     assert b'data-tab="backtest"' in body
-    assert b'data-tab="system"' in body
-    assert b'id="overview-tab"' in body
-    assert b'id="positions-tab"' in body
-    assert b'id="backtest-tab"' in body
-    assert b'id="system-tab"' in body
+    assert b'id="panel-overview"' in body
+    assert b'id="panel-positions"' in body
+    assert b'id="panel-activity"' in body
+    assert b'id="panel-backtest"' in body
 
 
-def test_overview_tab_renders_core_metrics(dash_app) -> None:
+def test_overview_metrics_ids(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data
-    assert b'id="tilePnl"' in body
-    assert b'id="tileEq"' in body
-    assert b'id="statusBanner"' in body
-    assert b'id="mktLine"' in body
-    assert b'id="tileCash"' in body
-    assert b'id="tileBp"' in body
-    assert b'id="overviewWarnings"' in body
-    assert b'id="statusApi"' in body
-    assert b'id="statusUpdated"' in body
-    assert b"What the bot is doing now" in body
-    assert b"No positions returned by /api/dashboard" in body
-    assert b"No recent decisions returned by /api/dashboard" in body
+    for bid in (b'id="mMode"', b'id="mPnlD"', b'id="mCash"', b'id="mMkt"', b'id="mCap"'):
+        assert bid in body
+    assert b'id="tblOverviewPositions"' in body
+    assert b'id="tblOverviewDecisions"' in body
 
 
-def test_positions_tab_renders_exit_status(dash_app) -> None:
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data
-    assert b'id="posDetailedBody"' in body
-    assert b">Exit status<" in body
-    assert b'renderTable("posDetailedBody"' in body
-    assert b"No exit signal" in body
-    assert b">Holding<" in body or b">Holding</td>" in body
-
-
-def test_overview_limits_preview_rows(dash_app) -> None:
+def test_positions_tab_columns(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "d.positions.slice(0, 5)" in body
-    assert "d.decisions.slice(0, 10)" in body
+    assert "Stock exit blocked: market closed" in body
+    assert "Crypto can trade 24/7" in body
+    assert "positionNote" in body
 
 
-def test_system_tab_renders_execution_health(dash_app) -> None:
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data
-    assert b'id="execHealthCash"' in body
-    assert b'id="execHealthBuyingPower"' in body
-    assert b'id="execHealthUsable"' in body
-    assert b'id="execHealthBlockedExits"' in body
-    assert b'id="execHealthPdtBadges"' in body
-    assert b'id="execHealthLastReconcile"' in body
-    assert b'id="execHealthMissing"' in body
-    assert b'text("execHealthCash"' in body
-    assert b"Execution health payload missing" in body
-
-
-def test_system_tab_advanced_controls_collapsed(dash_app) -> None:
-    """Sliders + raw experiment JSON live behind <details> by default."""
+def test_overview_preview_limits_in_js(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
-    assert "Advanced controls (bot parameters)" in body
-    advanced_idx = body.find("Advanced controls (bot parameters)")
-    cfg_range_idx = body.find('class="cfg-range"')
-    assert cfg_range_idx > advanced_idx, "Sliders must live inside the Advanced controls <details> block"
-    details_open = body.rfind("<details>", 0, cfg_range_idx)
-    summary_idx = body.find("Advanced controls (bot parameters)", details_open)
-    assert details_open != -1 and summary_idx != -1
-    assert "Parameter Experiments" in body
-    pe_idx = body.find("Parameter Experiments")
-    assert "<details>" in body[max(pe_idx - 200, 0):pe_idx]
+    assert ".slice(0, 5)" in body
+    assert ".slice(0, 10)" in body
 
 
-def test_backtest_strategy_dropdown_visible(dash_app) -> None:
-    """Strategy dropdown must render with explicit dark theme styling."""
+def test_activity_tab_tables(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b'id="tblActivityTrades"' in body
+    assert b'id="tblActivitySignals"' in body
+    assert b'id="tblActivityDecisions"' in body
+    assert b'id="actSectionStatus"' in body
+
+
+def test_backtest_minimal_controls(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
     body = r.data.decode("utf-8", errors="ignore")
     assert '<select id="btStrategy">' in body
-    assert ".bt-setup-grid select option" in body
-
-
-def test_index_emergency_poller_handles_missing_execution_health(dash_app) -> None:
-    """Emergency render hides exec-health warning when execution_health is populated."""
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert "execHealthMissing" in body
-    assert "Object.keys(d.eh)" in body
-    assert "Execution health payload missing" in body
-
-
-def test_adapter_contract_and_fallback_mapping_present(dash_app) -> None:
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert "function adapt(raw)" in body
-    assert "cashCombined" in body
-    assert "pf.cash_stocks" in body
-    assert "pf.cash_crypto" in body
-    assert "usable_buying_power" in body
-    assert "position_exit_rows" in body
-    assert "safeRows(p.open_positions)" in body
-
-
-def test_debug_payload_summary_exists(dash_app) -> None:
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data
-    assert b"Debug payload summary" in body
-    assert b'id="dbgApiStatus"' in body
-    assert b'id="dbgPosLen"' in body
-    assert b'id="dbgSigLen"' in body
-    assert b'id="dbgTradeLen"' in body
-    assert b'id="dbgEqLen"' in body
-    assert b'id="dbgEhPresent"' in body
-    assert b'id="dbgExitLen"' in body
-
-
-def test_backtest_default_is_clean_and_advanced_collapsed(dash_app) -> None:
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert '<select id="btStrategy">' in body
-    assert 'id="btSymbols"' in body
-    assert 'id="btStart"' in body
-    assert 'id="btEnd"' in body
-    assert 'id="btTimeframe"' in body
-    assert 'id="btStartingCash"' in body
     assert 'id="btRunBtn"' in body
     assert 'id="btCompareBtn"' in body
     assert 'id="btCopyReportBtn"' in body
     assert 'id="btDownloadReportBtn"' in body
-    # Advanced sections should be <details> without open by default
-    assert "<summary><strong>Advanced — Results Overview</strong></summary>" in body
-    assert "<summary><strong>Advanced — Parameter Experiments</strong></summary>" in body or "Parameter Experiments" in body
-    assert "<summary><strong>Advanced — Strategy Diagnostics</strong></summary>" in body
+    assert "btParamGrid" not in body
+
+
+def test_mapper_uses_cash_stocks_crypto_not_execution_health(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "cash_stocks" in body and "cash_crypto" in body
+    assert "execution_health" not in body
+
+
+def test_index_mapper_payload_paths(dash_app) -> None:
+    """mapDashboardPayload is the single place that reads raw API fields."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    for fragment in (
+        "p.pnl_vs_start_pct",
+        "p.pnl_vs_start_dollars",
+        "p.portfolio",
+        "pf.equity_total",
+        "pf.cash_stocks",
+        "pf.cash_crypto",
+        "p.equity_series",
+        "p.open_positions",
+        "p.recent_trades",
+        "p.recent_signals",
+        "p.execution_decisions",
+        "p.capital_stage",
+        "p.performance",
+        "p.calibration",
+        "p.section_status",
+    ):
+        assert fragment in body
+
+
+def test_index_empty_equity_hint(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data
+    assert b'id="eqEmptyHint"' in body
+    assert b"No equity series returned" in body
+
+
+def test_index_renders_minimal_shell(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    assert b"QuantBot" in r.data
+    assert b"Recent trades" in r.data
+    assert b"id=\"btRunBtn\"" in r.data
 
 
 def test_api_dashboard_still_returns_200(dash_app) -> None:
@@ -265,70 +222,12 @@ def test_api_dashboard_still_returns_200(dash_app) -> None:
         assert key in payload, "missing payload key: " + key
 
 
-def test_index_contains_safe_render_helpers(dash_app) -> None:
+def test_api_dashboard_includes_execution_decisions(dash_app) -> None:
     client = dash_app.test_client()
-    r = client.get("/")
+    r = client.get("/api/dashboard")
     assert r.status_code == 200
-    assert b"function text(" in r.data
-    assert b"Dashboard render failed" in r.data
-
-
-def test_index_contains_dom_helpers(dash_app) -> None:
-    """Core DOM helpers exist for the cockpit renderer."""
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data
-    assert b"function byId" in body
-    assert b"function text(" in body
-    assert b"function html(" in body
-
-
-def test_index_render_guard_keeps_polling_alive(dash_app) -> None:
-    """A render exception is caught so polling continues."""
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert "function render(payload)" in body
-    assert "renderInner(payload)" in body
-    assert "Dashboard render failed" in body
-    assert "inFlight = false" in body
-
-
-def test_index_uses_payload_field_paths(dash_app) -> None:
-    """Frontend adapt() reads the /api/dashboard payload shape."""
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    assert "p.pnl_vs_start_pct" in body
-    assert "p.pnl_vs_start_dollars" in body
-    assert "p.portfolio" in body
-    assert "pf.equity_total" in body
-    assert "p.equity_series" in body
-    assert "p.open_positions" in body
-    assert "p.recent_trades" in body
-    assert "p.signal_states || p.recent_signals" in body
-    assert "p.execution_health" in body
-
-
-def test_index_handles_empty_equity_series(dash_app) -> None:
-    """Empty equity series renders a placeholder, not a blank chart that looks broken."""
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data
-    assert b'id="eqEmpty"' in body
-    assert b"No equity data yet" in body
-
-
-def test_index_social_unavailable_message(dash_app) -> None:
-    """Social fetch failure shows a clear message; no infinite Loading."""
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    assert b"Social feed unavailable" in r.data
+    payload = json.loads(r.data)
+    assert "execution_decisions" in payload
 
 
 def test_api_dashboard_returns_200(dash_app) -> None:
@@ -406,26 +305,6 @@ def test_api_sync_alpaca_ok(dash_app) -> None:
     body = json.loads(r.data)
     assert body["status"] == "ok"
     assert body["equity"] == pytest.approx(2.0)
-
-
-def test_index_renders(dash_app) -> None:
-    client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    assert b"QUANTBOT" in r.data
-    assert b"bot parameters" in r.data
-    assert b"Performance" in r.data
-    assert b"Signal calibration" in r.data
-    assert b"Backtest" in r.data
-    assert b"btSampleWarning" in r.data
-    assert b"btCopyReportBtn" in r.data
-    assert b"btDownloadReportBtn" in r.data
-    assert b"\xe2\x96\xb6 Run Backtest" in r.data
-    assert b"btCompareEmpty" in r.data
-    assert b"Invalid comparison response shape" in r.data
-    assert b"Strategy Diagnostics" in r.data
-    assert b"Parameter Experiments" in r.data
-    assert b"Experiment Results" in r.data
 
 
 def test_api_calibration(dash_app) -> None:
