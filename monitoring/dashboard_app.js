@@ -1,41 +1,135 @@
 (function () {
   "use strict";
-  var boot = document.getElementById("boot-debug");
-  if (boot) boot.textContent = "APP JS STARTED";
+
+  var bootDbg = document.getElementById("boot-debug");
+  if (bootDbg) bootDbg.textContent = "APP JS STARTED";
+  var bootMirror = document.getElementById("bootDebugMirror");
+  if (bootMirror) bootMirror.textContent = "APP JS STARTED";
+
   var _dh = document.getElementById("dash-secret-holder");
   var DASHBOARD_SECRET = _dh ? _dh.value : "";
   var equityChart = null;
+  var POLL_MS = 30000;
+  var MIN_ORDER_NOTIONAL = 1.0;
+
+  // ---------------------------------------------------------------------------
+  // Formatting helpers
+  // ---------------------------------------------------------------------------
 
   function esc(s) {
     return String(s == null ? "" : s)
-      .replace(/&/g, "&amp;").replace(/\x3c/g, "&lt;").replace(/\x3e/g, "&gt;")
+      .replace(/&/g, "&amp;")
+      .replace(/\x3c/g, "&lt;")
+      .replace(/\x3e/g, "&gt;")
       .replace(/"/g, "&quot;");
   }
 
-  function fmtMoney(v) {
+  function isFiniteNum(v) {
     var n = Number(v);
-    return n === n && Number.isFinite(n) ? "$" + n.toFixed(2) : "—";
-  }
-
-  function fmtPct(v) {
-    var n = Number(v);
-    return n === n && Number.isFinite(n) ? n.toFixed(2) + "%" : "—";
+    return n === n && Number.isFinite(n);
   }
 
   function num(v, fallback) {
-    var n = Number(v);
-    return n === n && Number.isFinite(n) ? n : fallback;
+    return isFiniteNum(v) ? Number(v) : fallback;
+  }
+  function numOr(v, fallback) {
+    return isFiniteNum(v) ? Number(v) : fallback;
   }
 
-  function numOr(v, fallback) {
+  // $114.04 (unsigned, plain dollar)
+  function fmtMoney(v) {
+    if (!isFiniteNum(v)) return "—";
     var n = Number(v);
-    return n === n && Number.isFinite(n) ? n : fallback;
+    if (n < 0) return "-$" + Math.abs(n).toFixed(2);
+    return "$" + n.toFixed(2);
   }
+
+  // +$14.04 / -$0.74 / $0.00 (signed dollar)
+  function fmtMoneySigned(v) {
+    if (!isFiniteNum(v)) return "—";
+    var n = Number(v);
+    if (n > 0) return "+$" + n.toFixed(2);
+    if (n < 0) return "-$" + Math.abs(n).toFixed(2);
+    return "$0.00";
+  }
+
+  // 14.04% (unsigned)
+  function fmtPct(v) {
+    if (!isFiniteNum(v)) return "—";
+    return Number(v).toFixed(2) + "%";
+  }
+
+  // +14.04% / -3.14% / 0.00%
+  function fmtPctSigned(v) {
+    if (!isFiniteNum(v)) return "—";
+    var n = Number(v);
+    if (n > 0) return "+" + n.toFixed(2) + "%";
+    if (n < 0) return n.toFixed(2) + "%"; // Number.toFixed keeps the leading "-"
+    return "0.00%";
+  }
+
+  // Price: $1+ → 2 decimals, $<1 → 4 decimals, with "$" prefix
+  function fmtPrice(v) {
+    if (!isFiniteNum(v)) return "—";
+    var n = Math.abs(Number(v));
+    var sign = Number(v) < 0 ? "-" : "";
+    return sign + "$" + (n >= 1 ? n.toFixed(2) : n.toFixed(4));
+  }
+
+  // Quantity: stocks up to 4 decimals, crypto up to 8; trims trailing zeros.
+  function fmtQty(v, isCrypto) {
+    if (!isFiniteNum(v)) return "—";
+    var max = isCrypto ? 8 : 4;
+    var s = Number(v).toFixed(max);
+    // Trim trailing zeros after the decimal (but keep at least one digit if integer)
+    if (s.indexOf(".") !== -1) {
+      s = s.replace(/0+$/, "").replace(/\.$/, "");
+    }
+    return s;
+  }
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  // "12:34:56" — short local time stamp for header "Updated …"
+  function fmtTimeShort(d) {
+    if (!(d instanceof Date) || isNaN(d.getTime())) return "—";
+    return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+  }
+
+  // Try to parse ISO-ish strings into a readable short local form, else return original.
+  function fmtTimestamp(s) {
+    if (s == null || s === "") return "—";
+    var raw = String(s);
+    var iso = raw.length === 19 ? raw + "Z" : raw;
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return raw;
+    var now = new Date();
+    var sameDay =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+    if (sameDay) {
+      return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
+    }
+    return (d.getMonth() + 1) + "/" + d.getDate() + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+
+  function pnlClass(value) {
+    if (value == null || !isFiniteNum(value)) return "";
+    if (value > 0) return "pos-good";
+    if (value < 0) return "pos-bad";
+    return "";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Payload mapping
+  // ---------------------------------------------------------------------------
 
   function mapDashboardPayload(payload) {
     var p = payload && typeof payload === "object" ? payload : {};
     var pf = p.portfolio && typeof p.portfolio === "object" ? p.portfolio : {};
     var ehIn = p.execution_health && typeof p.execution_health === "object" ? p.execution_health : {};
+    var safety = p.live_safety && typeof p.live_safety === "object" ? p.live_safety : {};
     var cs = numOr(pf.cash_stocks, 0);
     var cc = numOr(pf.cash_crypto, 0);
     var eqN = Number(pf.equity_total);
@@ -66,9 +160,165 @@
       ghostPositionCount: num(p.ghost_position_count, null),
       dbLockCount24h: num(p.db_lock_count_24h, null),
       alpacaCacheAgeSeconds: p.alpaca_cache_age_seconds != null ? Number(p.alpaca_cache_age_seconds) : null,
-      alpacaCacheLastError: p.alpaca_cache_last_error != null ? String(p.alpaca_cache_last_error) : ""
+      alpacaCacheLastError: p.alpaca_cache_last_error != null ? String(p.alpaca_cache_last_error) : "",
+      liveSafetyEnabled: safety && safety.live_enabled === true,
+      buyGate: p.buy_gate && typeof p.buy_gate === "object" ? p.buy_gate : {}
     };
   }
+
+  // ---------------------------------------------------------------------------
+  // Header chips + error banner
+  // ---------------------------------------------------------------------------
+
+  function setChip(id, state, text) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var cls = "chip";
+    if (state === "ok") cls += " ok";
+    else if (state === "warn") cls += " warn";
+    else if (state === "bad") cls += " bad";
+    else if (state === "info") cls += " info";
+    el.className = cls;
+    el.setAttribute("data-state", state);
+    var txt = el.querySelector(".chip-text");
+    if (txt) txt.textContent = text;
+  }
+
+  function setApiChip(state, text) {
+    setChip("chipApi", state, text);
+  }
+
+  function setError(msg) {
+    var errEl = document.getElementById("dashError");
+    if (!errEl) return;
+    if (msg) {
+      errEl.style.display = "block";
+      errEl.textContent = "Dashboard error: " + msg;
+    } else {
+      errEl.style.display = "none";
+      errEl.textContent = "";
+    }
+  }
+
+  function applyHealthyChips(vm) {
+    var modeText = vm.mode ? String(vm.mode).toLowerCase() : "—";
+    var modeLabel = modeText === "paper" ? "Paper mode" : modeText === "live" ? "Live mode" : "Mode " + modeText;
+    setChip("chipMode", modeText === "paper" ? "info" : (modeText === "live" ? "warn" : "info"), modeLabel);
+    if (vm.liveSafetyEnabled === true) {
+      setChip("chipLive", "warn", "Live enabled");
+    } else if (vm.liveSafetyEnabled === false) {
+      setChip("chipLive", "ok", "Live disabled");
+    } else {
+      setChip("chipLive", "info", "Live —");
+    }
+    setApiChip("ok", "API connected");
+
+    var when = "Updated " + fmtTimeShort(new Date());
+    var stamp = document.getElementById("dashUpdatedAt");
+    if (stamp) stamp.textContent = when;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Operator summary (plain English sentences)
+  // ---------------------------------------------------------------------------
+
+  function setOpsLine(id, html, state) {
+    var li = document.getElementById(id);
+    if (!li) return;
+    li.innerHTML = html;
+    li.className = state ? state : "";
+  }
+
+  function renderOperatorSummary(vm) {
+    var modeText = vm.mode ? String(vm.mode).toUpperCase() : "—";
+    setOpsLine(
+      "opsLineMode",
+      "Account is in <span class=\"accent\">" + esc(modeText) + "</span> mode.",
+      modeText === "PAPER" ? "ok" : (modeText === "LIVE" ? "warn" : "")
+    );
+
+    if (vm.liveSafetyEnabled === true) {
+      setOpsLine("opsLineLive", "Live trading is <span class=\"warn-t\">enabled</span>.", "warn");
+    } else {
+      setOpsLine("opsLineLive", "Live trading is <span class=\"good\">disabled</span>.", "ok");
+    }
+
+    if (vm.marketOpen === true) {
+      setOpsLine("opsLineMarket", "Market is <span class=\"good\">OPEN</span>.", "ok");
+    } else if (vm.marketOpen === false) {
+      setOpsLine("opsLineMarket", "Market is <span class=\"warn-t\">CLOSED</span>.", "warn");
+    } else {
+      setOpsLine("opsLineMarket", "Market state: N/A.", "");
+    }
+
+    var cashStr = isFiniteNum(vm.cash) ? fmtMoney(vm.cash) : "N/A";
+    var cashState = isFiniteNum(vm.cash) && vm.cash < MIN_ORDER_NOTIONAL ? "warn" : "";
+    setOpsLine("opsLineCash", "Cash available: <span class=\"mono\">" + esc(cashStr) + "</span>.", cashState);
+
+    var posCount = (vm.positions || []).length;
+    setOpsLine("opsLinePositions", "Open positions: <span class=\"mono\">" + posCount + "</span>.", "");
+
+    var ubp = num((vm.executionHealth || {}).usable_buying_power, null);
+    if (ubp != null && ubp < MIN_ORDER_NOTIONAL) {
+      setOpsLine(
+        "opsLineBuys",
+        "New buys <span class=\"warn-t\">blocked</span>: usable cash <span class=\"mono\">" + esc(fmtMoney(ubp)) + "</span> below minimum order size.",
+        "warn"
+      );
+    } else if (ubp != null) {
+      setOpsLine(
+        "opsLineBuys",
+        "New buys eligible — usable cash <span class=\"mono\">" + esc(fmtMoney(ubp)) + "</span>.",
+        "ok"
+      );
+    } else if (isFiniteNum(vm.cash) && vm.cash < MIN_ORDER_NOTIONAL) {
+      setOpsLine("opsLineBuys", "New buys <span class=\"warn-t\">blocked</span>: insufficient cash.", "warn");
+    } else {
+      setOpsLine("opsLineBuys", "New buys: status N/A.", "");
+    }
+
+    if (vm.marketOpen === false) {
+      setOpsLine("opsLineStockExits", "Stock exits <span class=\"warn-t\">blocked</span> while market is closed.", "warn");
+    } else if (vm.marketOpen === true) {
+      setOpsLine("opsLineStockExits", "Stock exits <span class=\"good\">available</span> (regular session).", "ok");
+    } else {
+      setOpsLine("opsLineStockExits", "Stock exits: market state N/A.", "");
+    }
+
+    setOpsLine(
+      "opsLineCryptoExits",
+      "Crypto exits allowed <span class=\"good\">24/7</span> only if broker quantity exists.",
+      "ok"
+    );
+
+    var sec = vm.sectionStatus || {};
+    var perf = vm.performance || {};
+    var cycleStr = null;
+    var keys = ["last_cycle", "exec_path", "execution_path", "cycle"];
+    for (var i = 0; i < keys.length; i++) {
+      var s = sec[keys[i]];
+      if (s && typeof s === "object" && (s.analyzed != null || s.holds != null)) {
+        cycleStr = "analyzed " + (s.analyzed != null ? s.analyzed : "?") +
+          ", buys " + (s.buys != null ? s.buys : "?") +
+          ", sells " + (s.sells != null ? s.sells : "?") +
+          ", holds " + (s.holds != null ? s.holds : "?") +
+          ", errs " + (s.errors != null ? s.errors : (s.errs != null ? s.errs : "?"));
+        break;
+      }
+    }
+    if (!cycleStr && perf && perf.total_trades != null) {
+      cycleStr = "total_trades=" + perf.total_trades + ", closed_round_trips=" + (perf.closed_round_trips || 0);
+    }
+    if (cycleStr) {
+      setOpsLine("opsLineLastCycle", "Last cycle: <span class=\"mono\">" + esc(cycleStr) + "</span>.", "");
+    } else {
+      setOpsLine("opsLineLastCycle", "Last cycle: N/A.", "");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Execution health
+  // ---------------------------------------------------------------------------
 
   function renderExitRows(vm) {
     var rows = vm.positionExitRows || [];
@@ -84,7 +334,7 @@
       return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(String(r.local_qty != null ? r.local_qty : "")) + "</td><td class=\"mono\">" + esc(String(r.broker_qty != null ? r.broker_qty : "")) + "</td><td>" + esc(rec) + "</td><td>" + esc(String(r.exit_block_reason || "")) + "</td><td>" + esc(String(r.pdt_status || "")) + "</td><td class=\"mono\">" + esc(String(r.cooldown_remaining || "")) + "</td><td class=\"mono\">" + esc(String(r.pnl_pct || "")) + "</td></tr>";
     }).join("");
     try {
-      wrap.open = rows.length <= 12;
+      wrap.open = rows.length > 0 && rows.length <= 12;
     } catch (e) {}
   }
 
@@ -122,31 +372,27 @@
 
     var grid = document.getElementById("execHealthGrid");
     if (grid) {
-      function tcls(n, isWarn) {
-        if (isWarn) return "warn";
-        return "";
-      }
       function tile(cls, lab, val) {
         return '<div class="eh-tile ' + cls + '"><div class="eh-lab">' + esc(lab) + '</div><div class="eh-val mono">' + esc(val) + '</div></div>';
       }
       var cash = eh.cash != null ? fmtMoney(eh.cash) : "—";
       var bp = eh.buying_power != null ? fmtMoney(eh.buying_power) : "—";
       var ubp = eh.usable_buying_power != null ? fmtMoney(eh.usable_buying_power) : "—";
-      var ghost = vm.ghostPositionCount != null ? String(vm.ghostPositionCount) : "—";
+      var pdtCount = Array.isArray(eh.pdt_blocked_symbols) ? eh.pdt_blocked_symbols.length : 0;
+      var cacheAge = isFiniteNum(vm.alpacaCacheAgeSeconds) ? Number(vm.alpacaCacheAgeSeconds).toFixed(1) + " s" : "—";
+      var lastSync = eh.created_at != null ? fmtTimestamp(eh.created_at) : "—";
       var dblk = vm.dbLockCount24h != null ? String(vm.dbLockCount24h) : "—";
-      var cacheAge = Number.isFinite(Number(vm.alpacaCacheAgeSeconds)) ? String(vm.alpacaCacheAgeSeconds) + " s" : "—";
-      var ehAt = eh.created_at != null ? String(eh.created_at) : "—";
       var html = "";
-      html += tile(tcls(blocked, blocked > 0), "Blocked exits", String(blocked));
-      html += tile(tcls(stale, stale > 0), "Stale local rows", String(stale));
-      html += tile(tcls(mismatch, mismatch > 0), "Broker/local mismatch", String(mismatch));
       html += tile("", "Broker cash", cash);
       html += tile("", "Buying power", bp);
-      html += tile("", "Usable BP (buys)", ubp);
-      html += tile("", "Ghost positions", ghost);
-      html += tile("", "DB lock events (24h)", dblk);
+      html += tile("", "Usable buy power", ubp);
+      html += tile(blocked > 0 ? "warn" : "", "Blocked exits", String(blocked));
+      html += tile(mismatch > 0 ? "warn" : "", "Broker/local mismatches", String(mismatch));
+      html += tile(stale > 0 ? "warn" : "", "Stale local rows", String(stale));
+      html += tile("", "DB lock waits/retries (24h)", dblk);
       html += tile("", "Alpaca cache age", cacheAge);
-      html += tile("", "EH snapshot at", ehAt);
+      html += tile("", "Last broker snapshot", lastSync);
+      html += tile(pdtCount > 0 ? "warn" : "", "PDT guarded symbols", String(pdtCount));
       grid.innerHTML = html;
     }
 
@@ -160,7 +406,7 @@
       }
       var extra = "";
       if (cacheErr) {
-        extra = ' <span style="color:#f87171;">Alpaca cache error: ' + esc(cacheErr) + "</span>";
+        extra = ' <span style="color:#fbbf24;">Alpaca cache error: ' + esc(cacheErr) + "</span>";
       }
       helper.innerHTML = base + extra;
     }
@@ -183,12 +429,119 @@
     renderExitRows(vm);
   }
 
-  function positionNote(row, marketOpen) {
+  // ---------------------------------------------------------------------------
+  // Exit state classification (Positions tab)
+  // ---------------------------------------------------------------------------
+
+  // Returns { status: "HOLD"|"CAN SELL"|"BLOCKED"|"WAITING"|"STALE", explanation, mismatchWarn }
+  function exitStateFor(row, vm) {
     var ac = String(row.asset_class || "").toLowerCase();
-    if (ac === "crypto") return "Crypto can trade 24/7, waiting for signal";
-    if (ac === "stock" && marketOpen === false) return "Stock exit blocked: market closed";
-    return "Holding / no exit shown";
+    var localQ = Math.abs(num(row.net_qty, 0));
+    var brokerRaw = row.broker_qty != null ? row.broker_qty : row.broker_quantity;
+    var brokerQ = brokerRaw != null && isFiniteNum(brokerRaw) ? Math.abs(Number(brokerRaw)) : null;
+    var mismatchWarn = false;
+    if (brokerQ != null) {
+      if (localQ > 0 && brokerQ > 0 && (localQ > brokerQ * 1.5 || brokerQ > localQ * 1.5)) {
+        mismatchWarn = true;
+      }
+    }
+
+    // STALE: local row exists but broker says zero — broker is authoritative.
+    if (brokerQ != null && brokerQ <= 1e-9 && localQ > 0) {
+      return {
+        status: "STALE",
+        explanation: "Broker qty zero; local row needs reconciliation.",
+        mismatchWarn: false
+      };
+    }
+
+    if (ac === "crypto") {
+      if (brokerQ != null && brokerQ <= 1e-9) {
+        return {
+          status: "STALE",
+          explanation: "Broker qty zero; local row needs reconciliation.",
+          mismatchWarn: false
+        };
+      }
+      return {
+        status: "CAN SELL",
+        explanation: "Crypto can trade 24/7, waiting for signal.",
+        mismatchWarn: mismatchWarn
+      };
+    }
+
+    if (ac === "stock") {
+      if (vm.marketOpen === false) {
+        return {
+          status: "BLOCKED",
+          explanation: "Stock exit blocked: market closed.",
+          mismatchWarn: mismatchWarn
+        };
+      }
+      if (mismatchWarn) {
+        return {
+          status: "WAITING",
+          explanation: "Broker qty is authoritative.",
+          mismatchWarn: mismatchWarn
+        };
+      }
+      return {
+        status: "HOLD",
+        explanation: "Holding: no exit signal.",
+        mismatchWarn: mismatchWarn
+      };
+    }
+
+    return {
+      status: "HOLD",
+      explanation: "Holding: no exit signal.",
+      mismatchWarn: mismatchWarn
+    };
   }
+
+  function statusClass(status) {
+    if (status === "CAN SELL") return "can-sell";
+    if (status === "BLOCKED") return "blocked";
+    if (status === "WAITING") return "waiting";
+    if (status === "STALE") return "stale";
+    return "hold";
+  }
+
+  function exitBadge(status) {
+    return '<span class="exit-status ' + statusClass(status) + '">' + esc(status) + "</span>";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trade / decision status badges
+  // ---------------------------------------------------------------------------
+
+  function tradeStatusBadge(raw) {
+    if (raw == null || raw === "") return "—";
+    var s = String(raw);
+    var lo = s.toLowerCase();
+    var cls = "skipped";
+    if (lo === "filled" || lo === "ok" || lo === "complete" || lo === "completed") cls = "filled";
+    else if (lo === "rejected" || lo === "failed" || lo === "error" || lo === "canceled" || lo === "cancelled") cls = "rejected";
+    else if (lo === "skipped" || lo === "ignored") cls = "skipped";
+    else if (lo === "pending" || lo === "new" || lo === "accepted" || lo === "submitted") cls = "pending";
+    return '<span class="status-badge ' + cls + '">' + esc(s) + "</span>";
+  }
+
+  function decisionBadge(decision) {
+    if (decision == null || decision === "") return "—";
+    var s = String(decision);
+    var lo = s.toLowerCase();
+    var cls = "skipped";
+    if (lo === "executed" || lo === "filled" || lo === "ok") cls = "filled";
+    else if (lo === "rejected" || lo === "blocked" || lo === "failed" || lo === "error") cls = "rejected";
+    else if (lo === "skipped" || lo === "noop" || lo === "ignored" || lo === "deferred") cls = "skipped";
+    else if (lo === "pending" || lo === "queued" || lo === "submitted") cls = "pending";
+    return '<span class="status-badge ' + cls + '">' + esc(s) + "</span>";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Equity chart
+  // ---------------------------------------------------------------------------
 
   function renderEquityChart(vm) {
     var series = vm.equitySeries || [];
@@ -217,7 +570,25 @@
       equityChart = new Chart(canvas.getContext("2d"), {
         type: "line",
         data: { labels: labels, datasets: [{ data: vals, borderColor: "#34d399", tension: 0.2, pointRadius: 0 }] },
-        options: { animation: false, responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        options: {
+          animation: false,
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: {
+              ticks: {
+                callback: function (v) { return "$" + Number(v).toFixed(2); },
+                color: "#9ca3af"
+              },
+              grid: { color: "rgba(148,163,184,0.08)" }
+            },
+            x: {
+              ticks: { color: "#9ca3af", maxTicksLimit: 6 },
+              grid: { display: false }
+            }
+          }
+        }
       });
     } else {
       equityChart.data.labels = labels;
@@ -226,17 +597,29 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Overview tab
+  // ---------------------------------------------------------------------------
+
   function renderOverview(vm) {
-    document.getElementById("mMode").textContent = vm.mode;
+    document.getElementById("mMode").textContent = vm.mode ? String(vm.mode).toUpperCase() : "—";
     document.getElementById("mEq").textContent = vm.equity != null ? fmtMoney(vm.equity) : "—";
-    document.getElementById("mPnlD").textContent = vm.pnlDollars != null ? fmtMoney(vm.pnlDollars) : "—";
-    document.getElementById("mPnlP").textContent = vm.pnlPct != null ? fmtPct(vm.pnlPct) : "—";
-    document.getElementById("mCash").textContent = fmtMoney(vm.cash);
+
+    var pnlD = document.getElementById("mPnlD");
+    var pnlP = document.getElementById("mPnlP");
+    pnlD.textContent = vm.pnlDollars != null ? fmtMoneySigned(vm.pnlDollars) : "—";
+    pnlD.className = "val mono " + pnlClass(vm.pnlDollars);
+    pnlP.textContent = vm.pnlPct != null ? fmtPctSigned(vm.pnlPct) : "—";
+    pnlP.className = "val mono " + pnlClass(vm.pnlPct);
+
+    document.getElementById("mCash").textContent = isFiniteNum(vm.cash) ? fmtMoney(vm.cash) : "—";
     var mo = vm.marketOpen;
     document.getElementById("mMkt").textContent = mo === true ? "OPEN" : mo === false ? "CLOSED" : "—";
     var st = vm.capitalStage || {};
-    document.getElementById("mCap").textContent = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
+    var stageText = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
+    document.getElementById("mCap").textContent = stageText.toUpperCase();
 
+    renderOperatorSummary(vm);
     renderExecutionHealth(vm);
     renderEquityChart(vm);
 
@@ -245,11 +628,18 @@
     if (tb) {
       document.getElementById("posTopEmpty").style.display = top.length ? "none" : "block";
       tb.innerHTML = top.map(function (r) {
+        var ac = String(r.asset_class || "").toLowerCase();
         var q = num(r.net_qty, null);
-        var qs = q != null ? String(q) : "—";
         var up = num(r.unrealized_pnl_pct, null);
-        var ups = up != null ? fmtPct(up) : "—";
-        return "<tr><td>" + esc(r.symbol) + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + esc(ups) + "</td></tr>";
+        var stRow = exitStateFor(r, vm);
+        return "<tr>" +
+          "<td>" + esc(r.symbol) + "</td>" +
+          "<td class=\"mono\">" + esc(q != null ? fmtQty(q, ac === "crypto") : "—") + "</td>" +
+          "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
+          "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
+          "<td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td>" +
+          "<td>" + exitBadge(stRow.status) + "</td>" +
+          "</tr>";
       }).join("");
     }
 
@@ -260,47 +650,99 @@
       dt.innerHTML = decs.map(function (r) {
         var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
         var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
-        return "<tr><td class=\"mono\">" + esc(r.created_at || "") + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + esc(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
+        return "<tr><td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + decisionBadge(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
       }).join("");
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Positions tab
+  // ---------------------------------------------------------------------------
 
   function renderPositionsTab(vm) {
     var rows = vm.positions || [];
     document.getElementById("posAllEmpty").style.display = rows.length ? "none" : "block";
     var pb = document.querySelector("#tblPositionsFull tbody");
-    if (pb) {
-      pb.innerHTML = rows.map(function (r) {
-        var q = num(r.net_qty, null);
-        var qs = q != null ? String(q) : "—";
-        var mv = num(r.market_value, null);
-        var up = num(r.unrealized_pnl, null);
-        var upp = num(r.unrealized_pnl_pct, null);
-        var note = positionNote(r, vm.marketOpen);
-        return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(qs) + "</td><td class=\"mono\">" + fmtMoney(r.avg_entry_price) + "</td><td class=\"mono\">" + fmtMoney(r.current_price) + "</td><td class=\"mono\">" + (mv != null ? fmtMoney(mv) : "—") + "</td><td class=\"mono\">" + (up != null ? fmtMoney(up) : "—") + "</td><td class=\"mono\">" + (upp != null ? fmtPct(upp) : "—") + "</td><td><small>" + esc(note) + "</small></td></tr>";
-      }).join("");
-    }
+    if (!pb) return;
+    pb.innerHTML = rows.map(function (r) {
+      var ac = String(r.asset_class || "").toLowerCase();
+      var q = num(r.net_qty, null);
+      var qs = q != null ? fmtQty(q, ac === "crypto") : "—";
+      var mv = num(r.market_value, null);
+      var up = num(r.unrealized_pnl, null);
+      var upp = num(r.unrealized_pnl_pct, null);
+      var st = exitStateFor(r, vm);
+      var warnNote = st.mismatchWarn
+        ? '<span class="row-warn-note" title="Local qty differs from broker qty. Broker qty is used for real orders.">⚠ broker qty differs</span>'
+        : "";
+      return "<tr>" +
+        "<td>" + esc(r.symbol) + "</td>" +
+        "<td>" + esc(r.asset_class || "") + "</td>" +
+        "<td class=\"mono\">" + esc(qs) + "</td>" +
+        "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
+        "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
+        "<td class=\"mono\">" + esc(mv != null ? fmtMoney(mv) : "—") + "</td>" +
+        "<td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtMoneySigned(up) : "—") + "</td>" +
+        "<td class=\"mono " + pnlClass(upp) + "\">" + esc(upp != null ? fmtPctSigned(upp) : "—") + "</td>" +
+        "<td>" + exitBadge(st.status) + "</td>" +
+        "<td><small>" + esc(st.explanation) + "</small>" + warnNote + "</td>" +
+        "</tr>";
+    }).join("");
   }
+
+  // ---------------------------------------------------------------------------
+  // Activity tab
+  // ---------------------------------------------------------------------------
 
   function renderActivity(vm) {
     var tr = vm.recentTrades || [];
+    var trCount = document.getElementById("actTradesCount");
+    if (trCount) trCount.textContent = String(tr.length);
     document.getElementById("actTradesEmpty").style.display = tr.length ? "none" : "block";
     document.querySelector("#tblActivityTrades tbody").innerHTML = tr.map(function (t) {
-      return "<tr><td class=\"mono\">" + esc(t.created_at || "") + "</td><td>" + esc(t.symbol || "") + "</td><td>" + esc(t.side || "") + "</td><td class=\"mono\">" + esc(String(t.quantity != null ? t.quantity : "")) + "</td><td class=\"mono\">" + fmtMoney(t.price) + "</td><td class=\"mono\">" + fmtMoney(t.notional) + "</td><td>" + esc(t.status || "") + "</td></tr>";
+      var ac = String(t.asset_class || "").toLowerCase();
+      var q = num(t.quantity, null);
+      var qs = q != null ? fmtQty(q, ac === "crypto") : "—";
+      return "<tr>" +
+        "<td class=\"mono\">" + esc(fmtTimestamp(t.created_at || "")) + "</td>" +
+        "<td>" + esc(t.symbol || "") + "</td>" +
+        "<td>" + esc(t.side || "") + "</td>" +
+        "<td class=\"mono\">" + esc(qs) + "</td>" +
+        "<td class=\"mono\">" + esc(fmtPrice(t.price)) + "</td>" +
+        "<td class=\"mono\">" + esc(t.notional != null ? fmtMoney(t.notional) : "—") + "</td>" +
+        "<td>" + tradeStatusBadge(t.status) + "</td>" +
+        "</tr>";
     }).join("");
 
     var sig = vm.recentSignals || [];
+    var sigCount = document.getElementById("actSigCount");
+    if (sigCount) sigCount.textContent = String(sig.length);
     document.getElementById("actSigEmpty").style.display = sig.length ? "none" : "block";
     document.querySelector("#tblActivitySignals tbody").innerHTML = sig.map(function (s) {
-      return "<tr><td class=\"mono\">" + esc(s.created_at || "") + "</td><td>" + esc(s.symbol || "") + "</td><td>" + esc(s.signal_name || "") + "</td><td>" + esc(s.direction || "") + "</td><td class=\"mono\">" + esc(String(s.raw_value != null ? s.raw_value : "")) + "</td></tr>";
+      var score = s.raw_value != null ? s.raw_value : "";
+      return "<tr>" +
+        "<td class=\"mono\">" + esc(fmtTimestamp(s.created_at || "")) + "</td>" +
+        "<td>" + esc(s.symbol || "") + "</td>" +
+        "<td>" + esc(s.signal_name || "") + "</td>" +
+        "<td>" + esc(s.direction || "") + "</td>" +
+        "<td class=\"mono\">" + esc(String(score)) + "</td>" +
+        "</tr>";
     }).join("");
 
     var ed = vm.executionDecisions || [];
+    var decCount = document.getElementById("actDecCount");
+    if (decCount) decCount.textContent = String(ed.length);
     document.getElementById("actDecEmpty").style.display = ed.length ? "none" : "block";
     document.querySelector("#tblActivityDecisions tbody").innerHTML = ed.map(function (r) {
       var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
       var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
-      return "<tr><td class=\"mono\">" + esc(r.created_at || "") + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + esc(r.decision || "") + "</td><td>" + esc(reason) + "</td><td class=\"mono\">" + esc(String(r.score != null ? r.score : "")) + "</td></tr>";
+      return "<tr>" +
+        "<td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td>" +
+        "<td>" + esc(r.symbol || "") + "</td>" +
+        "<td>" + esc(r.side || "") + "</td>" +
+        "<td>" + decisionBadge(r.decision || "") + "</td>" +
+        "<td>" + esc(reason) + "</td>" +
+        "</tr>";
     }).join("");
 
     var perf = vm.performance || {};
@@ -330,9 +772,29 @@
     renderActivity(vm);
   }
 
+  function setDebugBlock(payload) {
+    var block = document.getElementById("debugStateBlock");
+    if (!block) return;
+    try {
+      block.textContent = JSON.stringify({
+        boot: "APP JS STARTED",
+        mode: payload && payload.mode,
+        portfolio_present: !!(payload && payload.portfolio),
+        positions: Array.isArray(payload && payload.open_positions) ? payload.open_positions.length : 0,
+        market_open: payload && payload.market_open,
+        section_status_keys: payload && payload.section_status ? Object.keys(payload.section_status) : []
+      }, null, 2);
+    } catch (e) {
+      block.textContent = "[debug serialization failed]";
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fetch loop
+  // ---------------------------------------------------------------------------
+
   async function fetchDashboard() {
-    var errEl = document.getElementById("dashError");
-    var st = document.getElementById("dashStatus");
+    setApiChip("info", "API …");
     try {
       var response = await fetch("/api/dashboard", { cache: "no-store" });
       console.log("FETCH /api/dashboard status", response.status);
@@ -341,20 +803,20 @@
       console.log("PAYLOAD", payload);
       var vm = mapDashboardPayload(payload);
       paintViewModel(vm);
-      if (errEl) {
-        errEl.style.display = "none";
-        errEl.textContent = "";
-      }
-      if (st) st.textContent = "Updated " + new Date().toLocaleString();
+      setError("");
+      applyHealthyChips(vm);
+      setDebugBlock(payload);
     } catch (error) {
       console.error(error);
-      if (errEl) {
-        errEl.style.display = "block";
-        errEl.textContent = "API failed: " + (error && error.message ? error.message : String(error));
-      }
-      if (st) st.textContent = "—";
+      var msg = error && error.message ? error.message : String(error);
+      setError(msg);
+      setApiChip("bad", "API error");
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Tabs + backtest wiring (unchanged behavior)
+  // ---------------------------------------------------------------------------
 
   function bindTabs() {
     var tabs = document.querySelectorAll(".tab-btn");
@@ -494,7 +956,7 @@
     bindTabs();
     wireBacktest();
     fetchDashboard();
-    setInterval(fetchDashboard, 30000);
+    setInterval(fetchDashboard, POLL_MS);
   }
 
   if (document.readyState === "loading") {

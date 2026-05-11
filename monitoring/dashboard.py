@@ -88,19 +88,59 @@ _PAGE = """<!DOCTYPE html>
       font-size: 14px;
     }
     header {
-      padding: 0.75rem 1rem;
+      padding: 14px 24px;
       border-bottom: 1px solid var(--border);
       display: flex;
       flex-wrap: wrap;
       align-items: center;
-      gap: 0.75rem;
+      gap: 0.85rem;
       justify-content: space-between;
+      max-width: 1280px;
+      margin: 0 auto;
+      width: 100%;
     }
     header h1 { margin: 0; font-size: 1.1rem; font-weight: 700; letter-spacing: 0.04em; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .header-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.65rem;
+    }
+    .updated-stamp { color: var(--muted); font-size: 12px; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 11px;
+      letter-spacing: 0.02em;
+      padding: 0.18rem 0.55rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: rgba(148, 163, 184, 0.08);
+      color: var(--muted);
+      white-space: nowrap;
+      transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+    }
+    .chip .dot {
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .chip.ok    { color: var(--good); border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.08); }
+    .chip.ok .dot    { background: var(--good); box-shadow: 0 0 6px rgba(52, 211, 153, 0.55); }
+    .chip.warn  { color: #fbbf24; border-color: rgba(251, 191, 36, 0.45); background: rgba(251, 191, 36, 0.08); }
+    .chip.warn .dot  { background: #fbbf24; box-shadow: 0 0 6px rgba(251, 191, 36, 0.55); }
+    .chip.bad   { color: var(--bad); border-color: rgba(248, 113, 113, 0.55); background: rgba(248, 113, 113, 0.1); }
+    .chip.bad .dot   { background: var(--bad); box-shadow: 0 0 6px rgba(248, 113, 113, 0.55); }
+    .chip.info  { color: var(--accent); border-color: rgba(56, 189, 248, 0.35); background: rgba(56, 189, 248, 0.08); }
+    .chip.info .dot  { background: var(--accent); }
     #dashError {
       display: none;
-      width: 100%;
+      max-width: 1280px;
+      margin: 12px auto 0;
       padding: 0.5rem 0.75rem;
       background: rgba(248,113,113,0.12);
       border: 1px solid var(--bad);
@@ -108,17 +148,15 @@ _PAGE = """<!DOCTYPE html>
       border-radius: 6px;
       font-size: 13px;
     }
-    #dashStatus {
-      color: var(--muted);
-      font-size: 12px;
-      transition: opacity var(--dur-fast) var(--ease-out);
-    }
     nav {
       display: flex;
       gap: 0.35rem;
-      padding: 0.5rem 1rem;
+      padding: 0.55rem 24px;
       border-bottom: 1px solid var(--border);
       flex-wrap: wrap;
+      max-width: 1280px;
+      margin: 0 auto;
+      width: 100%;
     }
     nav button {
       background: var(--card);
@@ -158,14 +196,14 @@ _PAGE = """<!DOCTYPE html>
       border-color: #7dd3fc;
       background: rgba(56, 189, 248, 0.18);
     }
-    main { padding: 0.75rem 1rem 2rem; max-width: 1200px; margin: 0 auto; }
+    main { padding: 20px 24px 48px; max-width: 1280px; margin: 0 auto; }
     .tab-panel { display: none; }
-    .tab-panel.active { display: block; }
+    .tab-panel.active { display: flex; flex-direction: column; gap: 16px; }
     .grid-metrics {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-      gap: 0.5rem;
-      margin-bottom: 1rem;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 0;
     }
     .metric {
       background: var(--card);
@@ -187,9 +225,9 @@ _PAGE = """<!DOCTYPE html>
     .card {
       background: var(--card);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.65rem 0.75rem;
-      margin-bottom: 0.75rem;
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      margin-bottom: 0;
       transition:
         border-color var(--dur-fast) var(--ease-out),
         box-shadow var(--dur-med) var(--ease-out);
@@ -218,6 +256,158 @@ _PAGE = """<!DOCTYPE html>
       background: rgba(56, 189, 248, 0.07);
     }
     .empty-hint { color: var(--muted); font-size: 13px; margin: 0.35rem 0; }
+    .pos-good { color: var(--good); }
+    .pos-bad  { color: var(--bad); }
+    .overview-split {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+      gap: 16px;
+      align-items: start;
+      margin-bottom: 0;
+    }
+    @media (max-width: 900px) {
+      .overview-split { grid-template-columns: 1fr; }
+    }
+    .ops-card { padding: 0.85rem 1rem; }
+    .ops-card h2 { margin: 0 0 0.55rem; font-size: 0.95rem; font-weight: 600; }
+    .ops-narrative {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .ops-narrative li {
+      position: relative;
+      padding: 0.32rem 0 0.32rem 1.1rem;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--text);
+      border-bottom: 1px dashed rgba(148, 163, 184, 0.14);
+    }
+    .ops-narrative li:last-child { border-bottom: none; }
+    .ops-narrative li::before {
+      content: "•";
+      position: absolute;
+      left: 0.2rem;
+      top: 0.35rem;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .ops-narrative li.ok::before    { color: var(--good); }
+    .ops-narrative li.warn::before  { color: #fbbf24; }
+    .ops-narrative li.bad::before   { color: var(--bad); }
+    .ops-narrative li .accent { color: var(--accent); }
+    .ops-narrative li .good   { color: var(--good); }
+    .ops-narrative li .warn-t { color: #fbbf24; }
+    .ops-narrative li .bad-t  { color: var(--bad); }
+    .ops-narrative li .mono   { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .chart-wrap { position: relative; height: 300px; }
+    .health-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 12px;
+      padding: 0.18rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(148, 163, 184, 0.08);
+      color: var(--muted);
+      transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+    }
+    .health-pill .dot {
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 50%;
+      background: var(--muted);
+      box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18);
+    }
+    .health-pill.ok    { color: var(--good); border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.08); }
+    .health-pill.ok .dot    { background: var(--good); box-shadow: 0 0 8px rgba(52, 211, 153, 0.55); }
+    .health-pill.warn  { color: #fbbf24; border-color: rgba(251, 191, 36, 0.45); background: rgba(251, 191, 36, 0.08); }
+    .health-pill.warn .dot  { background: #fbbf24; box-shadow: 0 0 8px rgba(251, 191, 36, 0.55); }
+    .health-pill.bad   { color: var(--bad); border-color: rgba(248, 113, 113, 0.55); background: rgba(248, 113, 113, 0.1); }
+    .health-pill.bad .dot   { background: var(--bad); box-shadow: 0 0 8px rgba(248, 113, 113, 0.55); }
+    .exit-status {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 0.18rem 0.45rem;
+      border-radius: 4px;
+      border: 1px solid currentColor;
+      white-space: nowrap;
+    }
+    .exit-status.hold     { color: var(--muted); }
+    .exit-status.can-sell { color: var(--good); background: rgba(52, 211, 153, 0.1); }
+    .exit-status.blocked  { color: #fbbf24;     background: rgba(251, 191, 36, 0.08); }
+    .exit-status.waiting  { color: var(--accent); background: rgba(56, 189, 248, 0.08); }
+    .exit-status.stale    { color: var(--bad);    background: rgba(248, 113, 113, 0.08); }
+    .row-warn-note {
+      display: inline-block;
+      margin-left: 0.4rem;
+      font-size: 11px;
+      color: #fbbf24;
+      cursor: help;
+    }
+    .status-badge {
+      display: inline-block;
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      padding: 0.14rem 0.4rem;
+      border-radius: 4px;
+      border: 1px solid currentColor;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .status-badge.filled   { color: var(--good);   background: rgba(52, 211, 153, 0.1); }
+    .status-badge.rejected { color: var(--bad);    background: rgba(248, 113, 113, 0.1); }
+    .status-badge.skipped  { color: var(--muted);  background: rgba(148, 163, 184, 0.1); }
+    .status-badge.pending  { color: var(--accent); background: rgba(56, 189, 248, 0.1); }
+    .scroll-table {
+      max-height: 420px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(15, 23, 42, 0.45);
+    }
+    .scroll-table table.data { font-size: 12px; }
+    .scroll-table table.data thead th {
+      position: sticky;
+      top: 0;
+      background: var(--card);
+      z-index: 1;
+      border-bottom: 1px solid var(--border);
+    }
+    details.section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.65rem 0.75rem;
+      margin-bottom: 0.6rem;
+      transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-med) var(--ease-out);
+    }
+    details.section:hover { border-color: rgba(56, 189, 248, 0.22); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.32); }
+    details.section > summary {
+      cursor: pointer;
+      list-style-position: outside;
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 0.1rem 0;
+      transition: color var(--dur-fast) var(--ease-out);
+    }
+    details.section > summary:hover { color: var(--accent); }
+    details.section > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
+    details.section > summary::after {
+      content: " ▸";
+      color: var(--muted);
+      font-weight: 400;
+      transition: transform var(--dur-fast) var(--ease-out);
+      display: inline-block;
+    }
+    details.section[open] > summary::after { content: " ▾"; }
+    details.section .section-body { margin-top: 0.55rem; }
+    .debug-panel { margin-top: 1.25rem; }
+    .debug-panel pre { font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; margin: 0.4rem 0 0; }
     /* Phase 1 — Execution Health (full-width; responsive tiles per execution-health-exit-safety plan) */
     .exec-health-panel {
       width: 100%;
@@ -360,7 +550,7 @@ _PAGE = """<!DOCTYPE html>
       outline-offset: 3px;
       border-radius: 4px;
     }
-    .chart-wrap { position: relative; height: 220px; margin-top: 0.35rem; }
+    /* chart-wrap height defined above (300px for equity) */
     .foot { font-size: 11px; color: var(--muted); margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
     .bt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.5rem; align-items: end; }
     .bt-grid label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 0.2rem; }
@@ -451,19 +641,27 @@ _PAGE = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-<div id="boot-debug" style="background:#300;color:#fff;padding:8px;font-family:monospace">
-JS NOT STARTED
-</div>
+<div id="boot-debug" hidden>JS NOT STARTED</div>
 <script>
-document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN";
-console.log("TINY SCRIPT RAN");
+(function () {
+  var bd = document.getElementById("boot-debug");
+  if (bd) bd.textContent = "TINY SCRIPT RAN";
+})();
 </script>
   <input type="hidden" id="dash-secret-holder" value="{{ dashboard_secret|e }}"/>
   <header>
     <h1 class="mono">QuantBot</h1>
-    <span id="dashStatus">Loading…</span>
-    <div id="dashError" role="alert"></div>
+    <div class="header-meta">
+      <span id="dashUpdatedAt" class="updated-stamp">Updated —</span>
+      <div class="chip-row" id="statusChips">
+        <span class="chip" id="chipMode" data-state="info"><span class="dot"></span><span class="chip-text">— mode</span></span>
+        <span class="chip" id="chipLive" data-state="info"><span class="dot"></span><span class="chip-text">Live —</span></span>
+        <span class="chip" id="chipApi" data-state="info"><span class="dot"></span><span class="chip-text">API connecting…</span></span>
+        <span class="chip info" id="chipPoll"><span class="dot"></span><span class="chip-text">Poll 30s</span></span>
+      </div>
+    </div>
   </header>
+  <div id="dashError" role="alert"></div>
   <nav aria-label="Tabs">
     <button type="button" class="tab-btn active" data-tab="overview">Overview</button>
     <button type="button" class="tab-btn" data-tab="positions">Positions</button>
@@ -482,20 +680,42 @@ console.log("TINY SCRIPT RAN");
         <div class="metric"><div class="lab">Market</div><div class="val mono" id="mMkt">—</div></div>
         <div class="metric"><div class="lab">Capital stage</div><div class="val mono" id="mCap">—</div></div>
       </div>
+
+      <div class="overview-split">
+        <div class="card">
+          <h2>Equity</h2>
+          <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
+          <p class="empty-hint" id="eqEmptyHint" style="display:none;">No equity series returned.</p>
+        </div>
+        <div class="card ops-card" id="opsSummaryCard">
+          <h2>Operator summary</h2>
+          <ul class="ops-narrative" id="opsSummaryList">
+            <li id="opsLineMode"     data-key="mode">Account mode unknown.</li>
+            <li id="opsLineLive"     data-key="live">Live trading state unknown.</li>
+            <li id="opsLineMarket"   data-key="market">Market state unknown.</li>
+            <li id="opsLineCash"     data-key="cash">Cash available: N/A.</li>
+            <li id="opsLinePositions" data-key="positions">Open positions: N/A.</li>
+            <li id="opsLineBuys"     data-key="buys">New buys: status unknown.</li>
+            <li id="opsLineStockExits" data-key="stock_exits">Stock exits: status unknown.</li>
+            <li id="opsLineCryptoExits" data-key="crypto_exits">Crypto exits: allowed 24/7 only if broker quantity exists.</li>
+            <li id="opsLineLastCycle" data-key="last_cycle">Last cycle: N/A.</li>
+          </ul>
+        </div>
+      </div>
+
       <div class="card exec-health-panel" id="execHealthPanel">
         <div class="exec-health-title-row">
-          <h2 style="margin:0;font-size:0.95rem;font-weight:600;">Execution health</h2>
+          <h2 style="margin:0;font-size:0.95rem;font-weight:600;">Broker &amp; Execution Health</h2>
           <span id="execHealthSeverity" class="eh-severity ok" style="display:none;">OK</span>
         </div>
         <p class="eh-helper" id="execHealthHelper">
-          Broker snapshot and exit-quality counters from the last logged worker cycle (Alpaca paper/live when enabled).
+          Broker values are authoritative. Local rows are reconciled when broker quantity is zero.
           <strong>PDT</strong> badges list symbols where same-day stock exits were deferred.
-          <strong>Stale / mismatch</strong> mean DB vs broker drift — reconcile carefully (symbol-scoped).
         </p>
         <div id="execHealthBanner" class="eh-banner" style="display:none;"></div>
         <div class="eh-grid" id="execHealthGrid"></div>
         <div class="badge-row" id="pdtBadgeRowWrap" style="display:none;">
-          <span class="lbl">PDT blocked symbols</span><span id="pdtBadgeRow"></span>
+          <span class="lbl">PDT guarded symbols</span><span id="pdtBadgeRow"></span>
         </div>
         <details class="eh-details" id="exitRowsWrap">
           <summary>Position exit rows (<span id="exitRowsCount">0</span>)</summary>
@@ -507,16 +727,12 @@ console.log("TINY SCRIPT RAN");
           </div>
         </details>
       </div>
-      <div class="card">
-        <h2>Equity</h2>
-        <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
-        <p class="empty-hint" id="eqEmptyHint" style="display:none;">No equity series returned.</p>
-      </div>
+
       <div class="card">
         <h2>Top open positions (5)</h2>
         <p class="empty-hint" id="posTopEmpty" style="display:none;">No positions returned.</p>
         <table class="data" id="tblOverviewPositions"><thead><tr>
-          <th>Symbol</th><th>Qty</th><th>Entry</th><th>Mark</th><th>uPnL %</th>
+          <th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>uPnL %</th><th>Status</th>
         </tr></thead><tbody></tbody></table>
       </div>
       <div class="card">
@@ -532,51 +748,58 @@ console.log("TINY SCRIPT RAN");
       <div class="card">
         <h2>All open positions</h2>
         <p class="empty-hint" id="posAllEmpty" style="display:none;">No positions returned.</p>
-        <div style="overflow-x:auto;">
+        <div class="scroll-table">
           <table class="data" id="tblPositionsFull"><thead><tr>
-            <th>Symbol</th><th>Class</th><th>Qty</th><th>Entry</th><th>Current</th><th>Mkt value</th><th>uPnL</th><th>uPnL %</th><th>Note</th>
+            <th>Symbol</th><th>Class</th><th>Qty</th><th>Entry</th><th>Current</th><th>Market Value</th><th>uPnL $</th><th>uPnL %</th><th>Exit Status</th><th>Explanation</th>
           </tr></thead><tbody></tbody></table>
         </div>
       </div>
     </section>
 
     <section id="panel-activity" class="tab-panel">
-      <div class="card">
-        <h2>Recent trades</h2>
-        <p class="empty-hint" id="actTradesEmpty" style="display:none;">No trades returned.</p>
-        <div style="overflow-x:auto;"><table class="data" id="tblActivityTrades"><thead><tr>
-          <th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Status</th>
-        </tr></thead><tbody></tbody></table></div>
-      </div>
-      <div class="card">
-        <h2>Recent signals</h2>
-        <p class="empty-hint" id="actSigEmpty" style="display:none;">No signals returned.</p>
-        <div style="overflow-x:auto;"><table class="data" id="tblActivitySignals"><thead><tr>
-          <th>Time</th><th>Symbol</th><th>Name</th><th>Dir</th><th>Value</th>
-        </tr></thead><tbody></tbody></table></div>
-      </div>
-      <div class="card">
-        <h2>Execution decisions</h2>
-        <p class="empty-hint" id="actDecEmpty" style="display:none;">No execution decisions returned.</p>
-        <div style="overflow-x:auto;"><table class="data" id="tblActivityDecisions"><thead><tr>
-          <th>Time</th><th>Symbol</th><th>Side</th><th>Decision</th><th>Reason</th><th>Score</th>
-        </tr></thead><tbody></tbody></table></div>
-      </div>
-      <div class="card">
-        <h2>Performance</h2>
-        <p class="mono" id="actPerfLine">—</p>
-      </div>
-      <div class="card">
-        <h2>Calibration</h2>
-        <p class="empty-hint" id="actCalEmpty" style="display:none;">No calibration rows.</p>
-        <table class="data" id="tblCalibration"><thead><tr>
-          <th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th>
-        </tr></thead><tbody></tbody></table>
-      </div>
-      <div class="card">
-        <h2>Section status</h2>
-        <pre class="sec mono" id="actSectionStatus">—</pre>
-      </div>
+      <details class="section" id="actTradesSec" open>
+        <summary>Recent trades (<span id="actTradesCount">0</span>)</summary>
+        <div class="section-body">
+          <p class="empty-hint" id="actTradesEmpty" style="display:none;">No trades returned.</p>
+          <div class="scroll-table"><table class="data" id="tblActivityTrades"><thead><tr>
+            <th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Notional</th><th>Status</th>
+          </tr></thead><tbody></tbody></table></div>
+        </div>
+      </details>
+      <details class="section" id="actSigSec">
+        <summary>Recent signals (<span id="actSigCount">0</span>)</summary>
+        <div class="section-body">
+          <p class="empty-hint" id="actSigEmpty" style="display:none;">No signals returned.</p>
+          <div class="scroll-table"><table class="data" id="tblActivitySignals"><thead><tr>
+            <th>Time</th><th>Symbol</th><th>Signal</th><th>Direction</th><th>Score</th>
+          </tr></thead><tbody></tbody></table></div>
+        </div>
+      </details>
+      <details class="section" id="actDecSec">
+        <summary>Execution decisions (<span id="actDecCount">0</span>)</summary>
+        <div class="section-body">
+          <p class="empty-hint" id="actDecEmpty" style="display:none;">No execution decisions returned.</p>
+          <div class="scroll-table"><table class="data" id="tblActivityDecisions"><thead><tr>
+            <th>Time</th><th>Symbol</th><th>Side</th><th>Decision</th><th>Reason</th><th>Score</th>
+          </tr></thead><tbody></tbody></table></div>
+        </div>
+      </details>
+      <details class="section" id="actPerfSec">
+        <summary>Performance &amp; calibration</summary>
+        <div class="section-body">
+          <p class="mono" id="actPerfLine">—</p>
+          <p class="empty-hint" id="actCalEmpty" style="display:none;">No calibration rows.</p>
+          <table class="data" id="tblCalibration"><thead><tr>
+            <th>Leg</th><th>N</th><th>Acc %</th><th>Weight</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </details>
+      <details class="section" id="actStatusSec">
+        <summary>Section status (raw)</summary>
+        <div class="section-body">
+          <pre class="sec mono" id="actSectionStatus">—</pre>
+        </div>
+      </details>
     </section>
 
     <section id="panel-backtest" class="tab-panel">
@@ -597,8 +820,22 @@ console.log("TINY SCRIPT RAN");
           <button type="button" id="btDownloadReportBtn" disabled>Download Report</button>
         </div>
         <p id="btStatus">Load defaults when you open this tab.</p>
+        <details class="section" id="btAdvancedSec" style="margin-top:0.75rem;">
+          <summary>Advanced (raw report &amp; debug)</summary>
+          <div class="section-body">
+            <p class="empty-hint">Run a backtest first, then use Copy Report or Download Report. Raw run JSON appears in the browser console.</p>
+          </div>
+        </details>
       </div>
     </section>
+
+    <details class="section debug-panel" id="debugPanelSec">
+      <summary>Debug</summary>
+      <div class="section-body">
+        <p class="mono" id="bootDebugMirror">—</p>
+        <pre id="debugStateBlock">{}</pre>
+      </div>
+    </details>
 
     <p class="foot mono">DB: {{ db }} · Poll every {{ refresh_sec }}s · <span id="pollFoot">HTTP only</span></p>
   </main>

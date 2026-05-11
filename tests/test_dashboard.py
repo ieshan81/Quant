@@ -72,16 +72,45 @@ def test_index_has_core_dom_ids(dash_app) -> None:
 
 
 def test_index_boot_debug_diagnostic_banner(dash_app) -> None:
+    """Boot probe and APP JS STARTED markers must exist in code, but the boot div is hidden by default."""
     client = dash_app.test_client()
     html, bundle, combined = _html_and_js(client)
     assert 'id="boot-debug"' in html
-    assert "JS NOT STARTED" in html
-    assert 'document.getElementById("boot-debug").textContent = "TINY SCRIPT RAN"' in html
+    assert "TINY SCRIPT RAN" in html
     assert 'id="dash-secret-holder"' in html
     assert 'src="/dashboard-app.js"' in html
-    assert 'boot.textContent = "APP JS STARTED"' in bundle
+    assert "APP JS STARTED" in bundle
     assert "_dh.value" in bundle
     assert "function startDashboard()" in bundle
+
+
+def test_index_boot_debug_is_hidden_by_default(dash_app) -> None:
+    """The diagnostic banner must not be visible to operators in the normal HTML — only the Debug panel mirrors it."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    # boot-debug element is rendered with `hidden` so it does not show.
+    assert '<div id="boot-debug" hidden>' in body
+    # The phrase "APP JS STARTED" must NOT be present as a visible top banner.
+    # It only lives in the JS bundle (set into the hidden div + Debug mirror).
+    assert "APP JS STARTED" not in body
+    # Debug panel exists at the bottom for diagnostics.
+    assert 'id="debugPanelSec"' in body
+    assert 'id="bootDebugMirror"' in body
+
+
+def test_header_status_chips_exist(dash_app) -> None:
+    """Header shows status chips + 'Updated <time>' stamp (no monolithic pill)."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    body = r.data.decode("utf-8", errors="ignore")
+    assert 'id="dashUpdatedAt"' in body
+    assert 'id="statusChips"' in body
+    for chip_id in ('id="chipMode"', 'id="chipLive"', 'id="chipApi"', 'id="chipPoll"'):
+        assert chip_id in body
+    # Poll cadence chip text reflects the 30s interval
+    assert "Poll 30s" in body
 
 
 def test_dashboard_app_js_route(dash_app) -> None:
@@ -98,7 +127,9 @@ def test_index_http_poll_only(dash_app) -> None:
     client = dash_app.test_client()
     _, bundle, _ = _html_and_js(client)
     assert 'fetch("/api/dashboard"' in bundle
-    assert "setInterval(fetchDashboard, 30000)" in bundle
+    # Poll cadence is set to 30000 ms via POLL_MS constant
+    assert "POLL_MS = 30000" in bundle
+    assert "setInterval(fetchDashboard, POLL_MS)" in bundle
     html = client.get("/").data.decode("utf-8", errors="ignore")
     assert "socket.io" not in html.lower()
 
@@ -142,10 +173,45 @@ def test_positions_tab_columns(dash_app) -> None:
     client = dash_app.test_client()
     html, bundle, _ = _html_and_js(client)
     assert "tblPositionsFull" in html
-    assert "<th>Note</th>" in html
+    # Polished column headers
+    assert "<th>Exit Status</th>" in html
+    assert "<th>Explanation</th>" in html
+    assert "<th>Market Value</th>" in html
+    assert "<th>uPnL $</th>" in html
+    # Plain-English explanation strings live in the JS bundle
     assert "Stock exit blocked: market closed" in bundle
-    assert "Crypto can trade 24/7" in bundle
-    assert "positionNote" in bundle
+    assert "Crypto can trade 24/7, waiting for signal" in bundle
+    assert "Broker qty zero; local row needs reconciliation" in bundle
+    assert "Holding: no exit signal" in bundle
+    assert "Broker qty is authoritative" in bundle
+    # Mismatch warning + exit state helper
+    assert "Local qty differs from broker qty" in bundle
+    assert "function exitStateFor" in bundle
+    # STALE state must be a real exit-status branch
+    assert '"STALE"' in bundle
+
+
+def test_overview_operator_summary_card(dash_app) -> None:
+    """Operator summary is rendered as plain-English sentence lines, not key/value pairs."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    body = r.data.decode("utf-8", errors="ignore")
+    assert 'id="opsSummaryCard"' in body
+    assert "Operator summary" in body
+    for op_id in (
+        'id="opsLineMode"',
+        'id="opsLineLive"',
+        'id="opsLineMarket"',
+        'id="opsLineCash"',
+        'id="opsLinePositions"',
+        'id="opsLineBuys"',
+        'id="opsLineStockExits"',
+        'id="opsLineCryptoExits"',
+        'id="opsLineLastCycle"',
+    ):
+        assert op_id in body
+    # Each line uses the .ops-narrative bullet list, not the old key/value table.
+    assert 'class="ops-narrative"' in body
 
 
 def test_overview_preview_limits_in_js(dash_app) -> None:
@@ -195,7 +261,95 @@ def test_exec_health_panel_in_overview_html(dash_app) -> None:
     body = r.data.decode("utf-8", errors="ignore")
     assert 'id="execHealthPanel"' in body
     assert 'id="execHealthGrid"' in body
-    assert "Execution health" in body
+    # Renamed title (HTML-escaped ampersand)
+    assert "Broker &amp; Execution Health" in body
+    # Helper sentence that explains broker authority
+    assert "Broker values are authoritative" in body
+
+
+def test_exec_health_tile_relabels(dash_app) -> None:
+    """Renamed user-facing labels live in the JS bundle; no scary 'Ghost positions' label anywhere."""
+    client = dash_app.test_client()
+    html, bundle, _ = _html_and_js(client)
+    assert "Stale local rows" in bundle
+    assert "Broker/local mismatches" in bundle
+    assert "Usable buy power" in bundle
+    assert "Last broker snapshot" in bundle
+    assert "DB lock waits/retries" in bundle
+    # No user-facing "Ghost positions" label
+    assert "Ghost positions" not in bundle
+    assert "Ghost positions" not in html
+
+
+def test_overview_top_positions_status_column(dash_app) -> None:
+    """Overview Top Open Positions preview includes a Status column."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    body = r.data.decode("utf-8", errors="ignore")
+    assert 'id="tblOverviewPositions"' in body
+    # Header row contains Status alongside the other columns
+    assert "<th>Symbol</th><th>Qty</th><th>Entry</th><th>Current</th><th>uPnL %</th><th>Status</th>" in body
+
+
+def test_recent_signals_columns(dash_app) -> None:
+    """Recent Signals table uses Time / Symbol / Signal / Direction / Score column headers."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "<th>Time</th><th>Symbol</th><th>Signal</th><th>Direction</th><th>Score</th>" in body
+
+
+def test_status_badge_helpers_in_bundle(dash_app) -> None:
+    """Trade/decision status badges use status-badge class with filled/rejected/skipped variants."""
+    client = dash_app.test_client()
+    _, bundle, _ = _html_and_js(client)
+    assert "status-badge" in bundle
+    assert "tradeStatusBadge" in bundle
+    assert "decisionBadge" in bundle
+
+
+def test_money_pct_formatters_signed(dash_app) -> None:
+    """Money/percent formatters provide signed variants and a conditional-decimal price helper."""
+    client = dash_app.test_client()
+    _, bundle, _ = _html_and_js(client)
+    assert "fmtMoneySigned" in bundle
+    assert "fmtPctSigned" in bundle
+    assert "fmtPrice" in bundle
+    assert "fmtQty" in bundle
+    assert "fmtTimestamp" in bundle
+
+
+def test_page_container_widths(dash_app) -> None:
+    """Centered max-width 1280px container with consistent padding."""
+    client = dash_app.test_client()
+    r = client.get("/")
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "max-width: 1280px" in body
+    assert "padding: 20px 24px 48px" in body
+
+
+def test_activity_collapsible_sections(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    body = r.data.decode("utf-8", errors="ignore")
+    # Recent Trades open by default; Signals and Decisions collapsed
+    assert '<details class="section" id="actTradesSec" open>' in body
+    assert '<details class="section" id="actSigSec">' in body
+    assert '<details class="section" id="actDecSec">' in body
+    # Internal scroll containers replace endless tables
+    assert "scroll-table" in body
+
+
+def test_backtest_advanced_collapsed_by_default(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/")
+    body = r.data.decode("utf-8", errors="ignore")
+    # Advanced section exists but does NOT have the `open` attribute
+    assert 'id="btAdvancedSec"' in body
+    advanced_open = '<details class="section" id="btAdvancedSec" open'
+    assert advanced_open not in body
+    # No raw JSON visible at top-level (no <pre id="btReport"> etc.)
+    assert 'id="btReport"' not in body
 
 
 def test_index_mapper_payload_paths(dash_app) -> None:
