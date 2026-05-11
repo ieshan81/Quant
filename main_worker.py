@@ -39,7 +39,7 @@ from data.data_store import (
     sync_from_alpaca,
 )
 from learning.rl_nudge import maybe_nudge_thresholds
-from execution import order_manager, reason_codes, stock_broker
+from execution import crypto_push_pull, order_manager, reason_codes, stock_broker
 from monitoring import alerts, trade_logger
 from risk import drawdown_guard
 from risk import portfolio_limiter
@@ -97,6 +97,7 @@ _sentiment_lock = threading.Lock()
 _blocked_exit_until: dict[str, float] = {}
 _blocked_exit_reason: dict[str, str] = {}
 _reconcile_queue: set[tuple[str, str]] = set()
+_crypto_last_exit_ts: dict[str, float] = {}
 _last_reconcile_iso: str | None = None
 
 # --- Sprint 11: news aggregator (asyncio loop in background thread) ---
@@ -1216,6 +1217,10 @@ def _check_and_execute_exits(
     Every cycle (before new signals): TP/SL/trailing vs mark for longs (sell) and shorts (buy to cover).
     Positions are the union of Alpaca + SQLite fills + the paper ledger.
     Max-hold uses filled-trade timestamps from SQLite ``trades`` (crypto 4h, stocks 8h).
+
+    **Phase 3 note:** profit-taking exits below are operational; full capital redeployment /
+    rotation after realized profit is not fully designed yet — do not treat that loop as complete.
+
     Returns ``(log_lines, len(all_positions), exits_filled_ok, health_meta)``.
     """
     stock_pos = stock_trader.get_open_positions()
@@ -1366,6 +1371,25 @@ def _check_and_execute_exits(
                     meta={"source": source},
                 )
             continue
+        if abs(float(local_qty_val) - float(qty)) > 1e-5:
+            broker_local_mismatch_count += 1
+            _persist_decision(
+                cycle_id=f"exit-{int(time.time())}",
+                asset_class=ac,
+                symbol=sym,
+                side="sell",
+                decision="hold",
+                reason_code=reason_codes.BROKER_LOCAL_MISMATCH,
+                score=None,
+                notional=float(qty) * float(mid),
+                quantity=float(qty),
+                price=mid,
+                meta={
+                    "broker_qty": float(qty),
+                    "local_qty": float(local_qty_val),
+                    "scope": "exit_path",
+                },
+            )
         entry_dt = _position_entry_datetime_from_trades(sym, ac, qty, db_p)
         _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
         max_hold_h = _max_hold_hours_for_symbol(sym)
@@ -1384,6 +1408,12 @@ def _check_and_execute_exits(
 
         if qty > 1e-12:
             sell_qty = qty
+
+            def _exit_rc_long(base: str) -> str:
+                if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
+                    return crypto_push_pull.map_generic_exit_to_crypto_trade_reason(base)
+                return base
+
             peak_px = position_exit_update_peak(db_path, ac, sym, float(mid))
             pnl_pct = (mid - entry) / entry
             trail_hit = (
@@ -1399,7 +1429,7 @@ def _check_and_execute_exits(
                     symbol=sym,
                     side="sell",
                     decision="rejected",
-                    reason_code="MARKET_CLOSED",
+                    reason_code=reason_codes.EXIT_BLOCKED_MARKET_CLOSED,
                     score=None,
                     notional=sell_qty * mid,
                     quantity=sell_qty,
@@ -1438,7 +1468,7 @@ def _check_and_execute_exits(
                             sym,
                             sell_qty,
                             mid,
-                            reason_code="STOP_LOSS",
+                            reason_code=_exit_rc_long("STOP_LOSS"),
                             meta={"risk_snapshot": {"sl_frac": sl_frac, "tp_frac": tp_frac}},
                         )
                     finally:
@@ -1455,9 +1485,11 @@ def _check_and_execute_exits(
                             price=mid,
                             status="filled",
                             broker_order_id=r.broker_order_id,
-                            reason_code="STOP_LOSS",
+                            reason_code=_exit_rc_long("STOP_LOSS"),
                             meta=None,
                         )
+                        if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
+                            _record_crypto_pull_cooldown(sym)
                     pnl = (mid - entry) * sell_qty
                     lines.append(f"STOP_LOSS {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
                     _snapshot_exit_row(
@@ -1501,7 +1533,7 @@ def _check_and_execute_exits(
                             sym,
                             sell_qty,
                             mid,
-                            reason_code="TRAILING_STOP",
+                            reason_code=_exit_rc_long("TRAILING_STOP"),
                             meta={
                                 "peak_price": peak_px,
                                 "trail_frac": trail_frac,
@@ -1522,9 +1554,11 @@ def _check_and_execute_exits(
                             price=mid,
                             status="filled",
                             broker_order_id=r.broker_order_id,
-                            reason_code="TRAILING_STOP",
+                            reason_code=_exit_rc_long("TRAILING_STOP"),
                             meta=None,
                         )
+                        if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
+                            _record_crypto_pull_cooldown(sym)
                     pnl = (mid - entry) * sell_qty
                     lines.append(f"TRAILING_STOP {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
                     _snapshot_exit_row(
@@ -1597,7 +1631,7 @@ def _check_and_execute_exits(
                             sym,
                             sell_qty,
                             mid,
-                            reason_code="TAKE_PROFIT",
+                            reason_code=_exit_rc_long("TAKE_PROFIT"),
                             meta={"risk_snapshot": {"tp_frac": tp_frac}, "eligibility": "allowed"},
                         )
                     finally:
@@ -1614,9 +1648,11 @@ def _check_and_execute_exits(
                             price=mid,
                             status="filled",
                             broker_order_id=r.broker_order_id,
-                            reason_code="TAKE_PROFIT",
+                            reason_code=_exit_rc_long("TAKE_PROFIT"),
                             meta=None,
                         )
+                        if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
+                            _record_crypto_pull_cooldown(sym)
                     else:
                         if str(getattr(r, "reason_code", "")) == "PDT_PROTECTION":
                             blocked_exits_count += 1
@@ -1673,7 +1709,7 @@ def _check_and_execute_exits(
                     ledger.set_telegram_on_fills(False)
                     try:
                         r = broker.place_sell_order(
-                            sym, sell_qty, mid, reason_code="MAX_HOLD_TIME", meta=None
+                            sym, sell_qty, mid, reason_code=_exit_rc_long("MAX_HOLD_TIME"), meta=None
                         )
                     finally:
                         ledger.set_telegram_on_fills(True)
@@ -1689,9 +1725,11 @@ def _check_and_execute_exits(
                             price=mid,
                             status="filled",
                             broker_order_id=r.broker_order_id,
-                            reason_code="MAX_HOLD_TIME",
+                            reason_code=_exit_rc_long("MAX_HOLD_TIME"),
                             meta=None,
                         )
+                        if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
+                            _record_crypto_pull_cooldown(sym)
                     pnl = (mid - entry) * sell_qty
                     lines.append(f"MAX_HOLD {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
                     _snapshot_exit_row(
@@ -1965,6 +2003,52 @@ def _use_local_paper_trader() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _crypto_push_pull_paper_safe() -> bool:
+    """True when live trading is off and we are on local or Alpaca paper."""
+    if config.trading_is_live():
+        return False
+    return _use_local_paper_trader() or config.alpaca_paper_trading_allowed()
+
+
+def _crypto_pull_prefixed_exit_reasons(rt: dict[str, float]) -> bool:
+    """Use CRYPTO_* trade labels when paper-safe and at least one of push/fast-exit is on."""
+    if not _crypto_push_pull_paper_safe():
+        return False
+    fast = bool(int(rt.get("crypto_fast_exit_enabled", 1)) == 1)
+    push = bool(int(rt.get("crypto_push_enabled", 0)) == 1)
+    return fast or push
+
+
+def _record_crypto_pull_cooldown(symbol: str) -> None:
+    k = str(symbol or "").strip()
+    if k:
+        _crypto_last_exit_ts[k] = time.time()
+
+
+def _broker_open_crypto_position_count(trader: PaperTrader) -> int:
+    if _use_local_paper_trader():
+        return sum(
+            1
+            for p in trader._positions.values()
+            if str(getattr(p, "asset_class", "") or "") == "crypto" and abs(float(p.quantity)) > 1e-12
+        )
+    rows = stock_broker.fetch_alpaca_open_positions()
+    n = 0
+    for r in rows or []:
+        sym = str(r.get("symbol") or "")
+        ac = str(r.get("asset_class") or "").lower()
+        if ac == "crypto" or "/" in sym:
+            n += 1
+    return n
+
+
+def _broker_holding_crypto_symbol(trader: PaperTrader, symbol: str) -> bool:
+    if _use_local_paper_trader():
+        pos = trader.position("crypto", symbol)
+        return pos is not None and float(pos.quantity) > 1e-8
+    return _get_real_position_qty(symbol, trader) > 1e-8
+
+
 def _alpaca_buying_power_snapshot() -> dict[str, float]:
     """Fetch Alpaca cash/buying power once for cycle-level buy gating."""
     out = {"cash": 0.0, "buying_power": 0.0, "usable_buying_power": 0.0}
@@ -2169,7 +2253,11 @@ def execute_cycle_results(
     *,
     cycle_id: str | None = None,
 ) -> dict[str, Any]:
-    """Sequential execution after parallel analysis (PaperTrader is not thread-safe)."""
+    """Sequential execution after parallel analysis (PaperTrader is not thread-safe).
+
+    When ``crypto_push_enabled`` is on and the process is paper-safe (local paper or Alpaca paper,
+    not live), crypto buys are additionally gated by :mod:`execution.crypto_push_pull`.
+    """
     import uuid as _uuid
 
     cid = cycle_id or _uuid.uuid4().hex[:10]
@@ -2188,6 +2276,21 @@ def execute_cycle_results(
     usable_buying_power = float(alpaca_snapshot.get("usable_buying_power", 0.0))
     max_usable_for_new_buys_stock = usable_buying_power * STOCK_BUY_BUFFER_PCT
     max_usable_for_new_buys_crypto = usable_buying_power
+    min_notional = float(config.MIN_ORDER_NOTIONAL_USD)
+    try:
+        crypto_min_notional = float(rt.get("crypto_min_order_notional", min_notional))
+    except (TypeError, ValueError):
+        crypto_min_notional = min_notional
+    stock_buys_disabled_cycle = (
+        (not _use_local_paper_trader())
+        and (config.alpaca_paper_trading_allowed() or config.trading_is_live())
+        and max_usable_for_new_buys_stock < min_notional
+    )
+    crypto_buys_disabled_cycle = (
+        (not _use_local_paper_trader())
+        and (config.alpaca_paper_trading_allowed() or config.trading_is_live())
+        and max_usable_for_new_buys_crypto < crypto_min_notional
+    )
     reserved_stock_notional = 0.0
     reserved_crypto_notional = 0.0
     stock_buy_attempts = 0
@@ -2202,6 +2305,44 @@ def execute_cycle_results(
         "stale_local_positions_count": 0,
         "broker_local_mismatch_count": 0,
     }
+    if stock_buys_disabled_cycle:
+        _persist_decision(
+            cycle_id=cid,
+            asset_class="stock",
+            symbol="-",
+            side="buy",
+            decision="rejected",
+            reason_code=reason_codes.STOCK_BUYS_DISABLED_INSUFFICIENT_BUYING_POWER,
+            score=None,
+            notional=max_usable_for_new_buys_stock,
+            quantity=0.0,
+            price=None,
+            meta={
+                "usable_buying_power": usable_buying_power,
+                "max_usable_for_new_buys_stock": max_usable_for_new_buys_stock,
+                "min_order_notional_usd": min_notional,
+                "scope": "cycle",
+            },
+        )
+    if crypto_buys_disabled_cycle:
+        _persist_decision(
+            cycle_id=cid,
+            asset_class="crypto",
+            symbol="-",
+            side="buy",
+            decision="rejected",
+            reason_code=reason_codes.CRYPTO_BUYS_DISABLED_INSUFFICIENT_BUYING_POWER,
+            score=None,
+            notional=max_usable_for_new_buys_crypto,
+            quantity=0.0,
+            price=None,
+            meta={
+                "usable_buying_power": usable_buying_power,
+                "max_usable_for_new_buys_crypto": max_usable_for_new_buys_crypto,
+                "crypto_min_order_notional": crypto_min_notional,
+                "scope": "cycle",
+            },
+        )
     stage_name = str(rt.get("_capital_stage", "MICRO")).upper()
     micro_stage = stage_name == "MICRO"
     max_stock_attempts = MICRO_MAX_STOCK_BUY_ATTEMPTS if micro_stage else 999
@@ -2238,6 +2379,18 @@ def execute_cycle_results(
                 if pos_e is not None and float(pos_e.quantity) > 1e-8:
                     eff_action = "SELL"
         direction = 1 if eff_action == "BUY" else (-1 if eff_action == "SELL" else 0)
+        sig_meta: dict[str, Any] = {
+            "action": eff_action,
+            "inputs": cs.signals,
+            "worker": "sprint12",
+        }
+        if eff_action == "BUY":
+            if cs.asset_class == "stock" and stock_buys_disabled_cycle:
+                sig_meta["signal_role"] = "analysis_only"
+                sig_meta["buy_pipeline"] = reason_codes.STOCK_BUYS_DISABLED_INSUFFICIENT_BUYING_POWER
+            elif cs.asset_class == "crypto" and crypto_buys_disabled_cycle:
+                sig_meta["signal_role"] = "analysis_only"
+                sig_meta["buy_pipeline"] = reason_codes.CRYPTO_BUYS_DISABLED_INSUFFICIENT_BUYING_POWER
         trader.log_signal_row(
             symbol=cs.symbol,
             signal_name="combined",
@@ -2245,7 +2398,7 @@ def execute_cycle_results(
             direction=direction,
             weight=1.0,
             combined_score=eff_score,
-            meta={"action": eff_action, "inputs": cs.signals, "worker": "sprint12"},
+            meta=sig_meta,
         )
         with _trader_lock:
             pos_short = trader.position(cs.asset_class, cs.symbol)
@@ -2295,6 +2448,12 @@ def execute_cycle_results(
             continue
         with _trader_lock:
             if eff_action == "BUY":
+                if cs.asset_class == "stock" and stock_buys_disabled_cycle:
+                    out["holds"] += 1
+                    continue
+                if cs.asset_class == "crypto" and crypto_buys_disabled_cycle:
+                    out["holds"] += 1
+                    continue
                 notional, bd = _buy_notional_breakdown(trader, cs.asset_class, rt)
                 cash = trader.cash_stocks if cs.asset_class == "stock" else trader.cash_crypto
                 stocks_open = portfolio_limiter.us_stock_market_open()
@@ -2333,6 +2492,43 @@ def execute_cycle_results(
                     )
                     out["holds"] += 1
                     continue
+                if (
+                    cs.asset_class == "crypto"
+                    and _crypto_push_pull_paper_safe()
+                    and bool(int(rt.get("crypto_push_enabled", 0)) == 1)
+                ):
+                    rem_crypto = max(0.0, max_usable_for_new_buys_crypto - reserved_crypto_notional)
+                    usable_cp = min(float(usable_buying_power), float(rem_crypto))
+                    ok_push, sub = crypto_push_pull.push_allowed(
+                        rt=rt,
+                        symbol=cs.symbol,
+                        combined_score=float(eff_score),
+                        crypto_buy_threshold=float(rt.get("crypto_buy_threshold", 0.0)),
+                        usable_crypto_buying_power=usable_cp,
+                        open_crypto_positions=_broker_open_crypto_position_count(trader),
+                        holding_symbol=_broker_holding_crypto_symbol(trader, cs.symbol),
+                        last_exit_ts_by_symbol=_crypto_last_exit_ts,
+                    )
+                    if not ok_push:
+                        code = crypto_push_pull.map_push_block_to_decision_code(sub)
+                        _persist_decision(
+                            cycle_id=cid,
+                            asset_class="crypto",
+                            symbol=cs.symbol,
+                            side="buy",
+                            decision="rejected",
+                            reason_code=code,
+                            score=eff_score,
+                            notional=0.0,
+                            quantity=0.0,
+                            price=mid,
+                            meta={
+                                "push_allowed_subreason": sub,
+                                "usable_crypto_buying_power": usable_cp,
+                            },
+                        )
+                        out["holds"] += 1
+                        continue
                 logger.info(
                     f"[buy_candidate] {cs.symbol} asset_class={cs.asset_class} score={eff_score:.4f} "
                     f"mid={mid:.4f} notional={notional:.2f} sleeve={bd['sleeve']:.2f} cash={cash:.2f} "
@@ -2500,6 +2696,28 @@ def execute_cycle_results(
                 pos = trader.position(cs.asset_class, cs.symbol)
                 if _use_local_paper_trader() and pos is not None and float(pos.quantity) > 1e-8:
                     live_qty = float(pos.quantity)
+                if (
+                    (not _use_local_paper_trader())
+                    and pos is not None
+                    and abs(float(pos.quantity) - float(live_qty)) > 1e-5
+                ):
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="sell",
+                        decision="hold",
+                        reason_code=reason_codes.BROKER_LOCAL_MISMATCH,
+                        score=eff_score,
+                        notional=float(live_qty) * float(mid),
+                        quantity=float(live_qty),
+                        price=mid,
+                        meta={
+                            "broker_qty": float(live_qty),
+                            "local_qty": float(pos.quantity),
+                            "scope": "signal_sell",
+                        },
+                    )
                 if live_qty > 1e-8:
                     entry = float(pos.avg_price) if pos is not None else float(mid)
                     trader.set_telegram_on_fills(False)
@@ -2660,6 +2878,16 @@ def run_trading_cycle_once(
         rt["stop_loss_pct"] = p["stop_loss_pct"]
     stock_trader = _StockExitBroker(trader, market_ctx)
     crypto_trader = _CryptoExitBroker(trader, market_ctx)
+    if (config.alpaca_paper_trading_allowed() or config.trading_is_live()) and not _use_local_paper_trader():
+        try:
+            _cli = stock_broker.get_rest_client()
+            if _cli is not None:
+                from data import broker_reconciliation as _broker_recon
+
+                _rs = _broker_recon.reconcile_sqlite_with_broker(config.DB_PATH, _cli, mode=config.MODE)
+                logger.info("[broker_reconcile] pre-exit summary={}", _rs)
+        except Exception:
+            logger.warning("[broker_reconcile] pre-exit run failed", exc_info=True)
     lines, _, _, exit_health = _check_and_execute_exits(stock_trader, crypto_trader, rt, config.DB_PATH)
     try:
         _drain_reconcile_queue(rt)

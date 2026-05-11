@@ -14,11 +14,12 @@ from loguru import logger
 
 import config
 
+from data.performance_trade_filters import TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
 from learning.calibrator import get_leg_accuracies
 from market_hours import nyse_regular_session_open
 
-_SYNC_REASON_CODES_FOR_MATCHING = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
-_SYNC_REASON_CODES_FOR_STATS = ("alpaca_sync", "alpaca_sync_open", "alpaca_real")
+_SYNC_REASON_CODES_FOR_MATCHING = TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
+_SYNC_REASON_CODES_FOR_STATS = TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
 
 # Cache durations for heavy Alpaca calls. WS pushes every 2s; portfolio account
 # heartbeat is fast enough to refresh each tick, but order/history fetches are
@@ -242,6 +243,7 @@ def fetch_recent_trades(conn: sqlite3.Connection | None = None, limit: int = 30)
         SELECT id, created_at, mode, asset_class, symbol, side, quantity, price, notional,
                status, broker_order_id, reason_code, meta_json
         FROM trades
+        WHERE (reason_code IS NULL OR reason_code != 'BROKER_RECONCILE_ADJUST')
         ORDER BY id DESC
         LIMIT ?
         """,
@@ -310,6 +312,54 @@ def fetch_open_positions_from_trades(conn: sqlite3.Connection | None = None) -> 
     return [_row_to_dict(r) for r in cur.fetchall()]
 
 
+def _local_net_qty_by_symbol_excluding_reconcile(
+    conn: sqlite3.Connection,
+) -> dict[tuple[str, str], float]:
+    """SQLite net qty per (asset_class, symbol), excluding synthetic reconciliation rows."""
+    cur = conn.execute(
+        """
+        SELECT asset_class, symbol,
+               SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
+        FROM trades
+        WHERE status = 'filled'
+          AND (reason_code IS NULL OR reason_code != 'BROKER_RECONCILE_ADJUST')
+        GROUP BY asset_class, symbol
+        HAVING ABS(net_qty) > 1e-8
+        """
+    )
+    m: dict[tuple[str, str], float] = {}
+    for r in cur.fetchall():
+        ac = str(r["asset_class"] or "").strip().lower()
+        sym = str(r["symbol"] or "").strip().upper()
+        m[(ac, sym)] = float(r["net_qty"] or 0.0)
+    return m
+
+
+def merge_open_positions_with_local_audit(
+    conn: sqlite3.Connection,
+    broker_positions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Broker ``net_qty`` remains the primary displayed quantity; if SQLite ledger (excluding
+    synthetic reconcile fills) differs, expose the local figure as ``local_qty_audit`` only.
+    """
+    local_map = _local_net_qty_by_symbol_excluding_reconcile(conn)
+    out: list[dict[str, Any]] = []
+    for p in broker_positions:
+        row = dict(p)
+        sym_raw = str(row.get("symbol") or "").strip()
+        sym_upper = sym_raw.upper()
+        ac = str(row.get("asset_class") or "stock").strip().lower()
+        lq = local_map.get((ac, sym_upper))
+        if lq is None and "/" in sym_raw:
+            lq = local_map.get(("crypto", sym_upper))
+        bq = float(row.get("net_qty") or 0.0)
+        if lq is not None and abs(float(lq) - bq) > 1e-5:
+            row["local_qty_audit"] = float(lq)
+        out.append(row)
+    return out
+
+
 def fetch_rl_learning_recent(conn: sqlite3.Connection | None = None, limit: int = 10) -> list[dict[str, Any]]:
     if conn is None:
         with _open_dashboard_sqlite() as local_conn:
@@ -351,7 +401,7 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection | None = None) -> list[tup
         SELECT mode, asset_class, symbol, side, price, status, reason_code
         FROM trades
         WHERE status = 'filled' AND price IS NOT NULL
-          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?))
+          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
         ORDER BY id ASC
         """,
         _SYNC_REASON_CODES_FOR_MATCHING,
@@ -378,7 +428,7 @@ def fetch_performance_summary(conn: sqlite3.Connection | None = None) -> dict[st
         """
         SELECT COUNT(*) FROM trades
         WHERE status = 'filled'
-          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?))
+          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
         """,
         _SYNC_REASON_CODES_FOR_STATS,
     )
@@ -617,6 +667,10 @@ def build_dashboard_payload(
     _record("alpaca_positions", positions_snap is not None)
     if positions_snap is not None:
         positions = positions_snap
+        try:
+            positions = merge_open_positions_with_local_audit(conn, positions)
+        except Exception:
+            logger.warning("[dashboard] merge broker/local positions failed", exc_info=True)
 
     perf_snap = snap.get("performance")
     _record("alpaca_performance", isinstance(perf_snap, dict) and bool(perf_snap))

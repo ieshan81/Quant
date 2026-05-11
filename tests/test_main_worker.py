@@ -238,7 +238,8 @@ def test_execute_cycle_skips_buy_when_insufficient_buying_power() -> None:
     mocked_submit.assert_not_called()
     assert summary["buys"] == 0
     assert summary["holds"] == 1
-    assert summary["buy_gate"]["skipped_count"] >= 1
+    # Cycle-level gate: no per-symbol INSUFFICIENT rows; skipped_count stays 0.
+    assert summary["buy_gate"]["skipped_count"] == 0
 
 
 def test_execute_cycle_non_fractionable_stock_skips_before_submit() -> None:
@@ -503,7 +504,8 @@ def test_buy_attempt_logged_only_after_gates_pass() -> None:
     ) as submit:
         mw.execute_cycle_results(t, [sig], _rt(), cycle_id="buyg1")
     assert submit.call_count == 0
-    assert any("[buy_candidate]" in x for x in logs)
+    # Cycle buy path skipped entirely when stock sleeve budget is below MIN_ORDER_NOTIONAL.
+    assert not any("[buy_candidate]" in x for x in logs)
     assert not any("[buy_attempt]" in x for x in logs)
 
 

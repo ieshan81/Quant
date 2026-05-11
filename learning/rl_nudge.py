@@ -11,6 +11,7 @@ from loguru import logger
 
 import config
 from data import data_store
+from data.performance_trade_filters import TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
 from monitoring import alerts
 
 
@@ -36,8 +37,10 @@ def _fifo_closed_pairs(conn: sqlite3.Connection) -> list[tuple[float, float]]:
         SELECT asset_class, symbol, side, price, status
         FROM trades
         WHERE status = 'filled' AND price IS NOT NULL
+          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
         ORDER BY id ASC
-        """
+        """,
+        TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE,
     )
     stacks: dict[tuple[str, str], deque[float]] = {}
     closed: list[tuple[float, float]] = []

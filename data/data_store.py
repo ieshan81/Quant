@@ -529,7 +529,39 @@ CREATE TABLE IF NOT EXISTS ops_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ops_metric_name ON ops_metrics(metric_name, created_at);
+
+-- Broker vs local SQLite trade history reconciliation audit (paper-first).
+CREATE TABLE IF NOT EXISTS reconciliation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    event_type TEXT NOT NULL,
+    asset_class TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    local_qty REAL,
+    broker_qty REAL,
+    action_taken TEXT NOT NULL,
+    meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_reconciliation_created ON reconciliation_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reconciliation_symbol ON reconciliation_events(asset_class, symbol);
+
+-- AI observer (read-only analyst; no orders, no config writes) — Phase 5.
+CREATE TABLE IF NOT EXISTS ai_observer_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cycle_id TEXT,
+    summary TEXT,
+    observed_issue TEXT,
+    suggested_followup TEXT,
+    confidence REAL,
+    source_data_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_observer_created ON ai_observer_notes(created_at DESC);
 """
+
+
 
 
 def _resolved_db_path(db_path: Path | str | None) -> Path:

@@ -23,6 +23,7 @@ from loguru import logger
 
 import config
 from data.data_store import get_connection, get_db_lock_count
+from data.performance_trade_filters import TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
 
 
 @dataclass
@@ -65,8 +66,10 @@ def _closed_round_trips(conn: sqlite3.Connection) -> list[float]:
             SELECT mode, asset_class, symbol, side, price, quantity
             FROM trades
             WHERE status = 'filled' AND price IS NOT NULL
+              AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
             ORDER BY id ASC
-            """
+            """,
+            TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE,
         )
     except sqlite3.OperationalError:
         return []
