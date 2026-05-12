@@ -251,6 +251,9 @@ def test_activity_export_endpoint_shape(dash_app) -> None:
     assert isinstance(data["recent_signals"], list)
     assert isinstance(data["reconciliation_events"], list)
     assert "rotation_plan" in data
+    assert "rotation_plan_stale" in data
+    assert "rotation_plan_cycle_id" in data
+    assert "cycle_summary_last_cycle_id" in data
     assert isinstance(data.get("why_no_sell_summary"), list)
     assert "broker_sync_events" in data
     assert "TELEGRAM" not in json.dumps(data).upper()
@@ -385,6 +388,230 @@ def test_activity_export_limit_100_checklist_aehl_merge_sync_split(dash_app) -> 
     assert data.get("rotation_plan") is not None
 
 
+def test_activity_export_rotation_plan_operator_verification(dash_app) -> None:
+    """GET /api/activity/export?limit=100: persisted planner output matches operator checklist."""
+    from data import data_store
+    from execution import reason_codes as rc
+    from execution.capital_rotation import build_rotation_plan, persist_rotation_plan
+
+    db = Path(config.DB_PATH)
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
+
+    rt = {
+        "rotation_enabled": 1.0,
+        "rotation_execute_enabled": 0.0,
+        "rotation_min_edge": 0.25,
+        "rotation_min_profit_to_trim_pct": 0.5,
+        "rotation_min_notional_to_free": 1.0,
+        "rotation_max_positions_to_liquidate_per_cycle": 1.0,
+        "rotation_allow_loss_cut": 0.0,
+        "rotation_max_loss_cut_pct": 2.0,
+        "rotation_reentry_cooldown_seconds": 900.0,
+        "rotation_prefer_crypto_when_market_closed": 1.0,
+        "buy_threshold": 0.1,
+        "crypto_buy_threshold": 0.05,
+        "sell_threshold": -0.1,
+        "pyramiding_enabled": 0.0,
+    }
+    positions = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "net_qty": 26.0,
+            "avg_entry_price": 1.0,
+            "current_price": 1.4958,
+            "market_value": 38.89,
+            "unrealized_pnl_pct": 49.58,
+        },
+        {
+            "symbol": "AAOI",
+            "asset_class": "stock",
+            "net_qty": 5.0,
+            "avg_entry_price": 10.0,
+            "current_price": 12.156,
+            "market_value": 60.78,
+            "unrealized_pnl_pct": 21.56,
+        },
+    ]
+    sig = [
+        {
+            "symbol": "AEHL",
+            "combined_score": -0.5,
+            "direction": -1,
+            "signal_name": "combined",
+            "meta": {"action": "SELL", "asset_class": "stock"},
+        },
+        {
+            "symbol": "AAOI",
+            "combined_score": 0.2,
+            "direction": 0,
+            "signal_name": "combined",
+            "meta": {"action": "HOLD", "asset_class": "stock"},
+        },
+        {
+            "symbol": "NVDA",
+            "combined_score": 0.9,
+            "direction": 1,
+            "signal_name": "combined",
+            "meta": {"action": "BUY", "asset_class": "stock"},
+        },
+    ]
+    plan = build_rotation_plan(
+        cycle_id="export_rotation_verify",
+        account={"cash": 0.26, "buying_power": 0.26, "usable_buying_power": 0.26, "equity": 117.65},
+        open_positions=positions,
+        recent_signals=sig,
+        execution_decisions=[],
+        market_open=False,
+        runtime_config=rt,
+    )
+    persist_rotation_plan(db, plan)
+
+    from monitoring import trade_logger
+
+    with data_store.get_connection(db) as conn:
+        trade_logger.log_ops_metric(
+            conn,
+            metric_name="cycle_activity_snapshot",
+            value=1.0,
+            window_label="export_rotation_verify",
+            meta={
+                "cycle_id": "export_rotation_verify",
+                "analyzed": 2,
+                "buys": 0,
+                "sells": 0,
+                "holds": 0,
+                "errors": 0,
+                "position_exit_decisions": [],
+                "sell_signal_audit": [],
+            },
+        )
+        conn.commit()
+
+    def _orders_forbidden(*_a, **_kw) -> None:
+        raise AssertionError("activity export must not submit broker orders")
+
+    client = dash_app.test_client()
+    with (
+        patch("monitoring.dashboard_data.get_alpaca_background_snapshot", return_value={}),
+        patch("execution.stock_broker.submit_market_order", side_effect=_orders_forbidden),
+    ):
+        r = client.get("/api/activity/export?limit=100")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    rp = data.get("rotation_plan")
+    assert rp is not None
+
+    ae = next(x for x in rp["holdings_ranked"] if x["symbol"] == "AEHL")
+    assert ae["suggested_action"] == "EXIT_CANDIDATE_BLOCKED_MARKET_CLOSED"
+    assert ae["rotation_eligibility"] == "eligible_after_market_open"
+    assert ae["exit_block_reason"] == rc.MARKET_CLOSED
+    hr = (ae.get("human_reason") or "").lower()
+    assert "profitable" in hr and "sell" in hr and "closed" in hr
+
+    ao = next(x for x in rp["holdings_ranked"] if x["symbol"] == "AAOI")
+    assert ao["suggested_action"] == "PROFIT_PROTECTION_WATCH"
+    assert ao["human_reason"] == "Profitable holding, no exit trigger yet."
+
+    cands = rp.get("candidates_ranked") or []
+    assert len(cands) > 0
+    nv = next(c for c in cands if c.get("symbol") == "NVDA")
+    assert nv.get("suggested_candidate_action") == "BUY_CANDIDATE_BLOCKED_LOW_BUYING_POWER"
+
+    assert "NO_ELIGIBLE_HOLDING" not in (rp.get("blocked_reasons") or [])
+    assert "NO_ELIGIBLE_CANDIDATE" not in (rp.get("blocked_reasons") or [])
+    assert rp.get("planner_version") == "rotation_planner_v2"
+    assert data.get("rotation_plan_stale") is False
+    assert data.get("rotation_plan_cycle_id") == "export_rotation_verify"
+    assert data.get("cycle_summary_last_cycle_id") == "export_rotation_verify"
+    assert rp["summary"]["diagnosis"] == (
+        "Rotation not actionable now because market is closed and buying power is below minimum order size."
+    )
+    assert rp["summary"]["rotation_execute_enabled"] is False
+
+
+def test_activity_export_marks_rotation_plan_stale_when_cycle_mismatch(dash_app) -> None:
+    from data import data_store
+    from execution.capital_rotation import build_rotation_plan, persist_rotation_plan
+    from monitoring import trade_logger
+
+    db = Path(config.DB_PATH)
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
+    rt = {
+        "rotation_enabled": 1.0,
+        "rotation_execute_enabled": 0.0,
+        "rotation_min_edge": 0.25,
+        "rotation_min_profit_to_trim_pct": 0.5,
+        "rotation_min_notional_to_free": 1.0,
+        "rotation_max_positions_to_liquidate_per_cycle": 1.0,
+        "rotation_allow_loss_cut": 0.0,
+        "rotation_max_loss_cut_pct": 2.0,
+        "rotation_reentry_cooldown_seconds": 900.0,
+        "rotation_prefer_crypto_when_market_closed": 1.0,
+        "buy_threshold": 0.1,
+        "crypto_buy_threshold": 0.05,
+        "sell_threshold": -0.1,
+        "pyramiding_enabled": 0.0,
+    }
+    plan = build_rotation_plan(
+        cycle_id="plan_old",
+        account={"cash": 1.0, "buying_power": 1.0, "usable_buying_power": 1.0, "equity": 2.0},
+        open_positions=[
+            {
+                "symbol": "X",
+                "asset_class": "stock",
+                "net_qty": 1.0,
+                "avg_entry_price": 10.0,
+                "current_price": 10.0,
+                "market_value": 10.0,
+                "unrealized_pnl_pct": 1.0,
+            }
+        ],
+        recent_signals=[
+            {
+                "symbol": "X",
+                "combined_score": 0.0,
+                "direction": 0,
+                "signal_name": "combined",
+                "meta": {"action": "HOLD", "asset_class": "stock"},
+            }
+        ],
+        execution_decisions=[],
+        market_open=False,
+        runtime_config=rt,
+    )
+    persist_rotation_plan(db, plan)
+    with data_store.get_connection(db) as conn:
+        trade_logger.log_ops_metric(
+            conn,
+            metric_name="cycle_activity_snapshot",
+            value=1.0,
+            window_label="cycle_new",
+            meta={
+                "cycle_id": "cycle_new",
+                "analyzed": 1,
+                "buys": 0,
+                "sells": 0,
+                "holds": 0,
+                "errors": 0,
+                "position_exit_decisions": [],
+                "sell_signal_audit": [],
+            },
+        )
+        conn.commit()
+
+    client = dash_app.test_client()
+    with patch("monitoring.dashboard_data.get_alpaca_background_snapshot", return_value={}):
+        r = client.get("/api/activity/export?limit=100")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["rotation_plan_stale"] is True
+    assert data["rotation_plan_cycle_id"] == "plan_old"
+    assert data["cycle_summary_last_cycle_id"] == "cycle_new"
+
+
 def test_build_activity_export_payload_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = tmp_path / "exp.sqlite3"
     monkeypatch.setattr("config.DB_PATH", db)
@@ -398,3 +625,6 @@ def test_build_activity_export_payload_db(tmp_path: Path, monkeypatch: pytest.Mo
         payload = build_activity_export_payload(conn, limit=10)
     assert isinstance(payload, dict)
     assert "warnings" in payload
+    assert "rotation_plan_stale" in payload
+    assert "rotation_plan_cycle_id" in payload
+    assert "cycle_summary_last_cycle_id" in payload

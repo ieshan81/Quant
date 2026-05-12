@@ -3180,6 +3180,14 @@ def run_trading_cycle_once(
         )
         summary["capital_rotation_plan"] = rot_plan
         _cr.persist_rotation_plan(config.DB_PATH, rot_plan)
+        logger.info(
+            "[rotation_plan] built cycle_id={} planner_version={} holdings={} candidates={} blocked_reasons={}",
+            rot_plan.get("cycle_id"),
+            rot_plan.get("planner_version"),
+            len(rot_plan.get("holdings_ranked") or []),
+            len(rot_plan.get("candidates_ranked") or []),
+            rot_plan.get("blocked_reasons"),
+        )
     except Exception:
         logger.debug("capital_rotation_plan skipped", exc_info=True)
     sorted_crypto_scores = sorted(

@@ -14,6 +14,8 @@ from typing import Any
 import config
 from execution import reason_codes as rc
 
+ROTATION_PLANNER_VERSION: str = "rotation_planner_v2"
+
 
 def _f(x: Any, default: float = 0.0) -> float:
     try:
@@ -281,41 +283,96 @@ def build_rotation_plan(
         exit_allowed = True
         exit_block_reason: str | None = None
         suggested = "WATCH"
+        human_reason = ""
+        rotation_eligibility = "watch_only"
+        eligible_after_market_open = False
+
+        sell_th = sell_th_crypto if ac == "crypto" else sell_th_stock
+        buy_th = buy_th_crypto if ac == "crypto" else buy_th_stock
+
+        upf = float(upct) if upct is not None else None
+        sell_like = action == "SELL" or signal_score <= sell_th
+        trim_like = (
+            upf is not None
+            and upf >= min_profit_trim
+            and float(signal_score) < float(buy_th) * 0.85
+        )
 
         if broker_qty <= 1e-12:
             exit_allowed = False
             exit_block_reason = rc.NO_BROKER_QTY
             suggested = "LOCKED_NO_BROKER_QTY"
-        elif ac == "stock" and not market_open:
-            exit_allowed = False
-            exit_block_reason = rc.MARKET_CLOSED
-            suggested = "LOCKED_MARKET_CLOSED"
+            rotation_eligibility = "watch_only"
+            human_reason = f"{sym}: No broker-reported quantity for this leg."
         elif sym in flags["pdt"]:
             exit_allowed = False
             exit_block_reason = rc.PDT_PROTECTION
             suggested = "LOCKED_PDT"
-
-        sell_th = sell_th_crypto if ac == "crypto" else sell_th_stock
-        buy_th = buy_th_crypto if ac == "crypto" else buy_th_stock
-
-        if suggested not in ("LOCKED_NO_BROKER_QTY", "LOCKED_MARKET_CLOSED", "LOCKED_PDT"):
-            if action == "SELL" or signal_score <= sell_th:
+            rotation_eligibility = "blocked_by_pdt"
+            human_reason = f"{sym}: Same-day round-trip (PDT) protection is blocking stock exits."
+        elif ac == "stock" and not market_open:
+            exit_allowed = False
+            exit_block_reason = rc.MARKET_CLOSED
+            if sell_like:
+                suggested = "EXIT_CANDIDATE_BLOCKED_MARKET_CLOSED"
+                rotation_eligibility = "eligible_after_market_open"
+                eligible_after_market_open = True
+                if upf is not None and upf > 0:
+                    human_reason = f"{sym} is profitable and has a SELL signal, but stock market is closed."
+                else:
+                    human_reason = f"{sym} has a SELL signal, but stock market is closed."
+            elif trim_like:
+                suggested = "PROFIT_PROTECTION_CANDIDATE"
+                rotation_eligibility = "eligible_after_market_open"
+                eligible_after_market_open = True
+                human_reason = (
+                    f"{sym} is above the profit-protection trim threshold; the stock market is closed."
+                )
+            elif upf is not None and upf > 0:
+                suggested = "PROFIT_PROTECTION_WATCH"
+                rotation_eligibility = "watch_only"
+                human_reason = "Profitable holding, no exit trigger yet."
+            else:
+                suggested = "WATCH"
+                rotation_eligibility = "blocked_by_market_closed"
+                human_reason = "US stock market is closed; no regular-session exit for this leg."
+        else:
+            # Crypto or US stock regular session — exits not blocked by exchange hours here.
+            if sell_like:
                 suggested = "EXIT_CANDIDATE"
-            elif upct is not None and float(upct) >= min_profit_trim and signal_score < buy_th * 0.85:
+                rotation_eligibility = "eligible_now"
+                human_reason = f"{sym}: SELL-side signal; exit would be allowed if rotation executed."
+            elif trim_like:
                 suggested = "TRIM_CANDIDATE"
+                rotation_eligibility = "eligible_now"
+                human_reason = (
+                    f"{sym}: Above profit trim threshold with soft momentum — trim candidate if rotation ran."
+                )
             elif (
                 allow_loss_cut
-                and upct is not None
-                and float(upct) <= -abs(max_loss_cut_pct)
+                and upf is not None
+                and upf <= -abs(max_loss_cut_pct)
                 and signal_score < 0
             ):
                 suggested = "EXIT_CANDIDATE"
-            elif signal_score >= buy_th and (upct is None or float(upct) >= 0):
+                rotation_eligibility = "eligible_now"
+                human_reason = f"{sym}: Loss-cut candidate under configured rotation rules."
+            elif signal_score >= buy_th and (upf is None or upf >= 0):
                 suggested = "KEEP"
+                rotation_eligibility = "watch_only"
+                human_reason = f"{sym}: Hold bias from latest combined signal."
+            elif upf is not None and upf > 0:
+                suggested = "PROFIT_PROTECTION_WATCH"
+                rotation_eligibility = "watch_only"
+                human_reason = "Profitable holding, no exit trigger yet."
             elif signal_score >= 0:
                 suggested = "WATCH"
+                rotation_eligibility = "watch_only"
+                human_reason = f"{sym}: Monitoring — no strong exit or add signal."
             else:
                 suggested = "WATCH"
+                rotation_eligibility = "watch_only"
+                human_reason = f"{sym}: Monitoring — signal soft vs thresholds."
 
         trend_score = 0.0
         if "trend_score" in meta and meta.get("trend_score") is not None:
@@ -352,6 +409,9 @@ def build_rotation_plan(
                 "exit_allowed": exit_allowed,
                 "exit_block_reason": exit_block_reason,
                 "suggested_action": suggested,
+                "human_reason": human_reason,
+                "rotation_eligibility": rotation_eligibility,
+                "eligible_after_market_open": bool(eligible_after_market_open),
                 "meta": meta_h,
             }
         )
@@ -382,29 +442,41 @@ def build_rotation_plan(
         entry_allowed = True
         entry_block: str | None = None
         cand_action = "WATCH"
+        rotation_eligibility_c = "watch_only"
 
         if usable < min_notional:
             entry_allowed = False
             entry_block = "BLOCKED_LOW_BUYING_POWER"
-            cand_action = "BLOCKED_LOW_BUYING_POWER"
+            buy_interest = action == "BUY" or direction > 0
+            if buy_interest and not already and not cooldown_sym:
+                cand_action = "BUY_CANDIDATE_BLOCKED_LOW_BUYING_POWER"
+                rotation_eligibility_c = "blocked_by_low_buying_power"
+            else:
+                cand_action = "BLOCKED_LOW_BUYING_POWER"
+                rotation_eligibility_c = "blocked_by_low_buying_power"
         elif already and not pyramiding:
             entry_allowed = False
             entry_block = "BLOCKED_ALREADY_HOLDING"
             cand_action = "BLOCKED_ALREADY_HOLDING"
+            rotation_eligibility_c = "watch_only"
         elif ac == "stock" and not market_open:
             entry_allowed = False
             entry_block = "BLOCKED_MARKET_CLOSED"
             cand_action = "BLOCKED_MARKET_CLOSED"
+            rotation_eligibility_c = "blocked_by_market_closed"
         elif cooldown_sym:
             entry_allowed = False
             entry_block = "BLOCKED_COOLDOWN"
             cand_action = "BLOCKED_COOLDOWN"
+            rotation_eligibility_c = "watch_only"
         elif action != "BUY" and direction <= 0:
             cand_action = "IGNORE"
             entry_allowed = False
             entry_block = None
+            rotation_eligibility_c = "watch_only"
         elif action == "BUY" or direction > 0:
             cand_action = "BUY_CANDIDATE"
+            rotation_eligibility_c = "eligible_now"
 
         cscore = compute_candidate_score(
             signal_score=score,
@@ -420,12 +492,14 @@ def build_rotation_plan(
                 "asset_class": ac,
                 "signal_score": round(score, 6),
                 "signal_action": action,
+                "direction": direction,
                 "candidate_score": round(cscore, 6),
                 "entry_allowed": entry_allowed,
                 "entry_block_reason": entry_block,
                 "already_holding": already,
                 "cooldown_active": cooldown_sym,
                 "suggested_candidate_action": cand_action,
+                "rotation_eligibility": rotation_eligibility_c,
             }
         )
 
@@ -440,9 +514,23 @@ def build_rotation_plan(
         for h in holdings_ranked:
             if h["exit_allowed"] and h["broker_qty"] > 0 and h["suggested_action"] not in (
                 "LOCKED_NO_BROKER_QTY",
-                "LOCKED_MARKET_CLOSED",
                 "LOCKED_PDT",
             ):
+                weakest = h
+                break
+    if weakest is None:
+        for h in holdings_ranked:
+            if h["broker_qty"] > 0 and h["suggested_action"] == "EXIT_CANDIDATE_BLOCKED_MARKET_CLOSED":
+                weakest = h
+                break
+    if weakest is None:
+        for h in holdings_ranked:
+            if h["broker_qty"] > 0 and h["suggested_action"] == "PROFIT_PROTECTION_CANDIDATE":
+                weakest = h
+                break
+    if weakest is None:
+        for h in holdings_ranked:
+            if h["broker_qty"] > 0 and h["suggested_action"] == "PROFIT_PROTECTION_WATCH":
                 weakest = h
                 break
 
@@ -505,21 +593,43 @@ def build_rotation_plan(
                 }
             )
     else:
+        has_funded_holding = any(float(h.get("broker_qty") or 0) > 1e-12 for h in holdings_ranked)
+        has_buy_interest = any(str(c.get("signal_action") or "").upper() == "BUY" for c in candidates_ranked)
+        has_buy_blocked_bp = any(
+            str(c.get("suggested_candidate_action") or "") == "BUY_CANDIDATE_BLOCKED_LOW_BUYING_POWER"
+            for c in candidates_ranked
+        )
         if not weakest:
-            blocked_reasons.append("NO_ELIGIBLE_HOLDING")
+            if not has_funded_holding:
+                blocked_reasons.append("NO_ELIGIBLE_HOLDING")
         if not best_cand:
-            blocked_reasons.append("NO_ELIGIBLE_CANDIDATE")
+            if not has_buy_interest and not has_buy_blocked_bp:
+                blocked_reasons.append("NO_ELIGIBLE_CANDIDATE")
+
+    diag_parts: list[str] = []
+    if not market_open:
+        diag_parts.append("market is closed")
+    if usable < min_notional:
+        diag_parts.append("buying power is below minimum order size")
+    if diag_parts:
+        diagnosis = "Rotation not actionable now because " + " and ".join(diag_parts) + "."
+    else:
+        diagnosis = (
+            "Rotation is in planner-only mode; see holdings_ranked and candidates_ranked for details."
+        )
 
     summary = {
         "actionable": False,
         "rotation_ready": rotation_ready,
         "rotation_execute_enabled": rotation_execute_enabled,
         "reason": "Planner only; execution disabled",
+        "diagnosis": diagnosis,
     }
     if rotation_ready and rotation_execute_enabled:
         summary["reason"] = "Execution path deferred in this phase"
 
     plan: dict[str, Any] = {
+        "planner_version": ROTATION_PLANNER_VERSION,
         "cycle_id": str(cycle_id),
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "mode": str(getattr(config, "MODE", "paper")),
@@ -569,25 +679,44 @@ def persist_rotation_plan(db_path: str | Path, plan: dict[str, Any]) -> None:
 
 
 def fetch_latest_rotation_plan(db_path: str | Path | None = None) -> dict[str, Any] | None:
-    """Return latest persisted plan dict, or ``None``."""
+    """Return persisted plan with the newest ``generated_at`` (not merely highest row id).
+
+    Scans recent ``capital_rotation_plan`` rows so an older plan re-inserted later
+    does not override a newer snapshot.
+    """
     from data.data_store import get_connection
 
     p = Path(str(db_path or config.DB_PATH))
     try:
         with get_connection(p) as conn:
-            row = conn.execute(
+            rows = conn.execute(
                 """
-                SELECT meta_json FROM ops_metrics
+                SELECT id, meta_json FROM ops_metrics
                 WHERE metric_name = 'capital_rotation_plan'
-                ORDER BY id DESC LIMIT 1
+                  AND meta_json IS NOT NULL
+                  AND meta_json != ''
+                ORDER BY id DESC
+                LIMIT 100
                 """
-            ).fetchone()
+            ).fetchall()
     except Exception:
         return None
-    if not row or row[0] is None:
-        return None
-    try:
-        data = json.loads(str(row[0]))
-        return data if isinstance(data, dict) else None
-    except json.JSONDecodeError:
-        return None
+    best: dict[str, Any] | None = None
+    best_ga = ""
+    best_id = -1
+    for rid, raw in rows or []:
+        if raw is None:
+            continue
+        try:
+            data = json.loads(str(raw))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        ga = str(data.get("generated_at") or "").strip()
+        rid_i = int(rid or 0)
+        if ga > best_ga or (ga == best_ga and rid_i > best_id):
+            best_ga = ga
+            best_id = rid_i
+            best = data
+    return best

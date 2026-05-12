@@ -581,6 +581,20 @@ def build_activity_export_payload(
     }
     from execution.capital_rotation import fetch_latest_rotation_plan
 
+    last_cid = _cid
     rp = fetch_latest_rotation_plan(str(config.DB_PATH))
+    rp_cid = ""
+    if isinstance(rp, dict):
+        rp_cid = str(rp.get("cycle_id") or "").strip()
+
+    rotation_plan_stale = False
+    if rp is None:
+        rotation_plan_stale = True
+    elif last_cid and rp_cid != last_cid:
+        rotation_plan_stale = True
+
     payload["rotation_plan"] = _scrub(rp) if rp else None
+    payload["rotation_plan_stale"] = rotation_plan_stale
+    payload["rotation_plan_cycle_id"] = (rp_cid or None) if rp else None
+    payload["cycle_summary_last_cycle_id"] = last_cid or None
     return _scrub(payload)

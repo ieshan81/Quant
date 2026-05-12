@@ -60,6 +60,10 @@ def test_low_buying_power_blocks_candidate() -> None:
     )
     cands = plan["candidates_ranked"]
     assert any(x.get("entry_block_reason") == "BLOCKED_LOW_BUYING_POWER" for x in cands)
+    assert any(x.get("suggested_candidate_action") == "BUY_CANDIDATE_BLOCKED_LOW_BUYING_POWER" for x in cands)
+    nv = next(c for c in cands if c["symbol"] == "NVDA")
+    assert nv["rotation_eligibility"] == "blocked_by_low_buying_power"
+    assert "NO_ELIGIBLE_CANDIDATE" not in plan["blocked_reasons"]
 
 
 def test_stock_profitable_market_closed_exit_blocked() -> None:
@@ -102,7 +106,164 @@ def test_stock_profitable_market_closed_exit_blocked() -> None:
     aapl = next(h for h in plan["holdings_ranked"] if h["symbol"] == "AAPL")
     assert aapl["exit_allowed"] is False
     assert aapl["exit_block_reason"] == rc.MARKET_CLOSED
-    assert aapl["suggested_action"] == "LOCKED_MARKET_CLOSED"
+    assert aapl["suggested_action"] == "PROFIT_PROTECTION_WATCH"
+    assert "profitable holding" in aapl["human_reason"].lower()
+    assert aapl["rotation_eligibility"] == "watch_only"
+    assert "NO_ELIGIBLE_HOLDING" not in plan["blocked_reasons"]
+
+
+def test_aehl_like_exit_candidate_blocked_market_closed() -> None:
+    positions = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "net_qty": 26.0,
+            "avg_entry_price": 1.0,
+            "current_price": 1.4958,
+            "market_value": 38.89,
+            "unrealized_pnl_pct": 49.58,
+        }
+    ]
+    sig = [
+        {
+            "symbol": "AEHL",
+            "combined_score": -0.5,
+            "direction": -1,
+            "signal_name": "combined",
+            "meta": {"action": "SELL", "asset_class": "stock"},
+        },
+    ]
+    plan = build_rotation_plan(
+        cycle_id="aehl1",
+        account={"cash": 0.26, "buying_power": 0.26, "usable_buying_power": 0.26, "equity": 117.65},
+        open_positions=positions,
+        recent_signals=sig,
+        execution_decisions=[],
+        market_open=False,
+        runtime_config=_rt(rotation_min_edge=0.01, rotation_min_notional_to_free=0.01),
+    )
+    ae = next(h for h in plan["holdings_ranked"] if h["symbol"] == "AEHL")
+    assert ae["suggested_action"] == "EXIT_CANDIDATE_BLOCKED_MARKET_CLOSED"
+    assert ae["latest_signal_action"] == "SELL"
+    assert pytest.approx(49.58, rel=0, abs=0.02) == float(ae["unrealized_pnl_pct"] or 0)
+    assert ae["exit_allowed"] is False
+    assert ae["exit_block_reason"] == rc.MARKET_CLOSED
+    assert "profitable" in ae["human_reason"].lower()
+    assert "sell" in ae["human_reason"].lower()
+    assert "closed" in ae["human_reason"].lower()
+    assert ae["rotation_eligibility"] == "eligible_after_market_open"
+    assert ae["eligible_after_market_open"] is True
+    assert plan["weakest_holding"]["symbol"] == "AEHL"
+    assert "NO_ELIGIBLE_HOLDING" not in plan["blocked_reasons"]
+
+
+def test_aaoi_like_profit_protection_watch() -> None:
+    positions = [
+        {
+            "symbol": "AAOI",
+            "asset_class": "stock",
+            "net_qty": 5.0,
+            "avg_entry_price": 10.0,
+            "current_price": 12.156,
+            "market_value": 60.78,
+            "unrealized_pnl_pct": 21.56,
+        }
+    ]
+    sig = [
+        {
+            "symbol": "AAOI",
+            "combined_score": 0.2,
+            "direction": 0,
+            "signal_name": "combined",
+            "meta": {"action": "HOLD", "asset_class": "stock"},
+        },
+    ]
+    plan = build_rotation_plan(
+        cycle_id="aaoi1",
+        account={"cash": 100.0, "buying_power": 100.0, "usable_buying_power": 100.0, "equity": 200.0},
+        open_positions=positions,
+        recent_signals=sig,
+        execution_decisions=[],
+        market_open=False,
+        runtime_config=_rt(),
+    )
+    row = next(h for h in plan["holdings_ranked"] if h["symbol"] == "AAOI")
+    assert row["suggested_action"] == "PROFIT_PROTECTION_WATCH"
+    assert row["human_reason"] == "Profitable holding, no exit trigger yet."
+    assert pytest.approx(21.56, rel=0, abs=0.02) == float(row["unrealized_pnl_pct"] or 0)
+
+
+def test_profit_protection_candidate_trim_market_closed() -> None:
+    """Profitable + soft momentum trim rule while stock session closed."""
+    positions = [
+        {
+            "symbol": "BIG",
+            "asset_class": "stock",
+            "net_qty": 1.0,
+            "avg_entry_price": 10.0,
+            "current_price": 12.0,
+            "market_value": 12.0,
+            "unrealized_pnl_pct": 20.0,
+        }
+    ]
+    sig = [
+        {
+            "symbol": "BIG",
+            "combined_score": 0.05,
+            "direction": 0,
+            "signal_name": "combined",
+            "meta": {"action": "HOLD", "asset_class": "stock"},
+        },
+    ]
+    plan = build_rotation_plan(
+        cycle_id="trim1",
+        account={"cash": 5000, "buying_power": 5000, "usable_buying_power": 5000, "equity": 10000.0},
+        open_positions=positions,
+        recent_signals=sig,
+        execution_decisions=[],
+        market_open=False,
+        runtime_config=_rt(),
+    )
+    row = next(h for h in plan["holdings_ranked"] if h["symbol"] == "BIG")
+    assert row["suggested_action"] == "PROFIT_PROTECTION_CANDIDATE"
+    assert row["rotation_eligibility"] == "eligible_after_market_open"
+    assert row["eligible_after_market_open"] is True
+
+
+def test_summary_diagnosis_market_closed_and_low_buying_power() -> None:
+    positions = [
+        {
+            "symbol": "ZZ",
+            "asset_class": "stock",
+            "net_qty": 1.0,
+            "avg_entry_price": 5.0,
+            "current_price": 5.2,
+            "market_value": 5.2,
+            "unrealized_pnl_pct": 4.0,
+        }
+    ]
+    sig = [
+        {
+            "symbol": "NVDA",
+            "combined_score": 0.9,
+            "direction": 1,
+            "signal_name": "combined",
+            "meta": {"action": "BUY", "asset_class": "stock"},
+        },
+    ]
+    plan = build_rotation_plan(
+        cycle_id="diag1",
+        account={"cash": 0.1, "buying_power": 0.1, "usable_buying_power": 0.1, "equity": 50.0},
+        open_positions=positions,
+        recent_signals=sig,
+        execution_decisions=[],
+        market_open=False,
+        runtime_config=_rt(),
+    )
+    d = plan["summary"]["diagnosis"]
+    assert d == (
+        "Rotation not actionable now because market is closed and buying power is below minimum order size."
+    )
 
 
 def test_crypto_rotation_ready_execution_disabled() -> None:
@@ -308,6 +469,41 @@ def test_persist_and_fetch_rotation_plan(tmp_path: Path, monkeypatch: pytest.Mon
     loaded = fetch_latest_rotation_plan(db)
     assert loaded is not None
     assert loaded["cycle_id"] == "persist1"
+
+
+def test_fetch_latest_rotation_plan_prefers_newer_generated_at(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Higher row id must not win over a newer ``generated_at`` timestamp."""
+    db = tmp_path / "rot_ga.sqlite3"
+    monkeypatch.setattr(config, "DB_PATH", db)
+    from data import data_store
+    from monitoring import trade_logger
+
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
+    newer = {
+        "planner_version": "rotation_planner_v2",
+        "cycle_id": "newer",
+        "generated_at": "2025-06-01T12:00:00Z",
+        "holdings_ranked": [],
+        "candidates_ranked": [],
+    }
+    older = {
+        "planner_version": "rotation_planner_v2",
+        "cycle_id": "older",
+        "generated_at": "2024-01-01T12:00:00Z",
+        "holdings_ranked": [],
+        "candidates_ranked": [],
+    }
+    with data_store.get_connection(db) as conn:
+        trade_logger.log_ops_metric(
+            conn, metric_name="capital_rotation_plan", value=0.0, window_label="n", meta=newer
+        )
+        trade_logger.log_ops_metric(
+            conn, metric_name="capital_rotation_plan", value=0.0, window_label="o", meta=older
+        )
+    got = fetch_latest_rotation_plan(db)
+    assert got is not None
+    assert got["cycle_id"] == "newer"
 
 
 @pytest.fixture()
