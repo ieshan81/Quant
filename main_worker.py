@@ -3103,6 +3103,7 @@ def run_trading_cycle_once(
     summary["analyzed"] = len(results)
     try:
         from monitoring.cycle_activity_export import blocked_exits_from_decisions, compile_position_exit_decisions
+        from monitoring.dashboard_data import fetch_execution_decisions_for_cycle
 
         eh_snap = dict(summary.get("execution_health") or {})
         rows_exit = list(eh_snap.get("position_exit_rows") or [])
@@ -3111,10 +3112,16 @@ def run_trading_cycle_once(
             for r in results
             if not r.error
         ]
+        _cid = str(summary.get("cycle_id") or "").strip()
+        cycle_decs: list[dict[str, Any]] = []
+        with get_connection(config.DB_PATH) as conn:
+            cycle_decs = fetch_execution_decisions_for_cycle(conn, cycle_id=_cid) if _cid else []
         compiled_exit_decisions = compile_position_exit_decisions(
             position_exit_rows=rows_exit,
             sell_signal_audit=list(summary.get("sell_signal_audit") or []),
             cycle_signals=cycle_signals,
+            execution_decisions=cycle_decs,
+            cycle_id=_cid if _cid else None,
         )
         summary["position_exit_decisions"] = compiled_exit_decisions
         summary["blocked_exits_cycle"] = blocked_exits_from_decisions(compiled_exit_decisions)

@@ -14,7 +14,10 @@ from loguru import logger
 
 import config
 
-from data.performance_trade_filters import TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
+from data.performance_trade_filters import (
+    BROKER_SYNC_TRADE_REASON_CODES,
+    TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE,
+)
 from learning.calibrator import get_leg_accuracies
 from market_hours import nyse_regular_session_open
 
@@ -238,16 +241,18 @@ def fetch_recent_trades(conn: sqlite3.Connection | None = None, limit: int = 30)
     if conn is None:
         with _open_dashboard_sqlite() as local_conn:
             return fetch_recent_trades(local_conn, limit)
+    sync_ph = ",".join(["?"] * len(BROKER_SYNC_TRADE_REASON_CODES))
     cur = conn.execute(
-        """
+        f"""
         SELECT id, created_at, mode, asset_class, symbol, side, quantity, price, notional,
                status, broker_order_id, reason_code, meta_json
         FROM trades
         WHERE (reason_code IS NULL OR reason_code != 'BROKER_RECONCILE_ADJUST')
+          AND (reason_code IS NULL OR reason_code NOT IN ({sync_ph}))
         ORDER BY id DESC
         LIMIT ?
         """,
-        (limit,),
+        (*BROKER_SYNC_TRADE_REASON_CODES, int(limit)),
     )
     out: list[dict[str, Any]] = []
     for r in cur.fetchall():
@@ -260,6 +265,85 @@ def fetch_recent_trades(conn: sqlite3.Connection | None = None, limit: int = 30)
         else:
             d["meta"] = None
         del d["meta_json"]
+        out.append(d)
+    return out
+
+
+def fetch_recent_broker_sync_trades(
+    conn: sqlite3.Connection | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Alpaca/broker sync ledger rows (not strategy fills) for audit export."""
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_recent_broker_sync_trades(local_conn, limit)
+    sync_ph = ",".join(["?"] * len(BROKER_SYNC_TRADE_REASON_CODES))
+    try:
+        cur = conn.execute(
+            f"""
+            SELECT id, created_at, mode, asset_class, symbol, side, quantity, price, notional,
+                   status, broker_order_id, reason_code, meta_json
+            FROM trades
+            WHERE reason_code IN ({sync_ph})
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (*BROKER_SYNC_TRADE_REASON_CODES, int(limit)),
+        )
+    except sqlite3.OperationalError:
+        return []
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        d = _row_to_dict(r)
+        if d.get("meta_json"):
+            try:
+                d["meta"] = json.loads(str(d["meta_json"]))
+            except json.JSONDecodeError:
+                d["meta"] = None
+        else:
+            d["meta"] = None
+        del d["meta_json"]
+        out.append(d)
+    return out
+
+
+def fetch_execution_decisions_for_cycle(
+    conn: sqlite3.Connection | None = None,
+    *,
+    cycle_id: str,
+    limit: int = 300,
+) -> list[dict[str, Any]]:
+    """All execution_decisions rows for one worker cycle (merge into exit export)."""
+    if not cycle_id:
+        return []
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_execution_decisions_for_cycle(local_conn, cycle_id=cycle_id, limit=limit)
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, created_at, cycle_id, asset_class, symbol, side, decision,
+                   reason_code, score, notional, quantity, price, strategy_name,
+                   strategy_version, meta_json
+            FROM execution_decisions
+            WHERE cycle_id = ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (str(cycle_id), int(limit)),
+        )
+    except sqlite3.OperationalError:
+        return []
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        d = _row_to_dict(r)
+        if d.get("meta_json"):
+            try:
+                d["meta"] = json.loads(str(d["meta_json"]))
+            except json.JSONDecodeError:
+                d["meta"] = None
+        else:
+            d["meta"] = None
+        d.pop("meta_json", None)
         out.append(d)
     return out
 

@@ -13,3 +13,10 @@ TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE: tuple[str, ...] = (
     "alpaca_real",
     "BROKER_RECONCILE_ADJUST",
 )
+
+# Alpaca→SQLite broker sync rows — not user-facing “trades” in activity export.
+BROKER_SYNC_TRADE_REASON_CODES: tuple[str, ...] = (
+    "alpaca_sync",
+    "alpaca_sync_open",
+    "alpaca_real",
+)

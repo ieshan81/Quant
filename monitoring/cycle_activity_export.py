@@ -30,6 +30,16 @@ _SECRET_KEY_NAMES = frozenset(
 )
 
 
+def _key_matches_secret_name(lk: str) -> bool:
+    """True if dict key name should be redacted (avoid false positives e.g. rotation_plan / token)."""
+    for s in _SECRET_KEY_NAMES:
+        if s not in lk:
+            continue
+        if lk == s or lk.startswith(f"{s}_") or lk.endswith(f"_{s}") or f"_{s}_" in lk:
+            return True
+    return False
+
+
 def _scrub(obj: Any, depth: int = 0) -> Any:
     """Remove secrets and truncate overly nested structures."""
     if depth > 18:
@@ -38,7 +48,7 @@ def _scrub(obj: Any, depth: int = 0) -> Any:
         out: dict[str, Any] = {}
         for k, v in obj.items():
             lk = str(k).lower()
-            if any(s in lk for s in _SECRET_KEY_NAMES):
+            if _key_matches_secret_name(lk):
                 out[str(k)] = "<redacted>"
                 continue
             if lk in ("env", "environ", "os.environ"):
@@ -65,6 +75,8 @@ def _human_blocked(symbol: str, asset_class: str, blocked: str | None, final_act
         return (
             f"{sym}: Broker reports zero quantity; capital rotation cannot proceed until positions reconcile."
         )
+    if final_action == "SELL_BLOCKED" and b in (rc.EXIT_BLOCKED_MARKET_CLOSED, "MARKET_CLOSED") and ac == "stock":
+        return f"{sym} had a SELL signal, but the US stock market was closed, so no order was submitted."
     if b == rc.EXIT_BLOCKED_MARKET_CLOSED:
         return (
             f"{sym}: Automated exit rule or sell signal fired for this US stock, but the regular "
@@ -86,11 +98,185 @@ def _human_blocked(symbol: str, asset_class: str, blocked: str | None, final_act
     return f"{sym}: {final_action} ({b or 'no detail'})."
 
 
+def _exit_row_key(rec: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(rec.get("asset_class") or "stock").strip().lower(),
+        str(rec.get("symbol") or "").strip().upper(),
+    )
+
+
+def merge_execution_decisions_into_exit_decisions(
+    exit_rows: list[dict[str, Any]],
+    execution_decisions: list[dict[str, Any]] | None,
+    *,
+    cycle_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Prefer real rejected sell rows over generic exit snapshots (same symbol / cycle)."""
+    if not execution_decisions:
+        return list(exit_rows)
+
+    def dec_key(d: dict[str, Any]) -> tuple[str, str]:
+        sym = str(d.get("symbol") or "").strip().upper()
+        ac = str(d.get("asset_class") or "stock").strip().lower()
+        if "/" in str(d.get("symbol") or ""):
+            ac = "crypto"
+        return (ac, sym)
+
+    sell_reject: dict[tuple[str, str], dict[str, Any]] = {}
+    allowed_syms = {_exit_row_key(x) for x in exit_rows} if not cycle_id else None
+    for d in execution_decisions:
+        cid = str(d.get("cycle_id") or "").strip()
+        if cycle_id and cid != str(cycle_id).strip():
+            continue
+        if str(d.get("side") or "").lower() != "sell":
+            continue
+        if str(d.get("decision") or "").lower() != "rejected":
+            continue
+        k = dec_key(d)
+        if not k[1] or k[1] == "-":
+            continue
+        if allowed_syms is not None and k not in allowed_syms:
+            continue
+        if k not in sell_reject:
+            sell_reject[k] = d
+
+    keys_in_order: list[tuple[str, str]] = []
+    out_by: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in exit_rows:
+        kk = _exit_row_key(r)
+        keys_in_order.append(kk)
+        out_by[kk] = dict(r)
+
+    for k, d in sell_reject.items():
+        rcv = str(d.get("reason_code") or "").strip().upper()
+        meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+        signal_sell = meta.get("scope") == "signal_sell"
+        ac, sym_u = k
+        sym_disp = str(out_by.get(k, {}).get("symbol") or d.get("symbol") or sym_u).strip() or sym_u
+
+        if k not in out_by:
+            out_by[k] = {
+                "symbol": d.get("symbol") or sym_u,
+                "asset_class": ac,
+                "broker_qty": d.get("quantity"),
+                "local_qty_audit": None,
+                "current_price": d.get("price"),
+                "entry_price": meta.get("entry_price"),
+                "unrealized_pnl_pct": None,
+                "exit_signal_present": True,
+                "exit_condition_hit": True,
+                "automated_rule": None,
+                "exit_allowed": False,
+                "blocked_reason": None,
+                "final_action": "SELL_BLOCKED",
+                "human_reason": "",
+            }
+            keys_in_order.append(k)
+
+        rec = out_by[k]
+        rec["exit_signal_present"] = True
+        rec["exit_allowed"] = False
+
+        if rcv in ("MARKET_CLOSED", rc.EXIT_BLOCKED_MARKET_CLOSED):
+            rec["blocked_reason"] = rc.EXIT_BLOCKED_MARKET_CLOSED
+            rec["final_action"] = "SELL_BLOCKED"
+            rec["exit_condition_hit"] = True if signal_sell else bool(rec.get("exit_condition_hit", True))
+            rec["human_reason"] = _human_blocked(sym_disp, ac, rec["blocked_reason"], "SELL_BLOCKED")
+        elif rcv in ("PDT_PROTECTION", rc.PDT_PROTECTION):
+            rec["blocked_reason"] = rc.PDT_PROTECTION
+            rec["final_action"] = "PDT_BLOCKED"
+            rec["exit_condition_hit"] = bool(rec.get("exit_condition_hit", True))
+            rec["human_reason"] = _human_blocked(sym_disp, ac, rc.PDT_PROTECTION, "PDT_BLOCKED")
+        else:
+            rec["blocked_reason"] = rcv or "ALPACA_ORDER_REJECTED"
+            rec["final_action"] = "SELL_BLOCKED"
+            rec["human_reason"] = _human_blocked(sym_disp, ac, rec["blocked_reason"], "SELL_BLOCKED")
+
+    seen: set[tuple[str, str]] = set()
+    ordered: list[tuple[str, str]] = []
+    for kk in keys_in_order:
+        if kk not in seen:
+            seen.add(kk)
+            ordered.append(kk)
+    for kk in out_by:
+        if kk not in seen:
+            ordered.append(kk)
+    return [out_by[kk] for kk in ordered if kk in out_by]
+
+
+def build_why_no_sell_summary(
+    *,
+    position_exit_decisions: list[dict[str, Any]],
+    open_positions: list[dict[str, Any]],
+) -> list[str]:
+    """Short operator-facing lines: why each open leg did not sell (or did)."""
+    idx: dict[tuple[str, str], dict[str, Any]] = {}
+    for d in position_exit_decisions or []:
+        idx[_exit_row_key(d)] = d
+
+    lines: list[str] = []
+    for p in open_positions or []:
+        sym = str(p.get("symbol") or "").strip()
+        if not sym:
+            continue
+        ac = str(p.get("asset_class") or ("crypto" if "/" in sym else "stock")).strip().lower()
+        k = (ac, sym.upper())
+        d = idx.get(k)
+        upnl = p.get("unrealized_pnl_pct")
+        try:
+            upf = float(upnl) if upnl is not None else None
+        except (TypeError, ValueError):
+            upf = None
+        prof = upf is not None and upf > 0
+
+        if d:
+            fa = str(d.get("final_action") or "")
+            br = str(d.get("blocked_reason") or "")
+            if fa == "SELL_BLOCKED" and br in (rc.EXIT_BLOCKED_MARKET_CLOSED, "MARKET_CLOSED"):
+                lines.append(f"{sym}: SELL blocked because market closed.")
+            elif fa == "PDT_BLOCKED":
+                lines.append(f"{sym}: SELL blocked by PDT protection.")
+            elif fa == "BROKER_QTY_ZERO":
+                lines.append(f"{sym}: Broker qty zero; no sell.")
+            elif fa == "SELL_SUBMITTED":
+                lines.append(f"{sym}: Sell submitted this cycle.")
+            elif fa in ("NO_EXIT_SIGNAL", "HOLD"):
+                if prof:
+                    lines.append(f"{sym}: Profitable but no exit trigger fired.")
+                else:
+                    lines.append(f"{sym}: No exit trigger fired.")
+            else:
+                lines.append(f"{sym}: {d.get('human_reason') or fa}.")
+        else:
+            if prof:
+                lines.append(f"{sym}: Profitable but no exit planner row.")
+            else:
+                lines.append(f"{sym}: No exit planner row.")
+
+    has_crypto_qty = False
+    for p in open_positions or []:
+        sym = str(p.get("symbol") or "")
+        ac = str(p.get("asset_class") or "").lower()
+        if ac == "crypto" or "/" in sym:
+            try:
+                if float(p.get("net_qty") or p.get("broker_qty") or 0) > 1e-8:
+                    has_crypto_qty = True
+                    break
+            except (TypeError, ValueError):
+                pass
+    if not has_crypto_qty:
+        lines.append("Crypto: no broker crypto positions (or broker qty zero).")
+
+    return lines
+
+
 def compile_position_exit_decisions(
     *,
     position_exit_rows: list[dict[str, Any]],
     sell_signal_audit: list[dict[str, Any]],
     cycle_signals: list[dict[str, Any]],
+    execution_decisions: list[dict[str, Any]] | None = None,
+    cycle_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Combine automated exit snapshots + combined sell signals into export rows."""
 
@@ -231,7 +417,8 @@ def compile_position_exit_decisions(
             rec["blocked_reason"] = None
             rec["human_reason"] = _human_blocked(sym, ac, None, "SELL_SUBMITTED")
 
-    return list(out_map.values())
+    out = list(out_map.values())
+    return merge_execution_decisions_into_exit_decisions(out, execution_decisions, cycle_id=cycle_id)
 
 
 def blocked_exits_from_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -336,8 +523,21 @@ def build_activity_export_payload(
     position_exit_decisions = cs_meta.get("position_exit_decisions")
     if not isinstance(position_exit_decisions, list):
         position_exit_decisions = []
+    else:
+        position_exit_decisions = [dict(x) for x in position_exit_decisions]
+    _cid = str(cycle_summary.get("last_cycle_id") or "").strip()
+    position_exit_decisions = merge_execution_decisions_into_exit_decisions(
+        position_exit_decisions,
+        decisions,
+        cycle_id=_cid if _cid else None,
+    )
 
     blocked_exits = blocked_exits_from_decisions(position_exit_decisions)
+    broker_sync_trades = dd.fetch_recent_broker_sync_trades(conn, limit=lim)
+    why_no_sell_summary = build_why_no_sell_summary(
+        position_exit_decisions=position_exit_decisions,
+        open_positions=positions if isinstance(positions, list) else [],
+    )
     crypto_ev = crypto_push_pull_events_from_decisions(decisions)
 
     warnings: list[str] = []
@@ -361,7 +561,9 @@ def build_activity_export_payload(
         "cycle_summary": cycle_summary,
         "open_positions": dd._json_safe(positions) if isinstance(positions, list) else [],
         "position_exit_decisions": dd._json_safe(position_exit_decisions),
+        "why_no_sell_summary": dd._json_safe(why_no_sell_summary),
         "recent_trades": dd._json_safe(trades),
+        "broker_sync_events": dd._json_safe(broker_sync_trades),
         "recent_signals": dd._json_safe(signals),
         "execution_decisions": dd._json_safe(decisions),
         "reconciliation_events": dd._json_safe(reconciliation),
