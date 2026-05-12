@@ -6,7 +6,9 @@ Does not import trading stacks beyond SQLite helpers.
 from __future__ import annotations
 
 import re
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import config
@@ -110,8 +112,13 @@ def merge_execution_decisions_into_exit_decisions(
     execution_decisions: list[dict[str, Any]] | None,
     *,
     cycle_id: str | None = None,
+    session_open_for_stock_sells: bool = False,
 ) -> list[dict[str, Any]]:
-    """Prefer real rejected sell rows over generic exit snapshots (same symbol / cycle)."""
+    """Prefer real rejected sell rows over generic exit snapshots (same symbol / cycle).
+
+    When ``session_open_for_stock_sells`` is true, rejected sells with ``MARKET_CLOSED`` from
+    ``execution_decisions`` are ignored so stale pre-open rejects do not override live export.
+    """
     if not execution_decisions:
         return list(exit_rows)
 
@@ -131,6 +138,13 @@ def merge_execution_decisions_into_exit_decisions(
         if str(d.get("side") or "").lower() != "sell":
             continue
         if str(d.get("decision") or "").lower() != "rejected":
+            continue
+        rcv = str(d.get("reason_code") or "").strip().upper()
+        if session_open_for_stock_sells and rcv in (
+            "MARKET_CLOSED",
+            rc.EXIT_BLOCKED_MARKET_CLOSED,
+            "EXIT_BLOCKED_MARKET_CLOSED",
+        ):
             continue
         k = dec_key(d)
         if not k[1] or k[1] == "-":
@@ -177,7 +191,7 @@ def merge_execution_decisions_into_exit_decisions(
         rec["exit_signal_present"] = True
         rec["exit_allowed"] = False
 
-        if rcv in ("MARKET_CLOSED", rc.EXIT_BLOCKED_MARKET_CLOSED):
+        if rcv in ("MARKET_CLOSED", rc.EXIT_BLOCKED_MARKET_CLOSED, "EXIT_BLOCKED_MARKET_CLOSED"):
             rec["blocked_reason"] = rc.EXIT_BLOCKED_MARKET_CLOSED
             rec["final_action"] = "SELL_BLOCKED"
             rec["exit_condition_hit"] = True if signal_sell else bool(rec.get("exit_condition_hit", True))
@@ -204,10 +218,291 @@ def merge_execution_decisions_into_exit_decisions(
     return [out_by[kk] for kk in ordered if kk in out_by]
 
 
+def _parse_ts_to_utc_rough(s: Any) -> datetime | None:
+    """Parse SQLite / ISO-ish timestamps as UTC for age math (best-effort)."""
+    if s is None:
+        return None
+    raw = str(s).strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw.replace(" ", "T", 1))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _age_seconds_utc(since: datetime | None) -> float | None:
+    if since is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - since).total_seconds())
+
+
+def _max_hold_hours_symbol(sym: str) -> float:
+    s = str(sym or "").upper()
+    return 4.0 if ("/" in s or "USD" in s) else 8.0
+
+
+def _exit_peak_price(db_path: str | Path | None, asset_class: str, symbol: str) -> float | None:
+    if not db_path:
+        return None
+    p = Path(str(db_path))
+    if not p.exists():
+        return None
+    try:
+        with sqlite3.connect(str(p)) as conn:
+            row = conn.execute(
+                """
+                SELECT peak_price FROM position_exit_state
+                WHERE LOWER(asset_class) = LOWER(?) AND UPPER(symbol) = ?
+                """,
+                (asset_class, symbol.strip().upper()),
+            ).fetchone()
+        if not row:
+            return None
+        v = float(row[0] or 0.0)
+        return v if v > 1e-12 else None
+    except Exception:
+        return None
+
+
+def _stock_entry_held_hours(db_path: str | Path | None, symbol: str, qty_signed: float) -> float | None:
+    """Hours since opening leg (latest filled BUY for long, SELL for short), matching main_worker semantics."""
+    if not db_path or abs(float(qty_signed or 0.0)) <= 1e-12:
+        return None
+    p = Path(str(db_path))
+    if not p.exists():
+        return None
+    side = "buy" if float(qty_signed) > 1e-12 else "sell"
+    sym_key = str(symbol or "").strip()
+    try:
+        with sqlite3.connect(str(p)) as conn:
+            row = conn.execute(
+                """
+                SELECT created_at FROM trades
+                WHERE symbol = ? AND asset_class = 'stock' AND status = 'filled'
+                  AND LOWER(side) = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sym_key, side.lower()),
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    dt = _parse_ts_to_utc_rough(row[0])
+    if dt is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
+
+
+def scrub_stale_market_closed_exit_rows_for_open_session(
+    rows: list[dict[str, Any]],
+    *,
+    account_market_open: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    """If the US session is open, downgrade persisted MARKET_CLOSED exit rows so export is not misleading."""
+    if not account_market_open or not rows:
+        return list(rows), False
+    changed = False
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        rr = dict(r)
+        ac = str(rr.get("asset_class") or "").strip().lower()
+        if ac != "stock":
+            out.append(rr)
+            continue
+        br = str(rr.get("blocked_reason") or "").strip().upper()
+        fa = str(rr.get("final_action") or "").strip().upper()
+        if fa == "SELL_BLOCKED" and br in (
+            "MARKET_CLOSED",
+            rc.EXIT_BLOCKED_MARKET_CLOSED,
+            "EXIT_BLOCKED_MARKET_CLOSED",
+        ):
+            sym = str(rr.get("symbol") or "").strip().upper()
+            rr["blocked_reason"] = "STALE_EXIT_DATA_SESSION_OPEN"
+            rr["final_action"] = "EXIT_REEVAL_PENDING"
+            rr["exit_data_stale_vs_clock"] = True
+            rr["human_reason"] = (
+                f"{sym}: Prior cycle recorded the US regular session as closed; the session is open now — "
+                "awaiting a fresh worker exit evaluation (stale snapshot, not a live after-hours block)."
+            )
+            changed = True
+        out.append(rr)
+    return out, changed
+
+
+def build_sell_readiness(
+    *,
+    open_positions: list[dict[str, Any]],
+    recent_signals: list[dict[str, Any]],
+    position_exit_decisions: list[dict[str, Any]],
+    market_open_now: bool,
+    worker_sell_gate_open_now: bool,
+    exit_runtime: dict[str, float] | None = None,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Per-leg operator view: **open_positions** prices + runtime TP/SL/trail vs snapshot blockers."""
+    from execution.capital_rotation import _latest_combined_signal_by_symbol
+
+    xr = dict(exit_runtime or {})
+    legacy_tp = float(xr.get("take_profit_pct", 0.015) or 0.015)
+    legacy_sl = float(xr.get("stop_loss_pct", 0.008) or 0.008)
+    stock_tp = float(xr.get("stock_take_profit_pct", legacy_tp) or legacy_tp)
+    stock_sl = float(xr.get("stock_stop_loss_pct", legacy_sl) or legacy_sl)
+    stock_trail = float(xr.get("stock_trailing_stop_pct", 0.02) or 0.02)
+
+    sig_by = _latest_combined_signal_by_symbol(recent_signals)
+    idx: dict[tuple[str, str], dict[str, Any]] = {}
+    for d in position_exit_decisions or []:
+        idx[_exit_row_key(d)] = d
+
+    mc_blockers = frozenset(
+        {
+            "MARKET_CLOSED",
+            str(rc.EXIT_BLOCKED_MARKET_CLOSED).upper(),
+            "EXIT_BLOCKED_MARKET_CLOSED",
+        }
+    )
+
+    out: list[dict[str, Any]] = []
+    for p in open_positions or []:
+        sym = str(p.get("symbol") or "").strip()
+        if not sym:
+            continue
+        ac = str(p.get("asset_class") or ("crypto" if "/" in sym else "stock")).strip().lower()
+        if ac != "stock":
+            continue
+        try:
+            qty = float(p.get("net_qty") or p.get("broker_qty") or p.get("quantity") or 0.0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty <= 1e-9:
+            continue
+        entry = p.get("avg_entry_price")
+        if entry is None:
+            entry = p.get("entry_price")
+        try:
+            entry_f = float(entry) if entry is not None else 0.0
+        except (TypeError, ValueError):
+            entry_f = 0.0
+        try:
+            cur = float(p.get("current_price") or 0.0)
+        except (TypeError, ValueError):
+            cur = 0.0
+        upnl = p.get("unrealized_pnl_pct")
+        try:
+            upf = float(upnl) if upnl is not None else None
+        except (TypeError, ValueError):
+            upf = None
+        if upf is None and entry_f > 0 and cur > 0:
+            upf = (cur - entry_f) / entry_f * 100.0
+
+        pnl_frac: float | None = None
+        if entry_f > 1e-12 and cur > 0:
+            pnl_frac = (cur - entry_f) / entry_f
+
+        take_profit_hit = bool(pnl_frac is not None and pnl_frac + 1e-12 >= stock_tp)
+        stop_loss_hit = bool(pnl_frac is not None and pnl_frac <= -stock_sl + 1e-12)
+
+        peak_db = _exit_peak_price(db_path, "stock", sym)
+        peak_eff = float(peak_db) if peak_db and peak_db > 0 else cur
+        trailing_stop_hit = False
+        if stock_trail > 1e-12 and peak_eff > 1e-12 and cur > 0:
+            trailing_stop_hit = (peak_eff - cur) / peak_eff >= stock_trail - 1e-12
+
+        held_h = _stock_entry_held_hours(db_path, sym, qty)
+        max_hold_h = _max_hold_hours_symbol(sym)
+        max_hold_hit = bool(held_h is not None and held_h + 1e-9 >= max_hold_h)
+
+        sk = (ac, sym.upper())
+        sig = sig_by.get(sk) or sig_by.get(("stock", sym.upper()))
+        if not isinstance(sig, dict):
+            sig = {}
+        meta_raw = sig.get("meta")
+        meta = meta_raw if isinstance(meta_raw, dict) else {}
+        action = str(meta.get("action") or "").strip().upper()
+        sell_signal_present = action == "SELL"
+
+        d = idx.get(sk)
+        blocker: str | None = None
+        fa = ""
+        if isinstance(d, dict):
+            fa = str(d.get("final_action") or "").strip().upper()
+            br = str(d.get("blocked_reason") or "").strip().upper() or None
+            if fa == "EXIT_REEVAL_PENDING":
+                blocker = br or "STALE_EXIT_DATA_SESSION_OPEN"
+            elif fa == "SELL_BLOCKED" and br:
+                blocker = br
+            elif fa == "PDT_BLOCKED":
+                blocker = "PDT_PROTECTION"
+            elif fa == "COOLDOWN_ACTIVE":
+                blocker = "COOLDOWN_ACTIVE"
+
+        if worker_sell_gate_open_now and blocker and str(blocker).strip().upper() in mc_blockers:
+            blocker = "STALE_EXIT_DATA_SESSION_OPEN"
+
+        stale_like = fa == "EXIT_REEVAL_PENDING" or blocker == "STALE_EXIT_DATA_SESSION_OPEN"
+        exit_cfg_disabled = float(xr.get("stock_automated_exits_enabled", 1.0) or 1.0) < 0.5
+        if exit_cfg_disabled:
+            blocker = "EXIT_DISABLED"
+
+        hard_block = blocker in ("PDT_PROTECTION", "COOLDOWN_ACTIVE", "EXIT_DISABLED")
+        sell_allowed_now = bool(
+            worker_sell_gate_open_now
+            and market_open_now
+            and qty > 0
+            and not exit_cfg_disabled
+            and not stale_like
+            and not hard_block
+        )
+
+        rule_intent = bool(
+            sell_signal_present or take_profit_hit or stop_loss_hit or trailing_stop_hit or max_hold_hit
+        )
+        if exit_cfg_disabled:
+            expected = "BLOCKED_WITH_REASON"
+        elif worker_sell_gate_open_now and rule_intent and sell_allowed_now and not blocker:
+            expected = "SELL_NOW"
+        elif worker_sell_gate_open_now and rule_intent and blocker:
+            expected = "BLOCKED_WITH_REASON"
+        elif rule_intent and not worker_sell_gate_open_now:
+            expected = "BLOCKED_WITH_REASON"
+        else:
+            expected = "HOLD"
+
+        out.append(
+            {
+                "symbol": sym,
+                "broker_qty": qty,
+                "current_price": cur if cur > 0 else None,
+                "entry_price": entry_f if entry_f > 0 else None,
+                "unrealized_pnl_pct": upf,
+                "market_open_now": bool(market_open_now),
+                "worker_sell_gate_open_now": bool(worker_sell_gate_open_now),
+                "sell_signal_present": sell_signal_present,
+                "take_profit_hit": take_profit_hit,
+                "trailing_stop_hit": trailing_stop_hit,
+                "stop_loss_hit": stop_loss_hit,
+                "max_hold_hit": max_hold_hit,
+                "sell_allowed_now": sell_allowed_now,
+                "blocker": blocker,
+                "expected_action": expected,
+            }
+        )
+    return out
+
+
 def build_why_no_sell_summary(
     *,
     position_exit_decisions: list[dict[str, Any]],
     open_positions: list[dict[str, Any]],
+    account_market_open: bool | None = None,
 ) -> list[str]:
     """Short operator-facing lines: why each open leg did not sell (or did)."""
     idx: dict[tuple[str, str], dict[str, Any]] = {}
@@ -233,7 +528,15 @@ def build_why_no_sell_summary(
             fa = str(d.get("final_action") or "")
             br = str(d.get("blocked_reason") or "")
             if fa == "SELL_BLOCKED" and br in (rc.EXIT_BLOCKED_MARKET_CLOSED, "MARKET_CLOSED"):
-                lines.append(f"{sym}: SELL blocked because market closed.")
+                if account_market_open is True:
+                    lines.append(
+                        f"{sym}: Stale snapshot still shows market-closed block; US session is open — "
+                        "worker should refresh exit evaluation."
+                    )
+                else:
+                    lines.append(f"{sym}: SELL blocked because market closed.")
+            elif fa == "EXIT_REEVAL_PENDING":
+                lines.append(f"{sym}: {d.get('human_reason') or 'Exit re-evaluation pending.'}")
             elif fa == "PDT_BLOCKED":
                 lines.append(f"{sym}: SELL blocked by PDT protection.")
             elif fa == "BROKER_QTY_ZERO":
@@ -277,6 +580,7 @@ def compile_position_exit_decisions(
     cycle_signals: list[dict[str, Any]],
     execution_decisions: list[dict[str, Any]] | None = None,
     cycle_id: str | None = None,
+    session_open_for_stock_sells: bool = False,
 ) -> list[dict[str, Any]]:
     """Combine automated exit snapshots + combined sell signals into export rows."""
 
@@ -323,10 +627,16 @@ def compile_position_exit_decisions(
             exit_condition_hit = rule_triggered or exit_condition_hit
             final_action = "SELL_SUBMITTED"
         elif elig == "MARKET_CLOSED" or str(row.get("exit_block_reason")) == "MARKET_CLOSED":
-            exit_condition_hit = True if rule_triggered else exit_condition_hit
-            exit_allowed = False
-            blocked_reason = blocked_reason or rc.EXIT_BLOCKED_MARKET_CLOSED
-            final_action = "SELL_BLOCKED"
+            if session_open_for_stock_sells and ac == "stock":
+                exit_condition_hit = True if rule_triggered else exit_condition_hit
+                exit_allowed = False
+                blocked_reason = "STALE_EXIT_DATA_SESSION_OPEN"
+                final_action = "EXIT_REEVAL_PENDING"
+            else:
+                exit_condition_hit = True if rule_triggered else exit_condition_hit
+                exit_allowed = False
+                blocked_reason = blocked_reason or rc.EXIT_BLOCKED_MARKET_CLOSED
+                final_action = "SELL_BLOCKED"
         elif elig == "COOLDOWN":
             exit_allowed = False
             blocked_reason = blocked_reason or "COOLDOWN"
@@ -398,13 +708,21 @@ def compile_position_exit_decisions(
                 rc_raw = rc.EXIT_BLOCKED_MARKET_CLOSED
             rec["blocked_reason"] = rc_raw or rec.get("blocked_reason")
             if rc_raw == rc.EXIT_BLOCKED_MARKET_CLOSED:
-                rec["final_action"] = "SELL_BLOCKED"
-                rec["human_reason"] = (
-                    f"{sym.upper()}: Combined signal requested SELL, but US stock regular session "
-                    "was closed — order not submitted."
-                    if ac == "stock"
-                    else f"{sym.upper()}: Sell signal blocked ({rc_raw})."
-                )
+                if session_open_for_stock_sells and ac == "stock":
+                    rec["final_action"] = "EXIT_REEVAL_PENDING"
+                    rec["blocked_reason"] = "STALE_EXIT_DATA_SESSION_OPEN"
+                    rec["human_reason"] = (
+                        f"{sym.upper()}: Prior audit shows US market closed; session is open — "
+                        "worker should refresh sell evaluation."
+                    )
+                else:
+                    rec["final_action"] = "SELL_BLOCKED"
+                    rec["human_reason"] = (
+                        f"{sym.upper()}: Combined signal requested SELL, but US stock regular session "
+                        "was closed — order not submitted."
+                        if ac == "stock"
+                        else f"{sym.upper()}: Sell signal blocked ({rc_raw})."
+                    )
             elif rc_raw == rc.PDT_PROTECTION:
                 rec["final_action"] = "PDT_BLOCKED"
                 rec["human_reason"] = _human_blocked(sym, ac, rc.PDT_PROTECTION, "PDT_BLOCKED")
@@ -418,7 +736,12 @@ def compile_position_exit_decisions(
             rec["human_reason"] = _human_blocked(sym, ac, None, "SELL_SUBMITTED")
 
     out = list(out_map.values())
-    return merge_execution_decisions_into_exit_decisions(out, execution_decisions, cycle_id=cycle_id)
+    return merge_execution_decisions_into_exit_decisions(
+        out,
+        execution_decisions,
+        cycle_id=cycle_id,
+        session_open_for_stock_sells=session_open_for_stock_sells,
+    )
 
 
 def blocked_exits_from_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -466,8 +789,13 @@ def build_activity_export_payload(
     limit: int = 50,
 ) -> dict[str, Any]:
     """Assemble sanitized JSON for operators / ChatGPT paste (no secrets)."""
-    from market_hours import nyse_regular_session_open as _nyse_open
+    from execution.capital_rotation import fetch_latest_rotation_plan
+    from market_hours import nyse_session_open_for_export_and_worker
     from monitoring import dashboard_data as dd
+
+    clock_source = (
+        "portfolio_limiter.us_stock_market_open+nyse_regular_session_open(America/New_York)"
+    )
 
     lim = max(1, min(100, int(limit)))
     snap = dd.get_alpaca_background_snapshot()
@@ -493,7 +821,7 @@ def build_activity_export_payload(
     if isinstance(snap.get("portfolio"), dict):
         real_pf = dict(snap["portfolio"])
     try:
-        market_open = bool(_nyse_open())
+        market_open = bool(nyse_session_open_for_export_and_worker())
     except Exception:
         market_open = False
 
@@ -526,17 +854,125 @@ def build_activity_export_payload(
     else:
         position_exit_decisions = [dict(x) for x in position_exit_decisions]
     _cid = str(cycle_summary.get("last_cycle_id") or "").strip()
-    position_exit_decisions = merge_execution_decisions_into_exit_decisions(
+    merged_exit = merge_execution_decisions_into_exit_decisions(
         position_exit_decisions,
         decisions,
         cycle_id=_cid if _cid else None,
+        session_open_for_stock_sells=market_open,
     )
+
+    had_stale_mc_in_exit_rows = False
+    if market_open:
+        for r in merged_exit:
+            if str(r.get("asset_class") or "").lower() != "stock":
+                continue
+            br = str(r.get("blocked_reason") or "").upper()
+            fa = str(r.get("final_action") or "").upper()
+            if fa == "SELL_BLOCKED" and br in (
+                "MARKET_CLOSED",
+                rc.EXIT_BLOCKED_MARKET_CLOSED,
+                "EXIT_BLOCKED_MARKET_CLOSED",
+            ):
+                had_stale_mc_in_exit_rows = True
+                break
+
+    exec_mc_stale = False
+    if market_open and _cid:
+        for ed in decisions or []:
+            if str(ed.get("cycle_id") or "").strip() != _cid:
+                continue
+            if str(ed.get("side") or "").lower() != "sell":
+                continue
+            if str(ed.get("decision") or "").lower() != "rejected":
+                continue
+            rcv_u = str(ed.get("reason_code") or "").upper()
+            if rcv_u in ("MARKET_CLOSED", rc.EXIT_BLOCKED_MARKET_CLOSED, "EXIT_BLOCKED_MARKET_CLOSED"):
+                exec_mc_stale = True
+                break
+
+    data_freshness_status = "OK"
+    if market_open and (had_stale_mc_in_exit_rows or exec_mc_stale):
+        data_freshness_status = "STALE_EXIT_DECISIONS_MARKET_NOW_OPEN"
+
+    position_exit_decisions, _did_scrub = scrub_stale_market_closed_exit_rows_for_open_session(
+        merged_exit, account_market_open=market_open
+    )
+    if market_open:
+        for rr in position_exit_decisions:
+            if str(rr.get("asset_class") or "").lower() != "stock":
+                continue
+            fa_u = str(rr.get("final_action") or "").upper()
+            br_u = str(rr.get("blocked_reason") or "").upper()
+            if fa_u == "SELL_BLOCKED" and br_u in (
+                "MARKET_CLOSED",
+                str(rc.EXIT_BLOCKED_MARKET_CLOSED).upper(),
+                "EXIT_BLOCKED_MARKET_CLOSED",
+            ):
+                sym_u = str(rr.get("symbol") or "").strip().upper()
+                rr["final_action"] = "EXIT_REEVAL_PENDING"
+                rr["blocked_reason"] = "STALE_EXIT_DATA_SESSION_OPEN"
+                rr["exit_data_stale_vs_clock"] = True
+                rr["human_reason"] = (
+                    f"{sym_u}: Prior cycle recorded the US regular session as closed; the session is open now — "
+                    "awaiting a fresh worker exit evaluation (stale snapshot, not a live after-hours block)."
+                )
+
+    dec_for_cid = [
+        ed for ed in (decisions or []) if _cid and str(ed.get("cycle_id") or "").strip() == _cid
+    ]
+    latest_exec_ca = ""
+    for ed in dec_for_cid:
+        ca = str(ed.get("created_at") or "")
+        if ca > latest_exec_ca:
+            latest_exec_ca = ca
+
+    exit_snap_created_at = cycle_snap_row.get("created_at")
+    exit_snap_dt = _parse_ts_to_utc_rough(exit_snap_created_at)
+
+    rp = fetch_latest_rotation_plan(str(config.DB_PATH))
+    rp_ga = str(rp.get("generated_at") or "").strip() if isinstance(rp, dict) else ""
+    rp_dt = _parse_ts_to_utc_rough(rp_ga)
+
+    try:
+        from data.data_store import load_runtime_config_dict
+
+        _rt = dict(load_runtime_config_dict(config.DB_PATH))
+        legacy_tp = float(_rt.get("take_profit_pct", 0.015) or 0.015)
+        legacy_sl = float(_rt.get("stop_loss_pct", 0.008) or 0.008)
+        exit_runtime: dict[str, float] = {
+            "take_profit_pct": legacy_tp,
+            "stop_loss_pct": legacy_sl,
+            "stock_take_profit_pct": float(_rt.get("stock_take_profit_pct", legacy_tp) or legacy_tp),
+            "stock_stop_loss_pct": float(_rt.get("stock_stop_loss_pct", legacy_sl) or legacy_sl),
+            "stock_trailing_stop_pct": float(_rt.get("stock_trailing_stop_pct", 0.02) or 0.02),
+            "stock_automated_exits_enabled": float(_rt.get("stock_automated_exits_enabled", 1.0) or 1.0),
+        }
+    except Exception:
+        exit_runtime = {
+            "take_profit_pct": 0.015,
+            "stop_loss_pct": 0.008,
+            "stock_take_profit_pct": 0.015,
+            "stock_stop_loss_pct": 0.008,
+            "stock_trailing_stop_pct": 0.02,
+            "stock_automated_exits_enabled": 1.0,
+        }
 
     blocked_exits = blocked_exits_from_decisions(position_exit_decisions)
     broker_sync_trades = dd.fetch_recent_broker_sync_trades(conn, limit=lim)
+    pos_list = positions if isinstance(positions, list) else []
+    sell_readiness = build_sell_readiness(
+        open_positions=pos_list,
+        recent_signals=signals if isinstance(signals, list) else [],
+        position_exit_decisions=position_exit_decisions,
+        market_open_now=market_open,
+        worker_sell_gate_open_now=market_open,
+        exit_runtime=exit_runtime,
+        db_path=config.DB_PATH,
+    )
     why_no_sell_summary = build_why_no_sell_summary(
         position_exit_decisions=position_exit_decisions,
-        open_positions=positions if isinstance(positions, list) else [],
+        open_positions=pos_list,
+        account_market_open=market_open,
     )
     crypto_ev = crypto_push_pull_events_from_decisions(decisions)
 
@@ -547,6 +983,11 @@ def build_activity_export_payload(
         warnings.append("broker_local_mismatch_count > 0")
     if int(eh.get("blocked_exits_count") or 0) > 0:
         warnings.append("blocked_exits_count > 0 (PDT / cooldown / gates)")
+    if data_freshness_status == "STALE_EXIT_DECISIONS_MARKET_NOW_OPEN":
+        warnings.append(
+            "data_freshness_status=STALE_EXIT_DECISIONS_MARKET_NOW_OPEN — exit snapshot or "
+            "execution rows still reflect a closed-session MARKET_CLOSED while the clock says open."
+        )
 
     payload: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -578,11 +1019,10 @@ def build_activity_export_payload(
         "crypto_push_pull_events": dd._json_safe(crypto_ev),
         "performance": dd._json_safe(performance),
         "warnings": warnings,
+        "sell_readiness": dd._json_safe(sell_readiness),
     }
-    from execution.capital_rotation import fetch_latest_rotation_plan
 
     last_cid = _cid
-    rp = fetch_latest_rotation_plan(str(config.DB_PATH))
     rp_cid = ""
     if isinstance(rp, dict):
         rp_cid = str(rp.get("cycle_id") or "").strip()
@@ -597,4 +1037,17 @@ def build_activity_export_payload(
     payload["rotation_plan_stale"] = rotation_plan_stale
     payload["rotation_plan_cycle_id"] = (rp_cid or None) if rp else None
     payload["cycle_summary_last_cycle_id"] = last_cid or None
+
+    payload["export_generated_at"] = payload["generated_at"]
+    payload["account_market_open"] = market_open
+    payload["account_market_clock_source"] = clock_source
+    payload["latest_cycle_id"] = last_cid or None
+    payload["latest_cycle_created_at"] = exit_snap_created_at or None
+    payload["latest_exit_snapshot_created_at"] = exit_snap_created_at or None
+    payload["latest_execution_decision_created_at"] = latest_exec_ca or None
+    payload["rotation_plan_created_at"] = rp_ga or None
+    payload["cycle_age_seconds"] = _age_seconds_utc(exit_snap_dt)
+    payload["exit_snapshot_age_seconds"] = _age_seconds_utc(exit_snap_dt)
+    payload["rotation_plan_age_seconds"] = _age_seconds_utc(rp_dt)
+    payload["data_freshness_status"] = data_freshness_status
     return _scrub(payload)

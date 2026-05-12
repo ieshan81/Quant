@@ -13,6 +13,7 @@ from execution import reason_codes as rc
 from monitoring.cycle_activity_export import (
     _scrub,
     build_activity_export_payload,
+    build_sell_readiness,
     build_why_no_sell_summary,
     compile_position_exit_decisions,
     merge_execution_decisions_into_exit_decisions,
@@ -233,6 +234,12 @@ def test_why_no_sell_summary_lines() -> None:
     assert any("AAOI" in ln and "Profitable" in ln for ln in lines)
     assert any("Crypto:" in ln for ln in lines)
 
+    lines_open = build_why_no_sell_summary(
+        position_exit_decisions=ped, open_positions=pos, account_market_open=True
+    )
+    assert not any("AEHL" in ln and "market closed" in ln.lower() for ln in lines_open)
+    assert any("AEHL" in ln and "Stale snapshot" in ln for ln in lines_open)
+
 
 def test_activity_export_endpoint_shape(dash_app) -> None:
     client = dash_app.test_client()
@@ -256,6 +263,13 @@ def test_activity_export_endpoint_shape(dash_app) -> None:
     assert "cycle_summary_last_cycle_id" in data
     assert isinstance(data.get("why_no_sell_summary"), list)
     assert "broker_sync_events" in data
+    assert data.get("export_generated_at") == data.get("generated_at")
+    assert "account_market_open" in data
+    assert "account_market_clock_source" in data
+    assert "data_freshness_status" in data
+    assert "sell_readiness" in data and isinstance(data["sell_readiness"], list)
+    assert "latest_exit_snapshot_created_at" in data
+    assert "exit_snapshot_age_seconds" in data
     assert "TELEGRAM" not in json.dumps(data).upper()
     assert "SECRET_KEY" not in json.dumps(data)
 
@@ -284,10 +298,10 @@ def test_activity_export_limit_100_checklist_aehl_merge_sync_split(dash_app) -> 
         "broker_qty": 26,
         "exit_signal_present": True,
         "exit_condition_hit": True,
-        "exit_allowed": True,
-        "blocked_reason": None,
-        "final_action": "NO_EXIT_SIGNAL",
-        "human_reason": "stale snapshot",
+        "exit_allowed": False,
+        "blocked_reason": rc.EXIT_BLOCKED_MARKET_CLOSED,
+        "final_action": "SELL_BLOCKED",
+        "human_reason": "market closed",
     }
     plan = {
         "cycle_id": cycle_id,
@@ -369,17 +383,20 @@ def test_activity_export_limit_100_checklist_aehl_merge_sync_split(dash_app) -> 
     assert fetch_latest_rotation_plan(str(db)) is not None
 
     client = dash_app.test_client()
-    with patch("monitoring.dashboard_data.get_alpaca_background_snapshot", return_value={}):
+    with patch("monitoring.dashboard_data.get_alpaca_background_snapshot", return_value={}), patch(
+        "market_hours.nyse_session_open_for_export_and_worker", return_value=True
+    ):
         r = client.get("/api/activity/export?limit=100")
     assert r.status_code == 200
     data = json.loads(r.data)
     ae = next(x for x in data["position_exit_decisions"] if x.get("symbol") == "AEHL")
-    assert ae["final_action"] == "SELL_BLOCKED"
-    assert ae["blocked_reason"] in (
-        rc.EXIT_BLOCKED_MARKET_CLOSED,
-        rc.MARKET_CLOSED,
-        "MARKET_CLOSED",
-    )
+    assert ae["final_action"] == "EXIT_REEVAL_PENDING"
+    assert ae["blocked_reason"] == "STALE_EXIT_DATA_SESSION_OPEN"
+    assert data.get("data_freshness_status") == "STALE_EXIT_DECISIONS_MARKET_NOW_OPEN"
+    assert any("STALE_EXIT_DECISIONS_MARKET_NOW_OPEN" in w for w in (data.get("warnings") or []))
+    why = " ".join(data.get("why_no_sell_summary") or [])
+    assert "AEHL" in why
+    assert "market closed" not in why.lower()
     rc_trades = [str(t.get("reason_code") or "") for t in data["recent_trades"]]
     assert "alpaca_sync_open" not in rc_trades
     sync_rc = [str(t.get("reason_code") or "") for t in data.get("broker_sync_events") or []]
@@ -610,6 +627,121 @@ def test_activity_export_marks_rotation_plan_stale_when_cycle_mismatch(dash_app)
     assert data["rotation_plan_stale"] is True
     assert data["rotation_plan_cycle_id"] == "plan_old"
     assert data["cycle_summary_last_cycle_id"] == "cycle_new"
+
+
+def test_merge_skips_market_closed_when_session_open() -> None:
+    snap = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "broker_qty": 26,
+            "exit_signal_present": True,
+            "exit_condition_hit": False,
+            "exit_allowed": True,
+            "blocked_reason": None,
+            "final_action": "NO_EXIT_SIGNAL",
+            "human_reason": "noise",
+        }
+    ]
+    exec_rows = [
+        {
+            "cycle_id": "c1",
+            "asset_class": "stock",
+            "symbol": "AEHL",
+            "side": "sell",
+            "decision": "rejected",
+            "reason_code": "MARKET_CLOSED",
+            "quantity": 26,
+            "meta": {"scope": "signal_sell"},
+        }
+    ]
+    out = merge_execution_decisions_into_exit_decisions(
+        snap, exec_rows, cycle_id="c1", session_open_for_stock_sells=True
+    )
+    ae = next(x for x in out if x["symbol"] == "AEHL")
+    assert ae["final_action"] == "NO_EXIT_SIGNAL"
+
+
+def test_compile_take_profit_market_closed_when_session_open() -> None:
+    rows = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "broker_qty": 26,
+            "entry_price": 1.0,
+            "current_price": 1.5,
+            "recommended_action": "MARKET_CLOSED",
+            "exit_block_reason": "MARKET_CLOSED",
+            "rotation_eval": {
+                "rule_triggered": True,
+                "automated_rule": "TAKE_PROFIT",
+                "exit_allowed": False,
+                "blocked_reason_code": rc.EXIT_BLOCKED_MARKET_CLOSED,
+            },
+        }
+    ]
+    out = compile_position_exit_decisions(
+        position_exit_rows=rows,
+        sell_signal_audit=[],
+        cycle_signals=[],
+        session_open_for_stock_sells=True,
+    )
+    assert len(out) == 1
+    assert out[0]["final_action"] == "EXIT_REEVAL_PENDING"
+    assert out[0]["blocked_reason"] == "STALE_EXIT_DATA_SESSION_OPEN"
+
+
+def test_sell_readiness_uses_open_position_price_not_stale_exit_snapshot() -> None:
+    """sell_readiness.current_price must follow open_positions, not merged exit snapshot rows."""
+    positions = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "net_qty": 26.0,
+            "avg_entry_price": 0.8625,
+            "current_price": 1.96,
+            "unrealized_pnl_pct": 127.246,
+        }
+    ]
+    exit_rows = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "current_price": 1.37,
+            "blocked_reason": rc.EXIT_BLOCKED_MARKET_CLOSED,
+            "final_action": "SELL_BLOCKED",
+        }
+    ]
+    signals = [
+        {
+            "symbol": "AEHL",
+            "combined_score": -1.0,
+            "meta": {"asset_class": "stock", "action": "SELL"},
+        }
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=signals,
+        position_exit_decisions=exit_rows,
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.5,
+            "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99,
+            "take_profit_pct": 0.5,
+            "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0,
+        },
+        db_path=None,
+    )
+    assert len(rows) == 1
+    r0 = rows[0]
+    assert r0["current_price"] == 1.96
+    assert r0["take_profit_hit"] is True
+    assert r0["blocker"] == "STALE_EXIT_DATA_SESSION_OPEN"
+    assert "MARKET_CLOSED" not in str(r0["blocker"]).upper()
+    assert r0["worker_sell_gate_open_now"] is True
 
 
 def test_build_activity_export_payload_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

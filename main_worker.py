@@ -99,6 +99,7 @@ _blocked_exit_reason: dict[str, str] = {}
 _reconcile_queue: set[tuple[str, str]] = set()
 _crypto_last_exit_ts: dict[str, float] = {}
 _last_reconcile_iso: str | None = None
+_prev_us_stock_session_open: bool | None = None
 
 # --- Sprint 11: news aggregator (asyncio loop in background thread) ---
 _news_aggregator: Any = None
@@ -1143,16 +1144,11 @@ def _is_pdt_risk_active_for_small_account(rt: dict[str, float] | None = None) ->
 
 
 def _us_stock_market_open_for_routed_sell() -> bool:
-    """NYSE session must agree across portfolio_limiter + market_hours (fail closed)."""
+    """NYSE session: same dual gate as export (portfolio_limiter + NYSE regular session, ET)."""
     try:
-        if not portfolio_limiter.us_stock_market_open():
-            return False
-    except Exception:
-        return False
-    try:
-        from market_hours import nyse_regular_session_open as _nyse_open
+        from market_hours import nyse_session_open_for_export_and_worker
 
-        return bool(_nyse_open())
+        return bool(nyse_session_open_for_export_and_worker())
     except Exception:
         return False
 
@@ -1228,6 +1224,15 @@ def _check_and_execute_exits(
     stock_positions = stock_pos or []
     crypto_positions = crypto_pos or []
     all_positions = stock_positions + crypto_positions
+
+    try:
+        if stock_positions and _us_stock_market_open_for_routed_sell():
+            logger.info(
+                "[exits] Fresh stock exit evaluation: {} open stock leg(s), worker sell gate open.",
+                len(stock_positions),
+            )
+    except Exception:
+        pass
 
     market_ctx = None
     ledger = stock_trader.ledger
@@ -1408,7 +1413,7 @@ def _check_and_execute_exits(
         else:
             tp_frac, sl_frac, trail_frac = stock_tp, stock_sl, stock_trail
 
-        stock_market_closed = ac == "stock" and not portfolio_limiter.us_stock_market_open()
+        stock_market_closed = ac == "stock" and not _us_stock_market_open_for_routed_sell()
         pdt_small = _is_pdt_risk_active_for_small_account(rt)
         same_day = _same_et_trading_day(entry_dt)
 
@@ -2957,6 +2962,32 @@ def run_trading_cycle_once(
         rt["stop_loss_pct"] = p["stop_loss_pct"]
     stock_trader = _StockExitBroker(trader, market_ctx)
     crypto_trader = _CryptoExitBroker(trader, market_ctx)
+    global _prev_us_stock_session_open
+    try:
+        now_sess = bool(_us_stock_market_open_for_routed_sell())
+    except Exception:
+        now_sess = False
+    n_stock = 0
+    try:
+        for p in stock_trader.get_open_positions() or []:
+            try:
+                q = float(p.get("net_qty") or p.get("quantity") or p.get("broker_qty") or 0)
+            except (TypeError, ValueError):
+                q = 0.0
+            if q > 1e-9:
+                n_stock += 1
+    except Exception:
+        n_stock = 0
+    if (
+        _prev_us_stock_session_open is not None
+        and not _prev_us_stock_session_open
+        and now_sess
+        and n_stock > 0
+    ):
+        logger.info(
+            "[market_open] US stock session gate opened with {} open stock leg(s); running exit evaluation.",
+            n_stock,
+        )
     if (config.alpaca_paper_trading_allowed() or config.trading_is_live()) and not _use_local_paper_trader():
         try:
             _cli = stock_broker.get_rest_client()
@@ -3122,6 +3153,7 @@ def run_trading_cycle_once(
             cycle_signals=cycle_signals,
             execution_decisions=cycle_decs,
             cycle_id=_cid if _cid else None,
+            session_open_for_stock_sells=_us_stock_market_open_for_routed_sell(),
         )
         summary["position_exit_decisions"] = compiled_exit_decisions
         summary["blocked_exits_cycle"] = blocked_exits_from_decisions(compiled_exit_decisions)
@@ -3232,6 +3264,7 @@ def run_trading_cycle_once(
             _ds.reset_db_lock_count()
     except Exception:
         logger.debug("db_lock metric flush skipped", exc_info=True)
+    _prev_us_stock_session_open = now_sess
     cycle_alpaca_account = None
     try:
         cli = stock_broker.get_rest_client()

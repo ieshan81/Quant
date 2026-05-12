@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -582,13 +583,95 @@ def test_execute_cycle_stock_sell_preflight_blocks_pdt_same_day() -> None:
     now_et = mw.dt_et.now(tz)
     with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
         mw.portfolio_limiter, "us_stock_market_open", return_value=True
-    ), patch.object(mw, "_get_real_position_qty", return_value=1.0), patch.object(
+    ), patch.object(mw, "_us_stock_market_open_for_routed_sell", return_value=True), patch.object(
+        mw, "_get_real_position_qty", return_value=1.0
+    ), patch.object(
         mw,
         "_position_entry_datetime_from_trades",
         lambda *_a, **_k: now_et,
-    ), patch.object(mw.stock_broker, "submit_market_order") as sm:
+    ), patch.object(mw.stock_broker, "submit_market_order") as sm, patch.object(
+        mw, "_persist_decision"
+    ) as pers:
         mw.execute_cycle_results(t, [sig], rt, cycle_id="pdtsd")
     sm.assert_not_called()
+    reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]
+    assert mw.reason_codes.PDT_PROTECTION in reasons
+    assert mw.reason_codes.MARKET_CLOSED not in reasons
+
+
+def test_execute_cycle_stock_sell_submitted_when_open_no_pdt() -> None:
+    mw._blocked_exit_until.clear()
+    mw._blocked_exit_reason.clear()
+    t = create_paper_trader(persist_sqlite=False)
+    assert t.market_buy("stock", "AEHL", 26.0, 0.8625, reason_code="SIGNAL_BUY", meta=None).ok
+    sig = mw.CycleSignal("stock", "AEHL", {}, -0.9, "SELL", 1.96, None)
+    rt = {**_rt(), "pdt_avoid_same_day_round_trip": 1.0}
+    fake_account = MagicMock(equity="100000")
+    fake_client = MagicMock()
+    fake_client.get_account.return_value = fake_account
+    old = datetime.now(timezone.utc) - timedelta(days=2)
+    with patch.object(mw.stock_broker, "get_rest_client", return_value=fake_client), patch.object(
+        mw, "_us_stock_market_open_for_routed_sell", return_value=True
+    ), patch.object(mw, "_get_real_position_qty", return_value=26.0), patch.object(
+        mw,
+        "_position_entry_datetime_from_trades",
+        lambda *_a, **_k: old,
+    ), patch.object(mw.stock_broker, "submit_market_order") as sm:
+        sm.return_value = MagicMock(ok=True, broker_order_id="oid-aehl", message="ok", reason_code="OK")
+        mw.execute_cycle_results(t, [sig], rt, cycle_id="sellopen")
+    sm.assert_called_once()
+    args = sm.call_args[0]
+    assert args[0] == "sell" and args[1] == "AEHL" and abs(args[2] - 26.0) < 1e-9
+
+
+def test_automated_take_profit_stock_submits_when_gate_open_and_threshold_met(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "tptp.sqlite3"
+    init_schema(db)
+    monkeypatch.setattr(config, "DB_PATH", db)
+    t = create_paper_trader(persist_sqlite=True, db_path=db)
+    assert t.market_buy("stock", "AEHL", 26.0, 0.8625).ok
+
+    class _B:
+        def __init__(self, trader: PaperTrader) -> None:
+            self.ledger = trader
+            self.place_sell_order = MagicMock(
+                return_value=MagicMock(ok=True, broker_order_id="oid-tp", message="ok", reason_code="OK")
+            )
+
+        def get_open_positions(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "symbol": "AEHL",
+                    "asset_class": "stock",
+                    "net_qty": 26.0,
+                    "avg_entry_price": 0.8625,
+                    "source": "paper_ledger",
+                }
+            ]
+
+    sb = _B(t)
+    cb = _B(t)
+    cb.get_open_positions = lambda: []
+    old = datetime.now(timezone.utc) - timedelta(days=3)
+    monkeypatch.setattr(mw, "_us_stock_market_open_for_routed_sell", lambda: True)
+    monkeypatch.setattr(mw, "_is_pdt_risk_active_for_small_account", lambda rt: False)
+    monkeypatch.setattr(mw, "_exit_mark_price", lambda ctx, ns: 1.96)
+    monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
+    monkeypatch.setattr(mw, "_get_real_position_qty", lambda _sym, _br: 26.0)
+    monkeypatch.setattr(mw, "_position_entry_datetime_from_trades", lambda *a, **k: old)
+    rt = {
+        **_rt(),
+        "take_profit_pct": 0.5,
+        "stop_loss_pct": 0.99,
+        "stock_take_profit_pct": 0.5,
+        "stock_stop_loss_pct": 0.99,
+        "stock_trailing_stop_pct": 0.02,
+    }
+    lines, n, fired, _h = mw._check_and_execute_exits(sb, cb, rt, db)
+    assert sb.place_sell_order.call_count >= 1
+    assert any("TAKE_PROFIT" in ln for ln in lines)
 
 
 def test_execute_cycle_stock_sell_skips_when_broker_qty_zero() -> None:

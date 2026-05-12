@@ -20,3 +20,20 @@ def nyse_regular_session_open() -> bool:
     except Exception as e:
         logger.error("[market_hours] Timezone error: {}", e)
         return False  # fail closed — never trade on timezone errors
+
+
+def nyse_session_open_for_export_and_worker() -> bool:
+    """NYSE regular session using the same dual gate as routed stock sells in ``main_worker``.
+
+    Both ``risk.portfolio_limiter.us_stock_market_open`` (America/New_York wall clock)
+    and :func:`nyse_regular_session_open` must agree. Not an Alpaca API clock — avoids
+    extra latency and matches worker exit / sell preflight behavior.
+    """
+    try:
+        from risk import portfolio_limiter
+
+        if not portfolio_limiter.us_stock_market_open():
+            return False
+    except Exception:
+        return False
+    return bool(nyse_regular_session_open())
