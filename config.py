@@ -271,4 +271,15 @@ BOT_CONFIG_DEFAULTS = {
     "crypto_fast_exit_enabled": 1.0,
     "pdt_exit_block_seconds": 600.0,
     "dashboard_exit_positions_limit": 50.0,
+    # Capital rotation planner (paper analysis only; no orders from these flags alone)
+    "rotation_enabled": 0.0,
+    "rotation_execute_enabled": 0.0,
+    "rotation_min_edge": 0.25,
+    "rotation_min_profit_to_trim_pct": 0.5,
+    "rotation_min_notional_to_free": 1.0,
+    "rotation_max_positions_to_liquidate_per_cycle": 1.0,
+    "rotation_allow_loss_cut": 0.0,
+    "rotation_max_loss_cut_pct": 2.0,
+    "rotation_reentry_cooldown_seconds": 900.0,
+    "rotation_prefer_crypto_when_market_closed": 1.0,
 }

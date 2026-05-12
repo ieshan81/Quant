@@ -1049,6 +1049,78 @@ def fetch_latest_execution_health(conn: sqlite3.Connection | None = None) -> dic
         }
 
 
+def fetch_latest_cycle_activity_snapshot(
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Latest ``cycle_activity_snapshot`` row from ``ops_metrics`` (position exit explanations)."""
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_latest_cycle_activity_snapshot(local_conn)
+    try:
+        row = conn.execute(
+            """
+            SELECT value, meta_json, window_label, created_at
+            FROM ops_metrics
+            WHERE metric_name = 'cycle_activity_snapshot'
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {}
+    if not row:
+        return {}
+    out: dict[str, Any] = {
+        "value": float(row[0] or 0.0),
+        "window_label": row[2],
+        "created_at": row[3],
+    }
+    raw = row[1]
+    if raw:
+        try:
+            meta = json.loads(str(raw))
+            if isinstance(meta, dict):
+                out["meta"] = meta
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+def fetch_recent_reconciliation_events(
+    conn: sqlite3.Connection | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_recent_reconciliation_events(local_conn, limit)
+    try:
+        cur = conn.execute(
+            """
+            SELECT id, created_at, event_type, asset_class, symbol, local_qty, broker_qty,
+                   action_taken, meta_json
+            FROM reconciliation_events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+    except sqlite3.OperationalError:
+        return []
+    out: list[dict[str, Any]] = []
+    for r in cur.fetchall():
+        d = _row_to_dict(r)
+        raw_m = d.get("meta_json")
+        if raw_m:
+            try:
+                d["meta"] = json.loads(str(raw_m))
+            except json.JSONDecodeError:
+                d["meta"] = None
+        else:
+            d["meta"] = None
+        d.pop("meta_json", None)
+        out.append(d)
+    return out
+
+
 def fetch_strategy_parameters_db(
     strategy_name: str = "aggressive_micro_scalp",
     capital_stage: str = "MICRO",

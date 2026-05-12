@@ -123,6 +123,16 @@ def test_dashboard_app_js_route(dash_app) -> None:
     assert r.headers.get("Cache-Control") == "no-store"
 
 
+def test_activity_export_ui_hook(dash_app) -> None:
+    client = dash_app.test_client()
+    html = client.get("/").data.decode("utf-8", errors="ignore")
+    assert 'id="btnCopyActivityExport"' in html
+    assert 'id="btnDownloadActivityExport"' in html
+    js = client.get("/dashboard-app.js").data.decode("utf-8", errors="ignore")
+    assert "wireActivityExport" in js
+    assert "/api/activity/export" in js
+
+
 def test_index_http_poll_only(dash_app) -> None:
     client = dash_app.test_client()
     _, bundle, _ = _html_and_js(client)

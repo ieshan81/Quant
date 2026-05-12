@@ -40,6 +40,16 @@ _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
     "crypto_fast_exit_enabled": "1=allow crypto TP/trailing 24/7 when broker qty OK",
     "pdt_exit_block_seconds": "Cooldown seconds after PDT-blocked exit retry",
     "dashboard_exit_positions_limit": "Max rows in dashboard exit eligibility table",
+    "rotation_enabled": "1=capital rotation planner may mark rotation_ready when math passes",
+    "rotation_execute_enabled": "Reserved; planner phase does not submit rotation orders",
+    "rotation_min_edge": "Min candidate_score minus hold_score to consider rotation",
+    "rotation_min_profit_to_trim_pct": "Min unrealized P&L %% to prefer trim vs hold",
+    "rotation_min_notional_to_free": "Min estimated freed notional ($) for rotation",
+    "rotation_max_positions_to_liquidate_per_cycle": "Cap trims per cycle (reserved)",
+    "rotation_allow_loss_cut": "1=allow loss-cutting exit candidates when drawdown exceeds cap",
+    "rotation_max_loss_cut_pct": "Max loss %% (negative) for loss-cut exit candidate",
+    "rotation_reentry_cooldown_seconds": "Reference cooldown for planner messaging",
+    "rotation_prefer_crypto_when_market_closed": "1=small score bump for crypto when stocks closed",
 }
 
 

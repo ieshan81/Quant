@@ -952,9 +952,53 @@
     });
   }
 
+  function wireActivityExport() {
+    var copyBtn = document.getElementById("btnCopyActivityExport");
+    var dlBtn = document.getElementById("btnDownloadActivityExport");
+    var st = document.getElementById("actExportStatus");
+    if (!copyBtn || !dlBtn) return;
+    function stamp(msg) {
+      if (st) st.textContent = msg || "";
+    }
+    copyBtn.addEventListener("click", async function () {
+      try {
+        var r = await fetch("/api/activity/export", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var j = await r.json();
+        var text = JSON.stringify(j, null, 2);
+        await navigator.clipboard.writeText(text);
+        stamp("Copied activity JSON");
+      } catch (e) {
+        stamp(String(e && e.message ? e.message : e));
+      }
+    });
+    dlBtn.addEventListener("click", async function () {
+      try {
+        var r = await fetch("/api/activity/export", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var j = await r.json();
+        var text = JSON.stringify(j, null, 2);
+        var blob = new Blob([text], { type: "application/json;charset=utf-8" });
+        var u = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = u;
+        var d = new Date();
+        var pad = function (n) { return String(n).padStart(2, "0"); };
+        var fname = "activity-export-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + ".json";
+        a.download = fname;
+        a.click();
+        URL.revokeObjectURL(u);
+        stamp("Download started");
+      } catch (e) {
+        stamp(String(e && e.message ? e.message : e));
+      }
+    });
+  }
+
   function startDashboard() {
     bindTabs();
     wireBacktest();
+    wireActivityExport();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
   }

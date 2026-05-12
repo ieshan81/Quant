@@ -136,7 +136,7 @@ def setup_logging() -> None:
 
 
 def _alpaca_market_context() -> None:
-    """Compatibility placeholder: market data now routes through Alpaca helpers."""
+    """Legacy hook retained for callers passing ``exchange=`` into universe refresh."""
     return None
 
 
@@ -1218,8 +1218,7 @@ def _check_and_execute_exits(
     Positions are the union of Alpaca + SQLite fills + the paper ledger.
     Max-hold uses filled-trade timestamps from SQLite ``trades`` (crypto 4h, stocks 8h).
 
-    **Phase 3 note:** profit-taking exits below are operational; full capital redeployment /
-    rotation after realized profit is not fully designed yet — do not treat that loop as complete.
+    Broker-sized exits rotate capital when gates allow (see ``docs/ROADMAP.md`` for deferred workflow).
 
     Returns ``(log_lines, len(all_positions), exits_filled_ok, health_meta)``.
     """
@@ -1267,6 +1266,7 @@ def _check_and_execute_exits(
         block_reason: str,
         pdt_status: str,
         recommended_action: str,
+        rotation_eval: dict[str, Any] | None = None,
     ) -> None:
         pq = (
             f"{100.0 * (float(mid_p) - float(entry_p)) / float(entry_p):.2f}%"
@@ -1275,23 +1275,24 @@ def _check_and_execute_exits(
         )
         cd = _cooldown_remaining_seconds(symbol)
         cd_s = f"{cd:.0f}s" if cd > 1.0 else "—"
-        position_exit_rows.append(
-            {
-                "symbol": symbol,
-                "asset_class": asset_class,
-                "local_qty": local_qty,
-                "broker_qty": broker_qty,
-                "entry_price": entry_p,
-                "current_price": mid_p,
-                "pnl_pct": pq,
-                "exit_eligibility": recommended_action,
-                "exit_block_reason": block_reason,
-                "pdt_status": pdt_status,
-                "last_exit_attempt_at": "—",
-                "cooldown_remaining": cd_s,
-                "recommended_action": recommended_action,
-            }
-        )
+        row = {
+            "symbol": symbol,
+            "asset_class": asset_class,
+            "local_qty": local_qty,
+            "broker_qty": broker_qty,
+            "entry_price": entry_p,
+            "current_price": mid_p,
+            "pnl_pct": pq,
+            "exit_eligibility": recommended_action,
+            "exit_block_reason": block_reason,
+            "pdt_status": pdt_status,
+            "last_exit_attempt_at": "—",
+            "cooldown_remaining": cd_s,
+            "recommended_action": recommended_action,
+        }
+        if rotation_eval:
+            row["rotation_eval"] = rotation_eval
+        position_exit_rows.append(row)
 
     db_p = Path(db_path)
     for raw in all_positions:
@@ -1333,6 +1334,11 @@ def _check_and_execute_exits(
                 block_reason="COOLDOWN",
                 pdt_status="blocked" if sym in pdt_blocked_symbols else "—",
                 recommended_action="COOLDOWN",
+                rotation_eval={
+                    "rule_triggered": False,
+                    "exit_allowed": False,
+                    "blocked_reason_code": reason_codes.COOLDOWN,
+                },
             )
             continue
 
@@ -1450,6 +1456,12 @@ def _check_and_execute_exits(
                         block_reason="MARKET_CLOSED",
                         pdt_status="—",
                         recommended_action="MARKET_CLOSED",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "STOP_LOSS",
+                            "exit_allowed": False,
+                            "blocked_reason_code": reason_codes.EXIT_BLOCKED_MARKET_CLOSED,
+                        },
                     )
                 else:
                     logger.info(
@@ -1502,6 +1514,15 @@ def _check_and_execute_exits(
                         block_reason="—" if r.ok else str(getattr(r, "reason_code", "") or ""),
                         pdt_status="same_day" if (ac == "stock" and same_day) else "—",
                         recommended_action="EXIT_ALLOWED" if r.ok else "HOLD",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "STOP_LOSS",
+                            "exit_allowed": bool(r.ok),
+                            "blocked_reason_code": None
+                            if r.ok
+                            else str(getattr(r, "reason_code", "") or "").strip().upper() or None,
+                            "sell_submitted": bool(r.ok),
+                        },
                     )
             elif trail_hit:
                 if ac == "stock" and stock_market_closed:
@@ -1516,6 +1537,12 @@ def _check_and_execute_exits(
                         block_reason="MARKET_CLOSED",
                         pdt_status="—",
                         recommended_action="MARKET_CLOSED",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "TRAILING_STOP",
+                            "exit_allowed": False,
+                            "blocked_reason_code": reason_codes.EXIT_BLOCKED_MARKET_CLOSED,
+                        },
                     )
                 else:
                     logger.info(
@@ -1600,6 +1627,12 @@ def _check_and_execute_exits(
                         block_reason="PDT_PROTECTION",
                         pdt_status="same_day",
                         recommended_action="PDT_BLOCKED",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "TAKE_PROFIT",
+                            "exit_allowed": False,
+                            "blocked_reason_code": reason_codes.PDT_PROTECTION,
+                        },
                     )
                 elif ac == "stock" and stock_market_closed:
                     _reject_market_closed("take_profit_stock_market_closed")
@@ -1613,6 +1646,12 @@ def _check_and_execute_exits(
                         block_reason="MARKET_CLOSED",
                         pdt_status="—",
                         recommended_action="MARKET_CLOSED",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "TAKE_PROFIT",
+                            "exit_allowed": False,
+                            "blocked_reason_code": reason_codes.EXIT_BLOCKED_MARKET_CLOSED,
+                        },
                     )
                 else:
                     logger.info(
@@ -1683,6 +1722,15 @@ def _check_and_execute_exits(
                         block_reason="—" if r.ok else str(getattr(r, "reason_code", "") or ""),
                         pdt_status="same_day" if (ac == "stock" and same_day) else "—",
                         recommended_action="EXIT_ALLOWED" if r.ok else "PDT_BLOCKED",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "TAKE_PROFIT",
+                            "exit_allowed": bool(r.ok),
+                            "blocked_reason_code": None
+                            if r.ok
+                            else str(getattr(r, "reason_code", "") or "").strip().upper() or None,
+                            "sell_submitted": bool(r.ok),
+                        },
                     )
             elif entry_dt is not None and _held_h is not None and _held_h >= max_hold_h:
                 if ac == "stock" and stock_market_closed:
@@ -1697,6 +1745,12 @@ def _check_and_execute_exits(
                         block_reason="MARKET_CLOSED",
                         pdt_status="—",
                         recommended_action="MARKET_CLOSED",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "MAX_HOLD_TIME",
+                            "exit_allowed": False,
+                            "blocked_reason_code": reason_codes.EXIT_BLOCKED_MARKET_CLOSED,
+                        },
                     )
                 else:
                     logger.info(
@@ -1742,6 +1796,15 @@ def _check_and_execute_exits(
                         block_reason="—",
                         pdt_status="—",
                         recommended_action="EXIT_ALLOWED" if r.ok else "HOLD",
+                        rotation_eval={
+                            "rule_triggered": True,
+                            "automated_rule": "MAX_HOLD_TIME",
+                            "exit_allowed": bool(r.ok),
+                            "blocked_reason_code": None
+                            if r.ok
+                            else str(getattr(r, "reason_code", "") or "").strip().upper() or None,
+                            "sell_submitted": bool(r.ok),
+                        },
                     )
             else:
                 _snapshot_exit_row(
@@ -1754,6 +1817,7 @@ def _check_and_execute_exits(
                     block_reason="—",
                     pdt_status="same_day" if (ac == "stock" and same_day) else "—",
                     recommended_action="HOLD",
+                    rotation_eval={"rule_triggered": False},
                 )
         elif qty < -1e-12:
             pnl_pct = (entry - mid) / entry
@@ -2270,6 +2334,8 @@ def execute_cycle_results(
         "short_covers": 0,
         "cycle_id": cid,
     }
+    sell_signal_audit: list[dict[str, Any]] = []
+    out["sell_signal_audit"] = sell_signal_audit
     alpaca_snapshot = {"cash": 0.0, "buying_power": 0.0, "usable_buying_power": 0.0}
     if not _use_local_paper_trader() and (config.alpaca_paper_trading_allowed() or config.trading_is_live()):
         alpaca_snapshot = _alpaca_buying_power_snapshot()
@@ -2775,18 +2841,31 @@ def execute_cycle_results(
                         execution_health["stale_local_positions_count"] = int(execution_health["stale_local_positions_count"]) + 1
                         execution_health["broker_local_mismatch_count"] = int(execution_health["broker_local_mismatch_count"]) + 1
                         _queue_reconciliation_cleanup(cs.asset_class, cs.symbol)
+                        sell_signal_audit.append(
+                            {
+                                "symbol": cs.symbol,
+                                "asset_class": cs.asset_class,
+                                "broker_qty": 0.0,
+                                "entry_price": float(pos.avg_price) if pos is not None else mid,
+                                "mid": mid,
+                                "unrealized_pnl_pct": None,
+                                "signal_score": eff_score,
+                                "submitted": False,
+                                "blocked_reason": reason_codes.CRYPTO_PULL_BLOCKED_NO_BROKER_QTY,
+                            }
+                        )
                         _persist_decision(
                             cycle_id=cid,
                             asset_class=cs.asset_class,
                             symbol=cs.symbol,
                             side="sell",
                             decision="rejected",
-                            reason_code="LOCAL_POSITION_STALE",
+                            reason_code=reason_codes.CRYPTO_PULL_BLOCKED_NO_BROKER_QTY,
                             score=eff_score,
                             notional=0.0,
                             quantity=float(pos.quantity),
                             price=mid,
-                            meta={"reason_detail": "broker_qty_zero"},
+                            meta={"reason_detail": "broker_qty_zero", "legacy_note": "LOCAL_POSITION_STALE"},
                         )
                     out["holds"] += 1
                 else:
@@ -3022,6 +3101,80 @@ def run_trading_cycle_once(
         logger.debug("execution_health merge/log skipped", exc_info=True)
     summary["stop_events"] = lines
     summary["analyzed"] = len(results)
+    try:
+        from monitoring.cycle_activity_export import blocked_exits_from_decisions, compile_position_exit_decisions
+
+        eh_snap = dict(summary.get("execution_health") or {})
+        rows_exit = list(eh_snap.get("position_exit_rows") or [])
+        cycle_signals = [
+            {"symbol": r.symbol, "asset_class": r.asset_class, "action": r.action, "score": r.score}
+            for r in results
+            if not r.error
+        ]
+        compiled_exit_decisions = compile_position_exit_decisions(
+            position_exit_rows=rows_exit,
+            sell_signal_audit=list(summary.get("sell_signal_audit") or []),
+            cycle_signals=cycle_signals,
+        )
+        summary["position_exit_decisions"] = compiled_exit_decisions
+        summary["blocked_exits_cycle"] = blocked_exits_from_decisions(compiled_exit_decisions)
+        snap_meta = {
+            "cycle_id": summary.get("cycle_id"),
+            "analyzed": summary["analyzed"],
+            "buys": summary["buys"],
+            "sells": summary["sells"],
+            "holds": summary["holds"],
+            "errors": summary["errors"],
+            "position_exit_decisions": compiled_exit_decisions,
+            "sell_signal_audit": summary.get("sell_signal_audit") or [],
+        }
+        with get_connection(config.DB_PATH) as conn:
+            trade_logger.log_ops_metric(
+                conn,
+                metric_name="cycle_activity_snapshot",
+                value=1.0,
+                window_label=str(summary.get("cycle_id") or ""),
+                meta=snap_meta,
+            )
+    except Exception:
+        logger.debug("cycle_activity_snapshot skipped", exc_info=True)
+    try:
+        from execution import capital_rotation as _cr
+        from monitoring import dashboard_data as _dd
+
+        bg = summary.get("buy_gate") or {}
+        account = {
+            "cash": float(bg.get("cash", 0)),
+            "buying_power": float(bg.get("buying_power", 0)),
+            "usable_buying_power": float(bg.get("usable_buying_power", 0)),
+            "equity": float(trader.equity_total()),
+        }
+        cli = stock_broker.get_rest_client()
+        if cli is not None:
+            open_pos = _dd.get_real_positions(cli)
+        else:
+            with get_connection(config.DB_PATH) as conn:
+                raw_pos = _dd.fetch_open_positions_from_trades(conn)
+            open_pos = _cr.sqlite_net_positions_to_broker_shape(raw_pos, prices_dict)
+        with get_connection(config.DB_PATH) as conn:
+            recent_sigs = _dd.fetch_recent_signals(conn, limit=80)
+            recent_decs = _dd.fetch_recent_execution_decisions(conn, limit=80)
+        rot_plan = _cr.build_rotation_plan(
+            cycle_id=str(summary.get("cycle_id") or ""),
+            account=account,
+            open_positions=open_pos,
+            recent_signals=recent_sigs,
+            execution_decisions=recent_decs,
+            market_open=portfolio_limiter.us_stock_market_open(),
+            runtime_config=dict(rt),
+            broker_positions=None,
+            now=None,
+            prices_fallback=prices_dict,
+        )
+        summary["capital_rotation_plan"] = rot_plan
+        _cr.persist_rotation_plan(config.DB_PATH, rot_plan)
+    except Exception:
+        logger.debug("capital_rotation_plan skipped", exc_info=True)
     sorted_crypto_scores = sorted(
         ((r.symbol, r.score) for r in results if r.asset_class == "crypto" and not r.error),
         key=lambda x: x[1],

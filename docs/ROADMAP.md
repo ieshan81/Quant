@@ -42,3 +42,13 @@ We never auto-flip live trading. The AI helper rolls out in four stages:
 No LLM is shipped yet. No AI fund manager is wired yet. This is the staged
 plan we will follow once the cockpit (Overview / Positions / Backtest / System
 Health) is clean and stable.
+
+## Capital redeployment after profit capture (deferred)
+
+Automated exits (take-profit / stop / trailing / max-hold) and signal-based
+sells rotate **out** of positions when gates allow. A separate, higher-level
+workflow for *where* freed cash deploys next (full portfolio-level “capital
+redeployment loop”, cross-sleeve budgeting, and formal rotation policy) remains
+product design — it is **not** part of the execution hot path. Export
+``GET /api/activity/export`` and per-cycle ``position_exit_decisions`` explain
+**why** sells did or did not fire; they do not guarantee future performance.

@@ -757,6 +757,11 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-activity" class="tab-panel">
+      <div class="chip-row" style="margin-bottom:10px;">
+        <button type="button" id="btnCopyActivityExport" class="tab-btn" style="font-size:12px;">Copy Activity JSON</button>
+        <button type="button" id="btnDownloadActivityExport" class="tab-btn" style="font-size:12px;">Download Activity JSON</button>
+        <span class="updated-stamp" id="actExportStatus"></span>
+      </div>
       <details class="section" id="actTradesSec" open>
         <summary>Recent trades (<span id="actTradesCount">0</span>)</summary>
         <div class="section-body">
@@ -1367,6 +1372,35 @@ def create_app() -> Flask:
             json.dumps(payload, default=str),
             mimetype="application/json",
         )
+
+    @app.get("/api/activity/export")
+    def api_activity_export() -> Response:
+        limit_raw = request.args.get("limit", "50")
+        try:
+            lim = max(1, min(100, int(str(limit_raw))))
+        except ValueError:
+            lim = 50
+        from monitoring.cycle_activity_export import build_activity_export_payload
+        from monitoring.dashboard_data import _open_dashboard_sqlite
+
+        with _open_dashboard_sqlite() as conn:
+            payload = build_activity_export_payload(conn, limit=lim)
+        return Response(json.dumps(payload, default=str), mimetype="application/json")
+
+    @app.get("/api/rotation/latest")
+    def api_rotation_latest() -> Any:
+        from execution.capital_rotation import fetch_latest_rotation_plan
+
+        plan = fetch_latest_rotation_plan(str(config.DB_PATH))
+        if plan is None:
+            return jsonify(
+                {
+                    "ok": True,
+                    "rotation_plan": None,
+                    "message": "No rotation plan recorded yet",
+                }
+            )
+        return jsonify({"ok": True, "rotation_plan": plan})
 
     @app.post("/api/client-debug")
     def api_client_debug_post() -> tuple[dict[str, Any], int]:
