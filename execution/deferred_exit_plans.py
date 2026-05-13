@@ -287,6 +287,28 @@ def process_deferred_exit_plans(
 
             plan_status = str(r["status"] or "pending").strip().lower()
 
+            upfront_qty = float(broker_qty_fn(sym))
+            if upfront_qty <= 1e-9:
+                _update_plan_status(conn, pid, "cancelled_position_closed", attempts_delta=0)
+                trade_logger.log_execution_decision(
+                    conn,
+                    cycle_id=cycle_id,
+                    asset_class="stock",
+                    symbol=sym,
+                    side="sell",
+                    decision="cancelled",
+                    reason_code=rc.DEFERRED_EXIT_CLOSED_NO_POSITION,
+                    score=None,
+                    notional=0.0,
+                    quantity=0.0,
+                    price=None,
+                    strategy_name="deferred_exit",
+                    strategy_version="1",
+                    meta={"source": "deferred_pdt", "plan_id": pid, "reason": "broker_qty_zero_upfront"},
+                )
+                lines.append(f"[deferred_exit] {sym} cancelled_position_closed — broker qty is 0")
+                continue
+
             if plan_status == "waiting_on_existing_order":
                 try:
                     from execution.stock_broker import get_open_sell_orders_for_symbol

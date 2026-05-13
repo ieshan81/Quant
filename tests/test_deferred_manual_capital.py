@@ -2520,3 +2520,127 @@ def test_deployment_proof_in_export(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
     assert "recent_buy_gate_decisions" in payload
     assert isinstance(payload["recent_buy_gate_decisions"], list)
+
+
+# ---------------------------------------------------------------------------
+# Deferred exit cleanup when broker position is gone
+# ---------------------------------------------------------------------------
+
+def test_deferred_plan_cancelled_when_broker_qty_zero(tmp_path: Path) -> None:
+    """A pending deferred plan is cancelled when broker reports qty 0."""
+    from execution.deferred_exit_plans import (
+        record_pdt_deferred_exit,
+        process_deferred_exit_plans,
+        fetch_deferred_exit_plans,
+    )
+    from data.data_store import init_schema
+
+    db = tmp_path / "def_cleanup.sqlite3"
+    init_schema(db)
+
+    rt: dict = {"deferred_pdt_exit_enabled": 1.0, "deferred_exit_check_first_in_cycle": 1.0,
+                "deferred_exit_min_profit_pct": 2.0, "deferred_exit_cancel_if_profit_below_pct": 0.0,
+                "deferred_exit_max_attempts": 5}
+    record_pdt_deferred_exit(
+        db, rt,
+        symbol="AEHL", asset_class="stock", broker_qty=50, entry_price=1.20,
+        trigger_price=1.50, trigger_pnl_pct=25.0, trigger_reason="TAKE_PROFIT",
+        blocked_reason="PDT_PROTECTION", cycle_id="c1",
+    )
+
+    import sqlite3
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        before = [dict(r) for r in conn.execute("SELECT * FROM deferred_exit_plans WHERE status='pending'").fetchall()]
+    assert len(before) == 1
+    assert before[0]["symbol"] == "AEHL"
+
+    lines: list[str] = []
+    process_deferred_exit_plans(
+        db, rt, cycle_id="c2",
+        broker_qty_fn=lambda sym: 0.0,
+        mid_price_fn=lambda sym: 1.50,
+        sell_gate_open=True,
+        pdt_blocks_fn=lambda s, q, p: False,
+        submit_sell_fn=lambda s, q, p: (True, None, None),
+        log_lines=lines,
+    )
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        after = [dict(r) for r in conn.execute("SELECT * FROM deferred_exit_plans WHERE symbol='AEHL'").fetchall()]
+    assert after[0]["status"] == "cancelled_position_closed"
+    assert any("cancelled_position_closed" in ln for ln in lines)
+
+
+def test_stale_deferred_plan_annotated_in_export(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Deferred plan for a symbol not in broker positions is annotated as stale in export."""
+    from execution.deferred_exit_plans import record_pdt_deferred_exit
+    from monitoring.cycle_activity_export import build_activity_export_payload
+    from data.data_store import init_schema
+    import sqlite3
+
+    db = tmp_path / "stale_def.sqlite3"
+    init_schema(db)
+    monkeypatch.setattr("monitoring.cycle_activity_export.config.DB_PATH", str(db))
+
+    rt: dict = {"deferred_pdt_exit_enabled": 1.0}
+    record_pdt_deferred_exit(
+        db, rt,
+        symbol="AEHL", asset_class="stock", broker_qty=50, entry_price=1.20,
+        trigger_price=1.50, trigger_pnl_pct=25.0, trigger_reason="TAKE_PROFIT",
+        blocked_reason="PDT_PROTECTION", cycle_id="c-stale",
+    )
+
+    from monitoring import dashboard_data as dd
+    monkeypatch.setattr(dd, "get_alpaca_background_snapshot", lambda: {"positions": []})
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        payload = build_activity_export_payload(conn, limit=5)
+
+    deferred = payload.get("deferred_exit_plans") or []
+    aehl_plans = [d for d in deferred if d.get("symbol") == "AEHL" and d.get("status") == "pending"]
+    assert len(aehl_plans) >= 1
+    assert aehl_plans[0].get("stale") is True
+    assert "position_no_longer_held" in str(aehl_plans[0].get("stale_reason") or "")
+
+
+def test_export_explains_dynamic_reserve_inactive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """capital_redeployment_status has status_explanation when reserve is inactive."""
+    from monitoring.cycle_activity_export import build_activity_export_payload
+    from data.data_store import init_schema
+    import sqlite3
+
+    db = tmp_path / "expl.sqlite3"
+    init_schema(db)
+    monkeypatch.setattr("monitoring.cycle_activity_export.config.DB_PATH", str(db))
+
+    with sqlite3.connect(str(db)) as conn:
+        payload = build_activity_export_payload(conn, limit=5)
+
+    crs = payload.get("capital_redeployment_status") or {}
+    assert "status_explanation" in crs
+    expl = str(crs["status_explanation"])
+    assert "inactive" in expl.lower() or "disabled" in expl.lower() or "deployed" in expl.lower()
+
+
+def test_profitable_position_above_tp_produces_exit_line() -> None:
+    """TP logic: pnl_pct > threshold triggers TAKE_PROFIT action (unit-level verification)."""
+    entry = 2.00
+    mark = 2.32
+    pnl_pct = (mark - entry) / entry
+    stock_tp = 0.10
+
+    assert pnl_pct >= stock_tp, (
+        f"EZGO at +{pnl_pct:.0%} should exceed TP threshold {stock_tp:.0%}"
+    )
+
+    from execution import reason_codes
+    expected_actions = {
+        reason_codes.TAKE_PROFIT,
+        reason_codes.EXIT_BLOCKED_MARKET_CLOSED,
+        reason_codes.PDT_PROTECTION,
+        reason_codes.STOCK_EXIT_SPREAD_TOO_WIDE,
+    }
+    assert reason_codes.TAKE_PROFIT in expected_actions

@@ -1150,6 +1150,18 @@ def build_activity_export_payload(
 
     deferred_rows = fetch_deferred_exit_plans(None, include_terminal=True, limit=50)
 
+    _live_syms: set[str] = set()
+    for _pp in (pos_list if isinstance(pos_list, list) else []):
+        _psym = str(_pp.get("symbol") or "").strip().upper()
+        if _psym:
+            _live_syms.add(_psym)
+    for _dr in deferred_rows:
+        _dsym = str(_dr.get("symbol") or "").strip().upper()
+        _dstat = str(_dr.get("status") or "").strip().lower()
+        if _dstat in ("pending", "waiting_on_existing_order") and _dsym and _dsym not in _live_syms:
+            _dr["stale"] = True
+            _dr["stale_reason"] = "position_no_longer_held_by_broker"
+
     _pos_snapshot_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     _broker_positions_retrieved_at: str | None = None
     if pos_snap is not None:
@@ -1550,6 +1562,24 @@ def build_activity_export_payload(
         "cooldown_active": _cooldown_on,
         "enforcement_code_version": _git_commit,
     }
+    _bp_val = float(_bg.get("buying_power", 0) or 0)
+    if _dyn_enabled and _cooldown_on:
+        _expl = "Dynamic reserve is active and enforcing post-profit cooldown."
+    elif _dyn_enabled and not _cooldown_on:
+        _parts = ["Dynamic reserve is deployed but inactive"]
+        _reasons = []
+        if _profit_ts <= 0:
+            _reasons.append("no recent profit-exit cash event within cooldown")
+        elif _cooldown_remaining <= 0:
+            _reasons.append("cooldown has expired")
+        if _bp_val < 1.0:
+            _reasons.append(f"buying power is only ${_bp_val:.2f}")
+        _expl = _parts[0] + (" because " + " and ".join(_reasons) if _reasons else "") + "."
+    elif not _dyn_enabled:
+        _expl = "Dynamic reserve is disabled in runtime config."
+    else:
+        _expl = ""
+    payload["capital_redeployment_status"]["status_explanation"] = _expl
 
     _buy_gate_rows: list[dict] = []
     _sync_codes = {"ALPACA_SYNC_OPEN", "ALPACA_SYNC", "ALPACA_REAL", "BROKER_RECONCILE_ADJUST"}
