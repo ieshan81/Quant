@@ -638,6 +638,36 @@ _PAGE = """<!DOCTYPE html>
         transform: none;
       }
     }
+    .capital-card .capital-sub { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+    .capital-card .capital-grid .muted { color: var(--muted); font-size: 11px; }
+    .capital-card.capital-warn-b .capital-main { color: #fbbf24; }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      display: none; align-items: center; justify-content: center; z-index: 9999;
+      padding: 16px;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal-box {
+      background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+      max-width: 460px; width: 100%; padding: 18px 20px;
+    }
+    .modal-box h3 { margin: 0 0 10px; font-size: 1rem; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; flex-wrap: wrap; }
+    .btn-sell {
+      background: rgba(248,113,113,0.15); border: 1px solid var(--bad); color: #fecaca;
+      padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    .btn-sell:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-cancel {
+      background: transparent; border: 1px solid var(--border); color: var(--text);
+      padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    .sell-open-btn { font-size: 11px; padding: 4px 10px; border-radius: 5px; }
+    #dashToast {
+      position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+      z-index: 10000; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
+      font-size: 13px; display: none; max-width: min(520px, 92vw);
+    }
   </style>
 </head>
 <body>
@@ -662,6 +692,7 @@ _PAGE = """<!DOCTYPE html>
     </div>
   </header>
   <div id="dashError" role="alert"></div>
+  <div id="dashToast" role="status" aria-live="polite"></div>
   <nav aria-label="Tabs">
     <button type="button" class="tab-btn active" data-tab="overview">Overview</button>
     <button type="button" class="tab-btn" data-tab="positions">Positions</button>
@@ -679,6 +710,20 @@ _PAGE = """<!DOCTYPE html>
         <div class="metric"><div class="lab">Cash</div><div class="val mono" id="mCash">—</div></div>
         <div class="metric"><div class="lab">Market</div><div class="val mono" id="mMkt">—</div></div>
         <div class="metric"><div class="lab">Capital stage</div><div class="val mono" id="mCap">—</div></div>
+      </div>
+
+      <div class="card capital-card" id="capitalStatusCard">
+        <h2 style="margin:0 0 8px 0;font-size:0.95rem;font-weight:600;">Available Buying Power</h2>
+        <div class="capital-main mono" id="capAvailMain" style="font-size:1.35rem;font-weight:600;">—</div>
+        <p class="capital-sub" id="capAvailSub">Free cash available for new trades</p>
+        <div class="capital-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(138px,1fr));gap:8px;margin-top:10px;font-size:0.85rem;">
+          <div><span class="muted">Cash</span><br><span class="mono" id="capCash">—</span></div>
+          <div><span class="muted">Broker Buying Power</span><br><span class="mono" id="capBP">—</span></div>
+          <div><span class="muted">Usable Buying Power</span><br><span class="mono" id="capUsable">—</span></div>
+          <div><span class="muted">Capital Deployed</span><br><span class="mono" id="capDeployed">—</span></div>
+        </div>
+        <p id="capNewBuys" style="margin-top:10px;font-size:13px;color:var(--muted);">—</p>
+        <p id="capWarn" style="display:none;margin-top:8px;color:#fbbf24;font-size:0.85rem;"></p>
       </div>
 
       <div class="overview-split">
@@ -750,7 +795,7 @@ _PAGE = """<!DOCTYPE html>
         <p class="empty-hint" id="posAllEmpty" style="display:none;">No positions returned.</p>
         <div class="scroll-table">
           <table class="data" id="tblPositionsFull"><thead><tr>
-            <th>Symbol</th><th>Class</th><th>Qty</th><th>Entry</th><th>Current</th><th>Market Value</th><th>uPnL $</th><th>uPnL %</th><th>Exit Status</th><th>Explanation</th>
+            <th>Symbol</th><th>Class</th><th>Opened</th><th>Qty</th><th>Entry</th><th>Current</th><th>Market Value</th><th>uPnL $</th><th>uPnL %</th><th>Exit Status</th><th>Explanation</th><th>Actions</th>
           </tr></thead><tbody></tbody></table>
         </div>
       </div>
@@ -843,6 +888,17 @@ _PAGE = """<!DOCTYPE html>
     </details>
 
     <p class="foot mono">DB: {{ db }} · Poll every {{ refresh_sec }}s · <span id="pollFoot">HTTP only</span></p>
+
+    <div id="manualSellModal" class="modal-backdrop" aria-hidden="true">
+      <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="msTitle">
+        <h3 id="msTitle">Confirm manual sell</h3>
+        <div id="msBody" class="mono" style="font-size:13px;line-height:1.6;"></div>
+        <div class="modal-actions">
+          <button type="button" class="btn-cancel" id="msCancel">Cancel</button>
+          <button type="button" class="btn-sell" id="msConfirm">Sell position</button>
+        </div>
+      </div>
+    </div>
   </main>
 
 <script src="/dashboard-app.js" defer></script>
@@ -1372,6 +1428,28 @@ def create_app() -> Flask:
             json.dumps(payload, default=str),
             mimetype="application/json",
         )
+
+    @app.post("/api/positions/sell")
+    def api_positions_sell() -> Any:
+        if not _check_auth():
+            return jsonify(
+                {"ok": False, "symbol": "", "reason_code": "unauthorized", "message": "Unauthorized."}
+            ), 401
+        body = request.get_json(silent=True) or {}
+        import uuid as _uuid
+
+        cycle = _uuid.uuid4().hex[:12]
+        from monitoring.manual_positions import try_manual_sell
+
+        out = try_manual_sell(
+            symbol=str(body.get("symbol") or ""),
+            asset_class=str(body.get("asset_class") or "stock"),
+            quantity=str(body.get("quantity") or ""),
+            confirm=bool(body.get("confirm")),
+            cycle_id=cycle,
+        )
+        status = 200 if out.get("ok") else 400
+        return jsonify(out), status
 
     @app.get("/api/activity/export")
     def api_activity_export() -> Response:

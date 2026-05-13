@@ -282,4 +282,9 @@ BOT_CONFIG_DEFAULTS = {
     "rotation_max_loss_cut_pct": 2.0,
     "rotation_reentry_cooldown_seconds": 900.0,
     "rotation_prefer_crypto_when_market_closed": 1.0,
+    "deferred_pdt_exit_enabled": 1.0,
+    "deferred_exit_min_profit_pct": 2.0,
+    "deferred_exit_max_attempts": 5.0,
+    "deferred_exit_cancel_if_profit_below_pct": 0.0,
+    "deferred_exit_check_first_in_cycle": 1.0,
 }

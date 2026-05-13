@@ -11,6 +11,8 @@
   var equityChart = null;
   var POLL_MS = 30000;
   var MIN_ORDER_NOTIONAL = 1.0;
+  var _sellSubmitting = false;
+  var _manualSellRow = null;
 
   // ---------------------------------------------------------------------------
   // Formatting helpers
@@ -162,7 +164,8 @@
       alpacaCacheAgeSeconds: p.alpaca_cache_age_seconds != null ? Number(p.alpaca_cache_age_seconds) : null,
       alpacaCacheLastError: p.alpaca_cache_last_error != null ? String(p.alpaca_cache_last_error) : "",
       liveSafetyEnabled: safety && safety.live_enabled === true,
-      buyGate: p.buy_gate && typeof p.buy_gate === "object" ? p.buy_gate : {}
+      buyGate: p.buy_gate && typeof p.buy_gate === "object" ? p.buy_gate : {},
+      capitalStatus: p.capital_status && typeof p.capital_status === "object" ? p.capital_status : {}
     };
   }
 
@@ -259,7 +262,17 @@
     setOpsLine("opsLinePositions", "Open positions: <span class=\"mono\">" + posCount + "</span>.", "");
 
     var ubp = num((vm.executionHealth || {}).usable_buying_power, null);
-    if (ubp != null && ubp < MIN_ORDER_NOTIONAL) {
+    var cs = vm.capitalStatus || {};
+    if (cs.new_buys_blocked === true) {
+      var minN = num(cs.min_order_notional, MIN_ORDER_NOTIONAL);
+      setOpsLine(
+        "opsLineBuys",
+        "New buys <span class=\"warn-t\">blocked</span>, below <span class=\"mono\">" +
+          esc(fmtMoney(minN)) +
+          "</span> minimum order size.",
+        "warn"
+      );
+    } else if (ubp != null && ubp < MIN_ORDER_NOTIONAL) {
       setOpsLine(
         "opsLineBuys",
         "New buys <span class=\"warn-t\">blocked</span>: usable cash <span class=\"mono\">" + esc(fmtMoney(ubp)) + "</span> below minimum order size.",
@@ -539,6 +552,77 @@
     return '<span class="status-badge ' + cls + '">' + esc(s) + "</span>";
   }
 
+  function showToast(msg, isErr) {
+    var el = document.getElementById("dashToast");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = "block";
+    el.style.borderColor = isErr ? "rgba(248,113,113,0.45)" : "rgba(52,211,153,0.35)";
+    el.style.background = isErr ? "rgba(248,113,113,0.18)" : "rgba(52,211,153,0.12)";
+    if (showToast._t) clearTimeout(showToast._t);
+    showToast._t = setTimeout(function () {
+      el.style.display = "none";
+    }, 4800);
+  }
+
+  function sameLocalCalendarDayAsToday(iso) {
+    if (!iso) return false;
+    var raw = String(iso);
+    var d = new Date(raw.length === 19 ? raw + "Z" : raw);
+    if (isNaN(d.getTime())) return false;
+    var now = new Date();
+    return (
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate()
+    );
+  }
+
+  function renderCapitalCard(vm) {
+    var card = document.getElementById("capitalStatusCard");
+    var cs = vm.capitalStatus || {};
+    var elAvail = document.getElementById("capAvailMain");
+    if (!card || !elAvail) return;
+    var abp = num(cs.available_buying_power, null);
+    elAvail.textContent = abp != null ? fmtMoney(abp) : "—";
+    var csh = num(cs.cash, null);
+    var bp = num(cs.buying_power, null);
+    var us = num(cs.usable_buying_power, null);
+    var dep = num(cs.capital_deployed_positions, null);
+    var elC = document.getElementById("capCash");
+    var elBp = document.getElementById("capBP");
+    var elU = document.getElementById("capUsable");
+    var elD = document.getElementById("capDeployed");
+    if (elC) elC.textContent = csh != null ? fmtMoney(csh) : "—";
+    if (elBp) elBp.textContent = bp != null ? fmtMoney(bp) : "—";
+    if (elU) elU.textContent = us != null ? fmtMoney(us) : "—";
+    if (elD) elD.textContent = dep != null ? fmtMoney(dep) : "—";
+    var nb = document.getElementById("capNewBuys");
+    var wn = document.getElementById("capWarn");
+    var minN = num(cs.min_order_notional, MIN_ORDER_NOTIONAL);
+    if (cs.new_buys_blocked === true) {
+      card.classList.add("capital-warn-b");
+      if (nb) {
+        nb.innerHTML =
+          "New buys: <span class=\"warn-t\">Blocked</span>, below <span class=\"mono\">" +
+          esc(fmtMoney(minN)) +
+          "</span> minimum order size.";
+      }
+      if (wn) {
+        wn.style.display = "block";
+        wn.textContent =
+          "Available buying power is below minimum order size. New buys are blocked.";
+      }
+    } else {
+      card.classList.remove("capital-warn-b");
+      if (nb) nb.textContent = "New buys: eligible at current buying power.";
+      if (wn) {
+        wn.style.display = "none";
+        wn.textContent = "";
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Equity chart
   // ---------------------------------------------------------------------------
@@ -619,6 +703,7 @@
     var stageText = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
     document.getElementById("mCap").textContent = stageText.toUpperCase();
 
+    renderCapitalCard(vm);
     renderOperatorSummary(vm);
     renderExecutionHealth(vm);
     renderEquityChart(vm);
@@ -675,9 +760,28 @@
       var warnNote = st.mismatchWarn
         ? '<span class="row-warn-note" title="Local qty differs from broker qty. Broker qty is used for real orders.">⚠ broker qty differs</span>'
         : "";
+      var openedDisp = r.opened_at_display != null ? String(r.opened_at_display) : "N/A";
+      var openedTitle =
+        r.opened_at_source === "broker_sync_fallback"
+          ? "Date inferred from broker sync, not original fill."
+          : "";
+      var symU = String(r.symbol || "").trim().toUpperCase();
+      var sellBtn =
+        ac === "stock" && q != null && q > 0
+          ? '<button type="button" class="tab-btn sell-open-btn" data-act="sell-open" data-symbol="' +
+            esc(symU) +
+            '" data-ac="stock"' +
+            (_sellSubmitting ? " disabled" : "") +
+            ">Sell</button>"
+          : "—";
       return "<tr>" +
         "<td>" + esc(r.symbol) + "</td>" +
         "<td>" + esc(r.asset_class || "") + "</td>" +
+        "<td" +
+        (openedTitle ? ' title="' + esc(openedTitle) + '"' : "") +
+        "><small>" +
+        esc(openedDisp) +
+        "</small></td>" +
         "<td class=\"mono\">" + esc(qs) + "</td>" +
         "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
         "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
@@ -686,6 +790,7 @@
         "<td class=\"mono " + pnlClass(upp) + "\">" + esc(upp != null ? fmtPctSigned(upp) : "—") + "</td>" +
         "<td>" + exitBadge(st.status) + "</td>" +
         "<td><small>" + esc(st.explanation) + "</small>" + warnNote + "</td>" +
+        "<td>" + sellBtn + "</td>" +
         "</tr>";
     }).join("");
   }
@@ -789,6 +894,130 @@
     }
   }
 
+  function closeManualSellModal() {
+    var m = document.getElementById("manualSellModal");
+    if (m) {
+      m.classList.remove("open");
+      m.setAttribute("aria-hidden", "true");
+    }
+    _manualSellRow = null;
+  }
+
+  function openManualSellModal(globalVm, row) {
+    _manualSellRow = row;
+    var m = document.getElementById("manualSellModal");
+    var b = document.getElementById("msBody");
+    var sym = String(row.symbol || "").toUpperCase();
+    var bqRaw = row.broker_qty != null ? row.broker_qty : row.broker_quantity;
+    var bq = bqRaw != null && isFiniteNum(bqRaw) ? Number(bqRaw) : num(row.net_qty, null);
+    var cur = num(row.current_price, null);
+    var up = num(row.unrealized_pnl, null);
+    var upp = num(row.unrealized_pnl_pct, null);
+    var opened = row.opened_at_display != null ? String(row.opened_at_display) : "N/A";
+    var notional = cur != null && bq != null ? bq * cur : null;
+    var parts = [];
+    parts.push("Symbol: <strong>" + esc(sym) + "</strong>");
+    parts.push("Broker qty: <span class=\"mono\">" + esc(bq != null ? String(bq) : "—") + "</span>");
+    parts.push("Current price: " + esc(cur != null ? fmtPrice(cur) : "—"));
+    parts.push("Estimated notional: " + esc(notional != null ? fmtMoney(notional) : "—"));
+    parts.push(
+      "Unrealized P&amp;L: " +
+        esc(up != null ? fmtMoneySigned(up) : "—") +
+        " (" +
+        esc(upp != null ? fmtPctSigned(upp) : "—") +
+        ")"
+    );
+    parts.push("Opened: " + esc(opened));
+    if (sameLocalCalendarDayAsToday(row.opened_at)) {
+      parts.push(
+        '<span style="color:#fbbf24">PDT: opened today — same-day round-trip rules may block the sell.</span>'
+      );
+    }
+    if (globalVm && globalVm.marketOpen === false) {
+      parts.push('<span style="color:#fbbf24">Stock market is closed.</span>');
+    }
+    parts.push(
+      '<span style="color:#94a3b8">This will submit a paper sell order for broker quantity only.</span>'
+    );
+    if (b) b.innerHTML = parts.join("<br>");
+    if (m) {
+      m.classList.add("open");
+      m.setAttribute("aria-hidden", "false");
+    }
+    var btn = document.getElementById("msConfirm");
+    if (btn) btn.disabled = _sellSubmitting;
+  }
+
+  async function confirmManualSell() {
+    if (!_manualSellRow || _sellSubmitting) return;
+    var sym = String(_manualSellRow.symbol || "").toUpperCase();
+    var btn = document.getElementById("msConfirm");
+    _sellSubmitting = true;
+    if (btn) btn.disabled = true;
+    try {
+      var r = await fetch("/api/positions/sell", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Dashboard-Secret": DASHBOARD_SECRET
+        },
+        body: JSON.stringify({
+          symbol: sym,
+          asset_class: "stock",
+          quantity: "all",
+          confirm: true
+        })
+      });
+      var j = await r.json().catch(function () {
+        return {};
+      });
+      if (j && j.ok) {
+        showToast(j.message || "Manual paper sell submitted.", false);
+      } else {
+        showToast((j && j.message) || ("Sell blocked: " + ((j && j.reason_code) || "unknown")), true);
+      }
+    } catch (e) {
+      showToast(String(e && e.message ? e.message : e), true);
+    } finally {
+      _sellSubmitting = false;
+      if (btn) btn.disabled = false;
+      closeManualSellModal();
+      await fetchDashboard();
+    }
+  }
+
+  function wireManualSell() {
+    document.addEventListener("click", function (ev) {
+      var t = ev.target;
+      if (!t || !t.getAttribute) return;
+      if (t.getAttribute("data-act") !== "sell-open") return;
+      var sym = t.getAttribute("data-symbol");
+      var vm = window.__dashVm;
+      var rows = (vm && vm.positions) || [];
+      var row = null;
+      var i;
+      for (i = 0; i < rows.length; i++) {
+        if (String(rows[i].symbol || "").toUpperCase() === String(sym || "").toUpperCase()) {
+          row = rows[i];
+          break;
+        }
+      }
+      if (row) openManualSellModal(vm, row);
+    });
+    var c = document.getElementById("msCancel");
+    var k = document.getElementById("msConfirm");
+    if (c) c.addEventListener("click", closeManualSellModal);
+    if (k) k.addEventListener("click", function () {
+      confirmManualSell();
+    });
+    var md = document.getElementById("manualSellModal");
+    if (md) {
+      md.addEventListener("click", function (ev) {
+        if (ev.target === md) closeManualSellModal();
+      });
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Fetch loop
   // ---------------------------------------------------------------------------
@@ -802,6 +1031,7 @@
       var payload = await response.json();
       console.log("PAYLOAD", payload);
       var vm = mapDashboardPayload(payload);
+      window.__dashVm = vm;
       paintViewModel(vm);
       setError("");
       applyHealthyChips(vm);
@@ -999,6 +1229,7 @@
     bindTabs();
     wireBacktest();
     wireActivityExport();
+    wireManualSell();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
   }

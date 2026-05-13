@@ -59,6 +59,8 @@ def test_api_dashboard_empty(dash_app) -> None:
     assert "execution_health" in data
     assert "position_exit_rows" in data
     assert isinstance(data["position_exit_rows"], list)
+    assert "capital_status" in data
+    assert isinstance(data["capital_status"], dict)
 
 
 def test_index_has_core_dom_ids(dash_app) -> None:

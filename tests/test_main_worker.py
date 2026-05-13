@@ -119,10 +119,18 @@ def test_can_buy_allows_existing_alpaca_long_when_pyramiding_enabled() -> None:
     assert reason == "ok"
 
 
-def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db = tmp_path / "clean_tp.sqlite3"
+    monkeypatch.setattr(config, "DB_PATH", db)
+    from data import data_store
+
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "TPZ", 1.0, 100.0).ok
     monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
+    monkeypatch.setattr(mw, "_us_stock_market_open_for_routed_sell", lambda: True)
+    monkeypatch.setattr(mw, "_routed_sell_preflight", lambda **kwargs: (True, None, {}))
     monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 106.0)
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, trader: 1.0)
@@ -133,6 +141,7 @@ def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch) -> None:
         "submit_market_order",
         lambda side, symbol, qty: MagicMock(ok=True, broker_order_id="oid-1", message="filled"),
     )
+    monkeypatch.setattr(mw, "_is_pdt_risk_active_for_small_account", lambda *_: False)
     lines, checked, fired = mw.apply_stops_and_targets(
         t,
         None,
@@ -427,7 +436,13 @@ def test_pdt_rejection_creates_pdt_protection() -> None:
     assert "PDT_PROTECTION" in reasons
 
 
-def test_pdt_blocked_symbol_not_retried_every_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pdt_blocked_symbol_not_retried_every_cycle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db = tmp_path / "clean_pdt.sqlite3"
+    monkeypatch.setattr(config, "DB_PATH", db)
+    from data import data_store
+
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
     t = create_paper_trader(persist_sqlite=False)
     assert t.market_buy("stock", "AAPL", 1.0, 100.0).ok
 
@@ -446,10 +461,13 @@ def test_pdt_blocked_symbol_not_retried_every_cycle(monkeypatch: pytest.MonkeyPa
     cb = _B(t)
     cb.get_open_positions = lambda: []
     monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
+    monkeypatch.setattr(mw, "_us_stock_market_open_for_routed_sell", lambda: True)
+    monkeypatch.setattr(mw, "_routed_sell_preflight", lambda **kwargs: (True, None, {}))
     monkeypatch.setattr(mw, "_exit_mark_price", lambda *_: 106.0)
     monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda *_: 1.0)
     monkeypatch.setattr(mw, "_position_entry_datetime_from_trades", lambda *a, **k: None)
+    monkeypatch.setattr(mw, "_is_pdt_risk_active_for_small_account", lambda *_: False)
     mw._blocked_exit_until.clear()
     mw._blocked_exit_reason.clear()
     mw._check_and_execute_exits(

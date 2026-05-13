@@ -474,3 +474,21 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
                 )
             ),
         )
+
+
+def has_open_order_for_symbol(symbol: str) -> bool:
+    """True if Alpaca has any open (non-filled) order for the equity symbol."""
+    client = get_rest_client()
+    if client is None:
+        return False
+    sym_u = str(symbol or "").strip().upper()
+    try:
+        raw = client.list_orders(status="open", limit=100)
+        lst = raw if isinstance(raw, list) else list(raw or [])
+        for o in lst:
+            s = str(getattr(o, "symbol", None) or "").strip().upper()
+            if s and s == sym_u:
+                return True
+    except Exception:
+        logger.debug("[alpaca] list_orders(open) failed for {}", sym_u, exc_info=True)
+    return False

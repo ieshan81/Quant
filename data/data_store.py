@@ -50,6 +50,11 @@ _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
     "rotation_max_loss_cut_pct": "Max loss %% (negative) for loss-cut exit candidate",
     "rotation_reentry_cooldown_seconds": "Reference cooldown for planner messaging",
     "rotation_prefer_crypto_when_market_closed": "1=small score bump for crypto when stocks closed",
+    "deferred_pdt_exit_enabled": "1=queue deferred stock sells when PDT blocks TP/signal exits",
+    "deferred_exit_min_profit_pct": "Min unrealized gain %% vs entry required to execute deferred sell",
+    "deferred_exit_max_attempts": "Max deferred check attempts before status blocked_again",
+    "deferred_exit_cancel_if_profit_below_pct": "Cancel deferred plan if unrealized pnl %% falls to or below this",
+    "deferred_exit_check_first_in_cycle": "1=evaluate deferred exits each cycle before new buys",
 }
 
 
@@ -555,6 +560,31 @@ CREATE TABLE IF NOT EXISTS reconciliation_events (
 
 CREATE INDEX IF NOT EXISTS idx_reconciliation_created ON reconciliation_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reconciliation_symbol ON reconciliation_events(asset_class, symbol);
+
+-- Deferred PDT-blocked stock exits (retry next session with fresh guards).
+CREATE TABLE IF NOT EXISTS deferred_exit_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    mode TEXT NOT NULL DEFAULT 'paper',
+    symbol TEXT NOT NULL,
+    asset_class TEXT NOT NULL DEFAULT 'stock',
+    broker_qty REAL NOT NULL,
+    entry_price REAL,
+    trigger_price REAL,
+    trigger_pnl_pct REAL,
+    trigger_reason TEXT NOT NULL,
+    blocked_reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    earliest_next_check_at TEXT,
+    last_checked_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_deferred_exit_status ON deferred_exit_plans(status, symbol);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_exit_one_pending
+    ON deferred_exit_plans(symbol, asset_class) WHERE status = 'pending';
 
 -- AI observer (read-only analyst; no orders, no config writes) — Phase 5.
 CREATE TABLE IF NOT EXISTS ai_observer_notes (

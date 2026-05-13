@@ -1208,6 +1208,7 @@ def _check_and_execute_exits(
     crypto_trader: _CryptoExitBroker,
     rt: dict[str, float],
     db_path: str | Path,
+    cycle_id: str | None = None,
 ) -> tuple[list[str], int, int, dict[str, Any]]:
     """
     Every cycle (before new signals): TP/SL/trailing vs mark for longs (sell) and shorts (buy to cover).
@@ -1250,6 +1251,7 @@ def _check_and_execute_exits(
         crypto_fast = True
     dash_exit_limit = int(max(1.0, float(rt.get("dashboard_exit_positions_limit", 50.0))))
     pdt_sec = _pdt_exit_block_seconds(rt)
+    cid_exit = str(cycle_id or "").strip() or f"exit-{int(time.time())}"
 
     lines: list[str] = []
     exits_ok = 0
@@ -1639,6 +1641,25 @@ def _check_and_execute_exits(
                             "blocked_reason_code": reason_codes.PDT_PROTECTION,
                         },
                     )
+                    try:
+                        from execution.deferred_exit_plans import record_pdt_deferred_exit
+
+                        record_pdt_deferred_exit(
+                            db_path,
+                            rt,
+                            symbol=sym,
+                            asset_class="stock",
+                            broker_qty=float(qty),
+                            entry_price=float(entry),
+                            trigger_price=float(mid),
+                            trigger_pnl_pct=float(pnl_pct) * 100.0,
+                            trigger_reason="TAKE_PROFIT",
+                            blocked_reason=reason_codes.PDT_PROTECTION,
+                            cycle_id=cid_exit,
+                            meta={"path": "automated_take_profit"},
+                        )
+                    except Exception:
+                        logger.debug("[deferred_exit] record TP PDT skipped", exc_info=True)
                 elif ac == "stock" and stock_market_closed:
                     _reject_market_closed("take_profit_stock_market_closed")
                     _snapshot_exit_row(
@@ -2838,6 +2859,34 @@ def execute_cycle_results(
                         )
                     else:
                         logger.warning("SELL failed {} {}", cs.symbol, r.message)
+                        rc_fail = str(getattr(r, "reason_code", "") or "")
+                        if (
+                            cs.asset_class == "stock"
+                            and rc_fail == reason_codes.PDT_PROTECTION
+                            and live_qty > 1e-9
+                            and entry > 1e-12
+                        ):
+                            epnl = (float(mid) - float(entry)) / float(entry)
+                            if epnl > 1e-9:
+                                try:
+                                    from execution.deferred_exit_plans import record_pdt_deferred_exit
+
+                                    record_pdt_deferred_exit(
+                                        config.DB_PATH,
+                                        rt,
+                                        symbol=cs.symbol,
+                                        asset_class="stock",
+                                        broker_qty=float(live_qty),
+                                        entry_price=float(entry),
+                                        trigger_price=float(mid),
+                                        trigger_pnl_pct=float(epnl) * 100.0,
+                                        trigger_reason="SELL_SIGNAL",
+                                        blocked_reason=reason_codes.PDT_PROTECTION,
+                                        cycle_id=cid,
+                                        meta={"path": "signal_sell"},
+                                    )
+                                except Exception:
+                                    logger.debug("[deferred_exit] record signal sell skipped", exc_info=True)
                         out["holds"] += 1
                 elif pos is not None and pos.quantity < -1e-8:
                     out["holds"] += 1
@@ -2998,13 +3047,65 @@ def run_trading_cycle_once(
                 logger.info("[broker_reconcile] pre-exit summary={}", _rs)
         except Exception:
             logger.warning("[broker_reconcile] pre-exit run failed", exc_info=True)
-    lines, _, _, exit_health = _check_and_execute_exits(stock_trader, crypto_trader, rt, config.DB_PATH)
+    import uuid as _uuid_cycle
+
+    cid = _uuid_cycle.uuid4().hex[:10]
+    lines, _, _, exit_health = _check_and_execute_exits(
+        stock_trader, crypto_trader, rt, config.DB_PATH, cycle_id=cid
+    )
     try:
         _drain_reconcile_queue(rt)
     except Exception:
         logger.debug("[reconcile] drain queue failed", exc_info=True)
     for ln in lines:
         logger.info(ln)
+
+    d_lines: list[str] = []
+    try:
+        from pathlib import Path as _Path
+
+        from execution import deferred_exit_plans as _dep
+
+        db_p = _Path(config.DB_PATH)
+
+        def _def_bq(sym: str) -> float:
+            return float(_get_real_position_qty(sym, trader))
+
+        def _def_mid(sym: str) -> float | None:
+            px = stock_broker.fetch_equity_latest_price(sym)
+            return float(px) if px is not None and float(px) > 0 else None
+
+        def _def_pdt(sym: str, _qty: float, _midv: float) -> bool:
+            if not _is_pdt_risk_active_for_small_account(rt):
+                return False
+            ed = _position_entry_datetime_from_trades(sym, "stock", _qty, db_p)
+            return bool(_same_et_trading_day(ed))
+
+        def _def_submit(sym: str, qv: float, midv: float):
+            r = stock_trader.place_sell_order(
+                sym,
+                float(qv),
+                float(midv),
+                reason_code=reason_codes.PDT_DEFERRED_EXIT_SUBMITTED,
+                meta={"source": "deferred_pdt"},
+            )
+            return bool(getattr(r, "ok", False)), getattr(r, "reason_code", None), r
+
+        _dep.process_deferred_exit_plans(
+            config.DB_PATH,
+            rt,
+            cycle_id=cid,
+            broker_qty_fn=_def_bq,
+            mid_price_fn=_def_mid,
+            sell_gate_open=bool(_us_stock_market_open_for_routed_sell()),
+            pdt_blocks_fn=_def_pdt,
+            submit_sell_fn=_def_submit,
+            log_lines=d_lines,
+        )
+    except Exception:
+        logger.debug("deferred_exit_plans processing skipped", exc_info=True)
+    for _ln in d_lines:
+        logger.info(_ln)
 
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
@@ -3099,9 +3200,6 @@ def run_trading_cycle_once(
             prices_dict[str(r.symbol)] = float(r.mid)
     trader.mark_to_market(prices_dict)
 
-    import uuid as _uuid
-
-    cid = _uuid.uuid4().hex[:10]
     summary = execute_cycle_results(trader, results, rt, cycle_id=cid)
     try:
         eh = dict(summary.get("execution_health") or {})

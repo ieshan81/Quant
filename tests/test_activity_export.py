@@ -268,6 +268,8 @@ def test_activity_export_endpoint_shape(dash_app) -> None:
     assert "account_market_clock_source" in data
     assert "data_freshness_status" in data
     assert "sell_readiness" in data and isinstance(data["sell_readiness"], list)
+    assert "deferred_exit_plans" in data and isinstance(data["deferred_exit_plans"], list)
+    assert "capital_status" in data and isinstance(data["capital_status"], dict)
     assert "latest_exit_snapshot_created_at" in data
     assert "exit_snapshot_age_seconds" in data
     assert "TELEGRAM" not in json.dumps(data).upper()
@@ -757,6 +759,9 @@ def test_build_activity_export_payload_db(tmp_path: Path, monkeypatch: pytest.Mo
         payload = build_activity_export_payload(conn, limit=10)
     assert isinstance(payload, dict)
     assert "warnings" in payload
+    assert "deferred_exit_plans" in payload
+    assert "capital_status" in payload
+    assert isinstance(payload.get("capital_status"), dict)
     assert "rotation_plan_stale" in payload
     assert "rotation_plan_cycle_id" in payload
     assert "cycle_summary_last_cycle_id" in payload

@@ -346,6 +346,7 @@ def build_sell_readiness(
     worker_sell_gate_open_now: bool,
     exit_runtime: dict[str, float] | None = None,
     db_path: str | Path | None = None,
+    deferred_plans: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Per-leg operator view: **open_positions** prices + runtime TP/SL/trail vs snapshot blockers."""
     from execution.capital_rotation import _latest_combined_signal_by_symbol
@@ -369,6 +370,14 @@ def build_sell_readiness(
             "EXIT_BLOCKED_MARKET_CLOSED",
         }
     )
+
+    dep_by: dict[str, dict[str, Any]] = {}
+    for dp in deferred_plans or []:
+        if str(dp.get("status", "")).strip().lower() != "pending":
+            continue
+        su = str(dp.get("symbol") or "").strip().upper()
+        if su:
+            dep_by[su] = dp
 
     out: list[dict[str, Any]] = []
     for p in open_positions or []:
@@ -476,6 +485,15 @@ def build_sell_readiness(
         else:
             expected = "HOLD"
 
+        dep = dep_by.get(sym.upper())
+        dep_fields = {
+            "deferred_exit_status": (dep or {}).get("status"),
+            "deferred_exit_id": (dep or {}).get("id"),
+            "earliest_next_check_at": (dep or {}).get("earliest_next_check_at"),
+            "trigger_pnl_pct": (dep or {}).get("trigger_pnl_pct"),
+            "trigger_reason": (dep or {}).get("trigger_reason"),
+        }
+
         out.append(
             {
                 "symbol": sym,
@@ -492,7 +510,9 @@ def build_sell_readiness(
                 "max_hold_hit": max_hold_hit,
                 "sell_allowed_now": sell_allowed_now,
                 "blocker": blocker,
+                "blocked_reason": blocker,
                 "expected_action": expected,
+                **dep_fields,
             }
         )
     return out
@@ -817,6 +837,17 @@ def build_activity_export_payload(
         except Exception:
             pass
 
+    from execution.deferred_exit_plans import fetch_deferred_exit_plans
+    from monitoring.position_meta import compute_capital_status, enrich_open_positions_opened_at
+
+    pos_list = list(positions) if isinstance(positions, list) else []
+    try:
+        pos_list = enrich_open_positions_opened_at(conn, pos_list)
+    except Exception:
+        pass
+
+    deferred_rows = fetch_deferred_exit_plans(None, include_terminal=True, limit=50)
+
     real_pf: dict[str, Any] = {}
     if isinstance(snap.get("portfolio"), dict):
         real_pf = dict(snap["portfolio"])
@@ -837,6 +868,18 @@ def build_activity_export_payload(
         bp_f = 0.0
 
     usable_bp = float(buy_gate.get("usable_buying_power") or eh.get("usable_buying_power") or bp_f)
+
+    min_ord = float(getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0)
+    try:
+        capital_status = compute_capital_status(
+            cash=cash_f,
+            buying_power=bp_f,
+            usable_buying_power=usable_bp,
+            open_positions=pos_list,
+            min_order_notional=min_ord,
+        )
+    except Exception:
+        capital_status = {}
 
     cs_meta = cycle_snap_row.get("meta") if isinstance(cycle_snap_row.get("meta"), dict) else {}
     cycle_summary = {
@@ -959,7 +1002,6 @@ def build_activity_export_payload(
 
     blocked_exits = blocked_exits_from_decisions(position_exit_decisions)
     broker_sync_trades = dd.fetch_recent_broker_sync_trades(conn, limit=lim)
-    pos_list = positions if isinstance(positions, list) else []
     sell_readiness = build_sell_readiness(
         open_positions=pos_list,
         recent_signals=signals if isinstance(signals, list) else [],
@@ -968,6 +1010,7 @@ def build_activity_export_payload(
         worker_sell_gate_open_now=market_open,
         exit_runtime=exit_runtime,
         db_path=config.DB_PATH,
+        deferred_plans=deferred_rows,
     )
     why_no_sell_summary = build_why_no_sell_summary(
         position_exit_decisions=position_exit_decisions,
@@ -1000,7 +1043,7 @@ def build_activity_export_payload(
             "market_open": market_open,
         },
         "cycle_summary": cycle_summary,
-        "open_positions": dd._json_safe(positions) if isinstance(positions, list) else [],
+        "open_positions": dd._json_safe(pos_list) if isinstance(pos_list, list) else [],
         "position_exit_decisions": dd._json_safe(position_exit_decisions),
         "why_no_sell_summary": dd._json_safe(why_no_sell_summary),
         "recent_trades": dd._json_safe(trades),
@@ -1020,6 +1063,8 @@ def build_activity_export_payload(
         "performance": dd._json_safe(performance),
         "warnings": warnings,
         "sell_readiness": dd._json_safe(sell_readiness),
+        "deferred_exit_plans": dd._json_safe(deferred_rows),
+        "capital_status": dd._json_safe(capital_status),
     }
 
     last_cid = _cid

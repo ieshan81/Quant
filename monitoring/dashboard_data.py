@@ -812,6 +812,14 @@ def build_dashboard_payload(
     buy_gate = _section_db("buy_gate", {}, lambda: fetch_latest_buy_gate(conn))
     execution_health = _section_db("execution_health", {}, lambda: fetch_latest_execution_health(conn))
 
+    if isinstance(positions, list):
+        try:
+            from monitoring.position_meta import enrich_open_positions_opened_at
+
+            positions = enrich_open_positions_opened_at(conn, positions)
+        except Exception:
+            logger.warning("[dashboard] enrich open_positions failed", exc_info=True)
+
     try:
         from risk import promotion_gates as _pg
 
@@ -854,6 +862,46 @@ def build_dashboard_payload(
     alpaca_cache_age_seconds = round(time.time() - lu_out, 1) if lu_out else None
     alpaca_cache_last_error = snap_out.get("last_error")
 
+    bg = buy_gate if isinstance(buy_gate, dict) else {}
+    eh_pre = execution_health if isinstance(execution_health, dict) else {}
+    cash_d = 0.0
+    bp_d = 0.0
+    if has_pf and isinstance(real_pf, dict):
+        try:
+            cash_d = float(real_pf.get("cash") or 0.0)
+        except (TypeError, ValueError):
+            cash_d = 0.0
+        try:
+            bp_d = float(real_pf.get("buying_power") or 0.0)
+        except (TypeError, ValueError):
+            bp_d = 0.0
+    if cash_d <= 1e-12 and isinstance(latest, dict):
+        try:
+            cash_d = float(latest.get("cash_stocks") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    if bp_d <= 1e-12:
+        try:
+            bp_d = float(bg.get("buying_power") or 0.0)
+        except (TypeError, ValueError):
+            bp_d = 0.0
+    try:
+        ub_d = float(bg.get("usable_buying_power") or eh_pre.get("usable_buying_power") or bp_d or cash_d)
+    except (TypeError, ValueError):
+        ub_d = 0.0
+    try:
+        from monitoring.position_meta import compute_capital_status
+
+        capital_status = compute_capital_status(
+            cash=cash_d,
+            buying_power=bp_d,
+            usable_buying_power=ub_d,
+            open_positions=positions if isinstance(positions, list) else [],
+            min_order_notional=float(getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0),
+        )
+    except Exception:
+        capital_status = {}
+
     return {
         "mode": latest.get("mode") if latest else None,
         "portfolio": _json_safe(latest) if latest is not None else None,
@@ -893,6 +941,7 @@ def build_dashboard_payload(
         "adaptive_parameter_changes": _json_safe(adaptive_changes) if isinstance(adaptive_changes, list) else [],
         "alpaca_cache_age_seconds": alpaca_cache_age_seconds,
         "alpaca_cache_last_error": alpaca_cache_last_error,
+        "capital_status": _json_safe(capital_status) if isinstance(capital_status, dict) else {},
     }
 
 
