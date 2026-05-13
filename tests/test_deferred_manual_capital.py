@@ -1344,3 +1344,115 @@ def test_buying_power_available_updates_capital_status() -> None:
     assert cs["available_buying_power"] == pytest.approx(77.54, rel=1e-2)
     assert cs["new_buys_blocked"] is False
     assert cs["broker_buying_power"] == pytest.approx(77.54, rel=1e-2)
+
+
+# ---------------------------------------------------------------------------
+# Post-sell reporting race: filled sell newer than position snapshot
+# ---------------------------------------------------------------------------
+
+def test_detect_filled_sell_after_position_snapshot() -> None:
+    """A filled sell newer than position snapshot marks the position as stale."""
+    from monitoring.cycle_activity_export import _detect_filled_sells_after_position_snapshot
+
+    trades = [
+        {
+            "symbol": "AEHL", "side": "sell", "status": "filled",
+            "quantity": 25.0, "price": 2.91,
+            "created_at": "2026-05-13 18:03:39",
+            "reason_code": "TAKE_PROFIT",
+        },
+    ]
+    pos = [{"symbol": "AEHL", "net_qty": 25.0}]
+    result = _detect_filled_sells_after_position_snapshot(
+        trades_list=trades,
+        pos_list=pos,
+        pos_snapshot_at="2026-05-13 18:03:35",
+    )
+    assert "AEHL" in result
+    assert result["AEHL"]["sell_qty"] == 25.0
+    assert result["AEHL"]["sell_price"] == 2.91
+
+
+def test_no_false_positive_when_sell_before_snapshot() -> None:
+    """A sell before the position snapshot should NOT be flagged."""
+    from monitoring.cycle_activity_export import _detect_filled_sells_after_position_snapshot
+
+    trades = [
+        {
+            "symbol": "XYZ", "side": "sell", "status": "filled",
+            "quantity": 10.0, "price": 5.0,
+            "created_at": "2026-05-13 17:00:00",
+        },
+    ]
+    pos = [{"symbol": "XYZ", "net_qty": 10.0}]
+    result = _detect_filled_sells_after_position_snapshot(
+        trades_list=trades,
+        pos_list=pos,
+        pos_snapshot_at="2026-05-13 18:00:00",
+    )
+    assert len(result) == 0
+
+
+def test_filled_sell_overrides_exit_decision() -> None:
+    """EXIT_FILLED_POSITION_REFRESH_PENDING suppresses stale blockers in sell_readiness."""
+    from monitoring.cycle_activity_export import build_sell_readiness
+
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 0.86, "current_price": 2.91}
+    ]
+    exit_decisions = [
+        {
+            "symbol": "AEHL", "asset_class": "stock",
+            "final_action": "EXIT_FILLED_POSITION_REFRESH_PENDING",
+            "blocked_reason": None,
+            "meta": {},
+            "exit_filled_sell_at": "2026-05-13 18:03:39",
+            "exit_filled_sell_qty": 25.0,
+        }
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=exit_decisions,
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0,
+        },
+        db_path=None,
+    )
+    sr = rows[0]
+    assert sr["expected_action"] == "EXIT_FILLED"
+    assert sr["blocker"] is None
+    assert "filled" in (sr.get("human_reason") or "").lower()
+
+
+def test_filled_sell_warning_in_export() -> None:
+    """OPEN_POSITION_STALE_AFTER_RECENT_SELL_FILL warning is emitted."""
+    from monitoring.cycle_activity_export import _detect_filled_sells_after_position_snapshot
+
+    trades = [
+        {
+            "symbol": "AEHL", "side": "sell", "status": "filled",
+            "quantity": 25.0, "price": 2.91,
+            "created_at": "2026-05-13 18:03:39",
+        },
+    ]
+    pos = [{"symbol": "AEHL", "net_qty": 25.0}]
+    filled = _detect_filled_sells_after_position_snapshot(
+        trades_list=trades,
+        pos_list=pos,
+        pos_snapshot_at="2026-05-13 18:03:35",
+    )
+    warnings: list[str] = []
+    for sym, info in filled.items():
+        warnings.append(
+            f"OPEN_POSITION_STALE_AFTER_RECENT_SELL_FILL: {sym} sell filled at "
+            f"{info.get('sell_created_at')} for qty {info.get('sell_qty')}; "
+            "open_positions snapshot is stale."
+        )
+    assert len(warnings) == 1
+    assert "OPEN_POSITION_STALE_AFTER_RECENT_SELL_FILL" in warnings[0]
+    assert "AEHL" in warnings[0]

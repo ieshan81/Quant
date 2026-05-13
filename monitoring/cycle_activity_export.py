@@ -584,6 +584,8 @@ def build_sell_readiness(
                 blocker = str(rc.STOCK_EXIT_SPREAD_TOO_WIDE)
             elif fa == "EXIT_EVALUATION_STALE":
                 blocker = "EXIT_EVALUATION_NOT_REFRESHED"
+            elif fa == "EXIT_FILLED_POSITION_REFRESH_PENDING":
+                blocker = None
             exit_eval_cid = d.get("last_exit_evaluation_cycle_id")
             exit_eval_at = d.get("last_exit_evaluation_at")
             exit_eval_age = d.get("exit_decision_age_seconds")
@@ -627,7 +629,14 @@ def build_sell_readiness(
         rule_intent = bool(
             sell_signal_present or take_profit_hit or stop_loss_hit or trailing_stop_hit or max_hold_hit
         )
-        if exit_cfg_disabled:
+        if fa == "EXIT_FILLED_POSITION_REFRESH_PENDING":
+            sell_allowed_now = False
+            blocker = None
+            expected = "EXIT_FILLED"
+            human_reason = (
+                f"{sym}: Sell already filled; position snapshot is stale and pending refresh."
+            )
+        elif exit_cfg_disabled:
             expected = "BLOCKED_WITH_REASON"
         elif worker_sell_gate_open_now and rule_intent and sell_allowed_now and not blocker:
             expected = "SELL_NOW"
@@ -656,7 +665,8 @@ def build_sell_readiness(
             "pending_order_id": (str(sym_sells[0].get("id") or "")[:8] or None) if has_pending_sell else None,
             "pending_order_expires_at": sym_sells[0].get("expires_at") if has_pending_sell else None,
         }
-        human_reason: str | None = None
+        if fa != "EXIT_FILLED_POSITION_REFRESH_PENDING":
+            human_reason = None
         if has_pending_sell:
             blocker = str(rc.ORDER_ALREADY_PENDING)
             pdt_block_source = None
@@ -1048,6 +1058,53 @@ def crypto_push_pull_events_from_decisions(rows: list[dict[str, Any]]) -> list[d
     return out
 
 
+def _detect_filled_sells_after_position_snapshot(
+    *,
+    trades_list: list[dict[str, Any]],
+    pos_list: list[dict[str, Any]],
+    pos_snapshot_at: str,
+) -> dict[str, dict[str, Any]]:
+    """Return {SYMBOL: sell_info} for filled sells whose created_at > pos_snapshot_at.
+
+    Only flags symbols that still appear in open_positions with qty that would be
+    fully covered by the sell.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    pos_qty: dict[str, float] = {}
+    for p in pos_list or []:
+        s = str(p.get("symbol") or "").strip().upper()
+        if s:
+            try:
+                pos_qty[s] = float(p.get("net_qty") or p.get("broker_qty") or p.get("quantity") or 0)
+            except (TypeError, ValueError):
+                pass
+    snap_ts = pos_snapshot_at or ""
+    for t in trades_list or []:
+        side = str(t.get("side") or "").strip().lower()
+        status = str(t.get("status") or "").strip().lower()
+        if side != "sell" or status != "filled":
+            continue
+        sym = str(t.get("symbol") or "").strip().upper()
+        if not sym or sym not in pos_qty:
+            continue
+        ca = str(t.get("created_at") or "").strip()
+        if not ca or ca <= snap_ts:
+            continue
+        try:
+            sell_qty = float(t.get("quantity") or 0)
+        except (TypeError, ValueError):
+            sell_qty = 0.0
+        if sell_qty >= pos_qty[sym] - 0.01:
+            out[sym] = {
+                "sell_qty": sell_qty,
+                "sell_price": t.get("price"),
+                "sell_created_at": ca,
+                "reason_code": t.get("reason_code"),
+                "pos_qty": pos_qty[sym],
+            }
+    return out
+
+
 def build_activity_export_payload(
     conn: Any,
     *,
@@ -1092,6 +1149,30 @@ def build_activity_export_payload(
         pass
 
     deferred_rows = fetch_deferred_exit_plans(None, include_terminal=True, limit=50)
+
+    _pos_snapshot_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _broker_positions_retrieved_at: str | None = None
+    if pos_snap is not None:
+        _bp_ts = snap.get("retrieved_at") or snap.get("updated_at")
+        _broker_positions_retrieved_at = str(_bp_ts) if _bp_ts else _pos_snapshot_at
+
+    _filled_sell_symbols = _detect_filled_sells_after_position_snapshot(
+        trades_list=trades if isinstance(trades, list) else [],
+        pos_list=pos_list,
+        pos_snapshot_at=_broker_positions_retrieved_at or _pos_snapshot_at,
+    )
+    if _filled_sell_symbols:
+        _new_pos: list[dict[str, Any]] = []
+        for _p in pos_list:
+            _ps = str(_p.get("symbol") or "").strip().upper()
+            if _ps in _filled_sell_symbols:
+                _p_copy = dict(_p)
+                _p_copy["_stale_after_sell_fill"] = True
+                _p_copy["_sell_fill_info"] = _filled_sell_symbols[_ps]
+                _new_pos.append(_p_copy)
+            else:
+                _new_pos.append(_p)
+        pos_list = _new_pos
 
     real_pf: dict[str, Any] = {}
     if isinstance(snap.get("portfolio"), dict):
@@ -1272,6 +1353,19 @@ def build_activity_export_payload(
         position_exit_decisions, oo_by_sym,
     )
 
+    for _ped_fs in position_exit_decisions:
+        _ped_sym_fs = str(_ped_fs.get("symbol") or "").strip().upper()
+        if _ped_sym_fs in _filled_sell_symbols:
+            _fsi = _filled_sell_symbols[_ped_sym_fs]
+            _ped_fs["final_action"] = "EXIT_FILLED_POSITION_REFRESH_PENDING"
+            _ped_fs["blocked_reason"] = None
+            _ped_fs["human_reason"] = (
+                f"{_ped_sym_fs} sell filled at {_fsi.get('sell_price')}; "
+                "waiting for broker position refresh."
+            )
+            _ped_fs["exit_filled_sell_at"] = _fsi.get("sell_created_at")
+            _ped_fs["exit_filled_sell_qty"] = _fsi.get("sell_qty")
+
     exit_snap_age = _age_seconds_utc(exit_snap_dt)
     _newest_exec_cid = ""
     for ed in (decisions or []):
@@ -1362,6 +1456,14 @@ def build_activity_export_payload(
     )
     crypto_ev = crypto_push_pull_events_from_decisions(decisions)
 
+    _recent_trade_latest_at: str | None = None
+    for _t in (trades if isinstance(trades, list) else []):
+        _tca = str(_t.get("created_at") or "").strip()
+        if _tca and (_recent_trade_latest_at is None or _tca > _recent_trade_latest_at):
+            _recent_trade_latest_at = _tca
+
+    _positions_data_stale = bool(_filled_sell_symbols)
+
     warnings: list[str] = []
     if int(eh.get("stale_local_positions_count") or 0) > 0:
         warnings.append("stale_local_positions_count > 0 — reconcile broker vs SQLite")
@@ -1373,6 +1475,12 @@ def build_activity_export_payload(
         warnings.append(
             "data_freshness_status=STALE_EXIT_DECISIONS_MARKET_NOW_OPEN — exit snapshot or "
             "execution rows still reflect a closed-session MARKET_CLOSED while the clock says open."
+        )
+    for _fs_sym, _fs_info in _filled_sell_symbols.items():
+        warnings.append(
+            f"OPEN_POSITION_STALE_AFTER_RECENT_SELL_FILL: {_fs_sym} sell filled at "
+            f"{_fs_info.get('sell_created_at')} for qty {_fs_info.get('sell_qty')}; "
+            "open_positions snapshot is stale."
         )
 
     payload: dict[str, Any] = {
@@ -1426,6 +1534,10 @@ def build_activity_export_payload(
     payload["rotation_plan_cycle_id"] = (rp_cid or None) if rp else None
     payload["cycle_summary_last_cycle_id"] = last_cid or None
 
+    payload["open_positions_snapshot_at"] = _pos_snapshot_at
+    payload["broker_positions_retrieved_at"] = _broker_positions_retrieved_at
+    payload["recent_trade_latest_at"] = _recent_trade_latest_at
+    payload["positions_data_stale"] = _positions_data_stale
     payload["export_generated_at"] = payload["generated_at"]
     payload["account_market_open"] = market_open
     payload["account_market_clock_source"] = clock_source
