@@ -445,11 +445,16 @@ def build_sell_readiness(
         blocker: str | None = None
         pdt_block_source: str | None = None
         broker_would_accept_unknown: bool | None = None
+        exit_eval_cid: str | None = None
+        exit_eval_at: str | None = None
+        exit_eval_age: float | None = None
         fa = ""
         if isinstance(d, dict):
             fa = str(d.get("final_action") or "").strip().upper()
             br = str(d.get("blocked_reason") or "").strip().upper() or None
-            if fa == "EXIT_REEVAL_PENDING":
+            if fa == "EXIT_EVALUATION_NOT_REFRESHED":
+                blocker = "STALE_EXIT_DATA_SESSION_OPEN"
+            elif fa == "EXIT_REEVAL_PENDING":
                 blocker = br or "STALE_EXIT_DATA_SESSION_OPEN"
             elif fa == "SELL_BLOCKED" and br:
                 blocker = br
@@ -457,6 +462,9 @@ def build_sell_readiness(
                 blocker = "PDT_PROTECTION"
             elif fa == "COOLDOWN_ACTIVE":
                 blocker = "COOLDOWN_ACTIVE"
+            exit_eval_cid = d.get("last_exit_evaluation_cycle_id")
+            exit_eval_at = d.get("last_exit_evaluation_at")
+            exit_eval_age = d.get("exit_decision_age_seconds")
             d_meta = d.get("meta") or {}
             if isinstance(d_meta, str):
                 import json as _json
@@ -552,6 +560,9 @@ def build_sell_readiness(
                 "broker_would_accept_unknown": broker_would_accept_unknown,
                 "human_reason": human_reason,
                 "expected_action": expected,
+                "last_exit_evaluation_cycle_id": exit_eval_cid,
+                "last_exit_evaluation_at": exit_eval_at,
+                "exit_decision_age_seconds": exit_eval_age,
                 **dep_fields,
                 **pend_fields,
             }
@@ -603,6 +614,10 @@ def build_why_no_sell_summary(
                 lines.append(
                     f"{sym}: Existing broker sell order is open/accepted; "
                     "waiting for fill/cancel/expiry."
+                )
+            elif fa == "EXIT_EVALUATION_NOT_REFRESHED":
+                lines.append(
+                    f"{sym}: {d.get('human_reason') or 'Exit evaluation stale; worker must re-evaluate.'}"
                 )
             elif fa == "SELL_BLOCKED" and br in (rc.EXIT_BLOCKED_MARKET_CLOSED, "MARKET_CLOSED"):
                 if account_market_open is True:
@@ -862,7 +877,7 @@ def blocked_exits_from_decisions(decisions: list[dict[str, Any]]) -> list[dict[s
     for d in decisions:
         fa = str(d.get("final_action") or "")
         br = str(d.get("blocked_reason") or "")
-        if fa in ("PDT_BLOCKED", "COOLDOWN_ACTIVE", "BROKER_QTY_ZERO", "WAITING_ON_PENDING_ORDER"):
+        if fa in ("PDT_BLOCKED", "COOLDOWN_ACTIVE", "BROKER_QTY_ZERO", "WAITING_ON_PENDING_ORDER", "EXIT_EVALUATION_NOT_REFRESHED"):
             out.append(
                 {
                     "symbol": d.get("symbol"),
@@ -962,6 +977,14 @@ def build_activity_export_payload(
 
     usable_bp = float(buy_gate.get("usable_buying_power") or eh.get("usable_buying_power") or bp_f)
 
+    broker_bp_raw: float | None = None
+    try:
+        _rbp = real_pf.get("buying_power")
+        if _rbp is not None:
+            broker_bp_raw = float(_rbp)
+    except (TypeError, ValueError):
+        pass
+
     min_ord = float(getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0)
     try:
         capital_status = compute_capital_status(
@@ -969,6 +992,7 @@ def build_activity_export_payload(
             buying_power=bp_f,
             usable_buying_power=usable_bp,
             open_positions=pos_list,
+            broker_buying_power=broker_bp_raw,
             min_order_notional=min_ord,
         )
     except Exception:
@@ -1110,6 +1134,34 @@ def build_activity_export_payload(
     position_exit_decisions = overlay_open_orders_on_exit_decisions(
         position_exit_decisions, oo_by_sym,
     )
+
+    exit_snap_age = _age_seconds_utc(exit_snap_dt)
+    _newest_exec_cid = ""
+    for ed in (decisions or []):
+        ed_cid = str(ed.get("cycle_id") or "").strip()
+        if ed_cid > _newest_exec_cid:
+            _newest_exec_cid = ed_cid
+
+    for ped in position_exit_decisions:
+        ped["last_exit_evaluation_cycle_id"] = _cid or None
+        ped["last_exit_evaluation_at"] = exit_snap_created_at
+        ped["exit_decision_age_seconds"] = round(exit_snap_age, 1) if exit_snap_age is not None else None
+        fa_u = str(ped.get("final_action") or "").upper()
+        if (
+            market_open
+            and fa_u in ("EXIT_REEVAL_PENDING", "SELL_BLOCKED")
+            and _newest_exec_cid
+            and _cid
+            and _newest_exec_cid > _cid
+        ):
+            ped["final_action"] = "EXIT_EVALUATION_NOT_REFRESHED"
+            ped["blocked_reason"] = "STALE_EXIT_DATA_SESSION_OPEN"
+            sym_u = str(ped.get("symbol") or "").strip().upper()
+            ped["human_reason"] = (
+                f"{sym_u}: Exit evaluation has not refreshed since cycle {_cid}; "
+                f"newer cycle {_newest_exec_cid} exists. Worker should re-evaluate."
+            )
+
     blocked_exits = blocked_exits_from_decisions(position_exit_decisions)
 
     sell_readiness = build_sell_readiness(
@@ -1206,6 +1258,13 @@ def build_activity_export_payload(
     payload["cycle_age_seconds"] = _age_seconds_utc(exit_snap_dt)
     payload["exit_snapshot_age_seconds"] = _age_seconds_utc(exit_snap_dt)
     payload["rotation_plan_age_seconds"] = _age_seconds_utc(rp_dt)
+    payload["last_exit_evaluation_cycle_id"] = _cid or None
+    payload["last_exit_evaluation_at"] = exit_snap_created_at or None
+    payload["exit_decision_age_seconds"] = round(exit_snap_age, 1) if exit_snap_age is not None else None
+    payload["newest_execution_decision_cycle_id"] = _newest_exec_cid or None
+    payload["exit_evaluation_stale"] = bool(
+        market_open and _cid and _newest_exec_cid and _newest_exec_cid > _cid
+    )
     payload["data_freshness_status"] = data_freshness_status
 
     from execution.dynamic_capital_allocator import build_capital_allocator_summary, fetch_latest_dynamic_capital_plan

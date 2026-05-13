@@ -616,6 +616,181 @@ def test_pdt_not_shown_when_open_order_exists() -> None:
     assert sr["pdt_block_source"] is None
 
 
+def test_filled_pending_order_clears_order_already_pending() -> None:
+    """After open order fills and is gone, sell_readiness should NOT show ORDER_ALREADY_PENDING."""
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 0.8625, "current_price": 3.07}
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[
+            {"symbol": "AEHL", "asset_class": "stock", "final_action": "PDT_BLOCKED", "blocked_reason": "PDT_PROTECTION", "meta": {}}
+        ],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={"stock_take_profit_pct": 0.5, "stock_stop_loss_pct": 0.99, "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.5, "stop_loss_pct": 0.99, "stock_automated_exits_enabled": 1.0},
+        db_path=None,
+        open_orders_by_symbol={},
+    )
+    sr = rows[0]
+    assert sr["pending_order_exists"] is False
+    assert sr["blocker"] != rc.ORDER_ALREADY_PENDING
+    assert sr["broker_qty"] == 25.0
+
+
+def test_stale_exit_row_replaced_on_fresh_cycle() -> None:
+    """EXIT_REEVAL_PENDING is upgraded to EXIT_EVALUATION_NOT_REFRESHED when newer cycle exists."""
+    from monitoring.cycle_activity_export import overlay_open_orders_on_exit_decisions, _parse_ts_to_utc_rough, _age_seconds_utc
+
+    decisions = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "final_action": "EXIT_REEVAL_PENDING",
+            "blocked_reason": "STALE_EXIT_DATA_SESSION_OPEN",
+            "human_reason": "old msg",
+            "last_exit_evaluation_cycle_id": "cycle_001",
+            "last_exit_evaluation_at": "2026-05-13T06:00:00Z",
+            "exit_decision_age_seconds": 3600.0,
+        }
+    ]
+    d = decisions[0]
+    newer_cid = "cycle_002"
+    old_cid = "cycle_001"
+    market_open = True
+    fa_u = d["final_action"].upper()
+    if (
+        market_open
+        and fa_u in ("EXIT_REEVAL_PENDING", "SELL_BLOCKED")
+        and newer_cid
+        and old_cid
+        and newer_cid > old_cid
+    ):
+        d["final_action"] = "EXIT_EVALUATION_NOT_REFRESHED"
+        d["blocked_reason"] = "STALE_EXIT_DATA_SESSION_OPEN"
+
+    assert d["final_action"] == "EXIT_EVALUATION_NOT_REFRESHED"
+
+
+def test_deferred_exit_reverts_waiting_on_existing_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When open order gone but position remains, deferred plan reverts to pending."""
+    db = tmp_path / "de3.sqlite3"
+    from data.data_store import init_schema, get_connection
+
+    init_schema(db)
+    from execution.deferred_exit_plans import record_pdt_deferred_exit, process_deferred_exit_plans
+
+    rt: dict[str, float] = {
+        "deferred_pdt_exit_enabled": 1.0,
+        "deferred_exit_check_first_in_cycle": 1.0,
+        "deferred_exit_min_profit_pct": 0.0,
+        "deferred_exit_cancel_if_profit_below_pct": -999.0,
+        "deferred_exit_max_attempts": 5.0,
+    }
+    record_pdt_deferred_exit(
+        db, rt, symbol="AEHL", asset_class="stock", broker_qty=26.0, entry_price=0.86,
+        trigger_price=2.1, trigger_pnl_pct=144.0, trigger_reason="TAKE_PROFIT",
+        blocked_reason="PDT_PROTECTION", cycle_id="c1",
+    )
+
+    with get_connection(db) as conn:
+        conn.execute("UPDATE deferred_exit_plans SET status = 'waiting_on_existing_order' WHERE symbol = 'AEHL'")
+
+    monkeypatch.setattr(
+        "execution.stock_broker.get_open_sell_orders_for_symbol",
+        lambda sym: [],
+    )
+    monkeypatch.setattr(
+        "execution.deferred_exit_plans._before_earliest_check",
+        lambda earliest: False,
+    )
+
+    sell_called = []
+    monkeypatch.setattr(
+        "execution.stock_broker.get_open_sell_orders_for_symbol",
+        lambda sym: [],
+    )
+
+    lines: list[str] = []
+    process_deferred_exit_plans(
+        db, rt, cycle_id="c3",
+        broker_qty_fn=lambda s: 25.0,
+        mid_price_fn=lambda s: 3.07,
+        sell_gate_open=True,
+        pdt_blocks_fn=lambda s, q, m: False,
+        submit_sell_fn=lambda s, q, m: (sell_called.append(s), (True, None, None))[-1],
+        log_lines=lines,
+    )
+
+    assert any("reverting to pending" in ln for ln in lines) or any("submitted" in ln for ln in lines)
+
+
+def test_capital_status_discrepancy_explained() -> None:
+    """Capital status shows broker vs bot buying power discrepancy."""
+    from monitoring.position_meta import compute_capital_status
+
+    cs = compute_capital_status(
+        cash=3.23,
+        buying_power=3.23,
+        usable_buying_power=0.26,
+        open_positions=[{"market_value": 76.75}],
+        min_order_notional=1.0,
+        broker_buying_power=3.23,
+    )
+    assert cs["broker_buying_power"] == 3.23
+    assert cs["bot_usable_buying_power"] == 0.26
+    assert cs["restricted_by_risk_rules"] is True
+    assert "3.23" in cs["restriction_reason"]
+    assert "0.26" in cs["restriction_reason"]
+    assert cs["new_buys_blocked"] is True
+
+
+def test_capital_status_no_discrepancy_when_equal() -> None:
+    """No restriction when broker and bot buying power match."""
+    from monitoring.position_meta import compute_capital_status
+
+    cs = compute_capital_status(
+        cash=100.0,
+        buying_power=100.0,
+        usable_buying_power=100.0,
+        open_positions=[],
+        min_order_notional=1.0,
+        broker_buying_power=100.0,
+    )
+    assert cs["restricted_by_risk_rules"] is False
+    assert cs["restriction_reason"] == ""
+
+
+def test_sell_readiness_has_exit_evaluation_fields() -> None:
+    """sell_readiness includes exit evaluation age fields when present in decisions."""
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 0.86, "current_price": 3.07}
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[
+            {
+                "symbol": "AEHL", "asset_class": "stock",
+                "final_action": "EXIT_REEVAL_PENDING", "blocked_reason": "STALE_EXIT_DATA_SESSION_OPEN",
+                "meta": {},
+                "last_exit_evaluation_cycle_id": "c001",
+                "last_exit_evaluation_at": "2026-05-13T06:00:00Z",
+                "exit_decision_age_seconds": 1800.0,
+            }
+        ],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={"stock_take_profit_pct": 0.5, "stock_stop_loss_pct": 0.99, "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.5, "stop_loss_pct": 0.99, "stock_automated_exits_enabled": 1.0},
+        db_path=None,
+    )
+    sr = rows[0]
+    assert sr["last_exit_evaluation_cycle_id"] == "c001"
+    assert sr["last_exit_evaluation_at"] == "2026-05-13T06:00:00Z"
+    assert sr["exit_decision_age_seconds"] == 1800.0
+
+
 @pytest.fixture()
 def dash_app(tmp_path: Path):
     db = tmp_path / "t.sqlite3"

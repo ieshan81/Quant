@@ -119,6 +119,7 @@ def compute_capital_status(
     usable_buying_power: float,
     open_positions: list[dict[str, Any]],
     min_order_notional: float,
+    broker_buying_power: float | None = None,
 ) -> dict[str, Any]:
     deployed = 0.0
     for p in open_positions or []:
@@ -128,20 +129,35 @@ def compute_capital_status(
             mv = 0.0
         if mv > 0:
             deployed += mv
-    # ``usable_buying_power`` from buy_gate / execution_health is already what the bot may
-    # allocate to new orders; do not subtract deployed MV again (would double-count).
     avail = max(0.0, float(usable_buying_power or 0.0))
     blocked = avail + 1e-9 < float(min_order_notional or 0.0)
     block_reason = ""
     if blocked:
         block_reason = "Available buying power below minimum order size"
+
+    broker_bp = round(float(broker_buying_power), 2) if broker_buying_power is not None else None
+    bot_bp = round(avail, 2)
+    restricted = False
+    restriction_reason = ""
+    if broker_bp is not None and bot_bp < broker_bp - 0.01:
+        restricted = True
+        diff = round(broker_bp - bot_bp, 2)
+        restriction_reason = (
+            f"Bot usable_buying_power (${bot_bp}) < broker buying_power (${broker_bp}) "
+            f"by ${diff}; bot applies additional risk/sizing rules or snapshot is stale"
+        )
+
     return {
         "cash": round(float(cash or 0.0), 2),
         "buying_power": round(float(buying_power or 0.0), 2),
         "usable_buying_power": round(float(usable_buying_power or 0.0), 2),
+        "broker_buying_power": broker_bp,
+        "bot_usable_buying_power": bot_bp,
         "capital_deployed_positions": round(deployed, 2),
         "available_buying_power": round(avail, 2),
         "min_order_notional": round(float(min_order_notional or 0.0), 2),
         "new_buys_blocked": bool(blocked),
         "block_reason": block_reason,
+        "restricted_by_risk_rules": restricted,
+        "restriction_reason": restriction_reason,
     }
