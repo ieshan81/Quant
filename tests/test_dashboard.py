@@ -73,33 +73,73 @@ def test_index_has_core_dom_ids(dash_app) -> None:
     assert b'id="dashError"' in body
 
 
-def test_index_boot_debug_diagnostic_banner(dash_app) -> None:
-    """Boot probe and APP JS STARTED markers must exist in code, but the boot div is hidden by default."""
+def test_dashboard_shell_minimal_probe(dash_app) -> None:
+    """Index ships dashboard secret holder + JS bundle; no inline boot probe scripts."""
     client = dash_app.test_client()
-    html, bundle, combined = _html_and_js(client)
-    assert 'id="boot-debug"' in html
-    assert "TINY SCRIPT RAN" in html
+    html, bundle, _ = _html_and_js(client)
+    assert 'id="boot-debug"' not in html
+    assert "TINY SCRIPT RAN" not in html
     assert 'id="dash-secret-holder"' in html
     assert 'src="/dashboard-app.js"' in html
-    assert "APP JS STARTED" in bundle
     assert "_dh.value" in bundle
     assert "function startDashboard()" in bundle
 
 
-def test_index_boot_debug_is_hidden_by_default(dash_app) -> None:
-    """The diagnostic banner must not be visible to operators in the normal HTML — only the Debug panel mirrors it."""
+def test_operator_ui_hides_debug_footer(dash_app) -> None:
+    """DB / poll footer is not in the main operator surface — only inside collapsed developer diagnostics."""
     client = dash_app.test_client()
-    r = client.get("/")
-    assert r.status_code == 200
-    body = r.data.decode("utf-8", errors="ignore")
-    # boot-debug element is rendered with `hidden` so it does not show.
-    assert '<div id="boot-debug" hidden>' in body
-    # The phrase "APP JS STARTED" must NOT be present as a visible top banner.
-    # It only lives in the JS bundle (set into the hidden div + Debug mirror).
-    assert "APP JS STARTED" not in body
-    # Debug panel exists at the bottom for diagnostics.
-    assert 'id="debugPanelSec"' in body
-    assert 'id="bootDebugMirror"' in body
+    body = client.get("/").data.decode("utf-8", errors="ignore")
+    assert 'class="foot mono"' not in body
+    assert 'id="devDiagnosticsSec"' in body
+    assert "<details" in body and "Developer diagnostics" in body
+    assert '<details class="section dev-diagnostics" id="devDiagnosticsSec" open' not in body
+
+
+def test_no_app_js_started_string_in_bundle(dash_app) -> None:
+    client = dash_app.test_client()
+    _, bundle, _ = _html_and_js(client)
+    assert "APP JS STARTED" not in bundle
+
+
+def test_default_tab_overview_active_in_html(dash_app) -> None:
+    client = dash_app.test_client()
+    body = client.get("/").data.decode("utf-8", errors="ignore")
+    assert '<button type="button" class="tab-btn active" data-tab="overview"' in body
+    assert 'class="tab-btn active" data-tab="backtest"' not in body
+    assert '<section id="panel-overview" class="tab-panel active"' in body
+    assert '<section id="panel-backtest" class="tab-panel">' in body
+
+
+def test_dashboard_tab_hash_routing_in_js(dash_app) -> None:
+    client = dash_app.test_client()
+    _, bundle, _ = _html_and_js(client)
+    assert "tabNameFromHash" in bundle
+    assert 'h === "backtest"' in bundle
+    assert "hashchange" in bundle
+    assert "syncHashToTab" in bundle
+
+
+def test_backtest_result_summary_section_present(dash_app) -> None:
+    client = dash_app.test_client()
+    body = client.get("/").data.decode("utf-8", errors="ignore")
+    assert 'id="btResultSummarySection"' in body
+    assert "Backtest Result Summary" in body
+    assert 'id="btMetricFinalEquity"' in body
+
+
+def test_backtest_run_success_wiring_in_js(dash_app) -> None:
+    client = dash_app.test_client()
+    _, bundle, _ = _html_and_js(client)
+    assert "populateBacktestFromResult" in bundle
+    assert "Backtest completed." in bundle
+    assert "scrollIntoView" in bundle
+    assert "/api/backtest/result/" in bundle
+
+
+def test_backtest_copy_download_enable_after_run_js(dash_app) -> None:
+    client = dash_app.test_client()
+    _, bundle, _ = _html_and_js(client)
+    assert "btCopyReportBtn" in bundle and "disabled = false" in bundle
 
 
 def test_header_status_chips_exist(dash_app) -> None:
@@ -253,9 +293,13 @@ def test_backtest_minimal_controls(dash_app) -> None:
     body = r.data.decode("utf-8", errors="ignore")
     assert '<select id="btStrategy">' in body
     assert 'id="btRunBtn"' in body
+    assert "Run Backtest" in body
     assert 'id="btCompareBtn"' in body
+    assert "Compare Strategies" in body
     assert 'id="btCopyReportBtn"' in body
+    assert "Copy Report" in body
     assert 'id="btDownloadReportBtn"' in body
+    assert "Download Report" in body
     assert "btParamGrid" not in body
 
 
@@ -332,11 +376,11 @@ def test_money_pct_formatters_signed(dash_app) -> None:
 
 
 def test_page_container_widths(dash_app) -> None:
-    """Centered max-width 1280px container with consistent padding."""
+    """Centered max-width ~1400px container with consistent padding."""
     client = dash_app.test_client()
     r = client.get("/")
     body = r.data.decode("utf-8", errors="ignore")
-    assert "max-width: 1280px" in body
+    assert "max-width: 1400px" in body
     assert "padding: 20px 24px 48px" in body
 
 

@@ -1,11 +1,6 @@
 (function () {
   "use strict";
 
-  var bootDbg = document.getElementById("boot-debug");
-  if (bootDbg) bootDbg.textContent = "APP JS STARTED";
-  var bootMirror = document.getElementById("bootDebugMirror");
-  if (bootMirror) bootMirror.textContent = "APP JS STARTED";
-
   var _dh = document.getElementById("dash-secret-holder");
   var DASHBOARD_SECRET = _dh ? _dh.value : "";
   var equityChart = null;
@@ -882,7 +877,6 @@
     if (!block) return;
     try {
       block.textContent = JSON.stringify({
-        boot: "APP JS STARTED",
         mode: payload && payload.mode,
         portfolio_present: !!(payload && payload.portfolio),
         positions: Array.isArray(payload && payload.open_positions) ? payload.open_positions.length : 0,
@@ -1026,10 +1020,8 @@
     setApiChip("info", "API …");
     try {
       var response = await fetch("/api/dashboard", { cache: "no-store" });
-      console.log("FETCH /api/dashboard status", response.status);
       if (!response.ok) throw new Error("HTTP " + response.status);
       var payload = await response.json();
-      console.log("PAYLOAD", payload);
       var vm = mapDashboardPayload(payload);
       window.__dashVm = vm;
       paintViewModel(vm);
@@ -1045,11 +1037,33 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Tabs + backtest wiring (unchanged behavior)
+  // Tabs — URL hash is source of truth; default Overview (no persistence).
   // ---------------------------------------------------------------------------
 
+  function tabNameFromHash() {
+    var raw = (typeof location !== "undefined" && location.hash) ? String(location.hash) : "";
+    var h = raw.replace(/^#/, "").trim().toLowerCase();
+    if (h === "positions" || h === "activity" || h === "backtest" || h === "overview") return h;
+    return "overview";
+  }
+
+  function syncHashToTab(name) {
+    try {
+      if (typeof history !== "undefined" && history.replaceState) {
+        var base = location.pathname + (location.search || "");
+        if (name === "overview") {
+          history.replaceState(null, "", base);
+        } else {
+          history.replaceState(null, "", base + "#" + name);
+        }
+      } else if (typeof location !== "undefined") {
+        location.hash = name === "overview" ? "" : "#" + name;
+      }
+    } catch (e1) {}
+  }
+
   function bindTabs() {
-    var tabs = document.querySelectorAll(".tab-btn");
+    var tabs = document.querySelectorAll("nav .tab-btn");
     var panels = document.querySelectorAll(".tab-panel");
     function show(name) {
       var i;
@@ -1059,9 +1073,7 @@
       for (i = 0; i < panels.length; i++) {
         panels[i].classList.toggle("active", panels[i].id === "panel-" + name);
       }
-      try {
-        localStorage.setItem("quantbot_dash_tab", name);
-      } catch (e) {}
+      syncHashToTab(name);
       if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
     }
     var t;
@@ -1072,14 +1084,201 @@
         });
       })(tabs[t]);
     }
-    var saved = "overview";
     try {
-      saved = localStorage.getItem("quantbot_dash_tab") || "overview";
-    } catch (e2) {}
-    show(saved);
+      localStorage.removeItem("quantbot_dash_tab");
+    } catch (eRm) {}
+    window.addEventListener("hashchange", function () {
+      show(tabNameFromHash());
+    });
+    show(tabNameFromHash());
   }
 
   var btRunId = null;
+  var btEquityChart = null;
+
+  function btEl(id) {
+    return document.getElementById(id);
+  }
+
+  function hideBtRunError() {
+    var e = btEl("btRunError");
+    if (e) {
+      e.style.display = "none";
+      e.textContent = "";
+    }
+  }
+
+  function showBtRunError(msg) {
+    var e = btEl("btRunError");
+    if (e) {
+      e.style.display = "block";
+      e.textContent = msg || "Run failed.";
+    }
+  }
+
+  function slimBacktestResultForDebug(row) {
+    if (!row || typeof row !== "object") return row;
+    var o = {};
+    var k;
+    for (k in row) {
+      if (Object.prototype.hasOwnProperty.call(row, k)) o[k] = row[k];
+    }
+    var c = o.equity_curve;
+    if (Array.isArray(c) && c.length > 300) {
+      o.equity_curve = c.slice(0, 150).concat({ _note: "…truncated…" }).concat(c.slice(-80));
+    }
+    var tr = o.trades;
+    if (Array.isArray(tr) && tr.length > 200) {
+      o.trades = tr.slice(0, 120).concat({ _note: "…truncated…" });
+    }
+    return o;
+  }
+
+  function renderBacktestEquityChart(curve) {
+    var canvas = btEl("btEquityChart");
+    var hint = btEl("btEqEmptyHint");
+    if (!canvas) return;
+    if (typeof Chart === "undefined") {
+      if (hint) {
+        hint.style.display = "block";
+        hint.textContent = "Chart.js not loaded.";
+      }
+      return;
+    }
+    var series = Array.isArray(curve) ? curve : [];
+    if (!series.length) {
+      if (hint) {
+        hint.style.display = "block";
+        hint.textContent = "No equity curve for this run.";
+      }
+      if (btEquityChart) {
+        btEquityChart.destroy();
+        btEquityChart = null;
+      }
+      return;
+    }
+    if (hint) hint.style.display = "none";
+    var labels = series.map(function (p) {
+      return p == null || p.timestamp == null ? "" : String(p.timestamp);
+    });
+    var vals = series.map(function (p) {
+      return num(p && p.equity, 0);
+    });
+    if (!btEquityChart) {
+      btEquityChart = new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: { labels: labels, datasets: [{ data: vals, borderColor: "#38bdf8", tension: 0.2, pointRadius: 0 }] },
+        options: {
+          animation: false,
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: {
+              ticks: {
+                callback: function (v) {
+                  return "$" + Number(v).toFixed(2);
+                },
+                color: "#9ca3af"
+              },
+              grid: { color: "rgba(148,163,184,0.08)" }
+            },
+            x: {
+              ticks: { color: "#9ca3af", maxTicksLimit: 6 },
+              grid: { display: false }
+            }
+          }
+        }
+      });
+    } else {
+      btEquityChart.data.labels = labels;
+      btEquityChart.data.datasets[0].data = vals;
+      btEquityChart.update("none");
+    }
+  }
+
+  function populateBacktestTradesTable(trades) {
+    var tb = document.querySelector("#tblBacktestTrades tbody");
+    var empty = btEl("btTradesEmpty");
+    if (!tb) return;
+    var t = Array.isArray(trades) ? trades : [];
+    if (empty) empty.style.display = t.length ? "none" : "block";
+    tb.innerHTML = t
+      .map(function (tr) {
+        var pnl = tr.pnl;
+        var pnlStr = pnl != null && isFiniteNum(pnl) ? fmtMoneySigned(Number(pnl)) : "—";
+        return (
+          "<tr><td>" +
+          esc(tr.timestamp) +
+          "</td><td>" +
+          esc(tr.symbol) +
+          "</td><td>" +
+          esc(tr.asset_class) +
+          "</td><td>" +
+          esc(tr.side) +
+          "</td><td class=\"mono\">" +
+          esc(tr.qty != null ? String(tr.qty) : "") +
+          "</td><td class=\"mono\">" +
+          esc(tr.price != null ? fmtPrice(tr.price) : "—") +
+          "</td><td class=\"mono\">" +
+          esc(pnlStr) +
+          "</td><td>" +
+          esc(tr.reason_code || "") +
+          "</td></tr>"
+        );
+      })
+      .join("");
+  }
+
+  function setBtMetric(id, text) {
+    var n = btEl(id);
+    if (n) n.textContent = text == null || text === "" ? "—" : String(text);
+  }
+
+  function populateBacktestFromResult(row) {
+    var summ = (row && row.summary_json) || {};
+    var hint = btEl("btNoRunHint");
+    var wrap = btEl("btSummaryMetricsWrap");
+    if (hint) hint.style.display = "none";
+    if (wrap) wrap.style.display = "grid";
+    setBtMetric("btMetricStartingCash", fmtMoney(summ.starting_cash));
+    setBtMetric("btMetricFinalEquity", fmtMoney(summ.final_equity));
+    setBtMetric("btMetricPnl", summ.pnl != null && isFiniteNum(summ.pnl) ? fmtMoneySigned(Number(summ.pnl)) : "—");
+    setBtMetric("btMetricReturnPct", summ.return_pct != null && isFiniteNum(summ.return_pct) ? fmtPctSigned(Number(summ.return_pct)) : "—");
+    var bh =
+      summ.equal_weight_buy_and_hold_return_pct != null && isFiniteNum(summ.equal_weight_buy_and_hold_return_pct)
+        ? Number(summ.equal_weight_buy_and_hold_return_pct)
+        : summ.benchmark_return_pct != null && isFiniteNum(summ.benchmark_return_pct)
+          ? Number(summ.benchmark_return_pct)
+          : null;
+    setBtMetric("btMetricBuyHold", bh != null ? fmtPctSigned(bh) : "—");
+    var ex = summ.excess_return_pct;
+    setBtMetric("btMetricExcessReturn", ex != null && isFiniteNum(ex) ? fmtPctSigned(Number(ex)) : "—");
+    setBtMetric("btMetricMaxDd", summ.max_drawdown_pct != null && isFiniteNum(summ.max_drawdown_pct) ? fmtPct(Number(summ.max_drawdown_pct)) : "—");
+    setBtMetric("btMetricTotalTrades", summ.trades_total != null ? String(summ.trades_total) : "—");
+    setBtMetric("btMetricClosedTrades", summ.closed_trades != null ? String(summ.closed_trades) : "—");
+    setBtMetric("btMetricWinRate", summ.win_rate_pct != null && isFiniteNum(summ.win_rate_pct) ? fmtPct(Number(summ.win_rate_pct)) : "—");
+    setBtMetric("btMetricConfidence", summ.confidence_label != null ? String(summ.confidence_label) : "—");
+    renderBacktestEquityChart(row && row.equity_curve);
+    populateBacktestTradesTable(row && row.trades);
+    var rej = (row && row.rejection_summary_json) || {};
+    var pr = btEl("btRejectionsSummary");
+    if (pr) pr.textContent = JSON.stringify(rej, null, 2);
+    var dr = btEl("btLastRunDebug");
+    if (dr) dr.textContent = JSON.stringify(slimBacktestResultForDebug(row), null, 2);
+  }
+
+  function scrollToBacktestSummary() {
+    var sec = btEl("btResultSummarySection");
+    if (sec && sec.scrollIntoView) {
+      try {
+        sec.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (e2) {
+        sec.scrollIntoView(true);
+      }
+    }
+  }
+
   async function loadBacktestDefaultsOnce() {
     if (window.__btDefaultsLoaded) return;
     try {
@@ -1091,7 +1290,7 @@
       }
       if (j.default_timeframe) document.getElementById("btTimeframe").value = j.default_timeframe;
       if (Array.isArray(j.symbols)) document.getElementById("btSymbols").value = j.symbols.join(",");
-      document.getElementById("btStatus").textContent = "Defaults loaded.";
+      document.getElementById("btStatus").textContent = "Defaults loaded. Configure inputs, then Run Backtest.";
       window.__btDefaultsLoaded = true;
     } catch (e) {
       document.getElementById("btStatus").textContent = "Could not load backtest defaults.";
@@ -1100,6 +1299,9 @@
 
   function wireBacktest() {
     document.getElementById("btRunBtn").addEventListener("click", async function () {
+      hideBtRunError();
+      document.getElementById("btCopyReportBtn").disabled = true;
+      document.getElementById("btDownloadReportBtn").disabled = true;
       document.getElementById("btStatus").textContent = "Running…";
       var payload = {
         strategy_name: (document.getElementById("btStrategy") || {}).value || "current_adaptive",
@@ -1117,16 +1319,24 @@
           body: JSON.stringify(payload)
         });
         var j = await r.json();
-        if (!r.ok || !j.run_id) throw new Error(j.error || "run failed");
+        if (!r.ok || !j.run_id) throw new Error((j && j.error) || "run failed");
         btRunId = j.run_id;
+        var rr = await fetch("/api/backtest/result/" + encodeURIComponent(btRunId), { cache: "no-store" });
+        if (!rr.ok) throw new Error("Could not load run " + btRunId);
+        var row = await rr.json();
+        populateBacktestFromResult(row);
         document.getElementById("btCopyReportBtn").disabled = false;
         document.getElementById("btDownloadReportBtn").disabled = false;
-        document.getElementById("btStatus").textContent = "Run complete. id=" + j.run_id;
+        document.getElementById("btStatus").textContent = "Backtest completed.";
+        scrollToBacktestSummary();
       } catch (e) {
-        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+        var msg = String((e && e.message) || e);
+        showBtRunError(msg);
+        document.getElementById("btStatus").textContent = "Run did not complete. Fix the issue below and try again.";
       }
     });
     document.getElementById("btCompareBtn").addEventListener("click", async function () {
+      hideBtRunError();
       document.getElementById("btStatus").textContent = "Comparing…";
       try {
         var r = await fetch("/api/backtest/compare", {
@@ -1143,10 +1353,14 @@
           })
         });
         var j = await r.json();
-        if (!r.ok || !j.ok) throw new Error(j.error || "compare failed");
-        document.getElementById("btStatus").textContent = "Compare finished (" + (j.rows || []).length + " rows).";
+        if (!r.ok || !j.ok) throw new Error((j && j.error) || "compare failed");
+        var out = btEl("btCompareOutput");
+        if (out) out.textContent = JSON.stringify(j.rows || [], null, 2);
+        document.getElementById("btStatus").textContent = "Compare finished (" + (j.rows || []).length + " rows). See Advanced section for details.";
       } catch (e) {
-        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+        var msg2 = String((e && e.message) || e);
+        showBtRunError(msg2);
+        document.getElementById("btStatus").textContent = "Compare did not complete.";
       }
     });
     async function getReportMd() {
@@ -1162,7 +1376,8 @@
         await navigator.clipboard.writeText(md);
         document.getElementById("btStatus").textContent = "Report copied.";
       } catch (e) {
-        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+        showBtRunError(String((e && e.message) || e));
+        document.getElementById("btStatus").textContent = "Copy report failed.";
       }
     });
     document.getElementById("btDownloadReportBtn").addEventListener("click", async function () {
@@ -1177,7 +1392,8 @@
         URL.revokeObjectURL(u);
         document.getElementById("btStatus").textContent = "Download started.";
       } catch (e) {
-        document.getElementById("btStatus").textContent = String(e && e.message ? e.message : e);
+        showBtRunError(String((e && e.message) || e));
+        document.getElementById("btStatus").textContent = "Download failed.";
       }
     });
   }
@@ -1225,10 +1441,31 @@
     });
   }
 
+  function wireBrokerDiagnosticCopy() {
+    var btn = document.getElementById("btnCopyBrokerDiagnostic");
+    var st = document.getElementById("brokerDiagExportStatus");
+    if (!btn) return;
+    function stamp(msg) {
+      if (st) st.textContent = msg || "";
+    }
+    btn.addEventListener("click", async function () {
+      try {
+        var r = await fetch("/api/broker/diagnostic", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var text = await r.text();
+        await navigator.clipboard.writeText(text);
+        stamp("Copied broker diagnostic JSON");
+      } catch (e) {
+        stamp(String(e && e.message ? e.message : e));
+      }
+    });
+  }
+
   function startDashboard() {
     bindTabs();
     wireBacktest();
     wireActivityExport();
+    wireBrokerDiagnosticCopy();
     wireManualSell();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);

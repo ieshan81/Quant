@@ -95,7 +95,7 @@ _PAGE = """<!DOCTYPE html>
       align-items: center;
       gap: 0.85rem;
       justify-content: space-between;
-      max-width: 1280px;
+      max-width: 1400px;
       margin: 0 auto;
       width: 100%;
     }
@@ -139,7 +139,7 @@ _PAGE = """<!DOCTYPE html>
     .chip.info .dot  { background: var(--accent); }
     #dashError {
       display: none;
-      max-width: 1280px;
+      max-width: 1400px;
       margin: 12px auto 0;
       padding: 0.5rem 0.75rem;
       background: rgba(248,113,113,0.12);
@@ -148,13 +148,14 @@ _PAGE = """<!DOCTYPE html>
       border-radius: 6px;
       font-size: 13px;
     }
+    body { overflow-x: hidden; }
     nav {
       display: flex;
       gap: 0.35rem;
       padding: 0.55rem 24px;
       border-bottom: 1px solid var(--border);
       flex-wrap: wrap;
-      max-width: 1280px;
+      max-width: 1400px;
       margin: 0 auto;
       width: 100%;
     }
@@ -196,7 +197,7 @@ _PAGE = """<!DOCTYPE html>
       border-color: #7dd3fc;
       background: rgba(56, 189, 248, 0.18);
     }
-    main { padding: 20px 24px 48px; max-width: 1280px; margin: 0 auto; }
+    main { padding: 20px 24px 48px; max-width: 1400px; margin: 0 auto; width: 100%; box-sizing: border-box; }
     .tab-panel { display: none; }
     .tab-panel.active { display: flex; flex-direction: column; gap: 16px; }
     .grid-metrics {
@@ -300,7 +301,7 @@ _PAGE = """<!DOCTYPE html>
     .ops-narrative li .warn-t { color: #fbbf24; }
     .ops-narrative li .bad-t  { color: var(--bad); }
     .ops-narrative li .mono   { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .chart-wrap { position: relative; height: 300px; }
+    .chart-wrap { position: relative; height: 300px; max-width: 100%; }
     .health-pill {
       display: inline-flex;
       align-items: center;
@@ -406,8 +407,7 @@ _PAGE = """<!DOCTYPE html>
     }
     details.section[open] > summary::after { content: " ▾"; }
     details.section .section-body { margin-top: 0.55rem; }
-    .debug-panel { margin-top: 1.25rem; }
-    .debug-panel pre { font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; margin: 0.4rem 0 0; }
+    .dev-diagnostics pre { font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; margin: 0.4rem 0 0; }
     /* Phase 1 — Execution Health (full-width; responsive tiles per execution-health-exit-safety plan) */
     .exec-health-panel {
       width: 100%;
@@ -551,7 +551,10 @@ _PAGE = """<!DOCTYPE html>
       border-radius: 4px;
     }
     /* chart-wrap height defined above (300px for equity) */
-    .foot { font-size: 11px; color: var(--muted); margin-top: 1rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+    .dev-diagnostics { margin-top: 1rem; }
+    .dev-diagnostics summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    .dev-diagnostics .section-body { padding-top: 0.5rem; }
+    .dev-db-meta { font-size: 11px; color: var(--muted); margin: 0 0 0.5rem; }
     .bt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 0.5rem; align-items: end; }
     .bt-grid label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 0.2rem; }
     .bt-grid input, .bt-grid select {
@@ -573,6 +576,7 @@ _PAGE = """<!DOCTYPE html>
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
     }
+    .bt-actions-card .bt-actions { margin-top: 0; }
     .bt-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.65rem; }
     .bt-actions button {
       padding: 0.45rem 0.75rem;
@@ -613,8 +617,21 @@ _PAGE = """<!DOCTYPE html>
       box-shadow: 0 4px 16px rgba(52, 211, 153, 0.18);
       filter: brightness(1.06);
     }
-    #btStatus { margin-top: 0.5rem; font-size: 13px; color: var(--muted); }
-    pre.sec { font-size: 11px; overflow: auto; max-height: 120px; margin: 0.35rem 0 0; color: var(--muted); }
+    #btStatus { margin-top: 0.65rem; font-size: 13px; color: var(--muted); }
+    .bt-run-error {
+      display: none;
+      margin-top: 0.65rem;
+      padding: 0.5rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--bad);
+      background: rgba(248, 113, 113, 0.12);
+      color: #fecaca;
+      font-size: 13px;
+    }
+    .bt-sub { margin: 0.75rem 0 0.35rem; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+    .bt-sub:first-child { margin-top: 0; }
+    #btStrategy { max-width: min(100%, 420px); }
+    pre.sec { font-size: 11px; overflow: auto; max-height: 180px; margin: 0.35rem 0 0; color: var(--muted); }
     header h1.mono {
       transition: color var(--dur-med) var(--ease-out), text-shadow var(--dur-med) var(--ease-out);
     }
@@ -670,14 +687,6 @@ _PAGE = """<!DOCTYPE html>
     }
   </style>
 </head>
-<body>
-<div id="boot-debug" hidden>JS NOT STARTED</div>
-<script>
-(function () {
-  var bd = document.getElementById("boot-debug");
-  if (bd) bd.textContent = "TINY SCRIPT RAN";
-})();
-</script>
   <input type="hidden" id="dash-secret-holder" value="{{ dashboard_secret|e }}"/>
   <header>
     <h1 class="mono">QuantBot</h1>
@@ -805,7 +814,9 @@ _PAGE = """<!DOCTYPE html>
       <div class="chip-row" style="margin-bottom:10px;">
         <button type="button" id="btnCopyActivityExport" class="tab-btn" style="font-size:12px;">Copy Activity JSON</button>
         <button type="button" id="btnDownloadActivityExport" class="tab-btn" style="font-size:12px;">Download Activity JSON</button>
+        <button type="button" id="btnCopyBrokerDiagnostic" class="tab-btn" style="font-size:12px;">Copy Broker Diagnostic JSON</button>
         <span class="updated-stamp" id="actExportStatus"></span>
+        <span class="updated-stamp" id="brokerDiagExportStatus"></span>
       </div>
       <details class="section" id="actTradesSec" open>
         <summary>Recent trades (<span id="actTradesCount">0</span>)</summary>
@@ -853,8 +864,8 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-backtest" class="tab-panel">
-      <div class="card">
-        <h2>Backtest</h2>
+      <div class="card bt-setup-card">
+        <h2>Backtest Setup</h2>
         <div class="bt-grid">
           <div><label for="btStrategy">Strategy</label><select id="btStrategy"></select></div>
           <div style="grid-column: span 2;"><label for="btSymbols">Symbols (CSV)</label><input id="btSymbols" value="AAPL,MSFT"/></div>
@@ -863,31 +874,73 @@ _PAGE = """<!DOCTYPE html>
           <div><label for="btTimeframe">Timeframe</label><select id="btTimeframe"><option value="1Day">1Day</option><option value="1H">1H</option></select></div>
           <div><label for="btStartingCash">Starting cash</label><input id="btStartingCash" type="number" step="0.01" value="100"/></div>
         </div>
+      </div>
+      <div class="card bt-actions-card">
+        <h2>Actions</h2>
         <div class="bt-actions">
           <button type="button" class="primary" id="btRunBtn">Run Backtest</button>
           <button type="button" id="btCompareBtn">Compare Strategies</button>
           <button type="button" id="btCopyReportBtn" disabled>Copy Report</button>
           <button type="button" id="btDownloadReportBtn" disabled>Download Report</button>
         </div>
-        <p id="btStatus">Load defaults when you open this tab.</p>
-        <details class="section" id="btAdvancedSec" style="margin-top:0.75rem;">
-          <summary>Advanced (raw report &amp; debug)</summary>
-          <div class="section-body">
-            <p class="empty-hint">Run a backtest first, then use Copy Report or Download Report. Raw run JSON appears in the browser console.</p>
-          </div>
-        </details>
+        <p id="btStatus" class="bt-status-line" aria-live="polite">Open this tab to load defaults, then configure and run.</p>
+        <div id="btRunError" class="bt-run-error" role="alert" style="display:none;"></div>
       </div>
+
+      <section id="btResultSummarySection" class="card bt-results-card" aria-labelledby="btResultSummaryHeading">
+        <h2 id="btResultSummaryHeading">Backtest Result Summary</h2>
+        <p id="btNoRunHint" class="empty-hint">No backtest run yet. Configure inputs and click Run Backtest.</p>
+        <div id="btSummaryMetricsWrap" class="grid-metrics" style="display:none;">
+          <div class="metric"><div class="lab">Starting Cash</div><div class="val mono" id="btMetricStartingCash">—</div></div>
+          <div class="metric"><div class="lab">Final Equity</div><div class="val mono" id="btMetricFinalEquity">—</div></div>
+          <div class="metric"><div class="lab">P&amp;L</div><div class="val mono" id="btMetricPnl">—</div></div>
+          <div class="metric"><div class="lab">Return %</div><div class="val mono" id="btMetricReturnPct">—</div></div>
+          <div class="metric"><div class="lab">Buy &amp; Hold Return</div><div class="val mono" id="btMetricBuyHold">—</div></div>
+          <div class="metric"><div class="lab">Excess Return</div><div class="val mono" id="btMetricExcessReturn">—</div></div>
+          <div class="metric"><div class="lab">Max Drawdown</div><div class="val mono" id="btMetricMaxDd">—</div></div>
+          <div class="metric"><div class="lab">Total Trades</div><div class="val mono" id="btMetricTotalTrades">—</div></div>
+          <div class="metric"><div class="lab">Closed Trades</div><div class="val mono" id="btMetricClosedTrades">—</div></div>
+          <div class="metric"><div class="lab">Win Rate</div><div class="val mono" id="btMetricWinRate">—</div></div>
+          <div class="metric"><div class="lab">Confidence Label</div><div class="val mono" id="btMetricConfidence">—</div></div>
+        </div>
+      </section>
+
+      <div class="card">
+        <h2>Equity Curve</h2>
+        <div class="chart-wrap"><canvas id="btEquityChart"></canvas></div>
+        <p class="empty-hint" id="btEqEmptyHint" style="display:none;">No equity curve for this run.</p>
+      </div>
+
+      <div class="card">
+        <h2>Trades</h2>
+        <p class="empty-hint" id="btTradesEmpty" style="display:none;">No trades in this run.</p>
+        <div class="scroll-table">
+          <table class="data" id="tblBacktestTrades"><thead><tr>
+            <th>Time</th><th>Symbol</th><th>Class</th><th>Side</th><th>Qty</th><th>Price</th><th>PnL</th><th>Reason</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+
+      <details class="section" id="btAdvancedSec">
+        <summary>Advanced — comparison, rejections, raw run data</summary>
+        <div class="section-body">
+          <h3 class="bt-sub">Strategy comparison</h3>
+          <pre id="btCompareOutput" class="mono sec">Run Compare Strategies to see results here.</pre>
+          <h3 class="bt-sub">Rejections summary</h3>
+          <pre id="btRejectionsSummary" class="mono sec">—</pre>
+          <h3 class="bt-sub">Last run (truncated JSON)</h3>
+          <pre id="btLastRunDebug" class="mono sec">{}</pre>
+        </div>
+      </details>
     </section>
 
-    <details class="section debug-panel" id="debugPanelSec">
-      <summary>Debug</summary>
+    <details class="section dev-diagnostics" id="devDiagnosticsSec">
+      <summary>Developer diagnostics</summary>
       <div class="section-body">
-        <p class="mono" id="bootDebugMirror">—</p>
+        <p class="dev-db-meta mono" id="devDbMeta">DB: {{ db }} · Poll every {{ refresh_sec }}s · <span id="pollFoot">HTTP only</span></p>
         <pre id="debugStateBlock">{}</pre>
       </div>
     </details>
-
-    <p class="foot mono">DB: {{ db }} · Poll every {{ refresh_sec }}s · <span id="pollFoot">HTTP only</span></p>
 
     <div id="manualSellModal" class="modal-backdrop" aria-hidden="true">
       <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="msTitle">
@@ -1464,6 +1517,15 @@ def create_app() -> Flask:
         with _open_dashboard_sqlite() as conn:
             payload = build_activity_export_payload(conn, limit=lim)
         return Response(json.dumps(payload, default=str), mimetype="application/json")
+
+    @app.get("/api/broker/diagnostic")
+    def api_broker_diagnostic() -> Response:
+        from monitoring.broker_diagnostic import build_broker_diagnostic_payload, diagnostic_json_bytes
+        from monitoring.dashboard_data import _open_dashboard_sqlite
+
+        with _open_dashboard_sqlite() as conn:
+            payload = build_broker_diagnostic_payload(conn)
+        return Response(diagnostic_json_bytes(payload), mimetype="application/json")
 
     @app.get("/api/rotation/latest")
     def api_rotation_latest() -> Any:
