@@ -271,6 +271,7 @@ def test_execute_cycle_non_fractionable_stock_skips_before_submit() -> None:
 
 
 def test_execute_cycle_non_fractionable_stock_uses_whole_share_fallback() -> None:
+    mw._last_profit_exit_ts = 0.0
     t = create_paper_trader(persist_sqlite=False)
     sig = mw.CycleSignal("stock", "AMPX", {}, 0.9, "BUY", 10.4, None)
     fake_account = MagicMock(cash="23.13", buying_power="23.13")

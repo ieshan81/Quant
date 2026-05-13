@@ -1456,3 +1456,831 @@ def test_filled_sell_warning_in_export() -> None:
     assert len(warnings) == 1
     assert "OPEN_POSITION_STALE_AFTER_RECENT_SELL_FILL" in warnings[0]
     assert "AEHL" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Post-profit cooldown + capital reserve
+# ---------------------------------------------------------------------------
+
+def test_post_profit_cooldown_blocks_new_stock_buys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a TAKE_PROFIT exit, new stock buys should be blocked by post-profit cooldown."""
+    import time
+    import main_worker
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 30)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: True)
+
+    _persisted: list[dict] = []
+    _orig = main_worker._persist_decision
+
+    def _cap(**kw):
+        _persisted.append(kw)
+        try:
+            _orig(**kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "profit_cash_reserve_pct": 100.0,
+        "minimum_cash_after_profit_exit_usd": 80.0,
+        "dynamic_profit_reserve_enabled": 0.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "MICRO",
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0,
+        cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+    cs = SimpleNamespace(
+        symbol="EZGO",
+        asset_class="stock",
+        action="BUY",
+        score=0.6,
+        mid=1.50,
+        signals={"combined": 0.6},
+        error=None,
+        pump_emergency_buy=False,
+        pump_emergency_sell=False,
+    )
+    monkeypatch.setattr(main_worker, "STOCK_BUY_BUFFER_PCT", 1.0)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+
+    summary = main_worker.execute_cycle_results(trader, [cs], rt, cycle_id="cooldown-1")
+    cooldown_blocks = [
+        d for d in _persisted
+        if d.get("reason_code") == rc.BUY_BLOCKED_POST_PROFIT_COOLDOWN
+    ]
+    assert len(cooldown_blocks) >= 1
+    assert cooldown_blocks[0]["symbol"] == "EZGO"
+    assert summary["buys"] == 0
+    assert summary["buy_gate"]["profit_cooldown_active"] is True
+
+
+def test_post_profit_cooldown_expired_allows_buys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After cooldown expires, stock buys should proceed normally."""
+    import time
+    import main_worker
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 600)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: True)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "profit_cash_reserve_pct": 50.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "MICRO",
+    }
+    summary = main_worker.execute_cycle_results(
+        SimpleNamespace(
+            cash_stocks=80.0,
+            cash_crypto=0.0,
+            position=lambda ac, sym: None,
+            equity_total=lambda: 155.0,
+            log_signal_row=lambda **kw: None,
+            set_telegram_on_fills=lambda v: None,
+        ),
+        [],
+        rt,
+        cycle_id="nocooldown-1",
+    )
+    assert summary["buy_gate"]["profit_cooldown_active"] is False
+
+
+def test_reserve_keeps_cash_for_crypto(monkeypatch: pytest.MonkeyPatch) -> None:
+    """During post-profit cooldown, stock budget is capped; remaining is available for crypto."""
+    import time
+    import main_worker
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "profit_cash_reserve_pct": 50.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "MICRO",
+    }
+    summary = main_worker.execute_cycle_results(
+        SimpleNamespace(
+            cash_stocks=80.0,
+            cash_crypto=0.0,
+            position=lambda ac, sym: None,
+            equity_total=lambda: 155.0,
+            log_signal_row=lambda **kw: None,
+            set_telegram_on_fills=lambda v: None,
+        ),
+        [],
+        rt,
+        cycle_id="reserve-1",
+    )
+    bg = summary["buy_gate"]
+    assert bg["profit_cooldown_active"] is True
+    assert bg["max_usable_for_new_buys_stock"] < 80.0
+    assert bg["usable_buying_power"] == pytest.approx(80.0, rel=0.1)
+
+
+def test_capital_redeployment_status_in_export() -> None:
+    """capital_redeployment_status is present with expected keys."""
+    status = {
+        "recent_profit_exit": True,
+        "profit_cash_protected": True,
+        "new_stock_buys_blocked": True,
+        "block_reason": "post_profit_cooldown: 30s/300s elapsed, reserve=40.00, stock_cap=40.00",
+        "available_for_crypto": 80.0,
+        "cooldown_active": True,
+    }
+    assert status["recent_profit_exit"] is True
+    assert status["profit_cash_protected"] is True
+    assert status["cooldown_active"] is True
+    assert "reserve" in status["block_reason"]
+
+
+# ---------------------------------------------------------------------------
+# Dynamic post-profit reserve
+# ---------------------------------------------------------------------------
+
+from execution.dynamic_capital_allocator import calculate_dynamic_post_profit_reserve
+
+
+def _dyn_base_kwargs(**overrides):
+    """Baseline kwargs for calculate_dynamic_post_profit_reserve."""
+    kw = dict(
+        buying_power=80.0,
+        equity=155.0,
+        recent_profit_exit=True,
+        profit_exit_notional=72.0,
+        profit_exit_pct=46.0,
+        current_stock_weight=0.55,
+        target_stock_weight=0.44,
+        current_crypto_weight=0.0,
+        target_crypto_weight=0.20,
+        crypto_best_signal_score=0.0,
+        stock_best_signal_score=0.0,
+        crypto_spread_ok=True,
+        stock_spread_quality=1.0,
+        minutes_to_market_close=180.0,
+        recent_loss_streak=0,
+        runtime_config={
+            "dynamic_profit_reserve_enabled": 1.0,
+            "base_profit_cash_reserve_pct": 40.0,
+            "min_profit_cash_reserve_pct": 20.0,
+            "max_profit_cash_reserve_pct": 90.0,
+            "profit_size_reserve_weight": 0.15,
+            "stock_overweight_reserve_weight": 0.25,
+            "crypto_signal_reserve_weight": 0.15,
+            "near_close_reserve_weight": 0.10,
+            "loss_streak_reserve_weight": 0.10,
+            "stock_signal_discount_weight": 0.10,
+            "min_crypto_reserved_after_profit_usd": 3.0,
+            "max_stock_redeploy_fraction_after_profit_pct": 60.0,
+            "minimum_cash_after_profit_exit_usd": 5.0,
+            "profit_cash_reserve_pct": 50.0,
+        },
+    )
+    kw.update(overrides)
+    return kw
+
+
+def test_dynamic_large_profit_increases_reserve():
+    """AEHL-style large profit exit (46% of equity) increases reserve above base."""
+    res = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs())
+    assert res["reserve_pct"] > 40.0
+    assert any("profit_size" in r for r in res["reasoning"])
+    assert res["stock_buy_budget"] < 80.0
+
+
+def test_dynamic_stock_overweight_increases_reserve():
+    """When stock weight exceeds target, reserve increases further."""
+    res = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        current_stock_weight=0.70,
+        target_stock_weight=0.44,
+    ))
+    assert res["reserve_pct"] > 40.0
+    assert any("stock_overweight" in r for r in res["reasoning"])
+
+
+def test_dynamic_strong_crypto_signal_reserves_for_crypto():
+    """Strong crypto signal increases reserve and crypto_reserved_usd."""
+    res = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        crypto_best_signal_score=0.85,
+    ))
+    assert res["crypto_reserved_usd"] >= 3.0
+    assert any("crypto_signal" in r for r in res["reasoning"])
+
+
+def test_dynamic_strong_stock_signal_reduces_reserve():
+    """Strong stock signal when underweight reduces reserve toward min."""
+    res_no_sig = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        current_stock_weight=0.30,
+        target_stock_weight=0.44,
+        stock_best_signal_score=0.0,
+    ))
+    res_strong_sig = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        current_stock_weight=0.30,
+        target_stock_weight=0.44,
+        stock_best_signal_score=0.95,
+    ))
+    assert res_strong_sig["reserve_pct"] < res_no_sig["reserve_pct"]
+    assert any("stock_signal_discount" in r for r in res_strong_sig["reasoning"])
+    assert res_strong_sig["reserve_pct"] >= 20.0
+
+
+def test_dynamic_near_close_increases_reserve():
+    """Near market close increases reserve."""
+    res = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        minutes_to_market_close=15.0,
+    ))
+    assert any("near_close" in r for r in res["reasoning"])
+    res_far = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        minutes_to_market_close=180.0,
+    ))
+    assert res["reserve_pct"] >= res_far["reserve_pct"]
+
+
+def test_dynamic_loss_streak_increases_reserve():
+    """Loss streak increases reserve."""
+    res = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        recent_loss_streak=4,
+    ))
+    assert any("loss_streak" in r for r in res["reasoning"])
+    res_no_streak = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        recent_loss_streak=0,
+    ))
+    assert res["reserve_pct"] >= res_no_streak["reserve_pct"]
+
+
+def test_dynamic_disabled_falls_back_to_fixed():
+    """With dynamic disabled, falls back to fixed profit_cash_reserve_pct."""
+    kw = _dyn_base_kwargs()
+    kw["runtime_config"]["dynamic_profit_reserve_enabled"] = 0.0
+    res = calculate_dynamic_post_profit_reserve(**kw)
+    assert res["reserve_pct"] == pytest.approx(50.0)
+    assert any("fixed_fallback" in r for r in res["reasoning"])
+    assert res["inputs_used"]["dynamic_enabled"] is False
+
+
+def test_dynamic_stock_cannot_consume_crypto_reserved():
+    """stock_buy_budget does not consume crypto_reserved_usd."""
+    res = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs(
+        crypto_best_signal_score=0.9,
+    ))
+    assert res["stock_buy_budget"] <= (80.0 - res["crypto_reserved_usd"])
+
+
+def test_dynamic_export_includes_reserve_details():
+    """capital_redeployment_status shape includes dynamic reserve fields."""
+    res = calculate_dynamic_post_profit_reserve(**_dyn_base_kwargs())
+    assert "reserve_pct" in res
+    assert "reserve_usd" in res
+    assert "stock_buy_budget" in res
+    assert "crypto_reserved_usd" in res
+    assert "reasoning" in res
+    assert isinstance(res["reasoning"], list)
+    assert len(res["reasoning"]) >= 1
+
+
+def test_dynamic_reserve_integrated_blocks_stock_buy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dynamic reserve integrated with execute_cycle_results blocks stock buys."""
+    import time
+    import main_worker
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 30)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: True)
+
+    _persisted: list[dict] = []
+    _orig = main_worker._persist_decision
+
+    def _cap(**kw):
+        _persisted.append(kw)
+        try:
+            _orig(**kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 40.0,
+        "min_profit_cash_reserve_pct": 20.0,
+        "max_profit_cash_reserve_pct": 95.0,
+        "profit_size_reserve_weight": 0.15,
+        "stock_overweight_reserve_weight": 0.25,
+        "crypto_signal_reserve_weight": 0.15,
+        "near_close_reserve_weight": 0.10,
+        "loss_streak_reserve_weight": 0.10,
+        "stock_signal_discount_weight": 0.10,
+        "min_crypto_reserved_after_profit_usd": 3.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 10.0,
+        "minimum_cash_after_profit_exit_usd": 70.0,
+        "profit_cash_reserve_pct": 50.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "MICRO",
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0,
+        cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+    cs = SimpleNamespace(
+        symbol="EZGO",
+        asset_class="stock",
+        action="BUY",
+        score=0.6,
+        mid=1.50,
+        signals={"combined": 0.6},
+        error=None,
+        pump_emergency_buy=False,
+        pump_emergency_sell=False,
+    )
+    monkeypatch.setattr(main_worker, "STOCK_BUY_BUFFER_PCT", 1.0)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+
+    summary = main_worker.execute_cycle_results(trader, [cs], rt, cycle_id="dyn-1")
+    dyn_blocks = [
+        d for d in _persisted
+        if d.get("reason_code") == rc.BUY_BLOCKED_DYNAMIC_PROFIT_RESERVE
+    ]
+    assert len(dyn_blocks) >= 1
+    assert dyn_blocks[0]["symbol"] == "EZGO"
+    assert summary["buys"] == 0
+    assert summary["buy_gate"]["profit_cooldown_active"] is True
+    assert summary["buy_gate"]["dynamic_reserve"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Per-buy dynamic budget enforcement
+# ---------------------------------------------------------------------------
+
+def _make_buy_cs(symbol, mid=2.0):
+    return SimpleNamespace(
+        symbol=symbol,
+        asset_class="stock",
+        action="BUY",
+        score=0.7,
+        mid=mid,
+        signals={"combined": 0.7},
+        error=None,
+        pump_emergency_buy=False,
+        pump_emergency_sell=False,
+    )
+
+
+def test_first_buy_allowed_second_blocked_by_dynamic_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With $40 dynamic budget, first $38 buy allowed, second $38 buy blocked."""
+    import time
+    import main_worker
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+    monkeypatch.setattr("main_worker.portfolio_limiter.us_stock_market_open", lambda: True)
+    monkeypatch.setattr(
+        main_worker, "_buy_notional_breakdown",
+        lambda trader, ac, rt: (38.0, {
+            "sleeve": 80.0, "cap_notional": 38.0,
+            "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0,
+            "kelly_notional": 38.0,
+        }),
+    )
+    monkeypatch.setattr(main_worker, "_can_buy", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr("main_worker.stock_broker.is_tradable", lambda s: True)
+    monkeypatch.setattr("main_worker.stock_broker.is_fractionable", lambda s: True)
+    monkeypatch.setattr(
+        main_worker, "_submit_routed_order",
+        lambda **kw: MagicMock(ok=True, reason_code="ALPACA_ORDER_SUBMITTED", message="ok", broker_order_id="x"),
+    )
+
+    _persisted: list[dict] = []
+    _orig = main_worker._persist_decision
+
+    def _cap(**kw):
+        _persisted.append(kw)
+        try:
+            _orig(**kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 40.0,
+        "min_profit_cash_reserve_pct": 20.0,
+        "max_profit_cash_reserve_pct": 90.0,
+        "profit_size_reserve_weight": 0.15,
+        "stock_overweight_reserve_weight": 0.25,
+        "crypto_signal_reserve_weight": 0.15,
+        "near_close_reserve_weight": 0.10,
+        "loss_streak_reserve_weight": 0.10,
+        "stock_signal_discount_weight": 0.10,
+        "min_crypto_reserved_after_profit_usd": 3.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 50.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "profit_cash_reserve_pct": 50.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "SMALL",
+        "max_position_pct": 1.0,
+        "kelly_fraction": 1.0,
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0,
+        cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        equity_stocks=lambda: 80.0,
+        equity_crypto=lambda: 0.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+    cs1 = _make_buy_cs("EZGO", mid=2.0)
+    cs2 = _make_buy_cs("FCHL", mid=2.0)
+
+    summary = main_worker.execute_cycle_results(trader, [cs1, cs2], rt, cycle_id="budgetdecr-1")
+
+    allowed = [d for d in _persisted if d.get("decision") == "taken" and d.get("side") == "buy"]
+
+    assert len(allowed) >= 1, f"Expected at least 1 allowed buy, got {len(allowed)}"
+
+    first_allowed = allowed[0]
+    assert first_allowed["symbol"] == "EZGO"
+    assert first_allowed["meta"].get("dynamic_reserve_active") is True
+    assert first_allowed["meta"]["stock_buy_budget_remaining_before"] > 30
+    assert first_allowed["meta"]["stock_buy_budget_remaining_after"] < first_allowed["meta"]["stock_buy_budget_remaining_before"]
+
+    if len(allowed) >= 2:
+        second = allowed[1]
+        assert second["notional"] < 38.0, "Second buy must be clipped to remaining budget"
+        assert second["meta"]["stock_buy_budget_remaining_before"] < 10
+
+    total_stock_spent = sum(d["notional"] for d in allowed if d.get("asset_class") == "stock")
+    assert total_stock_spent <= 42.0, f"Total stock spend {total_stock_spent} exceeded budget"
+    assert summary["buy_gate"]["dyn_stock_budget_remaining"] >= 0
+
+
+def test_budget_remaining_persisted_in_decisions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Decision rows include budget_remaining_before/after during cooldown."""
+    import time
+    import main_worker
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+    monkeypatch.setattr("main_worker.portfolio_limiter.us_stock_market_open", lambda: True)
+    monkeypatch.setattr(
+        main_worker, "_buy_notional_breakdown",
+        lambda trader, ac, rt: (15.0, {
+            "sleeve": 80.0, "cap_notional": 15.0,
+            "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0,
+            "kelly_notional": 15.0,
+        }),
+    )
+    monkeypatch.setattr(main_worker, "_can_buy", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr("main_worker.stock_broker.is_tradable", lambda s: True)
+    monkeypatch.setattr("main_worker.stock_broker.is_fractionable", lambda s: True)
+    monkeypatch.setattr(
+        main_worker, "_submit_routed_order",
+        lambda **kw: MagicMock(ok=True, reason_code="ALPACA_ORDER_SUBMITTED", message="ok", broker_order_id="x"),
+    )
+
+    _persisted: list[dict] = []
+
+    def _cap(**kw):
+        _persisted.append(kw)
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 40.0,
+        "min_profit_cash_reserve_pct": 20.0,
+        "max_profit_cash_reserve_pct": 90.0,
+        "profit_size_reserve_weight": 0.15,
+        "stock_overweight_reserve_weight": 0.25,
+        "crypto_signal_reserve_weight": 0.15,
+        "near_close_reserve_weight": 0.10,
+        "loss_streak_reserve_weight": 0.10,
+        "stock_signal_discount_weight": 0.10,
+        "min_crypto_reserved_after_profit_usd": 3.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 60.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "profit_cash_reserve_pct": 50.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "SMALL",
+        "max_position_pct": 1.0,
+        "kelly_fraction": 1.0,
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0, cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        equity_stocks=lambda: 80.0, equity_crypto=lambda: 0.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+
+    summary = main_worker.execute_cycle_results(
+        trader, [_make_buy_cs("HAO")], rt, cycle_id="meta-1",
+    )
+
+    stock_buys = [d for d in _persisted if d.get("side") == "buy" and d.get("asset_class") == "stock" and d.get("decision") == "taken"]
+    assert len(stock_buys) >= 1
+    m = stock_buys[0]["meta"]
+    assert "stock_buy_budget_remaining_before" in m
+    assert "stock_buy_budget_remaining_after" in m
+    assert "candidate_notional" in m
+    assert m["stock_buy_budget_remaining_after"] < m["stock_buy_budget_remaining_before"]
+
+
+def test_crypto_reserved_usd_protected_from_stock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stock buy that would leave less than crypto_reserved_usd is blocked."""
+    import time
+    import main_worker
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 20.0, "buying_power": 20.0, "usable_buying_power": 20.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+    monkeypatch.setattr("main_worker.portfolio_limiter.us_stock_market_open", lambda: True)
+    monkeypatch.setattr(
+        main_worker, "_buy_notional_breakdown",
+        lambda trader, ac, rt: (18.0, {
+            "sleeve": 20.0, "cap_notional": 18.0,
+            "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0,
+            "kelly_notional": 18.0,
+        }),
+    )
+    monkeypatch.setattr(main_worker, "_can_buy", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr("main_worker.stock_broker.is_tradable", lambda s: True)
+    monkeypatch.setattr("main_worker.stock_broker.is_fractionable", lambda s: True)
+
+    _persisted: list[dict] = []
+
+    def _cap(**kw):
+        _persisted.append(kw)
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 10.0,
+        "min_profit_cash_reserve_pct": 10.0,
+        "max_profit_cash_reserve_pct": 15.0,
+        "profit_size_reserve_weight": 0.0,
+        "stock_overweight_reserve_weight": 0.0,
+        "crypto_signal_reserve_weight": 0.0,
+        "near_close_reserve_weight": 0.0,
+        "loss_streak_reserve_weight": 0.0,
+        "stock_signal_discount_weight": 0.0,
+        "min_crypto_reserved_after_profit_usd": 18.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 95.0,
+        "minimum_cash_after_profit_exit_usd": 2.0,
+        "profit_cash_reserve_pct": 10.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "SMALL",
+        "max_position_pct": 1.0,
+        "kelly_fraction": 1.0,
+    }
+    trader = SimpleNamespace(
+        cash_stocks=20.0, cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        equity_stocks=lambda: 20.0, equity_crypto=lambda: 0.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+
+    summary = main_worker.execute_cycle_results(
+        trader, [_make_buy_cs("KWEB", mid=3.0)], rt, cycle_id="cryptores-1",
+    )
+
+    bg = summary["buy_gate"]
+    assert bg["crypto_reserved_usd"] >= 15.0, f"crypto_reserved_usd={bg['crypto_reserved_usd']}"
+    assert bg["max_usable_for_new_buys_stock"] <= 5.0, (
+        f"stock budget should be capped to preserve crypto reserve, got {bg['max_usable_for_new_buys_stock']}"
+    )
+    stock_buys = [d for d in _persisted if d.get("side") == "buy" and d.get("asset_class") == "stock"]
+    if stock_buys:
+        max_spent = max(d.get("notional", 0) for d in stock_buys)
+        assert max_spent <= 5.0, f"Stock buy notional {max_spent} should be <= stock budget"
+
+
+def test_export_shows_dynamic_reserve_enforcement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Activity export capital_redeployment_status shows dynamic reserve fields."""
+    import time
+    import main_worker
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 40.0,
+        "min_profit_cash_reserve_pct": 20.0,
+        "max_profit_cash_reserve_pct": 90.0,
+        "profit_size_reserve_weight": 0.15,
+        "stock_overweight_reserve_weight": 0.25,
+        "crypto_signal_reserve_weight": 0.15,
+        "near_close_reserve_weight": 0.10,
+        "loss_streak_reserve_weight": 0.10,
+        "stock_signal_discount_weight": 0.10,
+        "min_crypto_reserved_after_profit_usd": 3.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 60.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "profit_cash_reserve_pct": 50.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "MICRO",
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0, cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+
+    summary = main_worker.execute_cycle_results(trader, [], rt, cycle_id="export-dyn-1")
+    bg = summary["buy_gate"]
+    assert bg["profit_cooldown_active"] is True
+    assert bg["dynamic_reserve"] is not None
+    assert "dyn_stock_budget_remaining" in bg
+    assert bg["dynamic_reserve"]["reserve_pct"] > 0
+    assert bg["dynamic_reserve"]["stock_buy_budget"] >= 0
+    assert bg["dynamic_reserve"]["crypto_reserved_usd"] >= 0
+
+
+def test_tiny_clipped_buy_blocked_by_min_useful_notional(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Budget $2 remaining with min_useful_stock_order_notional $5 => buy blocked, not clipped."""
+    import time
+    import main_worker
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+    monkeypatch.setattr("main_worker.portfolio_limiter.us_stock_market_open", lambda: True)
+    monkeypatch.setattr(
+        main_worker, "_buy_notional_breakdown",
+        lambda trader, ac, rt: (38.0, {
+            "sleeve": 80.0, "cap_notional": 38.0,
+            "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0,
+            "kelly_notional": 38.0,
+        }),
+    )
+    monkeypatch.setattr(main_worker, "_can_buy", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr("main_worker.stock_broker.is_tradable", lambda s: True)
+    monkeypatch.setattr("main_worker.stock_broker.is_fractionable", lambda s: True)
+    monkeypatch.setattr(
+        main_worker, "_submit_routed_order",
+        lambda **kw: MagicMock(ok=True, reason_code="ALPACA_ORDER_SUBMITTED", message="ok", broker_order_id="x"),
+    )
+
+    _persisted: list[dict] = []
+    _orig = main_worker._persist_decision
+
+    def _cap(**kw):
+        _persisted.append(kw)
+        try:
+            _orig(**kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 40.0,
+        "min_profit_cash_reserve_pct": 20.0,
+        "max_profit_cash_reserve_pct": 90.0,
+        "profit_size_reserve_weight": 0.15,
+        "stock_overweight_reserve_weight": 0.25,
+        "crypto_signal_reserve_weight": 0.15,
+        "near_close_reserve_weight": 0.10,
+        "loss_streak_reserve_weight": 0.10,
+        "stock_signal_discount_weight": 0.10,
+        "min_crypto_reserved_after_profit_usd": 3.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 50.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "profit_cash_reserve_pct": 50.0,
+        "min_useful_stock_order_notional": 5.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "SMALL",
+        "max_position_pct": 1.0,
+        "kelly_fraction": 1.0,
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0, cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        equity_stocks=lambda: 80.0, equity_crypto=lambda: 0.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+    cs1 = _make_buy_cs("EZGO", mid=2.0)
+    cs2 = _make_buy_cs("FCHL", mid=2.0)
+
+    summary = main_worker.execute_cycle_results(trader, [cs1, cs2], rt, cycle_id="minuseful-1")
+
+    allowed = [d for d in _persisted if d.get("decision") == "taken" and d.get("side") == "buy"]
+    blocked = [d for d in _persisted if d.get("reason_code") == rc.BUY_BLOCKED_DYNAMIC_PROFIT_RESERVE and d.get("side") == "buy"]
+
+    assert len(allowed) == 1, f"Expected exactly 1 allowed buy, got {len(allowed)}"
+    assert allowed[0]["symbol"] == "EZGO"
+
+    assert len(blocked) >= 1, f"Expected FCHL blocked, got {len(blocked)}"
+    assert blocked[0]["symbol"] == "FCHL"
+    assert blocked[0]["meta"]["final_decision"] == "blocked"
+    assert blocked[0]["meta"]["clipped_notional"] < 5.0
+    assert blocked[0]["meta"]["min_useful_stock_order_notional"] == 5.0

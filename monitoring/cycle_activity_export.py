@@ -1518,6 +1518,28 @@ def build_activity_export_payload(
         "capital_status": dd._json_safe(capital_status),
     }
 
+    _bg = buy_gate if isinstance(buy_gate, dict) else {}
+    _cooldown_on = bool(_bg.get("profit_cooldown_active", False))
+    _recent_profit = bool(_filled_sell_symbols) or _cooldown_on
+    _stock_buys_blocked = _cooldown_on or bool(
+        _bg.get("max_usable_for_new_buys_stock", 0) < float(getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0)
+    )
+    _dyn_res = _bg.get("dynamic_reserve") or {}
+    _dyn_enabled = bool(_dyn_res.get("inputs_used", {}).get("dynamic_enabled", False))
+    payload["capital_redeployment_status"] = {
+        "recent_profit_exit": _recent_profit,
+        "dynamic_reserve_enabled": _dyn_enabled,
+        "reserve_pct": _dyn_res.get("reserve_pct", 0),
+        "reserve_usd": _dyn_res.get("reserve_usd", 0),
+        "stock_buy_budget": _dyn_res.get("stock_buy_budget", float(_bg.get("max_usable_for_new_buys_stock", 0) or 0)),
+        "crypto_reserved_usd": float(_bg.get("crypto_reserved_usd", 0) or 0),
+        "new_stock_buys_blocked": _stock_buys_blocked,
+        "block_reason": str(_bg.get("profit_reserve_reason") or "") if _cooldown_on else None,
+        "reasoning": _dyn_res.get("reasoning", []),
+        "available_for_crypto": float(_bg.get("usable_buying_power", 0) or 0),
+        "cooldown_active": _cooldown_on,
+    }
+
     last_cid = _cid
     rp_cid = ""
     if isinstance(rp, dict):

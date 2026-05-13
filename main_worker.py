@@ -100,6 +100,8 @@ _reconcile_queue: set[tuple[str, str]] = set()
 _crypto_last_exit_ts: dict[str, float] = {}
 _last_reconcile_iso: str | None = None
 _prev_us_stock_session_open: bool | None = None
+_last_profit_exit_ts: float = 0.0
+_last_profit_exit_notional: float = 0.0
 
 # --- Sprint 11: news aggregator (asyncio loop in background thread) ---
 _news_aggregator: Any = None
@@ -1769,6 +1771,9 @@ def _check_and_execute_exits(
                             ledger.set_telegram_on_fills(True)
                         if r.ok:
                             exits_ok += 1
+                            global _last_profit_exit_ts, _last_profit_exit_notional
+                            _last_profit_exit_ts = time.time()
+                            _last_profit_exit_notional = sell_qty * mid
                             _ensure_exit_trade_logged(
                                 db_path=db_path,
                                 mode=ledger.mode,
@@ -2435,6 +2440,88 @@ def execute_cycle_results(
     max_usable_for_new_buys_stock = usable_buying_power * STOCK_BUY_BUFFER_PCT
     max_usable_for_new_buys_crypto = usable_buying_power
     min_notional = float(config.MIN_ORDER_NOTIONAL_USD)
+
+    _profit_cooldown_active = False
+    _profit_reserve_reason: str | None = None
+    _dynamic_reserve_result: dict | None = None
+    _crypto_reserved_usd: float = 0.0
+    try:
+        _protect_enabled = bool(int(rt.get("protect_profit_cash_after_exit_enabled", 1.0)) == 1)
+        _cooldown_sec = float(rt.get("post_profit_redeploy_cooldown_seconds", 300.0))
+        _since_profit = time.time() - _last_profit_exit_ts if _last_profit_exit_ts > 0 else float("inf")
+        if _protect_enabled and _since_profit < _cooldown_sec:
+            _profit_cooldown_active = True
+            _eq = float(alpaca_snapshot.get("buying_power", usable_buying_power))
+            try:
+                _eq = trader.equity_total()
+            except Exception:
+                pass
+            _profit_pct = (_last_profit_exit_notional / max(_eq, 1e-9)) * 100.0
+            _tgt_s = float(rt.get("target_stock_weight_pct", rt.get("stock_allocation_pct", 50.0))) / 100.0
+            _tgt_c = float(rt.get("target_crypto_weight_pct", rt.get("crypto_allocation_pct", 20.0))) / 100.0
+            _cur_s = 0.0
+            _cur_c = 0.0
+            try:
+                _total_eq = max(1e-9, _eq)
+                _cur_s = max(0.0, min(1.0, (float(rt.get("_stock_exposure_usd", 0.0))) / _total_eq))
+                _cur_c = max(0.0, min(1.0, (float(rt.get("_crypto_exposure_usd", 0.0))) / _total_eq))
+            except Exception:
+                pass
+            _min_close = float(rt.get("_minutes_to_close", 999.0))
+            _loss_streak = int(float(rt.get("_loss_streak", 0.0)))
+            _crypto_sig = float(rt.get("_crypto_best_signal", 0.0))
+            _stock_sig = float(rt.get("_stock_best_signal", 0.0))
+            from execution.dynamic_capital_allocator import calculate_dynamic_post_profit_reserve
+            _dynamic_reserve_result = calculate_dynamic_post_profit_reserve(
+                buying_power=usable_buying_power,
+                equity=_eq,
+                recent_profit_exit=True,
+                profit_exit_notional=_last_profit_exit_notional,
+                profit_exit_pct=_profit_pct,
+                current_stock_weight=_cur_s,
+                target_stock_weight=_tgt_s,
+                current_crypto_weight=_cur_c,
+                target_crypto_weight=_tgt_c,
+                crypto_best_signal_score=_crypto_sig,
+                stock_best_signal_score=_stock_sig,
+                crypto_spread_ok=True,
+                stock_spread_quality=1.0,
+                minutes_to_market_close=_min_close,
+                recent_loss_streak=_loss_streak,
+                runtime_config=rt,
+            )
+            _dyn_is_active = bool(_dynamic_reserve_result.get("inputs_used", {}).get("dynamic_enabled", False))
+            if not _dyn_is_active:
+                _dynamic_reserve_result = None
+            _cap_from_reserve = (
+                _dynamic_reserve_result["stock_buy_budget"]
+                if _dynamic_reserve_result
+                else max(0.0, usable_buying_power - max(
+                    float(rt.get("minimum_cash_after_profit_exit_usd", 5.0)),
+                    usable_buying_power * float(rt.get("profit_cash_reserve_pct", 50.0)) / 100.0,
+                ))
+            )
+            if _dynamic_reserve_result:
+                _crypto_reserved_usd = _dynamic_reserve_result["crypto_reserved_usd"]
+            if _cap_from_reserve < max_usable_for_new_buys_stock:
+                max_usable_for_new_buys_stock = _cap_from_reserve
+            _reserve_label = "dynamic_reserve" if _dynamic_reserve_result else "fixed_reserve"
+            _profit_reserve_reason = (
+                f"{_reserve_label}: {_since_profit:.0f}s/{_cooldown_sec:.0f}s elapsed, "
+                f"stock_budget={_cap_from_reserve:.2f}"
+            )
+            if _dynamic_reserve_result:
+                _profit_reserve_reason += (
+                    f", reserve_pct={_dynamic_reserve_result['reserve_pct']:.1f}%"
+                    f", reserve_usd={_dynamic_reserve_result['reserve_usd']:.2f}"
+                    f", crypto_reserved={_crypto_reserved_usd:.2f}"
+                )
+            logger.info("[buy_gate] {}", _profit_reserve_reason)
+    except Exception:
+        logger.debug("[buy_gate] post-profit reserve check skipped", exc_info=True)
+
+    _dyn_stock_budget_remaining = max_usable_for_new_buys_stock
+
     try:
         crypto_min_notional = float(rt.get("crypto_min_order_notional", min_notional))
     except (TypeError, ValueError):
@@ -2464,13 +2551,18 @@ def execute_cycle_results(
         "broker_local_mismatch_count": 0,
     }
     if stock_buys_disabled_cycle:
+        _stock_disabled_rc = (
+            (reason_codes.BUY_BLOCKED_DYNAMIC_PROFIT_RESERVE if _dynamic_reserve_result else reason_codes.BUY_BLOCKED_POST_PROFIT_COOLDOWN)
+            if _profit_cooldown_active
+            else reason_codes.STOCK_BUYS_DISABLED_INSUFFICIENT_BUYING_POWER
+        )
         _persist_decision(
             cycle_id=cid,
             asset_class="stock",
             symbol="-",
             side="buy",
             decision="rejected",
-            reason_code=reason_codes.STOCK_BUYS_DISABLED_INSUFFICIENT_BUYING_POWER,
+            reason_code=_stock_disabled_rc,
             score=None,
             notional=max_usable_for_new_buys_stock,
             quantity=0.0,
@@ -2479,6 +2571,8 @@ def execute_cycle_results(
                 "usable_buying_power": usable_buying_power,
                 "max_usable_for_new_buys_stock": max_usable_for_new_buys_stock,
                 "min_order_notional_usd": min_notional,
+                "profit_cooldown_active": _profit_cooldown_active,
+                "profit_reserve_reason": _profit_reserve_reason,
                 "scope": "cycle",
             },
         )
@@ -2632,6 +2726,39 @@ def execute_cycle_results(
                     )
                     out["holds"] += 1
                     continue
+                if cs.asset_class == "stock" and _profit_cooldown_active:
+                    _dyn_budget_before = max(0.0, _dyn_stock_budget_remaining)
+                    _dyn_meta_base = {
+                        "dynamic_reserve_active": bool(_dynamic_reserve_result),
+                        "reserve_pct": _dynamic_reserve_result["reserve_pct"] if _dynamic_reserve_result else None,
+                        "reserve_usd": _dynamic_reserve_result["reserve_usd"] if _dynamic_reserve_result else None,
+                        "stock_buy_budget_remaining_before": round(_dyn_budget_before, 2),
+                        "crypto_reserved_usd": round(_crypto_reserved_usd, 2),
+                        "profit_reserve_reason": _profit_reserve_reason,
+                    }
+                    if _dyn_budget_before < min_notional:
+                        _dyn_rc = (
+                            reason_codes.BUY_BLOCKED_DYNAMIC_PROFIT_RESERVE
+                            if _dynamic_reserve_result
+                            else reason_codes.BUY_BLOCKED_POST_PROFIT_COOLDOWN
+                        )
+                        _persist_decision(
+                            cycle_id=cid,
+                            asset_class="stock",
+                            symbol=cs.symbol,
+                            side="buy",
+                            decision="rejected",
+                            reason_code=_dyn_rc,
+                            score=eff_score,
+                            notional=0.0,
+                            quantity=0.0,
+                            price=mid,
+                            meta={**_dyn_meta_base, "candidate_notional": 0.0,
+                                  "stock_buy_budget_remaining_after": round(_dyn_budget_before, 2),
+                                  "final_decision": "blocked"},
+                        )
+                        out["holds"] += 1
+                        continue
                 notional, bd = _buy_notional_breakdown(trader, cs.asset_class, rt)
                 cash = trader.cash_stocks if cs.asset_class == "stock" else trader.cash_crypto
                 stocks_open = portfolio_limiter.us_stock_market_open()
@@ -2720,13 +2847,21 @@ def execute_cycle_results(
                     remaining_budget = max(0.0, max_usable_for_new_buys_crypto - reserved_crypto_notional)
                 if remaining_budget < min_notional:
                     buy_gate_skipped_count += 1
+                    if _profit_cooldown_active and cs.asset_class == "stock":
+                        _budget_rc = (
+                            reason_codes.BUY_BLOCKED_DYNAMIC_PROFIT_RESERVE
+                            if _dynamic_reserve_result
+                            else reason_codes.BUY_BLOCKED_POST_PROFIT_COOLDOWN
+                        )
+                    else:
+                        _budget_rc = "INSUFFICIENT_BUYING_POWER"
                     _persist_decision(
                         cycle_id=cid,
                         asset_class=cs.asset_class,
                         symbol=cs.symbol,
                         side="buy",
                         decision="rejected",
-                        reason_code="INSUFFICIENT_BUYING_POWER",
+                        reason_code=_budget_rc,
                         score=eff_score,
                         notional=notional,
                         quantity=0.0,
@@ -2736,6 +2871,8 @@ def execute_cycle_results(
                             "buying_power": float(alpaca_snapshot.get("buying_power", 0.0)),
                             "usable_buying_power": usable_buying_power,
                             "required_notional": min_notional,
+                            "profit_cooldown_active": _profit_cooldown_active,
+                            "profit_reserve_reason": _profit_reserve_reason,
                             "reserved_stock_notional": reserved_stock_notional,
                             "reserved_crypto_notional": reserved_crypto_notional,
                         },
@@ -2743,6 +2880,61 @@ def execute_cycle_results(
                     out["holds"] += 1
                     continue
                 notional = min(notional, remaining_budget)
+                if cs.asset_class == "stock" and _profit_cooldown_active:
+                    _dyn_budget_before_buy = max(0.0, _dyn_stock_budget_remaining)
+                    _buy_meta = {
+                        "dynamic_reserve_active": bool(_dynamic_reserve_result),
+                        "reserve_pct": _dynamic_reserve_result["reserve_pct"] if _dynamic_reserve_result else None,
+                        "reserve_usd": _dynamic_reserve_result["reserve_usd"] if _dynamic_reserve_result else None,
+                        "stock_buy_budget_remaining_before": round(_dyn_budget_before_buy, 2),
+                        "candidate_notional": round(notional, 2),
+                        "crypto_reserved_usd": round(_crypto_reserved_usd, 2),
+                    }
+                    _min_useful = float(rt.get(
+                        "min_useful_stock_order_notional",
+                        getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0,
+                    ))
+                    _clipped = min(notional, _dyn_budget_before_buy)
+                    if notional > _dyn_budget_before_buy + 0.01 or _clipped < _min_useful:
+                        _buy_meta["stock_buy_budget_remaining_after"] = round(_dyn_budget_before_buy, 2)
+                        _buy_meta["final_decision"] = "blocked"
+                        _buy_meta["min_useful_stock_order_notional"] = _min_useful
+                        _buy_meta["clipped_notional"] = round(_clipped, 2)
+                        _persist_decision(
+                            cycle_id=cid,
+                            asset_class="stock",
+                            symbol=cs.symbol,
+                            side="buy",
+                            decision="rejected",
+                            reason_code=reason_codes.BUY_BLOCKED_DYNAMIC_PROFIT_RESERVE,
+                            score=eff_score,
+                            notional=notional,
+                            quantity=0.0,
+                            price=mid,
+                            meta=_buy_meta,
+                        )
+                        out["holds"] += 1
+                        continue
+                    _would_remain = usable_buying_power - reserved_stock_notional - notional
+                    if _crypto_reserved_usd > 0 and _would_remain < _crypto_reserved_usd:
+                        _buy_meta["stock_buy_budget_remaining_after"] = round(_dyn_budget_before_buy, 2)
+                        _buy_meta["final_decision"] = "blocked_crypto_reserve"
+                        _buy_meta["buying_power_after_buy"] = round(_would_remain, 2)
+                        _persist_decision(
+                            cycle_id=cid,
+                            asset_class="stock",
+                            symbol=cs.symbol,
+                            side="buy",
+                            decision="rejected",
+                            reason_code=reason_codes.BUY_BLOCKED_CRYPTO_RESERVED_CASH,
+                            score=eff_score,
+                            notional=notional,
+                            quantity=0.0,
+                            price=mid,
+                            meta=_buy_meta,
+                        )
+                        out["holds"] += 1
+                        continue
                 ok, reason = _can_buy(
                     trader,
                     cs.asset_class,
@@ -2821,6 +3013,7 @@ def execute_cycle_results(
                 if cs.asset_class == "stock":
                     stock_buy_attempts += 1
                     reserved_stock_notional += float(notional)
+                    _dyn_stock_budget_remaining = max(0.0, _dyn_stock_budget_remaining - float(notional))
                 else:
                     crypto_buy_attempts += 1
                     reserved_crypto_notional += float(notional)
@@ -2836,6 +3029,18 @@ def execute_cycle_results(
                     meta={"score": eff_score},
                     rt=rt,
                 )
+                _buy_decision_meta: dict = {"order_message": getattr(r, "message", None)}
+                if _profit_cooldown_active and cs.asset_class == "stock":
+                    _buy_decision_meta.update({
+                        "dynamic_reserve_active": bool(_dynamic_reserve_result),
+                        "reserve_pct": _dynamic_reserve_result["reserve_pct"] if _dynamic_reserve_result else None,
+                        "reserve_usd": _dynamic_reserve_result["reserve_usd"] if _dynamic_reserve_result else None,
+                        "stock_buy_budget_remaining_before": round(_dyn_budget_before_buy, 2),
+                        "candidate_notional": round(notional, 2),
+                        "stock_buy_budget_remaining_after": round(_dyn_stock_budget_remaining, 2),
+                        "crypto_reserved_usd": round(_crypto_reserved_usd, 2),
+                        "final_decision": "allowed",
+                    })
                 _persist_decision(
                     cycle_id=cid,
                     asset_class=cs.asset_class,
@@ -2847,7 +3052,7 @@ def execute_cycle_results(
                     notional=notional,
                     quantity=qty,
                     price=mid,
-                    meta={"order_message": getattr(r, "message", None)},
+                    meta=_buy_decision_meta,
                 )
                 if r.ok:
                     out["buys"] += 1
@@ -3026,6 +3231,11 @@ def execute_cycle_results(
         "skipped_count": buy_gate_skipped_count,
         "max_stock_attempts": max_stock_attempts,
         "max_crypto_attempts": max_crypto_attempts,
+        "profit_cooldown_active": _profit_cooldown_active,
+        "profit_reserve_reason": _profit_reserve_reason,
+        "dynamic_reserve": _dynamic_reserve_result,
+        "crypto_reserved_usd": _crypto_reserved_usd,
+        "dyn_stock_budget_remaining": _dyn_stock_budget_remaining,
     }
     out["execution_health"] = execution_health
     logger.info(

@@ -131,6 +131,7 @@ def test_merge_positions_keeps_broker_net_qty_and_audit_local(tmp_path: Path) ->
 
 
 def test_execute_cycle_low_bp_one_cycle_rejection_not_per_symbol(tmp_path: Path) -> None:
+    mw._last_profit_exit_ts = 0.0
     db = tmp_path / "bg.sqlite3"
     init_schema(db)
     with patch.object(config, "DB_PATH", db):
