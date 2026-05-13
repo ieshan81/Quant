@@ -2284,3 +2284,239 @@ def test_tiny_clipped_buy_blocked_by_min_useful_notional(monkeypatch: pytest.Mon
     assert blocked[0]["meta"]["final_decision"] == "blocked"
     assert blocked[0]["meta"]["clipped_notional"] < 5.0
     assert blocked[0]["meta"]["min_useful_stock_order_notional"] == 5.0
+
+
+# ---------------------------------------------------------------------------
+# Export: recent_buy_gate_decisions + deployment_proof
+# ---------------------------------------------------------------------------
+
+def test_export_recent_buy_gate_decisions_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Activity export includes recent_buy_gate_decisions with expected fields."""
+    import time
+    import main_worker
+    from unittest.mock import MagicMock
+    from data.data_store import init_schema
+
+    db = tmp_path / "bg.sqlite3"
+    init_schema(db)
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr("main_worker.config.DB_PATH", str(db))
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+    monkeypatch.setattr("main_worker.portfolio_limiter.us_stock_market_open", lambda: True)
+    monkeypatch.setattr(
+        main_worker, "_buy_notional_breakdown",
+        lambda trader, ac, rt: (38.0, {
+            "sleeve": 80.0, "cap_notional": 38.0,
+            "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0,
+            "kelly_notional": 38.0,
+        }),
+    )
+    monkeypatch.setattr(main_worker, "_can_buy", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr("main_worker.stock_broker.is_tradable", lambda s: True)
+    monkeypatch.setattr("main_worker.stock_broker.is_fractionable", lambda s: True)
+    monkeypatch.setattr(
+        main_worker, "_submit_routed_order",
+        lambda **kw: MagicMock(ok=True, reason_code="ALPACA_ORDER_SUBMITTED", message="ok", broker_order_id="x"),
+    )
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 40.0,
+        "min_profit_cash_reserve_pct": 20.0,
+        "max_profit_cash_reserve_pct": 90.0,
+        "profit_size_reserve_weight": 0.15,
+        "stock_overweight_reserve_weight": 0.25,
+        "crypto_signal_reserve_weight": 0.15,
+        "near_close_reserve_weight": 0.10,
+        "loss_streak_reserve_weight": 0.10,
+        "stock_signal_discount_weight": 0.10,
+        "min_crypto_reserved_after_profit_usd": 3.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 50.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "profit_cash_reserve_pct": 50.0,
+        "min_useful_stock_order_notional": 5.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "SMALL",
+        "max_position_pct": 1.0,
+        "kelly_fraction": 1.0,
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0, cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        equity_stocks=lambda: 80.0, equity_crypto=lambda: 0.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+    cs1 = _make_buy_cs("EZGO", mid=2.0)
+    cs2 = _make_buy_cs("FCHL", mid=2.0)
+
+    main_worker.execute_cycle_results(trader, [cs1, cs2], rt, cycle_id="export-bgd-1")
+
+    import sqlite3
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM execution_decisions WHERE side='buy' AND asset_class='stock' ORDER BY id DESC LIMIT 20"
+        ).fetchall()]
+
+    stock_buy_rows = [r for r in rows if r.get("symbol") in ("EZGO", "FCHL")]
+    assert len(stock_buy_rows) >= 1
+    for r in stock_buy_rows:
+        meta = r.get("meta") or "{}"
+        import json
+        m = json.loads(meta) if isinstance(meta, str) else meta
+        if m.get("dynamic_reserve_active") is not None:
+            assert "stock_buy_budget_remaining_before" in m
+
+
+def test_sync_rows_excluded_from_buy_gate_decisions() -> None:
+    """Sync/reconcile reason codes are excluded from recent_buy_gate_decisions."""
+    from monitoring.cycle_activity_export import _SYNTHETIC_REASON_CODES
+
+    decisions = [
+        {"side": "buy", "asset_class": "stock", "symbol": "AAPL", "reason_code": "ALPACA_SYNC_OPEN", "meta": "{}"},
+        {"side": "buy", "asset_class": "stock", "symbol": "MSFT", "reason_code": "SIGNAL_BUY", "decision": "taken", "meta": '{"dynamic_reserve_active": true}'},
+        {"side": "buy", "asset_class": "stock", "symbol": "GOOG", "reason_code": "BROKER_RECONCILE_ADJUST", "meta": "{}"},
+    ]
+
+    _sync_codes = {"ALPACA_SYNC_OPEN", "ALPACA_SYNC", "ALPACA_REAL", "BROKER_RECONCILE_ADJUST"}
+    filtered = []
+    for d in decisions:
+        _rc = str(d.get("reason_code") or "")
+        _side = str(d.get("side") or "").lower()
+        _ac = str(d.get("asset_class") or "").lower()
+        if _side != "buy" or _ac != "stock" or _rc in _sync_codes:
+            continue
+        filtered.append(d)
+
+    assert len(filtered) == 1
+    assert filtered[0]["symbol"] == "MSFT"
+
+
+def test_buy_decision_rows_contain_dynamic_reserve_meta(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Decision meta for allowed buys during cooldown contains dynamic_reserve_active."""
+    import time
+    import main_worker
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr(main_worker, "_last_profit_exit_ts", time.time() - 10)
+    monkeypatch.setattr(main_worker, "_last_profit_exit_notional", 72.0)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: False)
+    monkeypatch.setattr("main_worker.config.alpaca_paper_trading_allowed", lambda: True)
+    monkeypatch.setattr("main_worker.config.trading_is_live", lambda: False)
+    monkeypatch.setattr(
+        "main_worker._alpaca_buying_power_snapshot",
+        lambda: {"cash": 80.0, "buying_power": 80.0, "usable_buying_power": 80.0},
+    )
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+    monkeypatch.setattr("main_worker.portfolio_limiter.us_stock_market_open", lambda: True)
+    monkeypatch.setattr(
+        main_worker, "_buy_notional_breakdown",
+        lambda trader, ac, rt: (20.0, {
+            "sleeve": 80.0, "cap_notional": 20.0,
+            "rt_max_position_pct": 1.0, "effective_max_position_pct": 1.0,
+            "kelly_notional": 20.0,
+        }),
+    )
+    monkeypatch.setattr(main_worker, "_can_buy", lambda *a, **kw: (True, "ok"))
+    monkeypatch.setattr("main_worker.stock_broker.is_tradable", lambda s: True)
+    monkeypatch.setattr("main_worker.stock_broker.is_fractionable", lambda s: True)
+    monkeypatch.setattr(
+        main_worker, "_submit_routed_order",
+        lambda **kw: MagicMock(ok=True, reason_code="ALPACA_ORDER_SUBMITTED", message="ok", broker_order_id="x"),
+    )
+
+    _persisted: list[dict] = []
+    def _cap(**kw):
+        _persisted.append(kw)
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    rt = {
+        "protect_profit_cash_after_exit_enabled": 1.0,
+        "post_profit_redeploy_cooldown_seconds": 300.0,
+        "dynamic_profit_reserve_enabled": 1.0,
+        "base_profit_cash_reserve_pct": 40.0,
+        "min_profit_cash_reserve_pct": 20.0,
+        "max_profit_cash_reserve_pct": 90.0,
+        "profit_size_reserve_weight": 0.15,
+        "stock_overweight_reserve_weight": 0.25,
+        "crypto_signal_reserve_weight": 0.15,
+        "near_close_reserve_weight": 0.10,
+        "loss_streak_reserve_weight": 0.10,
+        "stock_signal_discount_weight": 0.10,
+        "min_crypto_reserved_after_profit_usd": 3.0,
+        "max_stock_redeploy_fraction_after_profit_pct": 60.0,
+        "minimum_cash_after_profit_exit_usd": 5.0,
+        "profit_cash_reserve_pct": 50.0,
+        "min_useful_stock_order_notional": 5.0,
+        "block_new_buys_when_profit_exit_pending": 0.0,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "SMALL",
+        "max_position_pct": 1.0,
+        "kelly_fraction": 1.0,
+    }
+    trader = SimpleNamespace(
+        cash_stocks=80.0, cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 155.0,
+        equity_stocks=lambda: 80.0, equity_crypto=lambda: 0.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+
+    summary = main_worker.execute_cycle_results(
+        trader, [_make_buy_cs("HAO", mid=2.0)], rt, cycle_id="meta-dyn-1",
+    )
+
+    taken = [d for d in _persisted if d.get("decision") == "taken" and d.get("side") == "buy" and d.get("asset_class") == "stock"]
+    assert len(taken) >= 1
+    m = taken[0]["meta"]
+    assert m["dynamic_reserve_active"] is True
+    assert "stock_buy_budget_remaining_before" in m
+    assert "stock_buy_budget_remaining_after" in m
+    assert m["final_decision"] == "allowed"
+
+
+def test_deployment_proof_in_export(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """deployment_proof section includes expected config keys and git_commit."""
+    from monitoring.cycle_activity_export import build_activity_export_payload
+    from data.data_store import init_schema
+    import sqlite3
+
+    db = tmp_path / "dp.sqlite3"
+    init_schema(db)
+    monkeypatch.setattr("monitoring.cycle_activity_export.config.DB_PATH", str(db))
+
+    with sqlite3.connect(str(db)) as conn:
+        payload = build_activity_export_payload(conn, limit=5)
+
+    assert "deployment_proof" in payload
+    dp = payload["deployment_proof"]
+    assert "dynamic_profit_reserve_enabled" in dp
+    assert "enforce_allocator_before_new_buys" in dp
+    assert "protect_profit_cash_after_exit_enabled" in dp
+    assert "post_profit_redeploy_cooldown_seconds" in dp
+    assert "min_useful_stock_order_notional" in dp
+    assert "git_commit" in dp
+
+    assert "capital_redeployment_status" in payload
+    crs = payload["capital_redeployment_status"]
+    assert "enforcement_code_version" in crs
+    assert "post_profit_cooldown_remaining_seconds" in crs
+    assert "dyn_stock_budget_remaining" in crs
+
+    assert "recent_buy_gate_decisions" in payload
+    assert isinstance(payload["recent_buy_gate_decisions"], list)

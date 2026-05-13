@@ -3010,6 +3010,16 @@ def execute_cycle_results(
                     f"[buy_attempt] {cs.symbol} asset_class={cs.asset_class} score={eff_score:.4f} "
                     f"mid={mid:.4f} notional={notional:.2f} qty={qty} cash={cash:.2f}"
                 )
+                if cs.asset_class == "stock" and _profit_cooldown_active:
+                    logger.info(
+                        "[dynamic_reserve_gate] active={} symbol={} budget_before={:.2f} notional={:.2f} "
+                        "crypto_reserved={:.2f} decision=allowed",
+                        bool(_dynamic_reserve_result),
+                        cs.symbol,
+                        _dyn_stock_budget_remaining,
+                        notional,
+                        _crypto_reserved_usd,
+                    )
                 if cs.asset_class == "stock":
                     stock_buy_attempts += 1
                     reserved_stock_notional += float(notional)
@@ -3236,6 +3246,7 @@ def execute_cycle_results(
         "dynamic_reserve": _dynamic_reserve_result,
         "crypto_reserved_usd": _crypto_reserved_usd,
         "dyn_stock_budget_remaining": _dyn_stock_budget_remaining,
+        "_last_profit_exit_ts": _last_profit_exit_ts,
     }
     out["execution_health"] = execution_health
     logger.info(

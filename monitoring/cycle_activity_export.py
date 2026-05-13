@@ -1326,6 +1326,7 @@ def build_activity_export_payload(
             "stock_automated_exits_enabled": float(_rt.get("stock_automated_exits_enabled", 1.0) or 1.0),
         }
     except Exception:
+        _rt = {}
         exit_runtime = {
             "take_profit_pct": 0.015,
             "stop_loss_pct": 0.008,
@@ -1526,18 +1527,66 @@ def build_activity_export_payload(
     )
     _dyn_res = _bg.get("dynamic_reserve") or {}
     _dyn_enabled = bool(_dyn_res.get("inputs_used", {}).get("dynamic_enabled", False))
+    import os as _os
+    _git_commit = (_os.environ.get("RAILWAY_GIT_COMMIT_SHA") or _os.environ.get("GIT_COMMIT") or "")[:12] or "local"
+    _cooldown_sec = float(_rt.get("post_profit_redeploy_cooldown_seconds", 300.0))
+    _profit_ts = float(_bg.get("_last_profit_exit_ts", 0) or 0)
+    _cooldown_remaining = max(0.0, _cooldown_sec - (time.time() - _profit_ts)) if _profit_ts > 0 else 0.0
     payload["capital_redeployment_status"] = {
         "recent_profit_exit": _recent_profit,
+        "latest_profit_exit_at": datetime.fromtimestamp(_profit_ts, tz=timezone.utc).isoformat() if _profit_ts > 0 else None,
+        "dynamic_reserve_active": _dyn_enabled and _cooldown_on,
         "dynamic_reserve_enabled": _dyn_enabled,
         "reserve_pct": _dyn_res.get("reserve_pct", 0),
         "reserve_usd": _dyn_res.get("reserve_usd", 0),
         "stock_buy_budget": _dyn_res.get("stock_buy_budget", float(_bg.get("max_usable_for_new_buys_stock", 0) or 0)),
+        "dyn_stock_budget_remaining": float(_bg.get("dyn_stock_budget_remaining", 0) or 0),
         "crypto_reserved_usd": float(_bg.get("crypto_reserved_usd", 0) or 0),
+        "post_profit_cooldown_remaining_seconds": round(_cooldown_remaining, 1),
         "new_stock_buys_blocked": _stock_buys_blocked,
         "block_reason": str(_bg.get("profit_reserve_reason") or "") if _cooldown_on else None,
         "reasoning": _dyn_res.get("reasoning", []),
         "available_for_crypto": float(_bg.get("usable_buying_power", 0) or 0),
         "cooldown_active": _cooldown_on,
+        "enforcement_code_version": _git_commit,
+    }
+
+    _buy_gate_rows: list[dict] = []
+    _sync_codes = {"ALPACA_SYNC_OPEN", "ALPACA_SYNC", "ALPACA_REAL", "BROKER_RECONCILE_ADJUST"}
+    for d in (decisions or [])[-50:]:
+        _side = str(d.get("side") or "").lower()
+        _ac = str(d.get("asset_class") or "").lower()
+        _rc = str(d.get("reason_code") or "")
+        if _side != "buy" or _ac != "stock" or _rc in _sync_codes:
+            continue
+        _meta = d.get("meta") or {}
+        if isinstance(_meta, str):
+            try:
+                import json as _json
+                _meta = _json.loads(_meta)
+            except Exception:
+                _meta = {}
+        _buy_gate_rows.append({
+            "symbol": d.get("symbol"),
+            "created_at": d.get("created_at"),
+            "reason_code": _rc,
+            "decision": d.get("decision"),
+            "dynamic_reserve_active": _meta.get("dynamic_reserve_active"),
+            "stock_buy_budget_remaining_before": _meta.get("stock_buy_budget_remaining_before"),
+            "candidate_notional": _meta.get("candidate_notional") or d.get("notional"),
+            "stock_buy_budget_remaining_after": _meta.get("stock_buy_budget_remaining_after"),
+            "crypto_reserved_usd": _meta.get("crypto_reserved_usd"),
+            "final_decision": _meta.get("final_decision"),
+        })
+    payload["recent_buy_gate_decisions"] = _buy_gate_rows[-20:]
+
+    payload["deployment_proof"] = {
+        "dynamic_profit_reserve_enabled": float(_rt.get("dynamic_profit_reserve_enabled", 1.0)),
+        "enforce_allocator_before_new_buys": float(_rt.get("enforce_allocator_before_new_buys", 1.0)),
+        "protect_profit_cash_after_exit_enabled": float(_rt.get("protect_profit_cash_after_exit_enabled", 1.0)),
+        "post_profit_redeploy_cooldown_seconds": float(_rt.get("post_profit_redeploy_cooldown_seconds", 300.0)),
+        "min_useful_stock_order_notional": float(_rt.get("min_useful_stock_order_notional", 5.0)),
+        "git_commit": _git_commit,
     }
 
     last_cid = _cid
