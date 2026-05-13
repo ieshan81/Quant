@@ -363,6 +363,41 @@ def process_deferred_exit_plans(
                 lines.append(f"[deferred_exit] {sym} market gate closed — keep pending")
                 continue
 
+            try:
+                from execution.stock_broker import get_open_sell_orders_for_symbol
+                existing_sells = get_open_sell_orders_for_symbol(sym)
+            except Exception:
+                existing_sells = []
+            if existing_sells:
+                conn.execute(
+                    "UPDATE deferred_exit_plans SET last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+                    (pid,),
+                )
+                trade_logger.log_execution_decision(
+                    conn,
+                    cycle_id=cycle_id,
+                    asset_class="stock",
+                    symbol=sym,
+                    side="sell",
+                    decision="skipped",
+                    reason_code=rc.ORDER_ALREADY_PENDING,
+                    score=None,
+                    notional=live_qty * mid,
+                    quantity=live_qty,
+                    price=mid,
+                    strategy_name="deferred_exit",
+                    strategy_version="1",
+                    meta={
+                        "source": "deferred_pdt",
+                        "plan_id": pid,
+                        "waiting_on_existing_order": True,
+                        "existing_sell_qty": existing_sells[0].get("qty"),
+                        "existing_sell_status": existing_sells[0].get("status"),
+                    },
+                )
+                lines.append(f"[deferred_exit] {sym} waiting_on_existing_order — open sell already exists")
+                continue
+
             if pdt_blocks_fn(sym, live_qty, mid):
                 new_attempts = attempts + 1
                 new_status = "blocked_again" if new_attempts >= max_attempts else "pending"

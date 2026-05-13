@@ -347,6 +347,7 @@ def build_sell_readiness(
     exit_runtime: dict[str, float] | None = None,
     db_path: str | Path | None = None,
     deferred_plans: list[dict[str, Any]] | None = None,
+    open_orders_by_symbol: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Per-leg operator view: **open_positions** prices + runtime TP/SL/trail vs snapshot blockers."""
     from execution.capital_rotation import _latest_combined_signal_by_symbol
@@ -378,6 +379,8 @@ def build_sell_readiness(
         su = str(dp.get("symbol") or "").strip().upper()
         if su:
             dep_by[su] = dp
+
+    oo_by_sym: dict[str, list[dict[str, Any]]] = dict(open_orders_by_symbol or {})
 
     out: list[dict[str, Any]] = []
     for p in open_positions or []:
@@ -440,6 +443,8 @@ def build_sell_readiness(
 
         d = idx.get(sk)
         blocker: str | None = None
+        pdt_block_source: str | None = None
+        broker_would_accept_unknown: bool | None = None
         fa = ""
         if isinstance(d, dict):
             fa = str(d.get("final_action") or "").strip().upper()
@@ -452,6 +457,16 @@ def build_sell_readiness(
                 blocker = "PDT_PROTECTION"
             elif fa == "COOLDOWN_ACTIVE":
                 blocker = "COOLDOWN_ACTIVE"
+            d_meta = d.get("meta") or {}
+            if isinstance(d_meta, str):
+                import json as _json
+                try:
+                    d_meta = _json.loads(d_meta)
+                except Exception:
+                    d_meta = {}
+            if blocker == "PDT_PROTECTION":
+                pdt_block_source = str(d_meta.get("pdt_block_source") or "local_preflight")
+                broker_would_accept_unknown = True
 
         if worker_sell_gate_open_now and blocker and str(blocker).strip().upper() in mc_blockers:
             blocker = "STALE_EXIT_DATA_SESSION_OPEN"
@@ -494,6 +509,18 @@ def build_sell_readiness(
             "trigger_reason": (dep or {}).get("trigger_reason"),
         }
 
+        sym_sells = [o for o in oo_by_sym.get(sym.upper(), []) if str(o.get("side") or "").lower() == "sell"]
+        has_pending_sell = len(sym_sells) > 0
+        pend_fields: dict[str, Any] = {
+            "pending_order_exists": has_pending_sell,
+            "pending_order_qty": sym_sells[0].get("qty") if has_pending_sell else None,
+            "pending_order_status": sym_sells[0].get("status") if has_pending_sell else None,
+        }
+        if has_pending_sell:
+            blocker = str(rc.ORDER_ALREADY_PENDING)
+            sell_allowed_now = False
+            expected = "BLOCKED_WITH_REASON"
+
         out.append(
             {
                 "symbol": sym,
@@ -511,8 +538,11 @@ def build_sell_readiness(
                 "sell_allowed_now": sell_allowed_now,
                 "blocker": blocker,
                 "blocked_reason": blocker,
+                "pdt_block_source": pdt_block_source,
+                "broker_would_accept_unknown": broker_would_accept_unknown,
                 "expected_action": expected,
                 **dep_fields,
+                **pend_fields,
             }
         )
     return out
@@ -1002,6 +1032,19 @@ def build_activity_export_payload(
 
     blocked_exits = blocked_exits_from_decisions(position_exit_decisions)
     broker_sync_trades = dd.fetch_recent_broker_sync_trades(conn, limit=lim)
+
+    oo_by_sym: dict[str, list[dict[str, Any]]] = {}
+    try:
+        from execution.stock_broker import get_open_orders_for_symbol
+        for _p in pos_list or []:
+            _s = str(_p.get("symbol") or "").strip().upper()
+            if _s and _s not in oo_by_sym:
+                _oos = get_open_orders_for_symbol(_s)
+                if _oos:
+                    oo_by_sym[_s] = _oos
+    except Exception:
+        pass
+
     sell_readiness = build_sell_readiness(
         open_positions=pos_list,
         recent_signals=signals if isinstance(signals, list) else [],
@@ -1011,6 +1054,7 @@ def build_activity_export_payload(
         exit_runtime=exit_runtime,
         db_path=config.DB_PATH,
         deferred_plans=deferred_rows,
+        open_orders_by_symbol=oo_by_sym,
     )
     why_no_sell_summary = build_why_no_sell_summary(
         position_exit_decisions=position_exit_decisions,
@@ -1095,4 +1139,21 @@ def build_activity_export_payload(
     payload["exit_snapshot_age_seconds"] = _age_seconds_utc(exit_snap_dt)
     payload["rotation_plan_age_seconds"] = _age_seconds_utc(rp_dt)
     payload["data_freshness_status"] = data_freshness_status
+
+    from execution.dynamic_capital_allocator import build_capital_allocator_summary, fetch_latest_dynamic_capital_plan
+
+    _dcp = None
+    try:
+        _dcp = fetch_latest_dynamic_capital_plan(config.DB_PATH)
+    except Exception:
+        pass
+    payload["dynamic_capital_plan"] = _scrub(_dcp) if _dcp else None
+    payload["capital_allocator_summary"] = _scrub(build_capital_allocator_summary(_dcp))
+
+    try:
+        from monitoring.notification_gate import fetch_telegram_status
+        payload["telegram_status"] = fetch_telegram_status()
+    except Exception:
+        payload["telegram_status"] = {}
+
     return _scrub(payload)

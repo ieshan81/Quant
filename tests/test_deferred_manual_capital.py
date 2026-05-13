@@ -287,6 +287,171 @@ def test_api_positions_sell_route(dash_app) -> None:
         assert ts.called
 
 
+def test_sell_readiness_pending_order_blocks_with_order_already_pending() -> None:
+    """Open AEHL sell order accepted qty 1 => sell_readiness blocker ORDER_ALREADY_PENDING."""
+    positions = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "net_qty": 26.0,
+            "avg_entry_price": 0.8625,
+            "current_price": 2.11,
+        }
+    ]
+    oo_by = {
+        "AEHL": [
+            {
+                "symbol": "AEHL",
+                "side": "sell",
+                "qty": 1.0,
+                "filled_qty": 0.0,
+                "status": "accepted",
+                "submitted_at": "2026-05-13T05:35:18Z",
+                "expires_at": "2026-05-13T20:00:00Z",
+            }
+        ]
+    }
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={"stock_take_profit_pct": 0.5, "stock_stop_loss_pct": 0.99, "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.5, "stop_loss_pct": 0.99, "stock_automated_exits_enabled": 1.0},
+        db_path=None,
+        deferred_plans=None,
+        open_orders_by_symbol=oo_by,
+    )
+    assert len(rows) == 1
+    sr = rows[0]
+    assert sr["pending_order_exists"] is True
+    assert sr["pending_order_qty"] == 1.0
+    assert sr["pending_order_status"] == "accepted"
+    assert sr["blocker"] == rc.ORDER_ALREADY_PENDING
+    assert sr["sell_allowed_now"] is False
+
+
+def test_sell_readiness_pdt_block_stores_local_preflight() -> None:
+    """Bot local PDT block stores pdt_block_source = local_preflight."""
+    positions = [
+        {
+            "symbol": "AEHL",
+            "asset_class": "stock",
+            "net_qty": 26.0,
+            "avg_entry_price": 0.8625,
+            "current_price": 2.11,
+        }
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[
+            {
+                "symbol": "AEHL",
+                "asset_class": "stock",
+                "final_action": "PDT_BLOCKED",
+                "blocked_reason": rc.PDT_PROTECTION,
+                "meta": {},
+            }
+        ],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={"stock_take_profit_pct": 0.5, "stock_stop_loss_pct": 0.99, "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.5, "stop_loss_pct": 0.99, "stock_automated_exits_enabled": 1.0},
+        db_path=None,
+    )
+    assert len(rows) == 1
+    sr = rows[0]
+    assert sr["blocker"] == "PDT_PROTECTION"
+    assert sr["pdt_block_source"] == "local_preflight"
+    assert sr["broker_would_accept_unknown"] is True
+
+
+def test_routed_sell_preflight_pdt_returns_local_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_routed_sell_preflight PDT block includes pdt_block_source = local_preflight in meta."""
+    db = tmp_path / "pf.sqlite3"
+    from data.data_store import init_schema
+
+    init_schema(db)
+    monkeypatch.setattr("main_worker._us_stock_market_open_for_routed_sell", lambda: True)
+    monkeypatch.setattr("main_worker._is_pdt_risk_active_for_small_account", lambda rt: True)
+    monkeypatch.setattr("main_worker._is_exit_blocked", lambda sym: False)
+    monkeypatch.setattr("main_worker._same_et_trading_day", lambda dt: True)
+    monkeypatch.setattr("main_worker._position_entry_datetime_from_trades", lambda *a: None)
+    monkeypatch.setattr("main_worker._mark_exit_blocked", lambda *a, **kw: None)
+
+    from main_worker import _routed_sell_preflight
+
+    ok, rcode, meta = _routed_sell_preflight(
+        asset_class="stock",
+        symbol="AEHL",
+        broker_qty=26.0,
+        mid=2.11,
+        rt={"pdt_exit_block_seconds": 3600.0},
+        db_path=db,
+    )
+    assert ok is False
+    assert rcode == rc.PDT_PROTECTION
+    assert meta.get("pdt_block_source") == "local_preflight"
+    assert meta.get("broker_would_accept_unknown") is True
+
+
+def test_deferred_exit_skips_when_open_sell_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing open sell order prevents duplicate deferred sell."""
+    db = tmp_path / "de.sqlite3"
+    from data.data_store import init_schema
+
+    init_schema(db)
+    from execution.deferred_exit_plans import record_pdt_deferred_exit, process_deferred_exit_plans
+
+    rt: dict[str, float] = {"deferred_pdt_exit_enabled": 1.0, "deferred_exit_check_first_in_cycle": 1.0, "deferred_exit_min_profit_pct": 0.0, "deferred_exit_cancel_if_profit_below_pct": -999.0, "deferred_exit_max_attempts": 5.0}
+    record_pdt_deferred_exit(
+        db, rt, symbol="AEHL", asset_class="stock", broker_qty=26.0, entry_price=0.86, trigger_price=2.1, trigger_pnl_pct=144.0, trigger_reason="TAKE_PROFIT", blocked_reason="PDT_PROTECTION", cycle_id="c1",
+    )
+
+    sell_called = []
+
+    def fake_sell(sym: str, qty: float, mid: float) -> tuple[bool, str | None, None]:
+        sell_called.append(sym)
+        return True, None, None
+
+    monkeypatch.setattr(
+        "execution.stock_broker.get_open_sell_orders_for_symbol",
+        lambda sym: [{"symbol": "AEHL", "side": "sell", "qty": 1.0, "status": "accepted"}],
+    )
+    monkeypatch.setattr(
+        "execution.deferred_exit_plans._before_earliest_check",
+        lambda earliest: False,
+    )
+
+    lines: list[str] = []
+    process_deferred_exit_plans(
+        db, rt, cycle_id="c2", broker_qty_fn=lambda s: 26.0, mid_price_fn=lambda s: 2.11, sell_gate_open=True, pdt_blocks_fn=lambda s, q, m: False, submit_sell_fn=fake_sell, log_lines=lines,
+    )
+    assert len(sell_called) == 0
+    assert any("waiting_on_existing_order" in ln for ln in lines)
+
+
+def test_pending_order_no_false_positive_when_no_orders() -> None:
+    """No open orders => pending_order_exists = false."""
+    positions = [{"symbol": "AAPL", "asset_class": "stock", "net_qty": 5.0, "avg_entry_price": 150.0, "current_price": 155.0}]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={"stock_take_profit_pct": 0.5, "stock_stop_loss_pct": 0.99, "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.5, "stop_loss_pct": 0.99, "stock_automated_exits_enabled": 1.0},
+        db_path=None,
+        open_orders_by_symbol={},
+    )
+    assert len(rows) == 1
+    assert rows[0]["pending_order_exists"] is False
+    assert rows[0]["pending_order_qty"] is None
+    assert rows[0]["blocker"] != rc.ORDER_ALREADY_PENDING
+
+
 @pytest.fixture()
 def dash_app(tmp_path: Path):
     db = tmp_path / "t.sqlite3"

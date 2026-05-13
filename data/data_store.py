@@ -18,6 +18,11 @@ _EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "rsi_oversold": (35.0, "RSI level considered oversold → bullish signal"),
     "rsi_overbought": (65.0, "RSI level considered overbought → bearish signal"),
     "rl_pair_checkpoint": (0.0, "internal: last closed-trade count after RL nudge"),
+    "telegram_startup_notify_enabled": (1.0, "1=send startup Telegram, 0=suppress"),
+    "telegram_startup_notify_mode": (1.0, "0=off 1=once_per_deploy 2=once_per_day 3=every_startup"),
+    "telegram_startup_dedupe_seconds": (21600.0, "Cooldown window for startup message dedup (seconds)"),
+    "telegram_error_alert_cooldown_seconds": (900.0, "Cooldown for repeated error/crash alerts (seconds)"),
+    "broker_startup_hard_fail": (0.0, "0=degraded mode on broker fail, 1=crash/restart"),
 }
 
 _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
@@ -64,6 +69,14 @@ def _merged_bot_config_defaults() -> dict[str, tuple[float, str]]:
         out[key] = (float(val), _BOT_KEY_DESCRIPTIONS[key])
     for key, (val, desc) in _EXTRA_BOT_DEFAULTS.items():
         out[key] = (val, desc)
+    try:
+        from execution.dynamic_capital_allocator import MODULE_CFG_DEFAULTS as _dca_def
+
+        for _k, _v in _dca_def.items():
+            _desc = _BOT_KEY_DESCRIPTIONS.get(_k, f"capital_allocator:{_k}")
+            out[str(_k)] = (float(_v), _desc)
+    except Exception:
+        pass
     return out
 
 
@@ -599,6 +612,16 @@ CREATE TABLE IF NOT EXISTS ai_observer_notes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_observer_created ON ai_observer_notes(created_at DESC);
+
+-- Telegram notification dedupe / rate-limit state.
+CREATE TABLE IF NOT EXISTS telegram_notification_state (
+    key TEXT PRIMARY KEY,
+    last_sent_at TEXT,
+    last_fingerprint TEXT,
+    send_count INTEGER NOT NULL DEFAULT 0,
+    suppressed_count INTEGER NOT NULL DEFAULT 0,
+    meta_json TEXT
+);
 """
 
 

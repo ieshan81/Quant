@@ -230,6 +230,7 @@ def _serialize_order(o: Any) -> dict[str, Any]:
         "failed_at": _fmt_ts(g("failed_at")),
         "expired_at": _fmt_ts(g("expired_at")),
         "replaced_at": _fmt_ts(g("replaced_at")),
+        "expires_at": _fmt_ts(g("expires_at")),
         "extended_hours": _bool(g("extended_hours")),
     }
 
@@ -325,6 +326,14 @@ def _final_secret_scan(blob: str) -> str:
             out = out.replace(sub, "<redacted>")
     out = re.sub(r"\b(pk_[A-Za-z0-9_\-]{10,}|AKIA[A-Z0-9]{10,})\b", "<redacted>", out)
     return out
+
+
+def _safe_telegram_status() -> dict[str, Any]:
+    try:
+        from monitoring.notification_gate import fetch_telegram_status
+        return fetch_telegram_status()
+    except Exception:
+        return {}
 
 
 def build_broker_diagnostic_payload(conn: Any) -> dict[str, Any]:
@@ -433,6 +442,14 @@ def build_broker_diagnostic_payload(conn: Any) -> dict[str, Any]:
     except Exception as e:
         warnings.append(f"bot_interpretation export failed: {e!s}")
 
+    from execution.dynamic_capital_allocator import build_capital_allocator_summary, fetch_latest_dynamic_capital_plan
+
+    dcp_json = None
+    try:
+        dcp_json = fetch_latest_dynamic_capital_plan(config.DB_PATH)
+    except Exception as e:
+        warnings.append(f"dynamic_capital_plan fetch failed: {e!s}")
+
     out: dict[str, Any] = {
         "generated_at": generated,
         "mode": str(getattr(config, "MODE", "paper") or "paper"),
@@ -453,6 +470,9 @@ def build_broker_diagnostic_payload(conn: Any) -> dict[str, Any]:
         "alpaca_recent_activities": activities,
         "market_data_snapshot": market_data,
         "bot_interpretation": bot_interp,
+        "dynamic_capital_plan": dcp_json,
+        "capital_allocator_summary": build_capital_allocator_summary(dcp_json) if dcp_json else build_capital_allocator_summary(None),
+        "telegram_status": _safe_telegram_status(),
         "diagnostic_warnings": warnings,
     }
     cleaned = _strip_leaks(out)

@@ -902,6 +902,18 @@ def build_dashboard_payload(
     except Exception:
         capital_status = {}
 
+    dca_plan: dict[str, Any] | None = None
+    try:
+        dca_plan = fetch_latest_dynamic_capital_plan(conn)
+        _record("dynamic_capital_plan", dca_plan is not None)
+    except Exception:
+        logger.warning("[dashboard] dynamic_capital_plan fetch failed", exc_info=True)
+        _record("dynamic_capital_plan", False)
+
+    from execution.dynamic_capital_allocator import build_capital_allocator_summary
+
+    cap_alloc_summary = build_capital_allocator_summary(dca_plan)
+
     return {
         "mode": latest.get("mode") if latest else None,
         "portfolio": _json_safe(latest) if latest is not None else None,
@@ -942,6 +954,8 @@ def build_dashboard_payload(
         "alpaca_cache_age_seconds": alpaca_cache_age_seconds,
         "alpaca_cache_last_error": alpaca_cache_last_error,
         "capital_status": _json_safe(capital_status) if isinstance(capital_status, dict) else {},
+        "dynamic_capital_plan": _json_safe(dca_plan) if isinstance(dca_plan, dict) else None,
+        "capital_allocator_summary": _json_safe(cap_alloc_summary) if isinstance(cap_alloc_summary, dict) else {},
     }
 
 
@@ -1180,6 +1194,29 @@ def fetch_latest_execution_health(conn: sqlite3.Connection | None = None) -> dic
             "usable_buying_power": float(row[0] or 0.0),
             "created_at": row[2],
         }
+
+
+def fetch_latest_dynamic_capital_plan(conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+    if conn is None:
+        with _open_dashboard_sqlite() as local_conn:
+            return fetch_latest_dynamic_capital_plan(local_conn)
+    try:
+        row = conn.execute(
+            """
+            SELECT meta_json FROM ops_metrics
+            WHERE metric_name = 'dynamic_capital_plan'
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        out = json.loads(str(row[0]))
+        return out if isinstance(out, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 
 def fetch_latest_cycle_activity_snapshot(

@@ -431,6 +431,8 @@ def test_index_mapper_payload_paths(dash_app) -> None:
         "p.section_status",
         "p.market_open",
         "p.mode",
+        "dynamic_capital_plan",
+        "capital_allocator_summary",
     ):
         assert fragment in bundle
 

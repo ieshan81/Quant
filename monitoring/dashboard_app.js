@@ -160,7 +160,9 @@
       alpacaCacheLastError: p.alpaca_cache_last_error != null ? String(p.alpaca_cache_last_error) : "",
       liveSafetyEnabled: safety && safety.live_enabled === true,
       buyGate: p.buy_gate && typeof p.buy_gate === "object" ? p.buy_gate : {},
-      capitalStatus: p.capital_status && typeof p.capital_status === "object" ? p.capital_status : {}
+      capitalStatus: p.capital_status && typeof p.capital_status === "object" ? p.capital_status : {},
+      dynamicCapitalPlan: p.dynamic_capital_plan && typeof p.dynamic_capital_plan === "object" ? p.dynamic_capital_plan : null,
+      capitalAllocatorSummary: p.capital_allocator_summary && typeof p.capital_allocator_summary === "object" ? p.capital_allocator_summary : {}
     };
   }
 
@@ -618,6 +620,64 @@
     }
   }
 
+  function renderCapitalAllocatorPanel(vm) {
+    var plan = vm.dynamicCapitalPlan;
+    var sum = vm.capitalAllocatorSummary || {};
+    var b = plan && plan.capital_buckets ? plan.capital_buckets : {};
+    var w = plan && plan.dynamic_weights ? plan.dynamic_weights : {};
+    var set = function (id, txt) {
+      var el = document.getElementById(id);
+      if (el) el.textContent = txt == null ? "—" : String(txt);
+    };
+    set("dcaFreeCash", b.free_cash != null ? fmtMoney(b.free_cash) : sum.free_cash != null ? fmtMoney(sum.free_cash) : "—");
+    set("dcaCryptoAvail", b.crypto_available_cash != null ? fmtMoney(b.crypto_available_cash) : "—");
+    set("dcaStockMv", b.stock_market_value != null ? fmtMoney(b.stock_market_value) : "—");
+    set("dcaCryptoMv", b.crypto_market_value != null ? fmtMoney(b.crypto_market_value) : "—");
+    set("dcaPdtTrap", b.pdt_trapped_stock_value != null ? fmtMoney(b.pdt_trapped_stock_value) : "—");
+    set("dcaSessTrap", b.market_session_trapped_stock_value != null ? fmtMoney(b.market_session_trapped_stock_value) : "—");
+    set("dcaTgtStock", w.target_stock_weight != null ? fmtPct(Number(w.target_stock_weight) * 100) : "—");
+    set("dcaTgtCrypto", w.target_crypto_weight != null ? fmtPct(Number(w.target_crypto_weight) * 100) : "—");
+    set("dcaTgtRes", w.target_reserve_weight != null ? fmtPct(Number(w.target_reserve_weight) * 100) : "—");
+    set("dcaActStock", w.actual_stock_weight != null ? fmtPct(Number(w.actual_stock_weight) * 100) : "—");
+    set("dcaActCrypto", w.actual_crypto_weight != null ? fmtPct(Number(w.actual_crypto_weight) * 100) : "—");
+    set("dcaActCash", w.actual_cash_weight != null ? fmtPct(Number(w.actual_cash_weight) * 100) : "—");
+    set("dcaRecAct", sum.recommended_next_action != null ? String(sum.recommended_next_action) : plan ? String(plan.recommended_next_action || "—") : "—");
+    set("dcaBlocker", sum.main_blocker != null ? String(sum.main_blocker) : "—");
+    var cep = plan && plan.crypto_engine_plan ? plan.crypto_engine_plan : {};
+    var cryptoLine =
+      "Enabled: " +
+      (cep.enabled ? "yes" : "no") +
+      " · Positions: " +
+      (Array.isArray(cep.crypto_positions) ? String(cep.crypto_positions.length) : "0") +
+      " · BP (crypto cash): " +
+      (cep.cash_available_for_crypto != null ? fmtMoney(cep.cash_available_for_crypto) : "—") +
+      " · Best: " +
+      (cep.best_crypto_candidate || "—") +
+      " · Block: " +
+      (cep.blocked_reason || "—") +
+      " · 24/7: crypto markets always on (Alpaca)";
+    set("dcaCryptoEngineLine", cryptoLine);
+    var ss = plan && plan.stock_session_state ? plan.stock_session_state : {};
+    var extEn = plan && plan.engine_permissions ? plan.engine_permissions.stock_extended_enabled_now : false;
+    var ovnEn = plan && plan.engine_permissions ? plan.engine_permissions.stock_overnight_enabled_now : false;
+    var sess =
+      "Regular: " +
+      (ss.regular ? "yes" : "no") +
+      " · Pre: " +
+      (ss.pre_market ? "yes" : "no") +
+      " · After: " +
+      (ss.after_hours ? "yes" : "no") +
+      " · Overnight: " +
+      (ss.overnight ? "yes" : "no") +
+      " · Closed: " +
+      (ss.closed ? "yes" : "no") +
+      " · Extended exec: " +
+      (extEn ? "on" : "planning only") +
+      " · Overnight exec: " +
+      (ovnEn ? "on" : "planning only");
+    set("dcaStockSessionLine", sess);
+  }
+
   // ---------------------------------------------------------------------------
   // Equity chart
   // ---------------------------------------------------------------------------
@@ -701,6 +761,7 @@
     renderCapitalCard(vm);
     renderOperatorSummary(vm);
     renderExecutionHealth(vm);
+    renderCapitalAllocatorPanel(vm);
     renderEquityChart(vm);
 
     var top = (vm.positions || []).slice(0, 5);
@@ -1461,11 +1522,32 @@
     });
   }
 
+  function wireCapitalAllocatorCopy() {
+    var btn = document.getElementById("btnCopyCapitalAllocatorJson");
+    var st = document.getElementById("dcaCopyStatus");
+    if (!btn) return;
+    btn.addEventListener("click", async function () {
+      try {
+        var vm = window.__dashVm || {};
+        var blob = {
+          dynamic_capital_plan: vm.dynamicCapitalPlan || null,
+          capital_allocator_summary: vm.capitalAllocatorSummary || {}
+        };
+        var text = JSON.stringify(blob, null, 2);
+        await navigator.clipboard.writeText(text);
+        if (st) st.textContent = "Copied allocator JSON";
+      } catch (e) {
+        if (st) st.textContent = String(e && e.message ? e.message : e);
+      }
+    });
+  }
+
   function startDashboard() {
     bindTabs();
     wireBacktest();
     wireActivityExport();
     wireBrokerDiagnosticCopy();
+    wireCapitalAllocatorCopy();
     wireManualSell();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);

@@ -272,8 +272,10 @@ def test_activity_export_endpoint_shape(dash_app) -> None:
     assert "capital_status" in data and isinstance(data["capital_status"], dict)
     assert "latest_exit_snapshot_created_at" in data
     assert "exit_snapshot_age_seconds" in data
-    assert "TELEGRAM" not in json.dumps(data).upper()
-    assert "SECRET_KEY" not in json.dumps(data)
+    raw_json = json.dumps(data)
+    assert "TELEGRAM_BOT_TOKEN" not in raw_json
+    assert "SECRET_KEY" not in raw_json
+    assert "telegram_status" in data
 
 
 def test_activity_export_limit_param(dash_app) -> None:

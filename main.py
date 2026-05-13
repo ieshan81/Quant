@@ -98,10 +98,13 @@ def main() -> None:
     init_schema()
     logger.success("SQLite schema ready | {}", config.DB_PATH)
 
-    from monitoring import alerts
-
-    if alerts.telegram_alerts_configured():
-        alerts.notify_bot_restarted(config.MODE)
+    from monitoring.notification_gate import send_startup_notification
+    try:
+        from data.data_store import load_runtime_config_dict
+        rt = load_runtime_config_dict()
+    except Exception:
+        rt = None
+    send_startup_notification(rt)
 
     if args.quotes:
         logger.info("Fetching live quotes (Sprint 2)")

@@ -1175,6 +1175,8 @@ def _routed_sell_preflight(
     if _is_exit_blocked(sym):
         rc = str(_blocked_exit_reason.get(sym, "") or "").strip().upper()
         code = reason_codes.PDT_PROTECTION if rc == "PDT_PROTECTION" else reason_codes.COOLDOWN
+        meta["pdt_block_source"] = "local_preflight" if code == reason_codes.PDT_PROTECTION else None
+        meta["broker_would_accept_unknown"] = True
         return False, code, meta
 
     ac = str(asset_class or "").strip().lower()
@@ -1185,7 +1187,12 @@ def _routed_sell_preflight(
         entry_dt = _position_entry_datetime_from_trades(sym, "stock", q, Path(db_path))
         if _same_et_trading_day(entry_dt):
             _mark_exit_blocked(sym, _pdt_exit_block_seconds(rt), reason_code="PDT_PROTECTION")
-            return False, reason_codes.PDT_PROTECTION, {**meta, "reason_detail": "same_day_round_trip"}
+            return False, reason_codes.PDT_PROTECTION, {
+                **meta,
+                "reason_detail": "same_day_round_trip",
+                "pdt_block_source": "local_preflight",
+                "broker_would_accept_unknown": True,
+            }
 
     _ = float(mid or 0.0)
     return True, None, meta
@@ -3320,6 +3327,83 @@ def run_trading_cycle_once(
         )
     except Exception:
         logger.debug("capital_rotation_plan skipped", exc_info=True)
+    try:
+        from execution import capital_rotation as _cr_dca
+        from execution.deferred_exit_plans import fetch_deferred_exit_plans
+        from execution.dynamic_capital_allocator import (
+            build_capital_allocator_summary,
+            gather_inputs_and_build_plan,
+            persist_dynamic_capital_plan,
+        )
+        from monitoring import dashboard_data as _dd_dca
+
+        rt_d = load_runtime_config_dict(config.DB_PATH)
+        q_snap: dict[str, Any] = {}
+        for _k, _v in (prices_dict or {}).items():
+            if _v is None:
+                continue
+            try:
+                q_snap[str(_k).strip().upper()] = {
+                    "last_trade_price": float(_v),
+                    "bid": None,
+                    "ask": None,
+                    "spread_pct": None,
+                    "timestamp": None,
+                }
+            except (TypeError, ValueError):
+                pass
+        ameta: dict[str, Any] = {}
+
+        def _alpaca_attr(o: Any, n: str, d: Any = None) -> Any:
+            return getattr(o, n, d) if o is not None else d
+
+        cli3 = stock_broker.get_rest_client()
+        if cli3 is not None:
+            open_pos_dca = _dd_dca.get_real_positions(cli3)
+        else:
+            with get_connection(config.DB_PATH) as conn:
+                raw_p = _dd_dca.fetch_open_positions_from_trades(conn)
+            open_pos_dca = _cr_dca.sqlite_net_positions_to_broker_shape(raw_p, prices_dict or {})
+        with get_connection(config.DB_PATH) as conn:
+            recent_sigs_dca = _dd_dca.fetch_recent_signals(conn, limit=80)
+        if cli3 is not None:
+            for _p in open_pos_dca or []:
+                _sym = str(_p.get("symbol") or "").strip().upper()
+                if not _sym:
+                    continue
+                _asset_sym = _sym.replace("/", "")
+                try:
+                    _a = cli3.get_asset(_asset_sym)
+                    ameta[_sym] = {
+                        "tradable": bool(_alpaca_attr(_a, "tradable", False)),
+                        "fractionable": bool(_alpaca_attr(_a, "fractionable", False)),
+                        "overnight_tradable": _alpaca_attr(_a, "overnight_tradable", None),
+                    }
+                except Exception:
+                    ameta[_sym] = {"tradable": None, "overnight_tradable": None}
+
+        perf_snap = summary.get("performance") if isinstance(summary.get("performance"), dict) else {}
+        dec_exit = list((summary.get("position_exit_decisions") or []))
+        if not dec_exit:
+            dec_exit = list((summary.get("execution_health") or {}).get("position_exit_rows") or [])
+        dep_plans = fetch_deferred_exit_plans(None, include_terminal=True, limit=50)
+        dplan = gather_inputs_and_build_plan(
+            buy_gate=dict(summary.get("buy_gate") or {}),
+            open_positions=list(open_pos_dca or []),
+            position_exit_rows=dec_exit,
+            recent_signals=list(recent_sigs_dca or []),
+            performance_summary=perf_snap,
+            deferred_exit_plans=dep_plans,
+            runtime_config=rt_d,
+            rest_client=cli3,
+            market_data_snapshot=q_snap,
+            asset_metadata=ameta,
+        )
+        persist_dynamic_capital_plan(config.DB_PATH, dplan)
+        summary["dynamic_capital_plan"] = dplan
+        summary["capital_allocator_summary"] = build_capital_allocator_summary(dplan)
+    except Exception:
+        logger.debug("dynamic_capital_plan skipped", exc_info=True)
     sorted_crypto_scores = sorted(
         ((r.symbol, r.score) for r in results if r.asset_class == "crypto" and not r.error),
         key=lambda x: x[1],
@@ -3490,11 +3574,12 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     logger.info(f"[startup] market_open_right_now={nyse_regular_session_open()}")
     logger.info("QuantBot worker | mode={} | db={}", config.MODE, config.DB_PATH)
 
-    if alerts.telegram_alerts_configured():
-        alerts.send_telegram(
-            f"🤖 QuantBot started | Mode: {config.MODE} | "
-            f"Universe: Alpaca most actives + Alpaca crypto set"
-        )
+    from monitoring.notification_gate import send_startup_notification
+    try:
+        rt = load_runtime_config_dict(config.DB_PATH)
+    except Exception:
+        rt = None
+    send_startup_notification(rt, db_path=config.DB_PATH)
 
     market_ctx = _alpaca_market_context()
     universe = UniverseState()
@@ -3529,6 +3614,17 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
 
     trader = create_paper_trader(telegram_on_fills=False)
     alpaca_ok, alpaca_account = False, None
+    from monitoring.notification_gate import (
+        send_error_alert,
+        ALPACA_AUTH_FAILED,
+        BROKER_STARTUP_FAILED,
+        _cfg_float as _ngate_cfg_float,
+    )
+    try:
+        _startup_rt = load_runtime_config_dict(config.DB_PATH)
+    except Exception:
+        _startup_rt = None
+    _hard_fail = _ngate_cfg_float(_startup_rt, "broker_startup_hard_fail") >= 0.5
     for attempt in range(3):
         try:
             alpaca_ok, alpaca_account = _alpaca_startup_ping()
@@ -3538,7 +3634,21 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         except Exception as e:
             logger.warning("[startup] Broker init attempt {}/3 failed: {}", attempt + 1, e)
             if attempt == 2:
-                raise
+                _is_auth = "AUTHENTICATION" in str(e).upper() or "AUTH" in str(e).upper()
+                _alert_type = ALPACA_AUTH_FAILED if _is_auth else BROKER_STARTUP_FAILED
+                send_error_alert(
+                    _alert_type,
+                    f"\u26a0\ufe0f Broker startup failed (attempt 3/3): {str(e)[:200]}",
+                    _startup_rt,
+                    db_path=config.DB_PATH,
+                )
+                if _hard_fail:
+                    raise
+                logger.warning(
+                    "[startup] broker_startup_hard_fail=0 — continuing in degraded mode "
+                    "(stock trading disabled)"
+                )
+                break
             time.sleep(10)
     if alpaca_ok:
         cli = stock_broker.get_rest_client()
@@ -3624,8 +3734,17 @@ def run_worker_forever() -> None:
             crashed = True
             logger.error("[worker] CRASHED: {}", e, exc_info=True)
             logger.error("[worker] Restarting in 10 seconds (positions preserved)...")
-            if alerts.telegram_alerts_configured():
-                alerts.send_telegram(f"⚠️ Worker crashed, restarting in 10s: {str(e)[:200]}")
+            from monitoring.notification_gate import send_error_alert, WORKER_CRASHED
+            try:
+                _rt = load_runtime_config_dict(config.DB_PATH)
+            except Exception:
+                _rt = None
+            send_error_alert(
+                WORKER_CRASHED,
+                f"\u26a0\ufe0f Worker crashed, restarting in 10s: {str(e)[:200]}",
+                _rt,
+                db_path=config.DB_PATH,
+            )
             if not _stop.is_set():
                 time.sleep(10)
         finally:

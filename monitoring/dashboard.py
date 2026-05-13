@@ -735,6 +735,34 @@ _PAGE = """<!DOCTYPE html>
         <p id="capWarn" style="display:none;margin-top:8px;color:#fbbf24;font-size:0.85rem;"></p>
       </div>
 
+      <div class="card" id="capitalAllocatorCard">
+        <h2 style="margin:0 0 8px 0;font-size:0.95rem;font-weight:600;">Capital Allocator</h2>
+        <div class="grid-metrics" style="margin-bottom:10px;">
+          <div class="metric"><div class="lab">Free cash</div><div class="val mono" id="dcaFreeCash">—</div></div>
+          <div class="metric"><div class="lab">Crypto available cash</div><div class="val mono" id="dcaCryptoAvail">—</div></div>
+          <div class="metric"><div class="lab">Stock value</div><div class="val mono" id="dcaStockMv">—</div></div>
+          <div class="metric"><div class="lab">Crypto value</div><div class="val mono" id="dcaCryptoMv">—</div></div>
+          <div class="metric"><div class="lab">PDT trapped stock</div><div class="val mono" id="dcaPdtTrap">—</div></div>
+          <div class="metric"><div class="lab">Session-trapped stock</div><div class="val mono" id="dcaSessTrap">—</div></div>
+          <div class="metric"><div class="lab">Target stock %</div><div class="val mono" id="dcaTgtStock">—</div></div>
+          <div class="metric"><div class="lab">Target crypto %</div><div class="val mono" id="dcaTgtCrypto">—</div></div>
+          <div class="metric"><div class="lab">Target reserve %</div><div class="val mono" id="dcaTgtRes">—</div></div>
+          <div class="metric"><div class="lab">Actual stock %</div><div class="val mono" id="dcaActStock">—</div></div>
+          <div class="metric"><div class="lab">Actual crypto %</div><div class="val mono" id="dcaActCrypto">—</div></div>
+          <div class="metric"><div class="lab">Actual cash %</div><div class="val mono" id="dcaActCash">—</div></div>
+          <div class="metric"><div class="lab">Recommended action</div><div class="val mono" id="dcaRecAct">—</div></div>
+          <div class="metric"><div class="lab">Main blocker</div><div class="val mono" id="dcaBlocker">—</div></div>
+        </div>
+        <h3 style="margin:12px 0 6px;font-size:0.85rem;color:var(--muted);font-weight:600;">Crypto engine status</h3>
+        <p class="mono" style="font-size:12px;margin:0;line-height:1.5;" id="dcaCryptoEngineLine">—</p>
+        <h3 style="margin:12px 0 6px;font-size:0.85rem;color:var(--muted);font-weight:600;">Stock session status</h3>
+        <p class="mono" style="font-size:12px;margin:0;line-height:1.5;" id="dcaStockSessionLine">—</p>
+        <div class="chip-row" style="margin-top:10px;">
+          <button type="button" class="tab-btn" style="font-size:12px;" id="btnCopyCapitalAllocatorJson">Copy Capital Allocator JSON</button>
+          <span class="updated-stamp" id="dcaCopyStatus"></span>
+        </div>
+      </div>
+
       <div class="overview-split">
         <div class="card">
           <h2>Equity</h2>

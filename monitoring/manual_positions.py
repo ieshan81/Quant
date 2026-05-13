@@ -119,8 +119,18 @@ def try_manual_sell(
         else:
             msg = f"Sell blocked: {rc_out}."
             code = rc_out or rc.MANUAL_SELL_ORDER_REJECTED
-        _log_decision(cycle_id, sym, code, live_qty, mid, "rejected", extra={"preflight": rc_out})
-        return {**out_base, "reason_code": code, "message": msg}
+        pdt_src = _meta.get("pdt_block_source") if code == rc.PDT_PROTECTION else None
+        _log_decision(
+            cycle_id, sym, code, live_qty, mid, "rejected",
+            extra={"preflight": rc_out, "pdt_block_source": pdt_src or "local_preflight"},
+        )
+        return {
+            **out_base,
+            "reason_code": code,
+            "message": msg,
+            "pdt_block_source": pdt_src if code == rc.PDT_PROTECTION else None,
+            "broker_would_accept_unknown": True if code == rc.PDT_PROTECTION else None,
+        }
 
     r = stock_broker.submit_market_order("sell", sym, live_qty, notional=None)
     if not getattr(r, "ok", False):

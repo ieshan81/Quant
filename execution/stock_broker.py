@@ -34,6 +34,15 @@ _rest_client_cached: Any | None = None
 _alpaca_config_logged_once = False
 
 
+def _safe_float(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _patch_rest_session_timeout(rest_client: Any) -> None:
     """``alpaca_trade_api`` calls ``requests`` with no timeout; stalled sockets hang forever.
 
@@ -476,19 +485,40 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
         )
 
 
-def has_open_order_for_symbol(symbol: str) -> bool:
-    """True if Alpaca has any open (non-filled) order for the equity symbol."""
+def get_open_orders_for_symbol(symbol: str) -> list[dict[str, Any]]:
+    """Return serialized open orders matching *symbol* (or empty list on failure)."""
     client = get_rest_client()
     if client is None:
-        return False
+        return []
     sym_u = str(symbol or "").strip().upper()
+    out: list[dict[str, Any]] = []
     try:
         raw = client.list_orders(status="open", limit=100)
         lst = raw if isinstance(raw, list) else list(raw or [])
         for o in lst:
             s = str(getattr(o, "symbol", None) or "").strip().upper()
             if s and s == sym_u:
-                return True
+                out.append({
+                    "symbol": s,
+                    "side": str(getattr(o, "side", "") or "").lower(),
+                    "qty": _safe_float(getattr(o, "qty", None)),
+                    "filled_qty": _safe_float(getattr(o, "filled_qty", None)),
+                    "status": str(getattr(o, "status", "") or "").lower(),
+                    "submitted_at": str(getattr(o, "submitted_at", "") or "") or None,
+                    "expires_at": str(getattr(o, "expires_at", "") or "") or None,
+                    "type": str(getattr(o, "type", "") or "").lower(),
+                    "id": str(getattr(o, "id", "") or "") or None,
+                })
     except Exception:
         logger.debug("[alpaca] list_orders(open) failed for {}", sym_u, exc_info=True)
-    return False
+    return out
+
+
+def has_open_order_for_symbol(symbol: str) -> bool:
+    """True if Alpaca has any open (non-filled) order for the equity symbol."""
+    return len(get_open_orders_for_symbol(symbol)) > 0
+
+
+def get_open_sell_orders_for_symbol(symbol: str) -> list[dict[str, Any]]:
+    """Return only open SELL orders for *symbol*."""
+    return [o for o in get_open_orders_for_symbol(symbol) if o.get("side") == "sell"]
