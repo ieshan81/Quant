@@ -903,6 +903,10 @@ def _position_entry_datetime_from_trades(
     """
     Opening leg timestamp from SQLite ``trades`` table (not ``trade_log``).
     Long positions → latest filled BUY; short positions → latest filled SELL.
+
+    Excludes synthetic ``alpaca_sync_open`` rows which carry the *sync* timestamp
+    (today) rather than the real fill time, preventing a false same-day PDT block
+    on multi-day positions.
     """
     p = Path(db_path)
     if not p.exists():
@@ -917,6 +921,7 @@ def _position_entry_datetime_from_trades(
                 SELECT created_at FROM trades
                 WHERE symbol = ? AND asset_class = ? AND status = 'filled'
                   AND LOWER(side) = ?
+                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
                 ORDER BY id DESC
                 LIMIT 1
                 """,
@@ -2553,6 +2558,26 @@ def execute_cycle_results(
                 if cs.asset_class == "crypto" and crypto_buys_disabled_cycle:
                     out["holds"] += 1
                     continue
+                _unresolved_str = str(rt.get("_unresolved_profit_exit_symbols", "")).strip()
+                if cs.asset_class == "stock" and _unresolved_str:
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class="stock",
+                        symbol=cs.symbol,
+                        side="buy",
+                        decision="rejected",
+                        reason_code=reason_codes.BUY_BLOCKED_PENDING_PROFIT_EXIT,
+                        score=eff_score,
+                        notional=0.0,
+                        quantity=0.0,
+                        price=mid,
+                        meta={
+                            "unresolved_profit_exit_symbols": _unresolved_str,
+                            "reason_detail": "high-profit exit pending; new stock buys blocked until resolved",
+                        },
+                    )
+                    out["holds"] += 1
+                    continue
                 notional, bd = _buy_notional_breakdown(trader, cs.asset_class, rt)
                 cash = trader.cash_stocks if cs.asset_class == "stock" else trader.cash_crypto
                 stocks_open = portfolio_limiter.us_stock_market_open()
@@ -3206,6 +3231,36 @@ def run_trading_cycle_once(
         if r.mid is not None and float(r.mid) > 0:
             prices_dict[str(r.symbol)] = float(r.mid)
     trader.mark_to_market(prices_dict)
+
+    _unresolved_profit_exit_syms: set[str] = set()
+    try:
+        _block_on_pending_exit = bool(int(rt.get("block_new_buys_when_profit_exit_pending", 1.0)) == 1)
+        if _block_on_pending_exit:
+            _stock_tp_frac = float(rt.get("stock_take_profit_pct", rt.get("take_profit_pct", 0.015)))
+            _min_exit_pct_raw = float(rt.get("pending_profit_exit_min_pct", 0.0))
+            _min_exit_pct = _min_exit_pct_raw if _min_exit_pct_raw > 1e-9 else _stock_tp_frac * 100.0
+            for _per in (exit_health.get("position_exit_rows") or []):
+                _psym = str(_per.get("symbol") or "").strip().upper()
+                _pac = str(_per.get("asset_class") or "").lower()
+                if _pac != "stock" or not _psym:
+                    continue
+                _pentry = float(_per.get("entry_price") or 0)
+                _pmid = float(_per.get("current_price") or 0)
+                if _pentry <= 1e-12 or _pmid <= 0:
+                    continue
+                _ppnl = (_pmid - _pentry) / _pentry * 100.0
+                if _ppnl >= _min_exit_pct:
+                    _pra = str(_per.get("recommended_action") or "").strip().upper()
+                    if _pra not in ("EXIT_ALLOWED",):
+                        _unresolved_profit_exit_syms.add(_psym)
+        if _unresolved_profit_exit_syms:
+            logger.info(
+                "[buy_gate] unresolved_profit_exit_symbols={} — stock buys blocked until resolved",
+                sorted(_unresolved_profit_exit_syms),
+            )
+    except Exception:
+        logger.debug("[buy_gate] unresolved profit exit check skipped", exc_info=True)
+    rt["_unresolved_profit_exit_symbols"] = ",".join(sorted(_unresolved_profit_exit_syms))
 
     summary = execute_cycle_results(trader, results, rt, cycle_id=cid)
     try:

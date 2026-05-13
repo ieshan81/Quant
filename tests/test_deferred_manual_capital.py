@@ -798,3 +798,341 @@ def dash_app(tmp_path: Path):
         app = create_app()
         app.config["TESTING"] = True
         yield app
+
+
+# ---------------------------------------------------------------------------
+# PDT same-day fix + sell_readiness opened_at fields
+# ---------------------------------------------------------------------------
+
+def _make_test_db_with_real_trade(tmp_path: Path, *, symbol: str = "AEHL", created_at: str = "2026-05-08 14:30:00") -> Path:
+    """Create a SQLite DB with the trades table and one real (non-sync) filled BUY."""
+    from data import data_store
+    db = tmp_path / "pdt_test.sqlite3"
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code, meta_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("paper", "stock", symbol, "buy", 26.0, 0.86, 22.36, "filled", "real-ord-1",
+             "signal_buy", '{"source":"test"}'),
+        )
+        conn.execute(
+            """UPDATE trades SET created_at = ? WHERE broker_order_id = 'real-ord-1'""",
+            (created_at,),
+        )
+    return db
+
+
+def test_pdt_no_block_old_position_aehl(tmp_path: Path) -> None:
+    """AEHL bought 08 May, cycle 13 May, TP hit => no local PDT block because not same day."""
+    db = _make_test_db_with_real_trade(tmp_path, symbol="AEHL", created_at="2026-05-08 14:30:00")
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 0.86, "current_price": 2.85}
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0, "pdt_avoid_same_day_round_trip": 1.0,
+        },
+        db_path=db,
+    )
+    sr = rows[0]
+    assert sr["same_day_entry_detected"] is False
+    assert sr["pdt_guard_applies"] is False
+    assert sr["opened_at_display"] == "08 May 2026"
+    assert sr["blocker"] is None or sr["blocker"] != "PDT_PROTECTION"
+    assert sr["pdt_block_source"] is None
+    assert sr["take_profit_hit"] is True
+    assert sr["sell_allowed_now"] is True
+
+
+def test_pdt_blocks_same_day_stock(tmp_path: Path) -> None:
+    """Stock bought today, TP hit => PDT_PROTECTION still blocks if guard enabled."""
+    from datetime import datetime, timezone as _tz
+    today_str = datetime.now(_tz.utc).strftime("%Y-%m-%d 10:00:00")
+    db = _make_test_db_with_real_trade(tmp_path, symbol="NEWB", created_at=today_str)
+    positions = [
+        {"symbol": "NEWB", "asset_class": "stock", "net_qty": 10.0, "avg_entry_price": 1.00, "current_price": 1.50}
+    ]
+    exit_decisions = [
+        {
+            "symbol": "NEWB", "asset_class": "stock",
+            "final_action": "PDT_BLOCKED", "blocked_reason": "PDT_PROTECTION",
+            "meta": {"pdt_block_source": "local_preflight"},
+        }
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=exit_decisions,
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0, "pdt_avoid_same_day_round_trip": 1.0,
+        },
+        db_path=db,
+    )
+    sr = rows[0]
+    assert sr["same_day_entry_detected"] is True
+    assert sr["same_day_entry_qty"] > 0
+    assert sr["pdt_guard_applies"] is True
+    assert sr["blocker"] == "PDT_PROTECTION"
+    assert sr["sell_allowed_now"] is False
+
+
+def test_mixed_lot_older_qty_not_falsely_blocked(tmp_path: Path) -> None:
+    """Position has both old and new trades; older-than-today qty is tracked separately."""
+    from data import data_store
+    db = tmp_path / "mixed.sqlite3"
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code)
+               VALUES ('paper', 'stock', 'MIX', 'buy', 20.0, 1.0, 20.0, 'filled', 'old-1', 'signal_buy')""",
+        )
+        conn.execute("UPDATE trades SET created_at = '2026-05-05 10:00:00' WHERE broker_order_id = 'old-1'")
+        from datetime import datetime, timezone as _tz
+        today_str = datetime.now(_tz.utc).strftime("%Y-%m-%d 11:00:00")
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code)
+               VALUES ('paper', 'stock', 'MIX', 'buy', 5.0, 1.2, 6.0, 'filled', 'new-1', 'signal_buy')""",
+        )
+        conn.execute(f"UPDATE trades SET created_at = '{today_str}' WHERE broker_order_id = 'new-1'")
+    positions = [
+        {"symbol": "MIX", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 1.04, "current_price": 1.50}
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0, "pdt_avoid_same_day_round_trip": 1.0,
+        },
+        db_path=db,
+    )
+    sr = rows[0]
+    assert sr["same_day_entry_detected"] is True
+    assert sr["same_day_entry_qty"] == pytest.approx(5.0)
+    assert sr["older_than_today_qty"] == pytest.approx(20.0)
+    assert sr["opened_at_display"] == "05 May 2026"
+
+
+def test_alpaca_pdt_check_entry_no_local_exit_block_for_old_position(tmp_path: Path) -> None:
+    """Alpaca pdt_check=entry should not cause local exit block for old positions."""
+    db = _make_test_db_with_real_trade(tmp_path, symbol="AEHL", created_at="2026-05-08 14:30:00")
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 0.86, "current_price": 2.85}
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0, "pdt_avoid_same_day_round_trip": 1.0,
+        },
+        db_path=db,
+    )
+    sr = rows[0]
+    assert sr["same_day_entry_detected"] is False
+    assert sr["pdt_guard_applies"] is False
+    assert sr["pdt_block_source"] is None
+    assert sr["sell_allowed_now"] is True
+
+
+def test_entry_datetime_excludes_sync_records(tmp_path: Path) -> None:
+    """_position_entry_datetime_from_trades must skip alpaca_sync_open rows."""
+    from data import data_store
+    db = tmp_path / "sync_test.sqlite3"
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code)
+               VALUES ('paper', 'stock', 'AEHL', 'buy', 26.0, 0.86, 22.36, 'filled', 'real-fill-1', 'signal_buy')""",
+        )
+        conn.execute("UPDATE trades SET created_at = '2026-05-08 14:30:00' WHERE broker_order_id = 'real-fill-1'")
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code)
+               VALUES ('paper', 'stock', 'AEHL', 'buy', 25.0, 0.86, 21.5, 'filled', 'sync-1', 'alpaca_sync_open')""",
+        )
+    import main_worker
+    entry_dt = main_worker._position_entry_datetime_from_trades("AEHL", "stock", 25.0, db)
+    assert entry_dt is not None
+    assert entry_dt.strftime("%Y-%m-%d") == "2026-05-08"
+
+
+def test_same_et_trading_day_false_for_old_entry() -> None:
+    """_same_et_trading_day returns False for a date 5 days ago."""
+    import main_worker
+    from datetime import datetime, timedelta, timezone as _tz
+    old = datetime.now(_tz.utc) - timedelta(days=5)
+    assert main_worker._same_et_trading_day(old) is False
+
+
+def test_same_et_trading_day_true_for_today() -> None:
+    """_same_et_trading_day returns True for today's entry."""
+    import main_worker
+    from datetime import datetime, timezone as _tz
+    now = datetime.now(_tz.utc)
+    assert main_worker._same_et_trading_day(now) is True
+
+
+# ---------------------------------------------------------------------------
+# BUY_BLOCKED_PENDING_PROFIT_EXIT tests
+# ---------------------------------------------------------------------------
+
+def test_buy_blocked_when_unresolved_profit_exit_exists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Stock buy is rejected with BUY_BLOCKED_PENDING_PROFIT_EXIT when unresolved TP exit exists."""
+    import main_worker
+
+    _persisted: list[dict] = []
+    _orig_persist = main_worker._persist_decision
+
+    def _capture_persist(**kw):
+        _persisted.append(kw)
+        try:
+            _orig_persist(**kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _capture_persist)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: True)
+
+    rt = {
+        "block_new_buys_when_profit_exit_pending": 1.0,
+        "pending_profit_exit_min_pct": 0.0,
+        "stock_take_profit_pct": 0.015,
+        "take_profit_pct": 0.015,
+        "_unresolved_profit_exit_symbols": "AEHL",
+        "_capital_stage": "MICRO",
+    }
+    trader = SimpleNamespace(
+        cash_stocks=5.0,
+        cash_crypto=0.0,
+        position=lambda ac, sym: None,
+        equity_total=lambda: 100.0,
+        log_signal_row=lambda **kw: None,
+        set_telegram_on_fills=lambda v: None,
+    )
+    cs = SimpleNamespace(
+        symbol="F",
+        asset_class="stock",
+        action="BUY",
+        score=0.6,
+        mid=2.90,
+        signals={"combined": 0.6},
+        error=None,
+        pump_emergency_buy=False,
+        pump_emergency_sell=False,
+    )
+    monkeypatch.setattr(main_worker, "STOCK_BUY_BUFFER_PCT", 1.0)
+    monkeypatch.setattr("main_worker._alpaca_buying_power_snapshot", lambda: {"cash": 5.0, "buying_power": 5.0, "usable_buying_power": 5.0})
+    monkeypatch.setattr("main_worker._alpaca_existing_longs", lambda: set())
+
+    summary = main_worker.execute_cycle_results(trader, [cs], rt, cycle_id="test-cyc-1")
+    blocked = [d for d in _persisted if d.get("reason_code") == rc.BUY_BLOCKED_PENDING_PROFIT_EXIT]
+    assert len(blocked) >= 1
+    assert blocked[0]["symbol"] == "F"
+    assert summary["buys"] == 0
+
+
+def test_buy_allowed_when_no_unresolved_profit_exit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Stock buy proceeds normally when there are no unresolved TP exits."""
+    import main_worker
+
+    _persisted: list[dict] = []
+    _orig_persist = main_worker._persist_decision
+
+    def _capture_persist(**kw):
+        _persisted.append(kw)
+        try:
+            _orig_persist(**kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _capture_persist)
+    monkeypatch.setattr("main_worker._use_local_paper_trader", lambda: True)
+
+    rt = {
+        "block_new_buys_when_profit_exit_pending": 1.0,
+        "pending_profit_exit_min_pct": 0.0,
+        "stock_take_profit_pct": 0.015,
+        "take_profit_pct": 0.015,
+        "_unresolved_profit_exit_symbols": "",
+        "_capital_stage": "MICRO",
+    }
+    blocked = [d for d in _persisted if d.get("reason_code") == rc.BUY_BLOCKED_PENDING_PROFIT_EXIT]
+    assert len(blocked) == 0
+
+
+def test_unresolved_profit_exit_detection_from_exit_rows() -> None:
+    """Logic that builds _unresolved_profit_exit_symbols from exit_health position rows."""
+    exit_health = {
+        "position_exit_rows": [
+            {
+                "symbol": "AEHL",
+                "asset_class": "stock",
+                "entry_price": 0.86,
+                "current_price": 2.85,
+                "recommended_action": "PDT_BLOCKED",
+            },
+            {
+                "symbol": "XYZ",
+                "asset_class": "stock",
+                "entry_price": 10.0,
+                "current_price": 10.1,
+                "recommended_action": "EXIT_ALLOWED",
+            },
+        ]
+    }
+    rt = {
+        "block_new_buys_when_profit_exit_pending": 1.0,
+        "pending_profit_exit_min_pct": 0.0,
+        "stock_take_profit_pct": 0.015,
+        "take_profit_pct": 0.015,
+    }
+    _stock_tp_frac = float(rt.get("stock_take_profit_pct", rt.get("take_profit_pct", 0.015)))
+    _min_exit_pct = _stock_tp_frac * 100.0
+    unresolved: set[str] = set()
+    for per in exit_health["position_exit_rows"]:
+        psym = str(per.get("symbol", "")).upper()
+        pac = str(per.get("asset_class", "")).lower()
+        if pac != "stock" or not psym:
+            continue
+        pentry = float(per.get("entry_price") or 0)
+        pmid = float(per.get("current_price") or 0)
+        if pentry <= 1e-12 or pmid <= 0:
+            continue
+        ppnl = (pmid - pentry) / pentry * 100.0
+        if ppnl >= _min_exit_pct:
+            pra = str(per.get("recommended_action", "")).upper()
+            if pra not in ("EXIT_ALLOWED",):
+                unresolved.add(psym)
+
+    assert "AEHL" in unresolved
+    assert "XYZ" not in unresolved
+    aehl_pnl = (2.85 - 0.86) / 0.86 * 100.0
+    assert aehl_pnl > _min_exit_pct

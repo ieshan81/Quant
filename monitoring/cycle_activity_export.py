@@ -286,6 +286,7 @@ def _stock_entry_held_hours(db_path: str | Path | None, symbol: str, qty_signed:
                 SELECT created_at FROM trades
                 WHERE symbol = ? AND asset_class = 'stock' AND status = 'filled'
                   AND LOWER(side) = ?
+                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
                 ORDER BY id DESC
                 LIMIT 1
                 """,
@@ -299,6 +300,99 @@ def _stock_entry_held_hours(db_path: str | Path | None, symbol: str, qty_signed:
     if dt is None:
         return None
     return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0)
+
+
+def _stock_entry_opened_at(db_path: str | Path | None, symbol: str, qty_signed: float) -> str | None:
+    """ISO timestamp of opening leg for the position (excludes synthetic sync records)."""
+    if not db_path or abs(float(qty_signed or 0.0)) <= 1e-12:
+        return None
+    p = Path(str(db_path))
+    if not p.exists():
+        return None
+    side = "buy" if float(qty_signed) > 1e-12 else "sell"
+    sym_key = str(symbol or "").strip()
+    try:
+        with sqlite3.connect(str(p)) as conn:
+            row = conn.execute(
+                """
+                SELECT created_at FROM trades
+                WHERE symbol = ? AND asset_class = 'stock' AND status = 'filled'
+                  AND LOWER(side) = ?
+                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (sym_key, side.lower()),
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return str(row[0]) if row[0] else None
+
+
+def _same_day_entry_breakdown(
+    db_path: str | Path | None,
+    symbol: str,
+    qty_signed: float,
+) -> tuple[float, float, str | None]:
+    """Return (same_day_qty, older_qty, opened_at_iso) from real trades (excluding sync records).
+
+    Uses Eastern Time to determine "today" vs older, matching the main_worker PDT logic.
+    """
+    if not db_path or abs(float(qty_signed or 0.0)) <= 1e-12:
+        return 0.0, 0.0, None
+    p = Path(str(db_path))
+    if not p.exists():
+        return 0.0, 0.0, None
+    side = "buy" if float(qty_signed) > 1e-12 else "sell"
+    sym_key = str(symbol or "").strip()
+    try:
+        import pytz as _pytz
+
+        et = _pytz.timezone("America/New_York")
+        today_et = datetime.now(et).date()
+    except Exception:
+        today_et = datetime.now(timezone.utc).date()
+    try:
+        with sqlite3.connect(str(p)) as conn:
+            rows = conn.execute(
+                """
+                SELECT created_at, quantity FROM trades
+                WHERE symbol = ? AND asset_class = 'stock' AND status = 'filled'
+                  AND LOWER(side) = ?
+                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
+                ORDER BY id ASC
+                """,
+                (sym_key, side.lower()),
+            ).fetchall()
+    except Exception:
+        return 0.0, 0.0, None
+    if not rows:
+        return 0.0, 0.0, None
+    same_day = 0.0
+    older = 0.0
+    opened_at: str | None = None
+    for row in rows:
+        ts_raw, q_raw = row
+        if opened_at is None and ts_raw:
+            opened_at = str(ts_raw)
+        dt = _parse_ts_to_utc_rough(ts_raw)
+        q = abs(float(q_raw or 0))
+        if dt is None:
+            older += q
+            continue
+        try:
+            import pytz as _pytz
+
+            row_date_et = dt.astimezone(_pytz.timezone("America/New_York")).date()
+        except Exception:
+            row_date_et = dt.date()
+        if row_date_et == today_et:
+            same_day += q
+        else:
+            older += q
+    return same_day, older, opened_at
 
 
 def scrub_stale_market_closed_exit_rows_for_open_session(
@@ -432,6 +526,22 @@ def build_sell_readiness(
         max_hold_h = _max_hold_hours_symbol(sym)
         max_hold_hit = bool(held_h is not None and held_h + 1e-9 >= max_hold_h)
 
+        sd_qty, older_qty, opened_at_raw = _same_day_entry_breakdown(db_path, sym, qty)
+        opened_at_display: str | None = None
+        if opened_at_raw:
+            dt_oa = _parse_ts_to_utc_rough(opened_at_raw)
+            if dt_oa:
+                opened_at_display = dt_oa.strftime("%d %b %Y")
+        same_day_entry_detected = sd_qty > 1e-9
+        pdt_guard_applies = same_day_entry_detected and bool(
+            float(xr.get("pdt_avoid_same_day_round_trip", 0) or 0)
+        )
+        pdt_guard_reason: str | None = None
+        if same_day_entry_detected and pdt_guard_applies:
+            pdt_guard_reason = f"same_day_entry_qty={sd_qty:.4f}, older_qty={older_qty:.4f}"
+        elif not same_day_entry_detected:
+            pdt_guard_reason = "no_same_day_entry"
+
         sk = (ac, sym.upper())
         sig = sig_by.get(sk) or sig_by.get(("stock", sym.upper()))
         if not isinstance(sig, dict):
@@ -563,6 +673,13 @@ def build_sell_readiness(
                 "last_exit_evaluation_cycle_id": exit_eval_cid,
                 "last_exit_evaluation_at": exit_eval_at,
                 "exit_decision_age_seconds": exit_eval_age,
+                "opened_at": opened_at_raw,
+                "opened_at_display": opened_at_display,
+                "same_day_entry_detected": same_day_entry_detected,
+                "same_day_entry_qty": sd_qty if same_day_entry_detected else 0.0,
+                "older_than_today_qty": older_qty,
+                "pdt_guard_applies": pdt_guard_applies,
+                "pdt_guard_reason": pdt_guard_reason,
                 **dep_fields,
                 **pend_fields,
             }

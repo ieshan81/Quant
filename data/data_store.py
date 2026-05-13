@@ -23,6 +23,8 @@ _EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "telegram_startup_dedupe_seconds": (21600.0, "Cooldown window for startup message dedup (seconds)"),
     "telegram_error_alert_cooldown_seconds": (900.0, "Cooldown for repeated error/crash alerts (seconds)"),
     "broker_startup_hard_fail": (0.0, "0=degraded mode on broker fail, 1=crash/restart"),
+    "block_new_buys_when_profit_exit_pending": (1.0, "1=block stock buys when unresolved TP exit exists"),
+    "pending_profit_exit_min_pct": (0.0, "Min unrealized pnl %% for TP exit to block new buys (0=use stock_take_profit_pct)"),
 }
 
 _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
