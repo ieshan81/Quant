@@ -270,6 +270,11 @@ def _exit_peak_price(db_path: str | Path | None, asset_class: str, symbol: str) 
         return None
 
 
+_SYNTHETIC_REASON_CODES = (
+    "ALPACA_SYNC_OPEN", "ALPACA_SYNC", "ALPACA_REAL", "BROKER_RECONCILE_ADJUST",
+)
+
+
 def _stock_entry_held_hours(db_path: str | Path | None, symbol: str, qty_signed: float) -> float | None:
     """Hours since opening leg (latest filled BUY for long, SELL for short), matching main_worker semantics."""
     if not db_path or abs(float(qty_signed or 0.0)) <= 1e-12:
@@ -279,18 +284,19 @@ def _stock_entry_held_hours(db_path: str | Path | None, symbol: str, qty_signed:
         return None
     side = "buy" if float(qty_signed) > 1e-12 else "sell"
     sym_key = str(symbol or "").strip()
+    ph = ",".join(["?"] * len(_SYNTHETIC_REASON_CODES))
     try:
         with sqlite3.connect(str(p)) as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT created_at FROM trades
                 WHERE symbol = ? AND asset_class = 'stock' AND status = 'filled'
                   AND LOWER(side) = ?
-                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
+                  AND UPPER(COALESCE(TRIM(reason_code), '')) NOT IN ({ph})
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (sym_key, side.lower()),
+                (sym_key, side.lower(), *_SYNTHETIC_REASON_CODES),
             ).fetchone()
     except Exception:
         return None
@@ -303,7 +309,7 @@ def _stock_entry_held_hours(db_path: str | Path | None, symbol: str, qty_signed:
 
 
 def _stock_entry_opened_at(db_path: str | Path | None, symbol: str, qty_signed: float) -> str | None:
-    """ISO timestamp of opening leg for the position (excludes synthetic sync records)."""
+    """ISO timestamp of opening leg for the position (excludes synthetic/sync records)."""
     if not db_path or abs(float(qty_signed or 0.0)) <= 1e-12:
         return None
     p = Path(str(db_path))
@@ -311,18 +317,19 @@ def _stock_entry_opened_at(db_path: str | Path | None, symbol: str, qty_signed: 
         return None
     side = "buy" if float(qty_signed) > 1e-12 else "sell"
     sym_key = str(symbol or "").strip()
+    ph = ",".join(["?"] * len(_SYNTHETIC_REASON_CODES))
     try:
         with sqlite3.connect(str(p)) as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT created_at FROM trades
                 WHERE symbol = ? AND asset_class = 'stock' AND status = 'filled'
                   AND LOWER(side) = ?
-                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
+                  AND UPPER(COALESCE(TRIM(reason_code), '')) NOT IN ({ph})
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (sym_key, side.lower()),
+                (sym_key, side.lower(), *_SYNTHETIC_REASON_CODES),
             ).fetchone()
     except Exception:
         return None
@@ -354,17 +361,18 @@ def _same_day_entry_breakdown(
         today_et = datetime.now(et).date()
     except Exception:
         today_et = datetime.now(timezone.utc).date()
+    ph = ",".join(["?"] * len(_SYNTHETIC_REASON_CODES))
     try:
         with sqlite3.connect(str(p)) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT created_at, quantity FROM trades
                 WHERE symbol = ? AND asset_class = 'stock' AND status = 'filled'
                   AND LOWER(side) = ?
-                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
+                  AND UPPER(COALESCE(TRIM(reason_code), '')) NOT IN ({ph})
                 ORDER BY id ASC
                 """,
-                (sym_key, side.lower()),
+                (sym_key, side.lower(), *_SYNTHETIC_REASON_CODES),
             ).fetchall()
     except Exception:
         return 0.0, 0.0, None
@@ -572,6 +580,10 @@ def build_sell_readiness(
                 blocker = "PDT_PROTECTION"
             elif fa == "COOLDOWN_ACTIVE":
                 blocker = "COOLDOWN_ACTIVE"
+            elif fa == "EXIT_BLOCKED_SPREAD":
+                blocker = str(rc.STOCK_EXIT_SPREAD_TOO_WIDE)
+            elif fa == "EXIT_EVALUATION_STALE":
+                blocker = "EXIT_EVALUATION_NOT_REFRESHED"
             exit_eval_cid = d.get("last_exit_evaluation_cycle_id")
             exit_eval_at = d.get("last_exit_evaluation_at")
             exit_eval_age = d.get("exit_decision_age_seconds")
@@ -586,6 +598,11 @@ def build_sell_readiness(
                 pdt_block_source = str(d_meta.get("pdt_block_source") or "local_preflight")
                 broker_would_accept_unknown = True
 
+        if blocker == "PDT_PROTECTION" and not same_day_entry_detected and older_qty > 1e-9:
+            blocker = "EXIT_EVALUATION_NOT_REFRESHED"
+            pdt_block_source = "stale_snapshot"
+            broker_would_accept_unknown = True
+
         if worker_sell_gate_open_now and blocker and str(blocker).strip().upper() in mc_blockers:
             blocker = "STALE_EXIT_DATA_SESSION_OPEN"
 
@@ -594,7 +611,10 @@ def build_sell_readiness(
         if exit_cfg_disabled:
             blocker = "EXIT_DISABLED"
 
-        hard_block = blocker in ("PDT_PROTECTION", "COOLDOWN_ACTIVE", "EXIT_DISABLED")
+        hard_block = blocker in (
+            "PDT_PROTECTION", "COOLDOWN_ACTIVE", "EXIT_DISABLED",
+            str(rc.STOCK_EXIT_SPREAD_TOO_WIDE), "EXIT_EVALUATION_NOT_REFRESHED",
+        )
         sell_allowed_now = bool(
             worker_sell_gate_open_now
             and market_open_now
@@ -1259,21 +1279,63 @@ def build_activity_export_payload(
         if ed_cid > _newest_exec_cid:
             _newest_exec_cid = ed_cid
 
+    _stale_block_actions = frozenset({
+        "EXIT_REEVAL_PENDING", "SELL_BLOCKED", "PDT_BLOCKED", "COOLDOWN_ACTIVE",
+    })
+    try:
+        _pdt_guard_cfg = float(exit_runtime.get("pdt_avoid_same_day_round_trip", 0) or 0)
+    except Exception:
+        _pdt_guard_cfg = 0.0
     for ped in position_exit_decisions:
         ped["last_exit_evaluation_cycle_id"] = _cid or None
         ped["last_exit_evaluation_at"] = exit_snap_created_at
         ped["exit_decision_age_seconds"] = round(exit_snap_age, 1) if exit_snap_age is not None else None
+
+        _ped_sym = str(ped.get("symbol") or "").strip().upper()
+        _ped_ac = str(ped.get("asset_class") or "").lower()
+        _ped_qty = float(ped.get("broker_qty") or ped.get("local_qty") or 0)
+        if _ped_ac == "stock" and _ped_qty > 1e-9:
+            _sd_qty, _ol_qty, _oa_raw = _same_day_entry_breakdown(config.DB_PATH, _ped_sym, _ped_qty)
+            _oa_display: str | None = None
+            if _oa_raw:
+                _dt_oa = _parse_ts_to_utc_rough(_oa_raw)
+                if _dt_oa:
+                    _oa_display = _dt_oa.strftime("%d %b %Y")
+            _sd_detected = _sd_qty > 1e-9
+            _pg_applies = _sd_detected and _pdt_guard_cfg > 0.5
+            ped["opened_at"] = _oa_raw
+            ped["opened_at_display"] = _oa_display
+            ped["same_day_entry_detected"] = _sd_detected
+            ped["same_day_entry_qty"] = _sd_qty if _sd_detected else 0.0
+            ped["older_than_today_qty"] = _ol_qty
+            ped["pdt_guard_applies"] = _pg_applies
+            ped["pdt_guard_reason"] = (
+                f"same_day_entry_qty={_sd_qty:.4f}, older_qty={_ol_qty:.4f}" if _pg_applies
+                else "no_same_day_entry"
+            )
+            fa_u = str(ped.get("final_action") or "").upper()
+            br_u = str(ped.get("blocked_reason") or "").upper()
+            if fa_u == "PDT_BLOCKED" and br_u == "PDT_PROTECTION" and not _sd_detected:
+                ped["pdt_block_source"] = "stale_snapshot"
+                ped["final_action"] = "EXIT_EVALUATION_STALE"
+                ped["blocked_reason"] = "EXIT_EVALUATION_NOT_REFRESHED"
+                ped["human_reason"] = (
+                    f"{_ped_sym}: PDT block is stale — position was opened on "
+                    f"{_oa_display or 'an earlier day'}, not same-day. "
+                    "Latest broker/account data requires re-evaluation."
+                )
+
         fa_u = str(ped.get("final_action") or "").upper()
         if (
             market_open
-            and fa_u in ("EXIT_REEVAL_PENDING", "SELL_BLOCKED")
+            and fa_u in _stale_block_actions
             and _newest_exec_cid
             and _cid
             and _newest_exec_cid > _cid
         ):
+            sym_u = str(ped.get("symbol") or "").strip().upper()
             ped["final_action"] = "EXIT_EVALUATION_NOT_REFRESHED"
             ped["blocked_reason"] = "STALE_EXIT_DATA_SESSION_OPEN"
-            sym_u = str(ped.get("symbol") or "").strip().upper()
             ped["human_reason"] = (
                 f"{sym_u}: Exit evaluation has not refreshed since cycle {_cid}; "
                 f"newer cycle {_newest_exec_cid} exists. Worker should re-evaluate."

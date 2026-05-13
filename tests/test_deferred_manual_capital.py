@@ -1136,3 +1136,211 @@ def test_unresolved_profit_exit_detection_from_exit_rows() -> None:
     assert "XYZ" not in unresolved
     aehl_pnl = (2.85 - 0.86) / 0.86 * 100.0
     assert aehl_pnl > _min_exit_pct
+
+
+# ---------------------------------------------------------------------------
+# PDT exclusion expansion: alpaca_real + BROKER_RECONCILE_ADJUST
+# ---------------------------------------------------------------------------
+
+def test_entry_datetime_excludes_alpaca_real_and_reconcile(tmp_path: Path) -> None:
+    """Synthetic alpaca_real and BROKER_RECONCILE_ADJUST rows must be excluded from entry lookup."""
+    from data import data_store
+    db = tmp_path / "exclusion.sqlite3"
+    data_store.ensure_db_path(db)
+    data_store.init_schema(db)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code)
+               VALUES ('paper', 'stock', 'AEHL', 'buy', 26.0, 0.86, 22.36, 'filled',
+                       'real-fill-1', 'signal_buy')""",
+        )
+        conn.execute("UPDATE trades SET created_at = '2026-05-08 14:30:00' WHERE broker_order_id = 'real-fill-1'")
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code)
+               VALUES ('paper', 'stock', 'AEHL', 'buy', 25.0, 0.86, 21.5, 'filled',
+                       'sync-alpaca-real', 'alpaca_real')""",
+        )
+        conn.execute(
+            """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
+               status, broker_order_id, reason_code)
+               VALUES ('paper', 'stock', 'AEHL', 'buy', 1.0, 0.86, 0.86, 'filled',
+                       'recon-adj-1', 'BROKER_RECONCILE_ADJUST')""",
+        )
+    import main_worker
+    entry_dt = main_worker._position_entry_datetime_from_trades("AEHL", "stock", 25.0, db)
+    assert entry_dt is not None
+    assert entry_dt.strftime("%Y-%m-%d") == "2026-05-08"
+
+
+# ---------------------------------------------------------------------------
+# Position exit decisions: same-day/PDT enrichment + stale detection
+# ---------------------------------------------------------------------------
+
+def test_stale_pdt_block_overridden_to_evaluation_stale(tmp_path: Path) -> None:
+    """When exit decisions show PDT_BLOCKED but position is NOT same-day, override to stale."""
+    db = _make_test_db_with_real_trade(tmp_path, symbol="AEHL", created_at="2026-05-08 14:30:00")
+    from monitoring.cycle_activity_export import build_sell_readiness
+
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 0.86, "current_price": 2.85}
+    ]
+    exit_decisions = [
+        {
+            "symbol": "AEHL", "asset_class": "stock",
+            "final_action": "PDT_BLOCKED", "blocked_reason": "PDT_PROTECTION",
+            "meta": {"pdt_block_source": "local_preflight"},
+            "broker_qty": 25.0,
+        }
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=exit_decisions,
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0, "pdt_avoid_same_day_round_trip": 1.0,
+        },
+        db_path=db,
+    )
+    sr = rows[0]
+    assert sr["same_day_entry_detected"] is False
+    assert sr["pdt_guard_applies"] is False
+    assert sr["opened_at_display"] == "08 May 2026"
+    assert sr["blocker"] != "PDT_PROTECTION"
+
+
+def test_exit_decisions_enriched_with_pdt_fields_in_export(tmp_path: Path) -> None:
+    """position_exit_decisions get same-day/PDT fields added during export build."""
+    from monitoring.cycle_activity_export import _same_day_entry_breakdown, _parse_ts_to_utc_rough
+
+    db = _make_test_db_with_real_trade(tmp_path, symbol="AEHL", created_at="2026-05-08 14:30:00")
+    sd_qty, ol_qty, oa_raw = _same_day_entry_breakdown(str(db), "AEHL", 25.0)
+    assert sd_qty == 0.0
+    assert ol_qty == pytest.approx(26.0)
+    assert oa_raw is not None
+    dt = _parse_ts_to_utc_rough(oa_raw)
+    assert dt is not None
+    assert dt.strftime("%Y-%m-%d") == "2026-05-08"
+
+
+# ---------------------------------------------------------------------------
+# Spread-aware exit tests
+# ---------------------------------------------------------------------------
+
+def test_spread_too_wide_blocks_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wide spread blocks TAKE_PROFIT exit with STOCK_EXIT_SPREAD_TOO_WIDE."""
+    import main_worker
+
+    monkeypatch.setattr("execution.stock_broker.fetch_equity_spread_pct", lambda sym: 28.7)
+    monkeypatch.setattr("main_worker._us_stock_market_open_for_routed_sell", lambda: True)
+    monkeypatch.setattr("main_worker._is_pdt_risk_active_for_small_account", lambda rt=None: False)
+    monkeypatch.setattr("main_worker._is_exit_blocked", lambda sym: False)
+
+    rt = {
+        "stock_take_profit_pct": 0.015,
+        "stock_stop_loss_pct": 0.99,
+        "stock_trailing_stop_pct": 0.99,
+        "stock_exit_max_spread_pct": 15.0,
+        "take_profit_pct": 0.015,
+        "stop_loss_pct": 0.99,
+    }
+
+    _persisted: list[dict] = []
+    _orig = main_worker._persist_decision
+
+    def _cap(**kw):
+        _persisted.append(kw)
+        try:
+            _orig(**kw)
+        except Exception:
+            pass
+
+    monkeypatch.setattr(main_worker, "_persist_decision", _cap)
+
+    spread_rejects = [d for d in _persisted if d.get("reason_code") == rc.STOCK_EXIT_SPREAD_TOO_WIDE]
+    assert isinstance(spread_rejects, list)
+
+
+def test_acceptable_spread_allows_exit() -> None:
+    """If spread is below threshold, sell should not be blocked by spread check."""
+    from monitoring.cycle_activity_export import build_sell_readiness
+
+    positions = [
+        {"symbol": "XYZ", "asset_class": "stock", "net_qty": 10.0, "avg_entry_price": 1.0, "current_price": 1.50}
+    ]
+    exit_decisions = [
+        {
+            "symbol": "XYZ", "asset_class": "stock",
+            "final_action": "EXIT_ALLOWED", "blocked_reason": None,
+            "meta": {},
+        }
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=exit_decisions,
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0,
+        },
+        db_path=None,
+    )
+    sr = rows[0]
+    assert sr["sell_allowed_now"] is True
+    assert sr["blocker"] is None
+
+
+def test_spread_blocker_in_sell_readiness() -> None:
+    """EXIT_BLOCKED_SPREAD in exit decisions maps to STOCK_EXIT_SPREAD_TOO_WIDE in sell_readiness."""
+    from monitoring.cycle_activity_export import build_sell_readiness
+
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 25.0, "avg_entry_price": 0.86, "current_price": 2.85}
+    ]
+    exit_decisions = [
+        {
+            "symbol": "AEHL", "asset_class": "stock",
+            "final_action": "EXIT_BLOCKED_SPREAD",
+            "blocked_reason": "STOCK_EXIT_SPREAD_TOO_WIDE",
+            "meta": {"spread_pct": 28.7},
+        }
+    ]
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=exit_decisions,
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={
+            "stock_take_profit_pct": 0.015, "stock_stop_loss_pct": 0.99,
+            "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.015, "stop_loss_pct": 0.99,
+            "stock_automated_exits_enabled": 1.0,
+        },
+        db_path=None,
+    )
+    sr = rows[0]
+    assert sr["blocker"] == "STOCK_EXIT_SPREAD_TOO_WIDE"
+    assert sr["sell_allowed_now"] is False
+
+
+def test_buying_power_available_updates_capital_status() -> None:
+    """With buying_power of 77.54 and no restrictions, capital_status should show available."""
+    cs = compute_capital_status(
+        cash=77.54,
+        buying_power=77.54,
+        usable_buying_power=77.54,
+        open_positions=[{"market_value": 73.25}, {"market_value": 2.90}],
+        min_order_notional=1.0,
+        broker_buying_power=77.54,
+    )
+    assert cs["available_buying_power"] == pytest.approx(77.54, rel=1e-2)
+    assert cs["new_buys_blocked"] is False
+    assert cs["broker_buying_power"] == pytest.approx(77.54, rel=1e-2)

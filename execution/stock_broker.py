@@ -278,6 +278,27 @@ def fetch_equity_latest_price(symbol: str) -> float | None:
             return None
 
 
+def fetch_equity_spread_pct(symbol: str) -> float | None:
+    """Bid/ask spread as a percentage of midpoint for an equity, or None on failure."""
+    client = get_rest_client()
+    if client is None:
+        return None
+    data_sym = alpaca_data_symbol(symbol)
+    try:
+        q = client.get_latest_quote(data_sym)
+        bp = _safe_float(getattr(q, "bp", None) or getattr(q, "bid_price", None))
+        ap = _safe_float(getattr(q, "ap", None) or getattr(q, "ask_price", None))
+        if bp is None or ap is None or bp <= 0 or ap <= 0:
+            return None
+        mid = (bp + ap) / 2.0
+        if mid <= 0:
+            return None
+        return (ap - bp) / mid * 100.0
+    except Exception:
+        logger.debug("[spread] quote fetch failed for {}", data_sym, exc_info=True)
+        return None
+
+
 def fetch_equity_latest_prices(symbols: list[str]) -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for s in symbols:

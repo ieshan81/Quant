@@ -904,9 +904,10 @@ def _position_entry_datetime_from_trades(
     Opening leg timestamp from SQLite ``trades`` table (not ``trade_log``).
     Long positions → latest filled BUY; short positions → latest filled SELL.
 
-    Excludes synthetic ``alpaca_sync_open`` rows which carry the *sync* timestamp
-    (today) rather than the real fill time, preventing a false same-day PDT block
-    on multi-day positions.
+    Excludes all synthetic / broker-sync rows (``alpaca_sync_open``,
+    ``alpaca_sync``, ``alpaca_real``, ``BROKER_RECONCILE_ADJUST``) whose
+    ``created_at`` may carry the sync timestamp rather than the real fill
+    time, preventing a false same-day PDT block on multi-day positions.
     """
     p = Path(db_path)
     if not p.exists():
@@ -921,7 +922,9 @@ def _position_entry_datetime_from_trades(
                 SELECT created_at FROM trades
                 WHERE symbol = ? AND asset_class = ? AND status = 'filled'
                   AND LOWER(side) = ?
-                  AND COALESCE(reason_code, '') NOT IN ('alpaca_sync_open', 'alpaca_sync')
+                  AND UPPER(COALESCE(TRIM(reason_code), ''))
+                      NOT IN ('ALPACA_SYNC_OPEN', 'ALPACA_SYNC',
+                              'ALPACA_REAL', 'BROKER_RECONCILE_ADJUST')
                 ORDER BY id DESC
                 LIMIT 1
                 """,
@@ -1692,67 +1695,118 @@ def _check_and_execute_exits(
                         },
                     )
                 else:
-                    logger.info(
-                        "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
-                        ac,
-                        sym,
-                        entry,
-                        mid,
-                        pnl_pct,
-                        tp_frac,
-                        held_sfx,
-                    )
-                    ledger.set_telegram_on_fills(False)
-                    try:
-                        r = broker.place_sell_order(
-                            sym,
-                            sell_qty,
-                            mid,
-                            reason_code=_exit_rc_long("TAKE_PROFIT"),
-                            meta={"risk_snapshot": {"tp_frac": tp_frac}, "eligibility": "allowed"},
-                        )
-                    finally:
-                        ledger.set_telegram_on_fills(True)
-                    if r.ok:
-                        exits_ok += 1
-                        _ensure_exit_trade_logged(
-                            db_path=db_path,
-                            mode=ledger.mode,
+                    _tp_spread = None
+                    _tp_spread_blocked = False
+                    if ac == "stock":
+                        try:
+                            _tp_spread = stock_broker.fetch_equity_spread_pct(sym)
+                            _max_sp = float(rt.get("stock_exit_max_spread_pct", 15.0) or 15.0)
+                            if _tp_spread is not None and _tp_spread > _max_sp:
+                                _tp_spread_blocked = True
+                        except Exception:
+                            pass
+                    if _tp_spread_blocked:
+                        blocked_exits_count += 1
+                        _persist_decision(
+                            cycle_id=f"exit-{int(time.time())}",
                             asset_class=ac,
                             symbol=sym,
                             side="sell",
+                            decision="rejected",
+                            reason_code=reason_codes.STOCK_EXIT_SPREAD_TOO_WIDE,
+                            score=None,
+                            notional=sell_qty * mid,
                             quantity=sell_qty,
                             price=mid,
-                            status="filled",
-                            broker_order_id=r.broker_order_id,
-                            reason_code=_exit_rc_long("TAKE_PROFIT"),
-                            meta=None,
+                            meta={
+                                "spread_pct": round(_tp_spread, 2) if _tp_spread else None,
+                                "max_spread_pct": float(rt.get("stock_exit_max_spread_pct", 15.0)),
+                                "reason_detail": "bid_ask_spread_exceeds_threshold",
+                            },
                         )
-                        if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
-                            _record_crypto_pull_cooldown(sym)
+                        lines.append(
+                            f"TAKE_PROFIT_SPREAD_BLOCKED {ac} {sym} @ {mid:.4f} spread={_tp_spread:.1f}%{held_sfx}"
+                        )
+                        _snapshot_exit_row(
+                            symbol=sym,
+                            asset_class=ac,
+                            local_qty=local_qty_val,
+                            broker_qty=qty,
+                            entry_p=entry,
+                            mid_p=mid,
+                            block_reason="STOCK_EXIT_SPREAD_TOO_WIDE",
+                            pdt_status="—",
+                            recommended_action="EXIT_BLOCKED_SPREAD",
+                            rotation_eval={
+                                "rule_triggered": True,
+                                "automated_rule": "TAKE_PROFIT",
+                                "exit_allowed": False,
+                                "blocked_reason_code": reason_codes.STOCK_EXIT_SPREAD_TOO_WIDE,
+                                "spread_pct": round(_tp_spread, 2) if _tp_spread else None,
+                            },
+                        )
                     else:
-                        if str(getattr(r, "reason_code", "")) == "PDT_PROTECTION":
-                            blocked_exits_count += 1
-                            pdt_blocked_symbols.add(sym)
-                            _mark_exit_blocked(sym, pdt_sec, reason_code="PDT_PROTECTION")
-                            _persist_decision(
-                                cycle_id=f"exit-{int(time.time())}",
+                        logger.info(
+                            "[exit] TAKE_PROFIT {} {} entry={:.4f} mark={:.4f} pnl_pct={:.2%} threshold={:.2%}{}",
+                            ac,
+                            sym,
+                            entry,
+                            mid,
+                            pnl_pct,
+                            tp_frac,
+                            held_sfx,
+                        )
+                        ledger.set_telegram_on_fills(False)
+                        try:
+                            r = broker.place_sell_order(
+                                sym,
+                                sell_qty,
+                                mid,
+                                reason_code=_exit_rc_long("TAKE_PROFIT"),
+                                meta={"risk_snapshot": {"tp_frac": tp_frac}, "eligibility": "allowed"},
+                            )
+                        finally:
+                            ledger.set_telegram_on_fills(True)
+                        if r.ok:
+                            exits_ok += 1
+                            _ensure_exit_trade_logged(
+                                db_path=db_path,
+                                mode=ledger.mode,
                                 asset_class=ac,
                                 symbol=sym,
                                 side="sell",
-                                decision="rejected",
-                                reason_code="PDT_PROTECTION",
-                                score=None,
-                                notional=sell_qty * mid,
                                 quantity=sell_qty,
                                 price=mid,
-                                meta={"order_message": getattr(r, "message", None)},
+                                status="filled",
+                                broker_order_id=r.broker_order_id,
+                                reason_code=_exit_rc_long("TAKE_PROFIT"),
+                                meta=None,
                             )
-                    pnl = (mid - entry) * sell_qty
-                    lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
-                    _snapshot_exit_row(
-                        symbol=sym,
-                        asset_class=ac,
+                            if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
+                                _record_crypto_pull_cooldown(sym)
+                        else:
+                            if str(getattr(r, "reason_code", "")) == "PDT_PROTECTION":
+                                blocked_exits_count += 1
+                                pdt_blocked_symbols.add(sym)
+                                _mark_exit_blocked(sym, pdt_sec, reason_code="PDT_PROTECTION")
+                                _persist_decision(
+                                    cycle_id=f"exit-{int(time.time())}",
+                                    asset_class=ac,
+                                    symbol=sym,
+                                    side="sell",
+                                    decision="rejected",
+                                    reason_code="PDT_PROTECTION",
+                                    score=None,
+                                    notional=sell_qty * mid,
+                                    quantity=sell_qty,
+                                    price=mid,
+                                    meta={"order_message": getattr(r, "message", None)},
+                                )
+                        pnl = (mid - entry) * sell_qty
+                        lines.append(f"TAKE_PROFIT {ac} {sym} @ {mid:.4f} pnl={pnl:.2f} ok={r.ok}{held_sfx}")
+                        _snapshot_exit_row(
+                            symbol=sym,
+                            asset_class=ac,
                         local_qty=local_qty_val,
                         broker_qty=qty,
                         entry_p=entry,

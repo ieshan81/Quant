@@ -25,6 +25,11 @@ _EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "broker_startup_hard_fail": (0.0, "0=degraded mode on broker fail, 1=crash/restart"),
     "block_new_buys_when_profit_exit_pending": (1.0, "1=block stock buys when unresolved TP exit exists"),
     "pending_profit_exit_min_pct": (0.0, "Min unrealized pnl %% for TP exit to block new buys (0=use stock_take_profit_pct)"),
+    "stock_exit_max_spread_pct": (15.0, "Max bid/ask spread %% to allow market sell; wider spreads block exit"),
+    "stock_exit_use_limit_when_spread_wide": (0.0, "1=use limit order at bid when spread too wide (not yet implemented)"),
+    "stock_exit_limit_price_source": (0.0, "0=bid 1=mid 2=last (encoded; for future limit-order source)"),
+    "stock_exit_staged_sell_enabled": (0.0, "1=sell a fraction per cycle instead of full qty"),
+    "stock_exit_staged_sell_fraction_pct": (50.0, "Fraction of qty to sell per staged exit cycle"),
 }
 
 _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
