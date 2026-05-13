@@ -2644,3 +2644,130 @@ def test_profitable_position_above_tp_produces_exit_line() -> None:
         reason_codes.STOCK_EXIT_SPREAD_TOO_WIDE,
     }
     assert reason_codes.TAKE_PROFIT in expected_actions
+
+
+# ---------------------------------------------------------------------------
+# Config parsing: _cfg_is_enabled edge cases
+# ---------------------------------------------------------------------------
+
+def test_cfg_is_enabled_missing_defaults_to_true() -> None:
+    from monitoring.cycle_activity_export import _cfg_is_enabled
+    assert _cfg_is_enabled(None, default=True) is True
+
+def test_cfg_is_enabled_zero_means_disabled() -> None:
+    from monitoring.cycle_activity_export import _cfg_is_enabled
+    assert _cfg_is_enabled(0) is False
+    assert _cfg_is_enabled(0.0) is False
+    assert _cfg_is_enabled("0") is False
+    assert _cfg_is_enabled("false") is False
+
+def test_cfg_is_enabled_one_means_enabled() -> None:
+    from monitoring.cycle_activity_export import _cfg_is_enabled
+    assert _cfg_is_enabled(1) is True
+    assert _cfg_is_enabled(1.0) is True
+    assert _cfg_is_enabled("1") is True
+    assert _cfg_is_enabled("1.0") is True
+    assert _cfg_is_enabled("true") is True
+
+def test_cfg_source_db_override(tmp_path: Path) -> None:
+    from monitoring.cycle_activity_export import _cfg_source
+    defaults = {"dynamic_profit_reserve_enabled": (1.0, "desc")}
+    rt = {"dynamic_profit_reserve_enabled": 0.0}
+    assert _cfg_source(rt, "dynamic_profit_reserve_enabled", defaults) == "db_override"
+
+def test_cfg_source_default_when_matches(tmp_path: Path) -> None:
+    from monitoring.cycle_activity_export import _cfg_source
+    defaults = {"dynamic_profit_reserve_enabled": (1.0, "desc")}
+    rt = {"dynamic_profit_reserve_enabled": 1.0}
+    assert _cfg_source(rt, "dynamic_profit_reserve_enabled", defaults) == "default"
+
+def test_cfg_source_missing() -> None:
+    from monitoring.cycle_activity_export import _cfg_source
+    defaults = {"dynamic_profit_reserve_enabled": (1.0, "desc")}
+    rt: dict = {}
+    assert _cfg_source(rt, "dynamic_profit_reserve_enabled", defaults) == "missing_using_code_default"
+
+
+# ---------------------------------------------------------------------------
+# Export: dynamic_reserve_enabled reads from runtime config, not buy_gate
+# ---------------------------------------------------------------------------
+
+def test_export_dynamic_reserve_enabled_from_rt_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """dynamic_reserve_enabled in export reflects runtime config, even when no cooldown."""
+    from monitoring.cycle_activity_export import build_activity_export_payload
+    from data.data_store import init_schema
+    import sqlite3
+
+    db = tmp_path / "rt_cfg.sqlite3"
+    init_schema(db)
+    monkeypatch.setattr("monitoring.cycle_activity_export.config.DB_PATH", str(db))
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        payload = build_activity_export_payload(conn, limit=5)
+
+    crs = payload.get("capital_redeployment_status") or {}
+    assert crs["dynamic_reserve_enabled"] is True
+    assert "status_explanation" in crs
+    assert "deployed" in crs["status_explanation"].lower() or "inactive" in crs["status_explanation"].lower()
+
+    dp = payload.get("deployment_proof") or {}
+    assert dp["dynamic_profit_reserve_enabled"] is True
+    assert "dynamic_profit_reserve_enabled_source" in dp
+
+    assert "runtime_config_snapshot_safe" in payload
+    snap = payload["runtime_config_snapshot_safe"]
+    assert "dynamic_profit_reserve_enabled" in snap
+
+
+def test_export_db_override_zero_shows_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """When DB has dynamic_profit_reserve_enabled=0, export says disabled_by_db_override."""
+    from monitoring.cycle_activity_export import build_activity_export_payload
+    from data.data_store import init_schema
+    import sqlite3
+
+    db = tmp_path / "override.sqlite3"
+    init_schema(db)
+    monkeypatch.setattr("monitoring.cycle_activity_export.config.DB_PATH", str(db))
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("UPDATE bot_config SET value = 0.0 WHERE key = 'dynamic_profit_reserve_enabled'")
+        conn.commit()
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        payload = build_activity_export_payload(conn, limit=5)
+
+    crs = payload.get("capital_redeployment_status") or {}
+    assert crs["dynamic_reserve_enabled"] is False
+    assert "disabled" in crs["status_explanation"].lower()
+    assert "db_override" in crs["status_explanation"].lower()
+
+    dp = payload.get("deployment_proof") or {}
+    assert dp["dynamic_profit_reserve_enabled"] is False
+    assert dp["dynamic_profit_reserve_enabled_source"] == "db_override"
+
+
+def test_deployment_proof_shows_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """deployment_proof includes config source for key settings."""
+    from monitoring.cycle_activity_export import build_activity_export_payload
+    from data.data_store import init_schema
+    import sqlite3
+
+    db = tmp_path / "src.sqlite3"
+    init_schema(db)
+    monkeypatch.setattr("monitoring.cycle_activity_export.config.DB_PATH", str(db))
+
+    with sqlite3.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        payload = build_activity_export_payload(conn, limit=5)
+
+    dp = payload.get("deployment_proof") or {}
+    assert "dynamic_profit_reserve_enabled_source" in dp
+    assert dp["dynamic_profit_reserve_enabled_source"] in ("default", "db_override", "missing_using_code_default")
+
+    crs = payload.get("capital_redeployment_status") or {}
+    cs = crs.get("config_source") or {}
+    assert "dynamic_profit_reserve_enabled" in cs
+    assert "protect_profit_cash_after_exit_enabled" in cs
+    assert "enforce_allocator_before_new_buys" in cs

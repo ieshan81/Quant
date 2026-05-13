@@ -15,6 +15,73 @@ import config
 from execution import reason_codes as rc
 
 
+_ALLOCATOR_SAFE_KEYS = frozenset({
+    "dynamic_profit_reserve_enabled",
+    "protect_profit_cash_after_exit_enabled",
+    "enforce_allocator_before_new_buys",
+    "post_profit_redeploy_cooldown_seconds",
+    "min_useful_stock_order_notional",
+    "base_profit_cash_reserve_pct",
+    "min_profit_cash_reserve_pct",
+    "max_profit_cash_reserve_pct",
+    "profit_cash_reserve_pct",
+    "minimum_cash_after_profit_exit_usd",
+    "profit_size_reserve_weight",
+    "stock_overweight_reserve_weight",
+    "crypto_signal_reserve_weight",
+    "near_close_reserve_weight",
+    "loss_streak_reserve_weight",
+    "stock_signal_discount_weight",
+    "min_crypto_reserved_after_profit_usd",
+    "max_stock_redeploy_fraction_after_profit_pct",
+    "max_position_pct",
+    "kelly_fraction",
+    "max_stock_weight_pct",
+    "target_stock_weight",
+    "stock_take_profit_pct",
+    "stock_stop_loss_pct",
+    "stock_trailing_stop_pct",
+    "stock_automated_exits_enabled",
+    "deferred_pdt_exit_enabled",
+    "block_new_buys_when_profit_exit_pending",
+})
+
+
+def _cfg_is_enabled(val: Any, default: bool = True) -> bool:
+    """Parse a config value as boolean (handles float, int, str "1"/"true"/etc.)."""
+    if val is None:
+        return default
+    s = str(val).strip().lower()
+    if s in ("1", "1.0", "true", "yes", "on"):
+        return True
+    if s in ("0", "0.0", "false", "no", "off", ""):
+        return False
+    try:
+        return float(val) >= 0.5
+    except (TypeError, ValueError):
+        return default
+
+
+def _cfg_source(rt: dict, key: str, defaults: dict | None = None) -> str:
+    """Determine the source of a config value: 'db_override', 'default', or 'missing'."""
+    if defaults is None:
+        try:
+            from data.data_store import BOT_CONFIG_DEFAULTS
+            defaults = BOT_CONFIG_DEFAULTS
+        except Exception:
+            defaults = {}
+    if key in rt:
+        default_val = defaults.get(key, (None,))[0] if isinstance(defaults.get(key), tuple) else defaults.get(key)
+        if default_val is not None:
+            try:
+                if abs(float(rt[key]) - float(default_val)) < 1e-9:
+                    return "default"
+            except (TypeError, ValueError):
+                pass
+        return "db_override"
+    return "missing_using_code_default"
+
+
 _SECRET_KEY_NAMES = frozenset(
     {
         "telegram",
@@ -1538,7 +1605,10 @@ def build_activity_export_payload(
         _bg.get("max_usable_for_new_buys_stock", 0) < float(getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0)
     )
     _dyn_res = _bg.get("dynamic_reserve") or {}
-    _dyn_enabled = bool(_dyn_res.get("inputs_used", {}).get("dynamic_enabled", False))
+    _dyn_enabled_cfg = _cfg_is_enabled(_rt.get("dynamic_profit_reserve_enabled"), default=True)
+    _protect_enabled_cfg = _cfg_is_enabled(_rt.get("protect_profit_cash_after_exit_enabled"), default=True)
+    _enforce_alloc_cfg = _cfg_is_enabled(_rt.get("enforce_allocator_before_new_buys"), default=True)
+    _dyn_cycle_active = bool(_dyn_res.get("inputs_used", {}).get("dynamic_enabled", False))
     import os as _os
     _git_commit = (_os.environ.get("RAILWAY_GIT_COMMIT_SHA") or _os.environ.get("GIT_COMMIT") or "")[:12] or "local"
     _cooldown_sec = float(_rt.get("post_profit_redeploy_cooldown_seconds", 300.0))
@@ -1547,8 +1617,10 @@ def build_activity_export_payload(
     payload["capital_redeployment_status"] = {
         "recent_profit_exit": _recent_profit,
         "latest_profit_exit_at": datetime.fromtimestamp(_profit_ts, tz=timezone.utc).isoformat() if _profit_ts > 0 else None,
-        "dynamic_reserve_active": _dyn_enabled and _cooldown_on,
-        "dynamic_reserve_enabled": _dyn_enabled,
+        "dynamic_reserve_active": _dyn_enabled_cfg and _cooldown_on and _dyn_cycle_active,
+        "dynamic_reserve_enabled": _dyn_enabled_cfg,
+        "protect_profit_cash_after_exit_enabled": _protect_enabled_cfg,
+        "enforce_allocator_before_new_buys": _enforce_alloc_cfg,
         "reserve_pct": _dyn_res.get("reserve_pct", 0),
         "reserve_usd": _dyn_res.get("reserve_usd", 0),
         "stock_buy_budget": _dyn_res.get("stock_buy_budget", float(_bg.get("max_usable_for_new_buys_stock", 0) or 0)),
@@ -1563,9 +1635,15 @@ def build_activity_export_payload(
         "enforcement_code_version": _git_commit,
     }
     _bp_val = float(_bg.get("buying_power", 0) or 0)
-    if _dyn_enabled and _cooldown_on:
+    if not _dyn_enabled_cfg:
+        _dpr_src = _cfg_source(_rt, "dynamic_profit_reserve_enabled")
+        if _dpr_src == "db_override":
+            _expl = "Dynamic reserve is disabled by db_override (dynamic_profit_reserve_enabled=0 in bot_config)."
+        else:
+            _expl = "Dynamic reserve is disabled in runtime config."
+    elif _dyn_enabled_cfg and _cooldown_on and _dyn_cycle_active:
         _expl = "Dynamic reserve is active and enforcing post-profit cooldown."
-    elif _dyn_enabled and not _cooldown_on:
+    elif _dyn_enabled_cfg and not _cooldown_on:
         _parts = ["Dynamic reserve is deployed but inactive"]
         _reasons = []
         if _profit_ts <= 0:
@@ -1575,11 +1653,14 @@ def build_activity_export_payload(
         if _bp_val < 1.0:
             _reasons.append(f"buying power is only ${_bp_val:.2f}")
         _expl = _parts[0] + (" because " + " and ".join(_reasons) if _reasons else "") + "."
-    elif not _dyn_enabled:
-        _expl = "Dynamic reserve is disabled in runtime config."
     else:
-        _expl = ""
+        _expl = "Dynamic reserve is enabled but not currently enforcing (no active cooldown cycle)."
     payload["capital_redeployment_status"]["status_explanation"] = _expl
+    payload["capital_redeployment_status"]["config_source"] = {
+        "dynamic_profit_reserve_enabled": _cfg_source(_rt, "dynamic_profit_reserve_enabled"),
+        "protect_profit_cash_after_exit_enabled": _cfg_source(_rt, "protect_profit_cash_after_exit_enabled"),
+        "enforce_allocator_before_new_buys": _cfg_source(_rt, "enforce_allocator_before_new_buys"),
+    }
 
     _buy_gate_rows: list[dict] = []
     _sync_codes = {"ALPACA_SYNC_OPEN", "ALPACA_SYNC", "ALPACA_REAL", "BROKER_RECONCILE_ADJUST"}
@@ -1611,13 +1692,30 @@ def build_activity_export_payload(
     payload["recent_buy_gate_decisions"] = _buy_gate_rows[-20:]
 
     payload["deployment_proof"] = {
-        "dynamic_profit_reserve_enabled": float(_rt.get("dynamic_profit_reserve_enabled", 1.0)),
-        "enforce_allocator_before_new_buys": float(_rt.get("enforce_allocator_before_new_buys", 1.0)),
-        "protect_profit_cash_after_exit_enabled": float(_rt.get("protect_profit_cash_after_exit_enabled", 1.0)),
+        "dynamic_profit_reserve_enabled": _dyn_enabled_cfg,
+        "dynamic_profit_reserve_enabled_source": _cfg_source(_rt, "dynamic_profit_reserve_enabled"),
+        "dynamic_profit_reserve_enabled_raw": _rt.get("dynamic_profit_reserve_enabled"),
+        "protect_profit_cash_after_exit_enabled": _protect_enabled_cfg,
+        "enforce_allocator_before_new_buys": _enforce_alloc_cfg,
         "post_profit_redeploy_cooldown_seconds": float(_rt.get("post_profit_redeploy_cooldown_seconds", 300.0)),
         "min_useful_stock_order_notional": float(_rt.get("min_useful_stock_order_notional", 5.0)),
         "git_commit": _git_commit,
     }
+
+    _safe_snap: dict[str, Any] = {}
+    for _sk in sorted(_ALLOCATOR_SAFE_KEYS):
+        if _sk in _rt:
+            _safe_snap[_sk] = _rt[_sk]
+        else:
+            try:
+                from data.data_store import BOT_CONFIG_DEFAULTS
+                _dv = BOT_CONFIG_DEFAULTS.get(_sk)
+                if _dv is not None:
+                    _safe_snap[_sk] = _dv[0] if isinstance(_dv, tuple) else _dv
+                    _safe_snap[f"{_sk}__source"] = "code_default_not_in_db"
+            except Exception:
+                pass
+    payload["runtime_config_snapshot_safe"] = _safe_snap
 
     last_cid = _cid
     rp_cid = ""
