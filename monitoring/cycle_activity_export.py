@@ -515,11 +515,21 @@ def build_sell_readiness(
             "pending_order_exists": has_pending_sell,
             "pending_order_qty": sym_sells[0].get("qty") if has_pending_sell else None,
             "pending_order_status": sym_sells[0].get("status") if has_pending_sell else None,
+            "pending_order_id": (str(sym_sells[0].get("id") or "")[:8] or None) if has_pending_sell else None,
+            "pending_order_expires_at": sym_sells[0].get("expires_at") if has_pending_sell else None,
         }
+        human_reason: str | None = None
         if has_pending_sell:
             blocker = str(rc.ORDER_ALREADY_PENDING)
+            pdt_block_source = None
+            broker_would_accept_unknown = None
             sell_allowed_now = False
             expected = "BLOCKED_WITH_REASON"
+            _pqty = pend_fields["pending_order_qty"]
+            human_reason = (
+                f"{sym}: Existing broker sell order is open/accepted for qty {_pqty}; "
+                "bot will not submit duplicate sell."
+            )
 
         out.append(
             {
@@ -540,6 +550,7 @@ def build_sell_readiness(
                 "blocked_reason": blocker,
                 "pdt_block_source": pdt_block_source,
                 "broker_would_accept_unknown": broker_would_accept_unknown,
+                "human_reason": human_reason,
                 "expected_action": expected,
                 **dep_fields,
                 **pend_fields,
@@ -553,11 +564,14 @@ def build_why_no_sell_summary(
     position_exit_decisions: list[dict[str, Any]],
     open_positions: list[dict[str, Any]],
     account_market_open: bool | None = None,
+    open_orders_by_symbol: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
     """Short operator-facing lines: why each open leg did not sell (or did)."""
     idx: dict[tuple[str, str], dict[str, Any]] = {}
     for d in position_exit_decisions or []:
         idx[_exit_row_key(d)] = d
+
+    oo = dict(open_orders_by_symbol or {})
 
     lines: list[str] = []
     for p in open_positions or []:
@@ -574,10 +588,23 @@ def build_why_no_sell_summary(
             upf = None
         prof = upf is not None and upf > 0
 
-        if d:
+        sym_sells = [o for o in oo.get(sym.upper(), []) if str(o.get("side") or "").lower() == "sell"]
+        has_pending_sell = len(sym_sells) > 0
+
+        if has_pending_sell:
+            lines.append(
+                f"{sym}: Existing broker sell order is open/accepted; "
+                "waiting for fill/cancel/expiry."
+            )
+        elif d:
             fa = str(d.get("final_action") or "")
             br = str(d.get("blocked_reason") or "")
-            if fa == "SELL_BLOCKED" and br in (rc.EXIT_BLOCKED_MARKET_CLOSED, "MARKET_CLOSED"):
+            if fa == "WAITING_ON_PENDING_ORDER":
+                lines.append(
+                    f"{sym}: Existing broker sell order is open/accepted; "
+                    "waiting for fill/cancel/expiry."
+                )
+            elif fa == "SELL_BLOCKED" and br in (rc.EXIT_BLOCKED_MARKET_CLOSED, "MARKET_CLOSED"):
                 if account_market_open is True:
                     lines.append(
                         f"{sym}: Stale snapshot still shows market-closed block; US session is open — "
@@ -794,12 +821,48 @@ def compile_position_exit_decisions(
     )
 
 
+def overlay_open_orders_on_exit_decisions(
+    decisions: list[dict[str, Any]],
+    open_orders_by_symbol: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    """If a symbol has an open sell order, override its exit decision to WAITING_ON_PENDING_ORDER."""
+    oo = dict(open_orders_by_symbol or {})
+    if not oo:
+        return decisions
+    for d in decisions:
+        sym = str(d.get("symbol") or "").strip().upper()
+        ac = str(d.get("asset_class") or "").strip().lower()
+        if ac != "stock":
+            continue
+        sells = [o for o in oo.get(sym, []) if str(o.get("side") or "").lower() == "sell"]
+        if not sells:
+            continue
+        first = sells[0]
+        oqty = first.get("qty")
+        ostatus = first.get("status")
+        oid = str(first.get("id") or "")[:8] if first.get("id") else None
+        oexpires = first.get("expires_at")
+        d["final_action"] = "WAITING_ON_PENDING_ORDER"
+        d["blocked_reason"] = str(rc.ORDER_ALREADY_PENDING)
+        d["exit_allowed"] = False
+        d["pending_order_exists"] = True
+        d["pending_order_qty"] = oqty
+        d["pending_order_status"] = ostatus
+        d["pending_order_id"] = oid
+        d["pending_order_expires_at"] = oexpires
+        d["human_reason"] = (
+            f"{sym}: Existing broker sell order is open/accepted for qty {oqty}; "
+            "bot will not submit duplicate sell."
+        )
+    return decisions
+
+
 def blocked_exits_from_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for d in decisions:
         fa = str(d.get("final_action") or "")
         br = str(d.get("blocked_reason") or "")
-        if fa in ("PDT_BLOCKED", "COOLDOWN_ACTIVE", "BROKER_QTY_ZERO"):
+        if fa in ("PDT_BLOCKED", "COOLDOWN_ACTIVE", "BROKER_QTY_ZERO", "WAITING_ON_PENDING_ORDER"):
             out.append(
                 {
                     "symbol": d.get("symbol"),
@@ -1030,7 +1093,6 @@ def build_activity_export_payload(
             "stock_automated_exits_enabled": 1.0,
         }
 
-    blocked_exits = blocked_exits_from_decisions(position_exit_decisions)
     broker_sync_trades = dd.fetch_recent_broker_sync_trades(conn, limit=lim)
 
     oo_by_sym: dict[str, list[dict[str, Any]]] = {}
@@ -1044,6 +1106,11 @@ def build_activity_export_payload(
                     oo_by_sym[_s] = _oos
     except Exception:
         pass
+
+    position_exit_decisions = overlay_open_orders_on_exit_decisions(
+        position_exit_decisions, oo_by_sym,
+    )
+    blocked_exits = blocked_exits_from_decisions(position_exit_decisions)
 
     sell_readiness = build_sell_readiness(
         open_positions=pos_list,
@@ -1060,6 +1127,7 @@ def build_activity_export_payload(
         position_exit_decisions=position_exit_decisions,
         open_positions=pos_list,
         account_market_open=market_open,
+        open_orders_by_symbol=oo_by_sym,
     )
     crypto_ev = crypto_push_pull_events_from_decisions(decisions)
 

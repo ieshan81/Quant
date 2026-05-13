@@ -96,6 +96,7 @@ def record_pdt_deferred_exit(
     mode = str(getattr(config, "MODE", "paper") or "paper")
     meta_d = dict(meta or {})
     meta_d["cycle_id"] = cycle_id
+    meta_d["earliest_check_reason"] = "PDT same-day round trip blocked; next session open"
     p = Path(str(db_path))
     with get_connection(p) as conn:
         row = conn.execute(
@@ -200,7 +201,7 @@ def fetch_deferred_exit_plans(
                    trigger_price, trigger_pnl_pct, trigger_reason, blocked_reason, status,
                    earliest_next_check_at, last_checked_at, attempts, meta_json
             FROM deferred_exit_plans
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'waiting_on_existing_order')
             ORDER BY earliest_next_check_at ASC
             LIMIT ?
             """,
@@ -269,9 +270,9 @@ def process_deferred_exit_plans(
         rows = conn.execute(
             """
             SELECT id, symbol, broker_qty, entry_price, trigger_pnl_pct, trigger_reason, attempts,
-                   earliest_next_check_at
+                   earliest_next_check_at, status
             FROM deferred_exit_plans
-            WHERE status = 'pending'
+            WHERE status IN ('pending', 'waiting_on_existing_order')
             """
         ).fetchall()
         for r in rows:
@@ -283,6 +284,32 @@ def process_deferred_exit_plans(
             trig_reason = str(r["trigger_reason"] or "")
             attempts = int(r["attempts"] or 0)
             earliest = str(r["earliest_next_check_at"] or "").strip() or None
+
+            plan_status = str(r["status"] or "pending").strip().lower()
+
+            if plan_status == "waiting_on_existing_order":
+                try:
+                    from execution.stock_broker import get_open_sell_orders_for_symbol
+                    still_open = get_open_sell_orders_for_symbol(sym)
+                except Exception:
+                    still_open = []
+                conn.execute(
+                    "UPDATE deferred_exit_plans SET last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+                    (pid,),
+                )
+                if still_open:
+                    lines.append(f"[deferred_exit] {sym} still waiting_on_existing_order")
+                    continue
+                live_qty_check = float(broker_qty_fn(sym))
+                if live_qty_check <= 1e-9:
+                    _update_plan_status(conn, pid, "executed_via_pending_order", attempts_delta=0)
+                    lines.append(f"[deferred_exit] {sym} pending order filled — position closed, plan resolved")
+                    continue
+                conn.execute(
+                    "UPDATE deferred_exit_plans SET status = 'pending', updated_at = datetime('now') WHERE id = ?",
+                    (pid,),
+                )
+                lines.append(f"[deferred_exit] {sym} pending order gone but position remains — reverting to pending")
 
             if _before_earliest_check(earliest):
                 lines.append(f"[deferred_exit] {sym} before earliest_next_check_at={earliest} — skip")
@@ -370,7 +397,11 @@ def process_deferred_exit_plans(
                 existing_sells = []
             if existing_sells:
                 conn.execute(
-                    "UPDATE deferred_exit_plans SET last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
+                    """UPDATE deferred_exit_plans SET
+                        last_checked_at = datetime('now'),
+                        updated_at = datetime('now'),
+                        status = 'waiting_on_existing_order'
+                    WHERE id = ?""",
                     (pid,),
                 )
                 trade_logger.log_execution_decision(
@@ -380,7 +411,7 @@ def process_deferred_exit_plans(
                     symbol=sym,
                     side="sell",
                     decision="skipped",
-                    reason_code=rc.ORDER_ALREADY_PENDING,
+                    reason_code=rc.DEFERRED_EXIT_WAITING_ON_PENDING_ORDER,
                     score=None,
                     notional=live_qty * mid,
                     quantity=live_qty,

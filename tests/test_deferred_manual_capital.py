@@ -452,6 +452,170 @@ def test_pending_order_no_false_positive_when_no_orders() -> None:
     assert rows[0]["blocker"] != rc.ORDER_ALREADY_PENDING
 
 
+def test_open_order_causes_sell_readiness_order_already_pending_with_full_fields() -> None:
+    """Broker open order for AEHL qty=1 accepted => sell_readiness: ORDER_ALREADY_PENDING + all fields."""
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 26.0, "avg_entry_price": 0.8625, "current_price": 2.14}
+    ]
+    oo = {"AEHL": [{"id": "abc12345-6789", "symbol": "AEHL", "side": "sell", "qty": 1.0, "status": "accepted", "expires_at": "2026-05-13 20:00:00+00:00"}]}
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[
+            {"symbol": "AEHL", "asset_class": "stock", "final_action": "PDT_BLOCKED", "blocked_reason": rc.PDT_PROTECTION, "meta": {}}
+        ],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={"stock_take_profit_pct": 0.5, "stock_stop_loss_pct": 0.99, "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.5, "stop_loss_pct": 0.99, "stock_automated_exits_enabled": 1.0},
+        db_path=None,
+        open_orders_by_symbol=oo,
+    )
+    sr = rows[0]
+    assert sr["blocker"] == rc.ORDER_ALREADY_PENDING
+    assert sr["sell_allowed_now"] is False
+    assert sr["pending_order_exists"] is True
+    assert sr["pending_order_qty"] == 1.0
+    assert sr["pending_order_status"] == "accepted"
+    assert sr["pending_order_id"] == "abc12345"
+    assert sr["pending_order_expires_at"] == "2026-05-13 20:00:00+00:00"
+    assert "duplicate" in (sr.get("human_reason") or "").lower()
+    assert sr["pdt_block_source"] is None
+
+
+def test_overlay_exit_decisions_waiting_on_pending_order() -> None:
+    """overlay_open_orders_on_exit_decisions sets WAITING_ON_PENDING_ORDER."""
+    from monitoring.cycle_activity_export import overlay_open_orders_on_exit_decisions
+
+    decisions = [
+        {"symbol": "AEHL", "asset_class": "stock", "final_action": "PDT_BLOCKED", "blocked_reason": "PDT_PROTECTION", "human_reason": "PDT block."}
+    ]
+    oo = {"AEHL": [{"id": "ord123", "symbol": "AEHL", "side": "sell", "qty": 1.0, "status": "accepted", "expires_at": "2026-05-13T20:00:00Z"}]}
+    result = overlay_open_orders_on_exit_decisions(decisions, oo)
+    d = result[0]
+    assert d["final_action"] == "WAITING_ON_PENDING_ORDER"
+    assert d["blocked_reason"] == rc.ORDER_ALREADY_PENDING
+    assert d["pending_order_exists"] is True
+    assert d["pending_order_qty"] == 1.0
+    assert d["pending_order_status"] == "accepted"
+    assert d["pending_order_id"] == "ord123"
+    assert "duplicate" in d["human_reason"].lower()
+
+
+def test_why_no_sell_summary_pending_order() -> None:
+    """why_no_sell_summary mentions existing broker sell order when open order exists."""
+    from monitoring.cycle_activity_export import build_why_no_sell_summary
+
+    decisions = [
+        {"symbol": "AEHL", "asset_class": "stock", "final_action": "PDT_BLOCKED", "blocked_reason": "PDT_PROTECTION"}
+    ]
+    positions = [{"symbol": "AEHL", "asset_class": "stock", "net_qty": 26.0, "unrealized_pnl_pct": 148.0}]
+    oo = {"AEHL": [{"side": "sell", "qty": 1.0, "status": "accepted"}]}
+    lines = build_why_no_sell_summary(
+        position_exit_decisions=decisions,
+        open_positions=positions,
+        account_market_open=True,
+        open_orders_by_symbol=oo,
+    )
+    assert any("existing broker sell order" in l.lower() for l in lines)
+    assert not any("pdt" in l.lower() for l in lines)
+
+
+def test_why_no_sell_summary_waiting_on_pending_order_final_action() -> None:
+    """why_no_sell_summary handles WAITING_ON_PENDING_ORDER final_action without oo dict."""
+    from monitoring.cycle_activity_export import build_why_no_sell_summary
+
+    decisions = [
+        {"symbol": "AEHL", "asset_class": "stock", "final_action": "WAITING_ON_PENDING_ORDER", "blocked_reason": "ORDER_ALREADY_PENDING"}
+    ]
+    positions = [{"symbol": "AEHL", "asset_class": "stock", "net_qty": 26.0}]
+    lines = build_why_no_sell_summary(
+        position_exit_decisions=decisions,
+        open_positions=positions,
+        account_market_open=True,
+    )
+    assert any("existing broker sell order" in l.lower() for l in lines)
+
+
+def test_deferred_exit_waiting_sets_status_and_reason_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deferred exit with open sell uses DEFERRED_EXIT_WAITING_ON_PENDING_ORDER and sets status."""
+    db = tmp_path / "de2.sqlite3"
+    from data.data_store import init_schema, get_connection
+
+    init_schema(db)
+    from execution.deferred_exit_plans import record_pdt_deferred_exit, process_deferred_exit_plans
+
+    rt: dict[str, float] = {
+        "deferred_pdt_exit_enabled": 1.0,
+        "deferred_exit_check_first_in_cycle": 1.0,
+        "deferred_exit_min_profit_pct": 0.0,
+        "deferred_exit_cancel_if_profit_below_pct": -999.0,
+        "deferred_exit_max_attempts": 5.0,
+    }
+    record_pdt_deferred_exit(
+        db, rt, symbol="AEHL", asset_class="stock", broker_qty=26.0, entry_price=0.86,
+        trigger_price=2.1, trigger_pnl_pct=144.0, trigger_reason="TAKE_PROFIT",
+        blocked_reason="PDT_PROTECTION", cycle_id="c1",
+    )
+    sell_called = []
+
+    monkeypatch.setattr(
+        "execution.stock_broker.get_open_sell_orders_for_symbol",
+        lambda sym: [{"symbol": "AEHL", "side": "sell", "qty": 1.0, "status": "accepted"}],
+    )
+    monkeypatch.setattr(
+        "execution.deferred_exit_plans._before_earliest_check",
+        lambda earliest: False,
+    )
+
+    lines: list[str] = []
+    process_deferred_exit_plans(
+        db, rt, cycle_id="c2",
+        broker_qty_fn=lambda s: 26.0,
+        mid_price_fn=lambda s: 2.11,
+        sell_gate_open=True,
+        pdt_blocks_fn=lambda s, q, m: False,
+        submit_sell_fn=lambda s, q, m: (sell_called.append(s), (True, None, None))[-1],
+        log_lines=lines,
+    )
+    assert len(sell_called) == 0
+
+    with get_connection(db) as conn:
+        row = conn.execute("SELECT status FROM deferred_exit_plans WHERE symbol = 'AEHL'").fetchone()
+    assert row is not None
+    assert row[0] == "waiting_on_existing_order"
+
+    with get_connection(db) as conn:
+        ed = conn.execute(
+            "SELECT reason_code FROM execution_decisions WHERE symbol = 'AEHL' AND reason_code = ?",
+            (rc.DEFERRED_EXIT_WAITING_ON_PENDING_ORDER,),
+        ).fetchone()
+    assert ed is not None
+
+
+def test_pdt_not_shown_when_open_order_exists() -> None:
+    """When open order exists, PDT is NOT shown as current blocker in sell_readiness."""
+    positions = [
+        {"symbol": "AEHL", "asset_class": "stock", "net_qty": 26.0, "avg_entry_price": 0.8625, "current_price": 2.14}
+    ]
+    oo = {"AEHL": [{"id": "o1", "symbol": "AEHL", "side": "sell", "qty": 1.0, "status": "accepted"}]}
+    rows = build_sell_readiness(
+        open_positions=positions,
+        recent_signals=[],
+        position_exit_decisions=[
+            {"symbol": "AEHL", "asset_class": "stock", "final_action": "PDT_BLOCKED", "blocked_reason": "PDT_PROTECTION", "meta": {}}
+        ],
+        market_open_now=True,
+        worker_sell_gate_open_now=True,
+        exit_runtime={"stock_take_profit_pct": 0.5, "stock_stop_loss_pct": 0.99, "stock_trailing_stop_pct": 0.99, "take_profit_pct": 0.5, "stop_loss_pct": 0.99, "stock_automated_exits_enabled": 1.0},
+        db_path=None,
+        open_orders_by_symbol=oo,
+    )
+    sr = rows[0]
+    assert sr["blocker"] == rc.ORDER_ALREADY_PENDING
+    assert sr["blocker"] != "PDT_PROTECTION"
+    assert sr["pdt_block_source"] is None
+
+
 @pytest.fixture()
 def dash_app(tmp_path: Path):
     db = tmp_path / "t.sqlite3"
