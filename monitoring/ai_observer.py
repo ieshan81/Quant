@@ -1057,34 +1057,71 @@ def build_ai_memories_export(db_path: Path | str | None = None) -> dict[str, Any
     })
 
 
-def build_ai_bundle_export(db_path: Path | str | None = None) -> dict[str, Any]:
-    """Sanitized full bundle: activity export + broker diagnostic + AI memory."""
-    ai_memories = build_ai_memories_export(db_path)
-
-    activity_export: dict[str, Any] = {}
+def _fetch_activity_export_safe(limit: int = 100) -> dict[str, Any]:
+    """Fetch activity export payload, returning detailed error on failure."""
     try:
-        from monitoring.cycle_activity_export import build_activity_export
-        activity_export = build_activity_export()
-    except Exception:
-        activity_export = {"error": "unavailable"}
+        from monitoring.cycle_activity_export import build_activity_export_payload
+        from monitoring.dashboard_data import _open_dashboard_sqlite
+        with _open_dashboard_sqlite() as conn:
+            return build_activity_export_payload(conn, limit=limit)
+    except Exception as exc:
+        return {
+            "error": "activity_export_failed",
+            "exception_type": type(exc).__name__,
+            "detail": str(exc)[:200],
+        }
 
-    broker_diagnostic: dict[str, Any] = {}
+
+def _fetch_broker_diagnostic_safe() -> dict[str, Any]:
+    """Fetch broker diagnostic payload, returning detailed error on failure."""
     try:
         from monitoring.broker_diagnostic import build_broker_diagnostic_payload
         from monitoring.dashboard_data import _open_dashboard_sqlite
         with _open_dashboard_sqlite() as conn:
-            broker_diagnostic = build_broker_diagnostic_payload(conn)
-    except Exception:
-        broker_diagnostic = {"error": "unavailable"}
+            return build_broker_diagnostic_payload(conn)
+    except Exception as exc:
+        return {
+            "error": "broker_diagnostic_failed",
+            "exception_type": type(exc).__name__,
+            "detail": str(exc)[:200],
+        }
+
+
+def build_ai_bundle_export(db_path: Path | str | None = None) -> dict[str, Any]:
+    """Sanitized full bundle: activity export + broker diagnostic + AI memory."""
+    ai_memories = build_ai_memories_export(db_path)
+
+    activity_export = _fetch_activity_export_safe(limit=100)
+    broker_diagnostic = _fetch_broker_diagnostic_safe()
+
+    source_errors: list[dict[str, str]] = []
+    if activity_export.get("error"):
+        source_errors.append({
+            "source": "activity_export",
+            "error": str(activity_export.get("error")),
+            "exception_type": str(activity_export.get("exception_type", "")),
+            "detail": str(activity_export.get("detail", "")),
+        })
+    if broker_diagnostic.get("error"):
+        source_errors.append({
+            "source": "broker_diagnostic",
+            "error": str(broker_diagnostic.get("error")),
+            "exception_type": str(broker_diagnostic.get("exception_type", "")),
+            "detail": str(broker_diagnostic.get("detail", "")),
+        })
 
     return _deep_scrub_export({
         "activity_export": activity_export,
         "broker_diagnostic": broker_diagnostic,
         "ai_status": ai_memories.get("ai_status"),
         "ai_memories": ai_memories,
+        "ai_latest_notes": ai_memories.get("latest_notes", []),
+        "ai_patterns": ai_memories.get("patterns", []),
+        "ai_skills": ai_memories.get("candidate_skills", []),
         "jarvis_last_answer": None,
         "copied_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "allowed_to_execute": False,
+        "source_errors": source_errors if source_errors else None,
     })
 
 
@@ -1119,11 +1156,13 @@ def handle_chat(
 
     if include_activity_export:
         try:
-            from monitoring.cycle_activity_export import build_activity_export
-            raw_export = build_activity_export()
-            context_parts.append("=== ACTIVITY EXPORT ===\n" + json.dumps(
-                _sanitize_for_gemini(raw_export), default=str)[:8000])
-            evidence_used.append("activity_export")
+            raw_export = _fetch_activity_export_safe(limit=50)
+            if not raw_export.get("error"):
+                context_parts.append("=== ACTIVITY EXPORT ===\n" + json.dumps(
+                    _sanitize_for_gemini(raw_export), default=str)[:8000])
+                evidence_used.append("activity_export")
+            else:
+                context_parts.append("=== ACTIVITY EXPORT === " + str(raw_export.get("detail", "unavailable")))
         except Exception:
             context_parts.append("=== ACTIVITY EXPORT === unavailable")
 
@@ -1224,8 +1263,7 @@ def _deterministic_chat(
 
     if has_export:
         try:
-            from monitoring.cycle_activity_export import build_activity_export
-            export = build_activity_export()
+            export = _fetch_activity_export_safe(limit=50)
             sell_readiness = export.get("sell_readiness") or []
             positions = export.get("open_positions") or []
             account = export.get("account") or {}

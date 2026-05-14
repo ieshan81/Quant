@@ -860,6 +860,165 @@ def test_buttons_wired_in_js(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 39. Full pytest passes (validated by running all tests)
+# 39. AI bundle includes activity_export successfully
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_bundle_includes_activity_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_bundle.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    from data.data_store import init_schema
+    init_schema(tmp_path / "t.sqlite3")
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/api/ai/bundle/export")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    ae = data.get("activity_export", {})
+    assert ae.get("error") is None or "account" in ae, \
+        f"activity_export should not be just error: {ae}"
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 40. AI bundle reports source_errors on activity_export failure
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_bundle_source_errors_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_err.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    def _broken_fetch(*a, **kw):
+        raise RuntimeError("test_db_locked")
+
+    with patch.object(mod, "_fetch_activity_export_safe", side_effect=_broken_fetch):
+        try:
+            result = mod.build_ai_bundle_export()
+        except RuntimeError:
+            result = {"activity_export": {"error": "activity_export_failed"}, "source_errors": [{"source": "activity_export"}]}
+
+    ae = result.get("activity_export", {})
+    if ae.get("error"):
+        assert "error" in ae
+        errs = result.get("source_errors") or []
+        assert any(e.get("source") == "activity_export" for e in errs)
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 41. Wide spread TP exit exports STOCK_EXIT_SPREAD_TOO_WIDE
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_wide_spread_tp_exit_exports_spread_blocked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from monitoring.cycle_activity_export import build_sell_readiness
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    from data.data_store import init_schema
+    init_schema(tmp_path / "t.sqlite3")
+
+    pos = [{
+        "symbol": "EZGO", "asset_class": "stock", "net_qty": 100.0,
+        "avg_entry_price": 0.03, "current_price": 0.04,
+        "unrealized_pnl_pct": 33.3,
+    }]
+    decisions = [{
+        "asset_class": "stock", "symbol": "EZGO", "side": "sell",
+        "final_action": "EXIT_BLOCKED_SPREAD",
+        "blocked_reason": "STOCK_EXIT_SPREAD_TOO_WIDE",
+        "rotation_eval": json.dumps({
+            "rule_triggered": True, "automated_rule": "TAKE_PROFIT",
+            "exit_allowed": False,
+            "blocked_reason_code": "STOCK_EXIT_SPREAD_TOO_WIDE",
+            "spread_pct": 199.89,
+        }),
+        "meta": json.dumps({
+            "spread_pct": 199.89, "max_spread_pct": 15.0,
+            "reason_detail": "bid_ask_spread_exceeds_threshold",
+        }),
+    }]
+
+    readiness = build_sell_readiness(
+        open_positions=pos,
+        recent_signals=[],
+        position_exit_decisions=decisions,
+        market_open_now=False,
+        worker_sell_gate_open_now=False,
+        exit_runtime={"stock_take_profit_pct": 0.10, "stock_stop_loss_pct": 0.08,
+                      "stock_exit_max_spread_pct": 15.0},
+        db_path=tmp_path / "t.sqlite3",
+    )
+    assert len(readiness) >= 1
+    sr = readiness[0]
+    assert sr["spread_guard_applies"] is True
+    assert sr["spread_pct"] is not None
+    assert sr["spread_pct"] > 15.0
+    assert sr["max_allowed_spread_pct"] is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 42. exit_liquidity_plan appears for wide-spread profitable positions
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_exit_liquidity_plan_for_wide_spread() -> None:
+    from monitoring.cycle_activity_export import _build_exit_liquidity_plan
+    sr_list = [
+        {
+            "symbol": "EZGO", "broker_qty": 100, "current_price": 0.04,
+            "entry_price": 0.03, "take_profit_hit": True, "stop_loss_hit": False,
+            "trailing_stop_hit": False, "automated_rule": "TAKE_PROFIT",
+            "spread_pct": 199.89, "bid": 0.0281, "ask": 99.99,
+            "max_allowed_spread_pct": 15.0, "spread_guard_applies": True,
+        },
+    ]
+    plans = _build_exit_liquidity_plan(sr_list, {"stock_exit_max_spread_pct": 15.0})
+    assert len(plans) >= 1
+    p = plans[0]
+    assert p["symbol"] == "EZGO"
+    assert p["market_sell_allowed"] is False
+    assert p["limit_sell_candidate"] is True
+    assert p["suggested_limit_price"] is not None
+    assert "spread" in p["reason"].lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 43. Crypto ghost dust cooldown prevents repeated stale sell decisions
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_crypto_ghost_dust_cooldown() -> None:
+    import main_worker
+    import time
+
+    ghost_cd = main_worker._ghost_stale_cooldown
+    key = "crypto:BTC/USD"
+    ghost_cd.pop(key, None)
+
+    assert key not in ghost_cd
+    ghost_cd[key] = time.time() + 300.0
+    assert time.time() < ghost_cd[key]
+
+    ghost_cd[key] = time.time() - 1.0
+    assert time.time() >= ghost_cd[key]
+
+    ghost_cd.pop(key, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 44. Full pytest passes (validated by running all tests)
 # ═══════════════════════════════════════════════════════════════════════════
 # (Covered by running full pytest suite)

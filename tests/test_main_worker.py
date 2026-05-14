@@ -530,6 +530,7 @@ def test_buy_attempt_logged_only_after_gates_pass() -> None:
 
 
 def test_sqlite_only_position_with_broker_zero_qty_records_stale() -> None:
+    mw._ghost_stale_cooldown.clear()
     t = create_paper_trader(persist_sqlite=False)
 
     class _B:

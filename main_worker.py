@@ -98,6 +98,7 @@ _blocked_exit_until: dict[str, float] = {}
 _blocked_exit_reason: dict[str, str] = {}
 _reconcile_queue: set[tuple[str, str]] = set()
 _crypto_last_exit_ts: dict[str, float] = {}
+_ghost_stale_cooldown: dict[str, float] = {}
 _last_reconcile_iso: str | None = None
 _prev_us_stock_session_open: bool | None = None
 _last_profit_exit_ts: float = 0.0
@@ -1157,6 +1158,7 @@ def _drain_reconcile_queue(rt: dict[str, float]) -> None:
             if summary.get("error"):
                 continue
             _reconcile_queue.discard(key)
+            _ghost_stale_cooldown.pop(f"{ac}:{sym}", None)
             _last_reconcile_iso = dt_et.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
             logger.info("[reconcile] symbol={} {} summary={}", ac, sym, summary)
         except Exception:
@@ -1420,22 +1422,28 @@ def _check_and_execute_exits(
         if qty <= 0:
             logger.info("[exits] skip {} {} — broker reports zero qty", ac, sym)
             if source == "sqlite_trades" or local_pos is not None:
-                stale_local_positions_count += 1
-                broker_local_mismatch_count += 1
-                _queue_reconciliation_cleanup(ac, sym)
-                _persist_decision(
-                    cycle_id=f"exit-{int(time.time())}",
-                    asset_class=ac,
-                    symbol=sym,
-                    side="sell",
-                    decision="rejected",
-                    reason_code="LOCAL_POSITION_STALE",
-                    score=None,
-                    notional=0.0,
-                    quantity=float(pos.get("net_qty") or 0.0),
-                    price=mid,
-                    meta={"source": source},
-                )
+                _ghost_key = f"{ac}:{sym}"
+                _ghost_until = _ghost_stale_cooldown.get(_ghost_key, 0.0)
+                if time.time() < _ghost_until:
+                    logger.debug("[exits] ghost cooldown active for {} — skipping stale decision", sym)
+                else:
+                    stale_local_positions_count += 1
+                    broker_local_mismatch_count += 1
+                    _queue_reconciliation_cleanup(ac, sym)
+                    _ghost_stale_cooldown[_ghost_key] = time.time() + 300.0
+                    _persist_decision(
+                        cycle_id=f"exit-{int(time.time())}",
+                        asset_class=ac,
+                        symbol=sym,
+                        side="sell",
+                        decision="rejected",
+                        reason_code="LOCAL_POSITION_STALE",
+                        score=None,
+                        notional=0.0,
+                        quantity=float(pos.get("net_qty") or 0.0),
+                        price=mid,
+                        meta={"source": source, "ghost_cooldown_sec": 300},
+                    )
             continue
         if abs(float(local_qty_val) - float(qty)) > 1e-5:
             broker_local_mismatch_count += 1

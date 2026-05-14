@@ -838,6 +838,50 @@ def build_sell_readiness(
 
         _pnl_frac_display = round(pnl_frac * 100.0, 2) if pnl_frac is not None else None
 
+        _spread_pct: float | None = None
+        _bid: float | None = None
+        _ask: float | None = None
+        _max_spread_pct: float | None = None
+        _spread_suggested_action: str | None = None
+        if isinstance(d, dict):
+            _d_meta = d.get("meta") or {}
+            if isinstance(_d_meta, str):
+                import json as _json3
+                try:
+                    _d_meta = _json3.loads(_d_meta)
+                except Exception:
+                    _d_meta = {}
+            if isinstance(_d_meta, dict):
+                _sp = _d_meta.get("spread_pct")
+                if _sp is not None:
+                    try:
+                        _spread_pct = round(float(_sp), 2)
+                    except (TypeError, ValueError):
+                        pass
+                _msp = _d_meta.get("max_spread_pct")
+                if _msp is not None:
+                    try:
+                        _max_spread_pct = round(float(_msp), 2)
+                    except (TypeError, ValueError):
+                        pass
+            _re_sp = _rotation_eval.get("spread_pct")
+            if _re_sp is not None and _spread_pct is None:
+                try:
+                    _spread_pct = round(float(_re_sp), 2)
+                except (TypeError, ValueError):
+                    pass
+        if _spread_pct is not None and _max_spread_pct is None:
+            try:
+                _max_spread_pct = round(float(xr.get("stock_exit_max_spread_pct", 15.0) or 15.0), 2)
+            except (TypeError, ValueError):
+                _max_spread_pct = 15.0
+        if _blocked_reason and "SPREAD" in str(_blocked_reason or "").upper():
+            if cur > 0 and _spread_pct is not None:
+                half_spread_frac = (_spread_pct / 100.0) / 2.0
+                _bid = round(cur * (1 - half_spread_frac), 4)
+                _ask = round(cur * (1 + half_spread_frac), 4)
+            _spread_suggested_action = "Use limit sell near bid or wait for spread to narrow"
+
         out.append(
             {
                 "symbol": sym,
@@ -874,8 +918,12 @@ def build_sell_readiness(
                 "final_action": _mapped_final_action,
                 "exit_allowed": sell_allowed_now,
                 "open_order_exists": has_pending_sell,
-                "spread_pct": None,
+                "spread_pct": _spread_pct,
+                "bid": _bid,
+                "ask": _ask,
+                "max_allowed_spread_pct": _max_spread_pct,
                 "spread_guard_applies": bool(_blocked_reason and "SPREAD" in str(_blocked_reason or "").upper()),
+                "spread_suggested_action": _spread_suggested_action,
                 "price_source": "broker_position",
                 "price_timestamp": p.get("last_trade_timestamp") or p.get("updated_at") or None,
                 "exit_decision_price": _exit_decision_price,
@@ -897,6 +945,54 @@ def build_sell_readiness(
             }
         )
     return out
+
+
+def _build_exit_liquidity_plan(
+    sell_readiness: list[dict[str, Any]],
+    xr: dict[str, float],
+) -> list[dict[str, Any]]:
+    """Advisory exit plan for wide-spread profitable positions."""
+    max_spread = float(xr.get("stock_exit_max_spread_pct", 15.0) or 15.0)
+    plans: list[dict[str, Any]] = []
+    for sr in sell_readiness or []:
+        sym = sr.get("symbol", "")
+        spread_pct = sr.get("spread_pct")
+        is_wide = bool(spread_pct is not None and spread_pct > max_spread)
+        tp_hit = sr.get("take_profit_hit", False)
+        sl_hit = sr.get("stop_loss_hit", False)
+        trail_hit = sr.get("trailing_stop_hit", False)
+        exit_hit = tp_hit or sl_hit or trail_hit
+        if not (exit_hit and is_wide):
+            continue
+        bid = sr.get("bid")
+        ask = sr.get("ask")
+        cur = sr.get("current_price") or 0
+        entry = sr.get("entry_price") or 0
+        suggested_limit = None
+        if bid and bid > 0:
+            suggested_limit = round(bid * 0.995, 4)
+        elif cur and cur > 0:
+            suggested_limit = round(cur * 0.99, 4)
+        trigger = sr.get("automated_rule") or "UNKNOWN"
+        reason = (
+            f"{trigger} triggered but spread {spread_pct:.1f}% > max {max_spread:.1f}%. "
+            "Market sell risks significant slippage. Limit sell recommended."
+        )
+        plans.append({
+            "symbol": sym,
+            "broker_qty": sr.get("broker_qty"),
+            "trigger": trigger,
+            "current_bid": bid,
+            "current_ask": ask,
+            "spread_pct": spread_pct,
+            "max_allowed_spread_pct": max_spread,
+            "market_sell_allowed": False,
+            "limit_sell_candidate": True,
+            "suggested_limit_price": suggested_limit,
+            "staged_qty": sr.get("broker_qty"),
+            "reason": reason,
+        })
+    return plans
 
 
 def build_why_no_sell_summary(
@@ -1709,6 +1805,7 @@ def build_activity_export_payload(
         "performance": dd._json_safe(performance),
         "warnings": warnings,
         "sell_readiness": dd._json_safe(sell_readiness),
+        "exit_liquidity_plan": dd._json_safe(_build_exit_liquidity_plan(sell_readiness, _rt)),
         "deferred_exit_plans": dd._json_safe(deferred_rows),
         "capital_status": dd._json_safe(capital_status),
     }
