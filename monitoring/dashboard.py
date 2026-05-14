@@ -1001,6 +1001,17 @@ _PAGE = """<!DOCTYPE html>
       </div>
 
       <div class="card">
+        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">AI Memory Export</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button type="button" id="btnCopyAiMemories" style="padding:6px 14px;font-size:12px;">Copy AI Memories</button>
+          <button type="button" id="btnCopyFullAiBundle" style="padding:6px 14px;font-size:12px;">Copy Full AI Bundle</button>
+          <button type="button" id="btnDownloadAiMemories" style="padding:6px 14px;font-size:12px;">Download AI Memories</button>
+          <button type="button" id="btnDownloadFullAiBundle" style="padding:6px 14px;font-size:12px;">Download Full AI Bundle</button>
+        </div>
+        <p id="aiMemoryCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
+      </div>
+
+      <div class="card">
         <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Latest AI Notes</h2>
         <div class="scroll-table">
           <table class="data" id="tblAiNotes"><thead><tr>
@@ -2464,6 +2475,18 @@ def create_app() -> Flask:
     def api_ai_memory_export() -> Response:
         from monitoring.ai_observer import export_memory
         data = export_memory()
+        return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.get("/api/ai/memories/export")
+    def api_ai_memories_export() -> Response:
+        from monitoring.ai_observer import build_ai_memories_export
+        data = build_ai_memories_export()
+        return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.get("/api/ai/bundle/export")
+    def api_ai_bundle_export() -> Response:
+        from monitoring.ai_observer import build_ai_bundle_export
+        data = build_ai_bundle_export()
         return Response(json.dumps(data, default=str), mimetype="application/json")
 
     @app.post("/api/ai/skills/<int:skill_id>/approve_observe_only")

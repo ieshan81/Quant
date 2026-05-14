@@ -666,6 +666,200 @@ def test_backtest_defaults_sqlite_locked(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 30. Full pytest passes (validated by running all tests)
+# 30. AI Console HTML contains btnCopyAiMemories
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_html_contains_copy_ai_memories_btn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    html = client.get("/").data.decode()
+    assert "btnCopyAiMemories" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 31. AI Console HTML contains btnCopyFullAiBundle
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_html_contains_copy_full_bundle_btn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    html = client.get("/").data.decode()
+    assert "btnCopyFullAiBundle" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 32. AI Console HTML contains btnDownloadAiMemories
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_html_contains_download_ai_memories_btn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    html = client.get("/").data.decode()
+    assert "btnDownloadAiMemories" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 33. AI Console HTML contains btnDownloadFullAiBundle
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_html_contains_download_full_bundle_btn(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    html = client.get("/").data.decode()
+    assert "btnDownloadFullAiBundle" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 34. /api/ai/memories/export returns notes/patterns/skills
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_api_ai_memories_export_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_mem_exp.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/api/ai/memories/export")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert "ai_status" in data
+    assert "latest_notes" in data
+    assert "patterns" in data
+    assert "candidate_skills" in data
+    assert "skill_memory" in data
+    assert "memory_counts" in data
+    assert data.get("allowed_to_execute") is False
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 35. /api/ai/bundle/export returns activity_export, broker_diagnostic, ai_status, ai_memories
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_api_ai_bundle_export_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_bundle_exp.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/api/ai/bundle/export")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert "activity_export" in data
+    assert "broker_diagnostic" in data
+    assert "ai_status" in data
+    assert "ai_memories" in data
+    assert data.get("allowed_to_execute") is False
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 36. Export does not leak GEMINI_API_KEY or Alpaca secrets
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_export_no_secret_leak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_sec.sqlite"))
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-test-secret-99999")
+    monkeypatch.setenv("ALPACA_API_KEY", "PKABC123TESTKEY")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "supersecretsecretkey")
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    data = mod.build_ai_memories_export()
+    raw = json.dumps(data, default=str)
+    assert "sk-test-secret-99999" not in raw
+    assert "PKABC123TESTKEY" not in raw
+    assert "supersecretsecretkey" not in raw
+    assert "GEMINI_API_KEY" not in raw
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 37. allowed_to_execute is false in exported AI memory
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_allowed_to_execute_false_in_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_atx.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    data = mod.build_ai_memories_export()
+    assert data["allowed_to_execute"] is False
+    status = data.get("ai_status") or {}
+    assert status.get("allowed_to_execute") is False
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 38. Buttons are wired in dashboard_app.js
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_buttons_wired_in_js(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    js = client.get("/dashboard-app.js").data.decode()
+    assert "btnCopyAiMemories" in js
+    assert "btnCopyFullAiBundle" in js
+    assert "btnDownloadAiMemories" in js
+    assert "btnDownloadFullAiBundle" in js
+    assert "wireAiMemoryButtons" in js
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 39. Full pytest passes (validated by running all tests)
 # ═══════════════════════════════════════════════════════════════════════════
 # (Covered by running full pytest suite)

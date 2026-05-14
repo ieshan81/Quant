@@ -1636,7 +1636,8 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
-      }).then(function (r) { return r.json(); }).then(function (d) {
+      }).then(function (r) { return r.json();       }).then(function (d) {
+        _lastJarvisAnswer = d;
         var wrap = document.getElementById("aiChatResult");
         if (wrap) wrap.style.display = "block";
         var prov = document.getElementById("aiChatProvider");
@@ -1662,6 +1663,77 @@
     });
   }
 
+  var _lastJarvisAnswer = null;
+
+  function _aiStatus(msg) {
+    var el = document.getElementById("aiMemoryCopyStatus");
+    if (el) el.textContent = msg;
+  }
+
+  function _downloadJson(data, filename) {
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  }
+
+  function _timestamp() {
+    var d = new Date();
+    return d.getFullYear() +
+      String(d.getMonth() + 1).padStart(2, "0") +
+      String(d.getDate()).padStart(2, "0") + "_" +
+      String(d.getHours()).padStart(2, "0") +
+      String(d.getMinutes()).padStart(2, "0") +
+      String(d.getSeconds()).padStart(2, "0");
+  }
+
+  function wireAiMemoryButtons() {
+    var btnCopy = document.getElementById("btnCopyAiMemories");
+    var btnBundle = document.getElementById("btnCopyFullAiBundle");
+    var btnDlMem = document.getElementById("btnDownloadAiMemories");
+    var btnDlBundle = document.getElementById("btnDownloadFullAiBundle");
+
+    if (btnCopy) btnCopy.addEventListener("click", function () {
+      _aiStatus("Fetching AI memories...");
+      fetch("/api/ai/memories/export").then(function (r) { return r.json(); }).then(function (d) {
+        return navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(function () {
+          _aiStatus("AI memories copied.");
+        });
+      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+    });
+
+    if (btnBundle) btnBundle.addEventListener("click", function () {
+      _aiStatus("Fetching full AI bundle...");
+      fetch("/api/ai/bundle/export").then(function (r) { return r.json(); }).then(function (d) {
+        if (_lastJarvisAnswer) d.jarvis_last_answer = _lastJarvisAnswer;
+        return navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(function () {
+          _aiStatus("Full AI bundle copied.");
+        });
+      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+    });
+
+    if (btnDlMem) btnDlMem.addEventListener("click", function () {
+      _aiStatus("Preparing download...");
+      fetch("/api/ai/memories/export").then(function (r) { return r.json(); }).then(function (d) {
+        _downloadJson(d, "ai_memories_" + _timestamp() + ".json");
+        _aiStatus("Download ready.");
+      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+    });
+
+    if (btnDlBundle) btnDlBundle.addEventListener("click", function () {
+      _aiStatus("Preparing download...");
+      fetch("/api/ai/bundle/export").then(function (r) { return r.json(); }).then(function (d) {
+        if (_lastJarvisAnswer) d.jarvis_last_answer = _lastJarvisAnswer;
+        _downloadJson(d, "quantbot_ai_bundle_" + _timestamp() + ".json");
+        _aiStatus("Download ready.");
+      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+    });
+  }
+
   function loadAiTab() {
     if (_aiLoaded) return;
     _aiLoaded = true;
@@ -1679,6 +1751,7 @@
     wireCapitalAllocatorCopy();
     wireManualSell();
     wireAiChat();
+    wireAiMemoryButtons();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
     document.querySelectorAll("nav .tab-btn").forEach(function (b) {

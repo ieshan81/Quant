@@ -963,6 +963,18 @@ def fetch_skills(
         return []
 
 
+def fetch_skill_memory(db_path: Path | str | None = None, *, limit: int = 50) -> list[dict[str, Any]]:
+    try:
+        conn = get_ai_memory_connection(db_path)
+        rows = conn.execute(
+            "SELECT * FROM ai_skill_memory ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
 def export_memory(db_path: Path | str | None = None) -> dict[str, Any]:
     """Full memory export with secrets scrubbed."""
     notes = fetch_latest_notes(db_path, limit=200)
@@ -975,6 +987,105 @@ def export_memory(db_path: Path | str | None = None) -> dict[str, Any]:
         "skills": skills,
         "schema_version": _SCHEMA_VERSION,
     }
+
+
+def _scrub_account_number(val: Any) -> Any:
+    """Mask account numbers, keeping only last 4 characters."""
+    s = str(val or "")
+    if len(s) > 4:
+        return "***" + s[-4:]
+    return s
+
+
+def _scrub_order_id(val: Any) -> str:
+    s = str(val or "")
+    return s[:8] + "..." if len(s) > 8 else s
+
+
+def _deep_scrub_export(obj: Any, depth: int = 0) -> Any:
+    """Recursively scrub secrets from export payloads."""
+    if depth > 18:
+        return "<truncated>"
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for k, v in obj.items():
+            lk = str(k).lower()
+            if any(sk.lower() in lk for sk in _SCRUB_KEYS):
+                continue
+            if lk in ("db_path", "database_path", "sqlite_path"):
+                out[str(k)] = "<redacted>"
+                continue
+            if "account_number" in lk or lk == "account_id":
+                out[str(k)] = _scrub_account_number(v)
+                continue
+            if "order_id" in lk and isinstance(v, str) and len(v) > 8:
+                out[str(k)] = _scrub_order_id(v)
+                continue
+            out[str(k)] = _deep_scrub_export(v, depth + 1)
+        return out
+    if isinstance(obj, list):
+        return [_deep_scrub_export(x, depth + 1) for x in obj[:500]]
+    if isinstance(obj, str):
+        import re as _re
+        if _re.match(r"^(pk_|sk_|AKIA)[A-Za-z0-9_-]+$", obj.strip()):
+            return "<redacted>"
+        return obj
+    return obj
+
+
+def build_ai_memories_export(db_path: Path | str | None = None) -> dict[str, Any]:
+    """Sanitized AI-only memory bundle for external analysis."""
+    status = get_ai_status(db_path)
+    notes = fetch_latest_notes(db_path, limit=200)
+    patterns = fetch_patterns(db_path, limit=100)
+    skills = fetch_skills(db_path, limit=100)
+    skill_mem = fetch_skill_memory(db_path, limit=50)
+    return _deep_scrub_export({
+        "ai_status": status,
+        "latest_notes": notes,
+        "patterns": patterns,
+        "candidate_skills": skills,
+        "skill_memory": skill_mem,
+        "last_run_at": status.get("last_run_at"),
+        "memory_counts": {
+            "notes": status.get("notes_count", 0),
+            "patterns": status.get("patterns_count", 0),
+            "skills": status.get("skills_count", 0),
+        },
+        "allowed_to_execute": False,
+        "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+
+
+def build_ai_bundle_export(db_path: Path | str | None = None) -> dict[str, Any]:
+    """Sanitized full bundle: activity export + broker diagnostic + AI memory."""
+    ai_memories = build_ai_memories_export(db_path)
+
+    activity_export: dict[str, Any] = {}
+    try:
+        from monitoring.cycle_activity_export import build_activity_export
+        activity_export = build_activity_export()
+    except Exception:
+        activity_export = {"error": "unavailable"}
+
+    broker_diagnostic: dict[str, Any] = {}
+    try:
+        from monitoring.broker_diagnostic import build_broker_diagnostic_payload
+        from monitoring.dashboard_data import _open_dashboard_sqlite
+        with _open_dashboard_sqlite() as conn:
+            broker_diagnostic = build_broker_diagnostic_payload(conn)
+    except Exception:
+        broker_diagnostic = {"error": "unavailable"}
+
+    return _deep_scrub_export({
+        "activity_export": activity_export,
+        "broker_diagnostic": broker_diagnostic,
+        "ai_status": ai_memories.get("ai_status"),
+        "ai_memories": ai_memories,
+        "jarvis_last_answer": None,
+        "copied_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "allowed_to_execute": False,
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════
