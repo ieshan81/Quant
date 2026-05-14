@@ -1166,10 +1166,25 @@ def compile_position_exit_decisions(
             final_action = "NO_EXIT_SIGNAL" if not exit_condition_hit else "HOLD"
 
         local_audit = row.get("local_qty")
+        _audit_includes_synthetic = False
+        _audit_source = "worker_ledger"
+        _audit_delta = None
+        _audit_delta_pct = None
         if local_audit is not None and broker_qty is not None:
             try:
-                if abs(float(local_audit) - float(broker_qty)) <= 1e-6:
+                bq = float(broker_qty)
+                la = float(local_audit)
+                if abs(la - bq) <= 1e-6:
                     local_audit = None
+                elif bq > 1e-9:
+                    ratio = la / bq
+                    if abs(ratio - 2.0) < 0.05:
+                        _audit_includes_synthetic = True
+                        local_audit = bq
+                        _audit_source = "broker_qty_corrected_synthetic_duplicate"
+                    else:
+                        _audit_delta = round(la - bq, 6)
+                        _audit_delta_pct = round((la - bq) / bq * 100.0, 2)
             except (TypeError, ValueError):
                 pass
 
@@ -1178,6 +1193,10 @@ def compile_position_exit_decisions(
             "asset_class": ac,
             "broker_qty": broker_qty,
             "local_qty_audit": local_audit,
+            "local_qty_audit_source": _audit_source,
+            "local_qty_audit_includes_synthetic": _audit_includes_synthetic,
+            "local_qty_audit_delta": _audit_delta,
+            "local_qty_audit_delta_pct": _audit_delta_pct,
             "current_price": mid_p,
             "entry_price": entry_p,
             "unrealized_pnl_pct": unrealized,
@@ -2024,6 +2043,30 @@ def build_activity_export_payload(
     )
     payload["data_freshness_status"] = data_freshness_status
 
+    _stale_symbols = []
+    _fresh_symbols = []
+    _stale_threshold = 600.0
+    for ped in position_exit_decisions:
+        _ps = str(ped.get("symbol") or "").strip().upper()
+        _pfa = str(ped.get("final_action") or "").upper()
+        _pbr = str(ped.get("blocked_reason") or "").upper()
+        if _pfa in ("EXIT_REEVAL_PENDING", "EXIT_EVALUATION_NOT_REFRESHED") or \
+           _pbr in ("STALE_EXIT_DATA_SESSION_OPEN",):
+            _stale_symbols.append(_ps)
+        elif _ps:
+            _fresh_symbols.append(_ps)
+    _exit_eval_fresh = not bool(_stale_symbols) or not market_open
+    payload["exit_evaluation_health"] = {
+        "fresh": _exit_eval_fresh,
+        "latest_exit_evaluation_at": exit_snap_created_at,
+        "age_seconds": round(exit_snap_age, 1) if exit_snap_age is not None else None,
+        "symbols_evaluated": len(_fresh_symbols) + len(_stale_symbols),
+        "stale_symbols": _stale_symbols if _stale_symbols else [],
+        "fresh_symbols": _fresh_symbols if _fresh_symbols else [],
+        "worker_cycle_id": _cid or None,
+        "market_open": market_open,
+    }
+
     from execution.dynamic_capital_allocator import build_capital_allocator_summary, fetch_latest_dynamic_capital_plan
 
     _dcp = None
@@ -2142,6 +2185,12 @@ def build_activity_export_payload(
         _action_messages.append("Regular session — stock + crypto trading active.")
     else:
         _action_messages.append(f"Session: {_mkt_session}.")
+
+    if not _exit_eval_fresh and market_open:
+        _action_messages.append(
+            f"WARNING: Market is open, but exit evaluation is stale "
+            f"({len(_stale_symbols)} symbols). Worker/export mismatch requires attention."
+        )
 
     payload["current_action_summary"] = {
         "doing_now": _doing_now,

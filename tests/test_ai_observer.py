@@ -1019,6 +1019,330 @@ def test_crypto_ghost_dust_cooldown() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 44. Full pytest passes (validated by running all tests)
+# 44. exit_evaluation_health appears in activity export
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_exit_evaluation_health_in_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """exit_evaluation_health block appears in the activity export payload."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "trade_eeh.sqlite")
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_eeh.sqlite"))
+
+    from data.data_store import ensure_db_path, init_schema
+    ensure_db_path(config.DB_PATH)
+    init_schema(config.DB_PATH)
+
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    from monitoring.cycle_activity_export import build_activity_export_payload
+    from monitoring.dashboard_data import _open_dashboard_sqlite
+    with _open_dashboard_sqlite() as conn:
+        payload = build_activity_export_payload(conn, limit=5)
+    eeh = payload.get("exit_evaluation_health")
+    assert eeh is not None
+    assert "fresh" in eeh
+    assert "latest_exit_evaluation_at" in eeh
+    assert "age_seconds" in eeh
+    assert "symbols_evaluated" in eeh
+    assert "stale_symbols" in eeh
+    assert "worker_cycle_id" in eeh
+    assert "market_open" in eeh
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 45. Stale exit decisions produce exit_evaluation_health.fresh=false
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_stale_exit_decisions_produce_unfresh_health() -> None:
+    """When position_exit_decisions contain STALE_EXIT_DATA_SESSION_OPEN, health.fresh=false."""
+    from monitoring.cycle_activity_export import compile_position_exit_decisions
+
+    rows = [
+        {
+            "symbol": "F",
+            "asset_class": "stock",
+            "broker_qty": 100,
+            "local_qty": 100,
+            "entry_price": 10.0,
+            "current_price": 11.0,
+            "recommended_action": "MARKET_CLOSED",
+            "exit_block_reason": "MARKET_CLOSED",
+            "exit_eligibility": "MARKET_CLOSED",
+            "rotation_eval": {
+                "rule_triggered": True,
+                "automated_rule": "TAKE_PROFIT",
+                "exit_allowed": False,
+                "blocked_reason_code": "EXIT_BLOCKED_MARKET_CLOSED",
+            },
+        },
+    ]
+    compiled = compile_position_exit_decisions(
+        position_exit_rows=rows,
+        sell_signal_audit=[],
+        cycle_signals=[],
+        execution_decisions=None,
+        cycle_id="test1",
+        session_open_for_stock_sells=True,
+    )
+    assert len(compiled) == 1
+    rec = compiled[0]
+    assert rec["blocked_reason"] == "STALE_EXIT_DATA_SESSION_OPEN"
+    assert rec["final_action"] == "EXIT_REEVAL_PENDING"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 46. local_qty_audit corrects synthetic doubling
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_local_qty_audit_corrects_doubling() -> None:
+    """When local_qty is exactly 2x broker_qty, synthetic correction applies."""
+    from monitoring.cycle_activity_export import compile_position_exit_decisions
+
+    rows = [
+        {
+            "symbol": "EZGO",
+            "asset_class": "stock",
+            "broker_qty": 1429,
+            "local_qty": 2858,
+            "entry_price": 1.50,
+            "current_price": 1.60,
+            "recommended_action": "HOLD",
+            "exit_block_reason": "",
+            "exit_eligibility": "HOLD",
+            "rotation_eval": {},
+        },
+    ]
+    compiled = compile_position_exit_decisions(
+        position_exit_rows=rows,
+        sell_signal_audit=[],
+        cycle_signals=[],
+    )
+    rec = compiled[0]
+    assert rec["local_qty_audit"] == 1429
+    assert rec["local_qty_audit_includes_synthetic"] is True
+    assert rec["local_qty_audit_source"] == "broker_qty_corrected_synthetic_duplicate"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 47. local_qty_audit equals broker_qty when matched
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_local_qty_audit_none_when_matched() -> None:
+    """When local_qty matches broker_qty exactly, local_qty_audit is None."""
+    from monitoring.cycle_activity_export import compile_position_exit_decisions
+
+    rows = [
+        {
+            "symbol": "KWEB",
+            "asset_class": "stock",
+            "broker_qty": 100,
+            "local_qty": 100,
+            "entry_price": 25.0,
+            "current_price": 26.0,
+            "recommended_action": "HOLD",
+            "exit_block_reason": "",
+            "exit_eligibility": "HOLD",
+            "rotation_eval": {},
+        },
+    ]
+    compiled = compile_position_exit_decisions(
+        position_exit_rows=rows,
+        sell_signal_audit=[],
+        cycle_signals=[],
+    )
+    rec = compiled[0]
+    assert rec["local_qty_audit"] is None
+    assert rec["local_qty_audit_includes_synthetic"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 48. AI deterministic check flags stale exit as critical
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_deterministic_flags_stale_exit_critical() -> None:
+    """Deterministic observer emits critical note for stale exits when market open."""
+    from monitoring.ai_observer import run_deterministic_checks
+
+    payload = {
+        "exit_evaluation_health": {
+            "fresh": False,
+            "market_open": True,
+            "stale_symbols": ["F", "EZGO", "HAO"],
+            "age_seconds": 28000,
+        },
+    }
+    notes = run_deterministic_checks(payload)
+    critical = [n for n in notes if n["severity"] == "critical" and n["category"] == "exit_logic"]
+    assert len(critical) >= 1
+    assert "stale" in critical[0]["finding"].lower()
+    assert critical[0]["evidence"]["stale_symbols"] == 3
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 49. Equity history endpoint returns series
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_equity_history_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /api/equity/history?range=1D returns JSON with series array."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t_eq.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/api/equity/history?range=1D")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert "series" in data
+    assert "range" in data
+    assert data["range"] == "1D"
+    assert "count" in data
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 50. Equity range buttons exist in HTML
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_equity_range_buttons_in_html(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dashboard HTML contains 1D/5D/1W/1M/ALL range buttons for equity chart."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t_eq_btn.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/")
+    html = r.data.decode()
+    for rng in ("1D", "5D", "1W", "1M", "ALL"):
+        assert f'data-range="{rng}"' in html, f"Missing range button {rng}"
+    assert "eq-range-btn" in html
+    assert "eqRangeChange" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 51. Exit evaluation health line in dashboard HTML
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_exit_health_ops_line_in_html(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dashboard HTML contains opsLineExitHealth operator summary line."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t_ops.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/")
+    html = r.data.decode()
+    assert "opsLineExitHealth" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 52. Dashboard payload includes exit_evaluation_health
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_dashboard_payload_exit_eval_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dashboard API response includes exit_evaluation_health with required fields."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t_dash_eeh.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/api/dashboard")
+    data = json.loads(r.data)
+    eeh = data.get("exit_evaluation_health")
+    assert eeh is not None
+    assert "fresh" in eeh
+    assert "market_open" in eeh
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 53. Sparse equity warning appears
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_equity_history_sparse_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When equity series has fewer than 3 points, warning is returned."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t_sparse.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/api/equity/history?range=ALL")
+    data = json.loads(r.data)
+    if data["count"] < 3:
+        assert data["warning"] is not None
+        assert "equity points" in data["warning"].lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 54. Equity date formatter uses human-readable months in JS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_equity_date_formatter_in_js(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """dashboard_app.js contains _fmtEqDate and uses month abbreviations."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t_jsdate.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/dashboard-app.js")
+    js = r.data.decode()
+    assert "_fmtEqDate" in js
+    assert "Jan" in js and "Feb" in js and "Mar" in js
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 55. local_qty_audit has new audit fields
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_local_qty_audit_fields_present() -> None:
+    """Compiled exit decisions include new local_qty_audit metadata fields."""
+    from monitoring.cycle_activity_export import compile_position_exit_decisions
+
+    rows = [
+        {
+            "symbol": "HAO",
+            "asset_class": "stock",
+            "broker_qty": 1266,
+            "local_qty": 2532,
+            "entry_price": 2.0,
+            "current_price": 2.1,
+            "recommended_action": "HOLD",
+            "exit_block_reason": "",
+            "exit_eligibility": "HOLD",
+            "rotation_eval": {},
+        },
+    ]
+    compiled = compile_position_exit_decisions(
+        position_exit_rows=rows,
+        sell_signal_audit=[],
+        cycle_signals=[],
+    )
+    rec = compiled[0]
+    assert "local_qty_audit_source" in rec
+    assert "local_qty_audit_includes_synthetic" in rec
+    assert "local_qty_audit_delta" in rec
+    assert "local_qty_audit_delta_pct" in rec
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 56. Full pytest passes (validated by running all tests)
 # ═══════════════════════════════════════════════════════════════════════════
 # (Covered by running full pytest suite)

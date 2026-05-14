@@ -485,6 +485,26 @@ def run_deterministic_checks(payload: dict[str, Any]) -> list[dict[str, Any]]:
             confidence=0.75,
         ))
 
+    # 10. Stale exit evaluations while market is open
+    eeh = payload.get("exit_evaluation_health") or {}
+    eeh_mkt = eeh.get("market_open", False)
+    eeh_fresh = eeh.get("fresh", True)
+    eeh_stale_syms = eeh.get("stale_symbols") or []
+    eeh_age = eeh.get("age_seconds")
+    if eeh_mkt and not eeh_fresh and eeh_stale_syms:
+        notes.append(_note(
+            "critical", "exit_logic",
+            f"Market is open but all exit evaluations are stale ({len(eeh_stale_syms)} symbols).",
+            evidence={
+                "market_open": True,
+                "stale_symbols": len(eeh_stale_syms),
+                "age_seconds": eeh_age,
+                "symbols": eeh_stale_syms[:10],
+            },
+            suggested_action="Refresh worker exit evaluation and prevent new entries until exit health is fresh.",
+            confidence=0.99,
+        ))
+
     return notes
 
 

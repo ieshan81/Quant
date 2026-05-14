@@ -257,6 +257,9 @@ _PAGE = """<!DOCTYPE html>
       background: rgba(56, 189, 248, 0.07);
     }
     .empty-hint { color: var(--muted); font-size: 13px; margin: 0.35rem 0; }
+    .eq-range-btn { background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:2px 10px; font-size:0.78rem; cursor:pointer; }
+    .eq-range-btn:hover { border-color:var(--accent); }
+    .eq-range-active { background:var(--accent); color:#fff; border-color:var(--accent); }
     .pos-good { color: var(--good); }
     .pos-bad  { color: var(--bad); }
     .overview-split {
@@ -767,8 +770,17 @@ _PAGE = """<!DOCTYPE html>
       <div class="overview-split">
         <div class="card">
           <h2>Equity</h2>
+          <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
+            <button class="eq-range-btn eq-range-active" data-range="1D">1D</button>
+            <button class="eq-range-btn" data-range="5D">5D</button>
+            <button class="eq-range-btn" data-range="1W">1W</button>
+            <button class="eq-range-btn" data-range="1M">1M</button>
+            <button class="eq-range-btn" data-range="ALL">ALL</button>
+            <span id="eqRangeChange" style="margin-left:auto;font-size:0.85rem;color:#9ca3af;"></span>
+          </div>
           <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
           <p class="empty-hint" id="eqEmptyHint" style="display:none;">No equity series returned.</p>
+          <p class="empty-hint" id="eqSparseHint" style="display:none;color:#f59e0b;"></p>
         </div>
         <div class="card ops-card" id="opsSummaryCard">
           <h2>Operator summary</h2>
@@ -781,6 +793,7 @@ _PAGE = """<!DOCTYPE html>
             <li id="opsLineBuys"     data-key="buys">New buys: status unknown.</li>
             <li id="opsLineStockExits" data-key="stock_exits">Stock exits: status unknown.</li>
             <li id="opsLineCryptoExits" data-key="crypto_exits">Crypto exits: allowed 24/7 only if broker quantity exists.</li>
+            <li id="opsLineExitHealth" data-key="exit_health">Exit evaluation health: N/A.</li>
             <li id="opsLineLastCycle" data-key="last_cycle">Last cycle: N/A.</li>
           </ul>
         </div>
@@ -1562,6 +1575,28 @@ def create_app() -> Flask:
 
         status["checked_at"] = int(_time.time())
         return status, http_code
+
+    @app.get("/api/equity/history")
+    def api_equity_history() -> Response:
+        from monitoring.dashboard_data import get_alpaca_background_snapshot
+        range_param = str(request.args.get("range", "1D") or "1D").upper().strip()
+        period_map = {"1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M"}
+        period = period_map.get(range_param, "1D")
+        snap = get_alpaca_background_snapshot()
+        curves = snap.get("equity_curves") or {}
+        series = curves.get(period) if isinstance(curves, dict) else []
+        if not isinstance(series, list):
+            series = []
+        warning = None
+        if len(series) < 3:
+            warning = f"Only {len(series)} equity points available for range {range_param}."
+        return Response(json.dumps({
+            "range": range_param,
+            "period_used": period,
+            "series": series,
+            "count": len(series),
+            "warning": warning,
+        }, default=str), mimetype="application/json")
 
     @app.get("/api/dashboard")
     def api_dashboard() -> Response:

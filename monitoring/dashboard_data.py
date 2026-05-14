@@ -914,6 +914,52 @@ def build_dashboard_payload(
 
     cap_alloc_summary = build_capital_allocator_summary(dca_plan)
 
+    _eeh_fresh = True
+    _eeh_stale: list[str] = []
+    _eeh_snap_at = None
+    _eeh_age = None
+    _eeh_cid = None
+    try:
+        _cs_row = fetch_latest_cycle_activity_snapshot(conn)
+        if isinstance(_cs_row, dict):
+            _cs_ca = _cs_row.get("created_at")
+            _cs_meta = _cs_row.get("meta") if isinstance(_cs_row.get("meta"), dict) else {}
+            _eeh_cid = str(_cs_meta.get("cycle_id") or _cs_row.get("window_label") or "")
+            _eeh_snap_at = _cs_ca
+            if _cs_ca:
+                try:
+                    import datetime as _dt
+                    _snap_dt = _dt.datetime.fromisoformat(str(_cs_ca).replace("Z", "+00:00"))
+                    if _snap_dt.tzinfo is None:
+                        _snap_dt = _snap_dt.replace(tzinfo=_dt.timezone.utc)
+                    _eeh_age = round((
+                        _dt.datetime.now(_dt.timezone.utc) - _snap_dt
+                    ).total_seconds(), 1)
+                except Exception:
+                    pass
+            _pe_decs = _cs_meta.get("position_exit_decisions")
+            if isinstance(_pe_decs, list) and market_open:
+                for _ped_it in _pe_decs:
+                    if not isinstance(_ped_it, dict):
+                        continue
+                    _pfa = str(_ped_it.get("final_action") or "").upper()
+                    _pbr = str(_ped_it.get("blocked_reason") or "").upper()
+                    if _pfa in ("EXIT_REEVAL_PENDING", "EXIT_EVALUATION_NOT_REFRESHED") or \
+                       _pbr in ("STALE_EXIT_DATA_SESSION_OPEN",):
+                        _eeh_stale.append(str(_ped_it.get("symbol") or ""))
+                        _eeh_fresh = False
+    except Exception:
+        pass
+    _exit_eval_health = {
+        "fresh": _eeh_fresh if market_open else True,
+        "latest_exit_evaluation_at": _eeh_snap_at,
+        "age_seconds": _eeh_age,
+        "symbols_evaluated": len(pe_clean),
+        "stale_symbols": _eeh_stale,
+        "worker_cycle_id": _eeh_cid,
+        "market_open": market_open,
+    }
+
     return {
         "mode": latest.get("mode") if latest else None,
         "portfolio": _json_safe(latest) if latest is not None else None,
@@ -938,6 +984,7 @@ def build_dashboard_payload(
         "db_lock_count_24h": db_lock_count,
         "buy_gate": _json_safe(buy_gate) if isinstance(buy_gate, dict) else {},
         "execution_health": eh_safe,
+        "exit_evaluation_health": _exit_eval_health,
         "position_exit_rows": list(pe_clean),
         "promotion_gates": _json_safe(promotion_status) if isinstance(promotion_status, dict) else {},
         "live_safety": _json_safe(safety) if isinstance(safety, dict) else {},

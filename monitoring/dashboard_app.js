@@ -152,6 +152,7 @@
       calibration: p.calibration && typeof p.calibration === "object" ? p.calibration : {},
       sectionStatus: p.section_status && typeof p.section_status === "object" ? p.section_status : {},
       executionHealth: ehIn,
+      exitEvaluationHealth: p.exit_evaluation_health && typeof p.exit_evaluation_health === "object" ? p.exit_evaluation_health : {},
       positionExitRows: pe,
       payloadDegraded: p.degraded === true,
       ghostPositionCount: num(p.ghost_position_count, null),
@@ -300,6 +301,21 @@
       "Crypto exits allowed <span class=\"good\">24/7</span> only if broker quantity exists.",
       "ok"
     );
+
+    var eeh = vm.exitEvaluationHealth || {};
+    if (eeh.market_open && eeh.fresh === false) {
+      var staleCount = (eeh.stale_symbols || []).length;
+      setOpsLine(
+        "opsLineExitHealth",
+        "Exit evaluation is <span class=\"warn-t\">STALE</span>: " + staleCount +
+          " symbol(s) not freshly evaluated. Worker/export mismatch requires attention.",
+        "warn"
+      );
+    } else if (eeh.fresh === true) {
+      setOpsLine("opsLineExitHealth", "Exit evaluation is <span class=\"good\">fresh</span>.", "ok");
+    } else {
+      setOpsLine("opsLineExitHealth", "Exit evaluation health: N/A.", "");
+    }
 
     var sec = vm.sectionStatus || {};
     var perf = vm.performance || {};
@@ -679,51 +695,117 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Equity chart
+  // Equity chart with range selector
   // ---------------------------------------------------------------------------
+
+  var _eqCurrentRange = "1D";
+
+  function _fmtEqDate(raw) {
+    if (!raw) return "";
+    var d = new Date(String(raw).replace(" ", "T") + (raw.indexOf("Z") < 0 ? "Z" : ""));
+    if (isNaN(d.getTime())) return String(raw);
+    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var day = d.getDate();
+    var mon = months[d.getMonth()];
+    var yr = d.getFullYear();
+    var hh = d.getHours();
+    var mm = d.getMinutes();
+    var ampm = hh >= 12 ? "PM" : "AM";
+    hh = hh % 12 || 12;
+    var mmStr = mm < 10 ? "0" + mm : "" + mm;
+    return day + " " + mon + " " + yr + ", " + hh + ":" + mmStr + " " + ampm;
+  }
+
+  function _fmtEqLabel(raw) {
+    if (!raw) return "";
+    var d = new Date(String(raw).replace(" ", "T") + (raw.indexOf("Z") < 0 ? "Z" : ""));
+    if (isNaN(d.getTime())) return String(raw);
+    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var day = d.getDate();
+    var mon = months[d.getMonth()];
+    var hh = d.getHours();
+    var mm = d.getMinutes();
+    var ampm = hh >= 12 ? "PM" : "AM";
+    hh = hh % 12 || 12;
+    var mmStr = mm < 10 ? "0" + mm : "" + mm;
+    if (_eqCurrentRange === "1D") return hh + ":" + mmStr + " " + ampm;
+    return day + " " + mon + " " + hh + ":" + mmStr;
+  }
+
+  function _updateEqRangeChange(series) {
+    var el = document.getElementById("eqRangeChange");
+    if (!el) return;
+    if (!series || series.length < 2) { el.textContent = ""; return; }
+    var first = num(series[0].equity_total, 0);
+    var last = num(series[series.length - 1].equity_total, 0);
+    if (first <= 0) { el.textContent = ""; return; }
+    var chg = last - first;
+    var pct = (chg / first) * 100;
+    var sign = chg >= 0 ? "+" : "";
+    var color = chg >= 0 ? "#34d399" : "#f87171";
+    el.style.color = color;
+    el.textContent = _eqCurrentRange + ": " + sign + "$" + chg.toFixed(2) + " (" + sign + pct.toFixed(1) + "%)";
+  }
 
   function renderEquityChart(vm) {
     var series = vm.equitySeries || [];
     var canvas = document.getElementById("equityChart");
     var eqHint = document.getElementById("eqEmptyHint");
+    var sparseHint = document.getElementById("eqSparseHint");
     if (!canvas) return;
     if (typeof Chart === "undefined") {
-      if (eqHint) {
-        eqHint.style.display = "block";
-        eqHint.textContent = "Chart.js not loaded.";
-      }
+      if (eqHint) { eqHint.style.display = "block"; eqHint.textContent = "Chart.js not loaded."; }
       return;
     }
     if (!series.length) {
       if (eqHint) eqHint.style.display = "block";
-      if (equityChart) {
-        equityChart.destroy();
-        equityChart = null;
-      }
+      if (sparseHint) sparseHint.style.display = "none";
+      if (equityChart) { equityChart.destroy(); equityChart = null; }
+      _updateEqRangeChange([]);
       return;
     }
     if (eqHint) eqHint.style.display = "none";
-    var labels = series.map(function (r) { return String(r.snapshot_at || ""); });
+    if (sparseHint) {
+      if (series.length < 3) {
+        sparseHint.textContent = "Only " + series.length + " equity points available for " + _eqCurrentRange + ".";
+        sparseHint.style.display = "block";
+      } else {
+        sparseHint.style.display = "none";
+      }
+    }
+    _updateEqRangeChange(series);
+    var labels = series.map(function (r) { return _fmtEqLabel(r.snapshot_at || ""); });
     var vals = series.map(function (r) { return num(r.equity_total, 0); });
+    var rawDates = series.map(function (r) { return r.snapshot_at || ""; });
     if (!equityChart) {
       equityChart = new Chart(canvas.getContext("2d"), {
         type: "line",
-        data: { labels: labels, datasets: [{ data: vals, borderColor: "#34d399", tension: 0.2, pointRadius: 0 }] },
+        data: { labels: labels, datasets: [{ data: vals, borderColor: "#34d399", tension: 0.2, pointRadius: 1, rawDates: rawDates }] },
         options: {
           animation: false,
           responsive: true,
           maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function (ctx) {
+                  var idx = ctx[0] && ctx[0].dataIndex;
+                  var ds = ctx[0] && ctx[0].dataset;
+                  if (ds && ds.rawDates && ds.rawDates[idx]) return _fmtEqDate(ds.rawDates[idx]);
+                  return ctx[0].label;
+                },
+                label: function (ctx) { return "Equity: $" + Number(ctx.parsed.y).toFixed(2); }
+              }
+            }
+          },
           scales: {
             y: {
-              ticks: {
-                callback: function (v) { return "$" + Number(v).toFixed(2); },
-                color: "#9ca3af"
-              },
+              ticks: { callback: function (v) { return "$" + Number(v).toFixed(2); }, color: "#9ca3af" },
               grid: { color: "rgba(148,163,184,0.08)" }
             },
             x: {
-              ticks: { color: "#9ca3af", maxTicksLimit: 6 },
+              ticks: { color: "#9ca3af", maxTicksLimit: 8 },
               grid: { display: false }
             }
           }
@@ -732,8 +814,31 @@
     } else {
       equityChart.data.labels = labels;
       equityChart.data.datasets[0].data = vals;
+      equityChart.data.datasets[0].rawDates = rawDates;
       equityChart.update("none");
     }
+  }
+
+  function _loadEquityRange(range) {
+    _eqCurrentRange = range;
+    document.querySelectorAll(".eq-range-btn").forEach(function (b) {
+      b.classList.toggle("eq-range-active", b.getAttribute("data-range") === range);
+    });
+    fetch("/api/equity/history?range=" + encodeURIComponent(range), { headers: _authHeaders() })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var series = d.series || [];
+        renderEquityChart({ equitySeries: series });
+      })
+      .catch(function () {});
+  }
+
+  function wireEquityRangeButtons() {
+    document.querySelectorAll(".eq-range-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        _loadEquityRange(btn.getAttribute("data-range"));
+      });
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1752,6 +1857,7 @@
     wireManualSell();
     wireAiChat();
     wireAiMemoryButtons();
+    wireEquityRangeButtons();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
     document.querySelectorAll("nav .tab-btn").forEach(function (b) {
