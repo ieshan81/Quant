@@ -498,8 +498,8 @@ def build_sell_readiness(
     from execution.capital_rotation import _latest_combined_signal_by_symbol
 
     xr = dict(exit_runtime or {})
-    legacy_tp = float(xr.get("take_profit_pct", 0.015) or 0.015)
-    legacy_sl = float(xr.get("stop_loss_pct", 0.008) or 0.008)
+    legacy_tp = float(xr.get("take_profit_pct", 0.10) or 0.10)
+    legacy_sl = float(xr.get("stop_loss_pct", 0.05) or 0.05)
     stock_tp = float(xr.get("stock_take_profit_pct", legacy_tp) or legacy_tp)
     stock_sl = float(xr.get("stock_stop_loss_pct", legacy_sl) or legacy_sl)
     stock_trail = float(xr.get("stock_trailing_stop_pct", 0.02) or 0.02)
@@ -683,9 +683,7 @@ def build_sell_readiness(
             expected = "BLOCKED_WITH_REASON"
         elif worker_sell_gate_open_now and rule_intent and sell_allowed_now and not blocker:
             expected = "SELL_NOW"
-        elif worker_sell_gate_open_now and rule_intent and blocker:
-            expected = "BLOCKED_WITH_REASON"
-        elif rule_intent and not worker_sell_gate_open_now:
+        elif rule_intent and (not sell_allowed_now or blocker):
             expected = "BLOCKED_WITH_REASON"
         else:
             expected = "HOLD"
@@ -724,6 +722,7 @@ def build_sell_readiness(
 
         _exit_decision_price = None
         _price_delta_pct = None
+        _price_mismatch_warning = None
         if isinstance(d, dict):
             try:
                 _exit_decision_price = float(d.get("current_price") or d.get("mark_price") or 0) or None
@@ -731,34 +730,94 @@ def build_sell_readiness(
                 _exit_decision_price = None
             if _exit_decision_price and _exit_decision_price > 0 and cur > 0:
                 _price_delta_pct = round((cur - _exit_decision_price) / _exit_decision_price * 100.0, 2)
+                if abs(_price_delta_pct) > 3.0:
+                    _price_mismatch_warning = "EXIT_PRICE_POSITION_PRICE_MISMATCH"
+
+        _rotation_eval = {}
+        if isinstance(d, dict):
+            _re = d.get("rotation_eval") or {}
+            if isinstance(_re, str):
+                import json as _json2
+                try:
+                    _re = _json2.loads(_re)
+                except Exception:
+                    _re = {}
+            _rotation_eval = _re if isinstance(_re, dict) else {}
+
+        _engine_rule = str(_rotation_eval.get("automated_rule") or "").strip().upper()
+        _engine_triggered = bool(_rotation_eval.get("rule_triggered", False))
+        _engine_blocked_code = str(_rotation_eval.get("blocked_reason_code") or "").strip().upper()
+
+        if _engine_triggered and _engine_rule:
+            if _engine_rule == "TAKE_PROFIT":
+                take_profit_hit = True
+            elif _engine_rule == "STOP_LOSS":
+                stop_loss_hit = True
+            elif _engine_rule == "TRAILING_STOP":
+                trailing_stop_hit = True
+            elif _engine_rule in ("MAX_HOLD", "MAX_HOLD_TIME"):
+                max_hold_hit = True
+
+        _exit_condition_hit = bool(take_profit_hit or stop_loss_hit or trailing_stop_hit or max_hold_hit or sell_signal_present)
+        _exit_rule_name = ""
+        if take_profit_hit:
+            _exit_rule_name = "TAKE_PROFIT"
+        elif stop_loss_hit:
+            _exit_rule_name = "STOP_LOSS"
+        elif trailing_stop_hit:
+            _exit_rule_name = "TRAILING_STOP"
+        elif max_hold_hit:
+            _exit_rule_name = "MAX_HOLD"
+        elif sell_signal_present:
+            _exit_rule_name = "SELL_SIGNAL"
 
         _mapped_final_action = "NO_EXIT_SIGNAL"
+        _blocked_reason = blocker
         if fa == "EXIT_FILLED_POSITION_REFRESH_PENDING":
             _mapped_final_action = "EXIT_FILLED"
         elif has_pending_sell:
             _mapped_final_action = "ORDER_ALREADY_PENDING"
         elif exit_cfg_disabled:
             _mapped_final_action = "EXIT_DISABLED"
-        elif blocker == "PDT_PROTECTION":
-            _mapped_final_action = "PDT_PROTECTION"
-        elif blocker and "SPREAD" in str(blocker).upper():
-            _mapped_final_action = "STOCK_EXIT_SPREAD_TOO_WIDE"
+            _blocked_reason = "EXIT_DISABLED"
+        elif _exit_condition_hit and sell_allowed_now and not blocker:
+            _mapped_final_action = f"{_exit_rule_name}_SELL_SUBMITTED"
+        elif _exit_condition_hit and not sell_allowed_now:
+            if blocker == "PDT_PROTECTION":
+                _mapped_final_action = "PDT_PROTECTION"
+                _blocked_reason = "PDT_PROTECTION"
+            elif blocker and "SPREAD" in str(blocker).upper():
+                _mapped_final_action = "STOCK_EXIT_SPREAD_TOO_WIDE"
+                _blocked_reason = str(rc.STOCK_EXIT_SPREAD_TOO_WIDE)
+            elif blocker == "STALE_EXIT_DATA_SESSION_OPEN":
+                _mapped_final_action = "SELL_BLOCKED"
+                _blocked_reason = "STALE_EXIT_DATA_SESSION_OPEN"
+            elif not market_open_now:
+                _mapped_final_action = "EXIT_BLOCKED_MARKET_CLOSED"
+                _blocked_reason = "EXIT_BLOCKED_MARKET_CLOSED"
+            else:
+                _mapped_final_action = f"SELL_BLOCKED"
+                _blocked_reason = blocker or "UNKNOWN"
+        elif _exit_condition_hit and blocker:
+            _mapped_final_action = f"BLOCKED_{blocker}"
         elif blocker and blocker in ("MARKET_CLOSED", "EXIT_BLOCKED_MARKET_CLOSED", "STALE_EXIT_DATA_SESSION_OPEN"):
             _mapped_final_action = "EXIT_BLOCKED_MARKET_CLOSED"
-        elif take_profit_hit and sell_allowed_now and not blocker:
-            _mapped_final_action = "TAKE_PROFIT_SELL_SUBMITTED"
-        elif stop_loss_hit and sell_allowed_now and not blocker:
-            _mapped_final_action = "STOP_LOSS_SELL_SUBMITTED"
-        elif trailing_stop_hit and sell_allowed_now and not blocker:
-            _mapped_final_action = "TRAILING_STOP_SELL_SUBMITTED"
-        elif max_hold_hit and sell_allowed_now and not blocker:
-            _mapped_final_action = "MAX_HOLD_SELL_SUBMITTED"
-        elif sell_signal_present and sell_allowed_now and not blocker:
-            _mapped_final_action = "SIGNAL_SELL_SUBMITTED"
         elif blocker:
             _mapped_final_action = f"BLOCKED_{blocker}"
-        elif not (take_profit_hit or stop_loss_hit or trailing_stop_hit or max_hold_hit or sell_signal_present):
-            _mapped_final_action = "NO_EXIT_SIGNAL"
+
+        if _exit_condition_hit and _mapped_final_action not in ("EXIT_FILLED", "ORDER_ALREADY_PENDING") and not has_pending_sell:
+            _pnl_display = f"{upf:.1f}" if upf is not None else "N/A"
+            if not sell_allowed_now:
+                human_reason = (
+                    f"{sym}: {_exit_rule_name} triggered (pnl={_pnl_display}% vs threshold={stock_tp * 100.0:.1f}%), "
+                    f"but {'market is closed' if not market_open_now else 'sell blocked: ' + str(_blocked_reason)}."
+                )
+            else:
+                human_reason = (
+                    f"{sym}: {_exit_rule_name} triggered — sell submitted."
+                )
+
+        _pnl_frac_display = round(pnl_frac * 100.0, 2) if pnl_frac is not None else None
 
         out.append(
             {
@@ -774,9 +833,11 @@ def build_sell_readiness(
                 "trailing_stop_hit": trailing_stop_hit,
                 "stop_loss_hit": stop_loss_hit,
                 "max_hold_hit": max_hold_hit,
+                "exit_condition_hit": _exit_condition_hit,
+                "automated_rule": _exit_rule_name or None,
                 "sell_allowed_now": sell_allowed_now,
-                "blocker": blocker,
-                "blocked_reason": blocker,
+                "blocker": _blocked_reason,
+                "blocked_reason": _blocked_reason,
                 "pdt_block_source": pdt_block_source,
                 "broker_would_accept_unknown": broker_would_accept_unknown,
                 "human_reason": human_reason,
@@ -795,11 +856,23 @@ def build_sell_readiness(
                 "exit_allowed": sell_allowed_now,
                 "open_order_exists": has_pending_sell,
                 "spread_pct": None,
-                "spread_guard_applies": bool(blocker and "SPREAD" in str(blocker or "").upper()),
+                "spread_guard_applies": bool(_blocked_reason and "SPREAD" in str(_blocked_reason or "").upper()),
                 "price_source": "broker_position",
                 "price_timestamp": p.get("last_trade_timestamp") or p.get("updated_at") or None,
                 "exit_decision_price": _exit_decision_price,
+                "open_position_current_price": cur if cur > 0 else None,
                 "position_price_vs_exit_price_delta_pct": _price_delta_pct,
+                "price_mismatch_warning": _price_mismatch_warning,
+                "entry_price_source": "broker_position",
+                "stock_take_profit_threshold_raw": stock_tp,
+                "stock_take_profit_threshold_pct_display": round(stock_tp * 100.0, 2),
+                "stock_stop_loss_threshold_raw": stock_sl,
+                "stock_stop_loss_threshold_pct_display": round(stock_sl * 100.0, 2),
+                "pnl_pct_used_for_exit": _pnl_frac_display,
+                "pnl_pct_source": "open_position_current_price",
+                "exit_engine_rule": _engine_rule or None,
+                "exit_engine_triggered": _engine_triggered,
+                "exit_engine_blocked_code": _engine_blocked_code or None,
                 **dep_fields,
                 **pend_fields,
             }

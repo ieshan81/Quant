@@ -564,3 +564,234 @@ def test_sell_readiness_profitable_above_tp_gets_take_profit_action():
     }
     assert r["final_action"] in valid_actions or r["final_action"].startswith("BLOCKED_"), \
         f"Unexpected final_action: {r['final_action']}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Exit trigger labeling + price source mismatch tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _make_sell_readiness_v2(
+    *,
+    symbol: str = "HAO",
+    entry_price: float = 1.0,
+    current_price: float = 1.156,
+    market_open: bool = False,
+    exit_decisions: list[dict[str, Any]] | None = None,
+    stock_tp: float = 0.1,
+    stock_sl: float = 0.05,
+) -> list[dict[str, Any]]:
+    """Helper simulating HAO/EZGO-style scenarios."""
+    positions = [
+        {
+            "symbol": symbol,
+            "asset_class": "stock",
+            "net_qty": 50.0,
+            "avg_entry_price": entry_price,
+            "current_price": current_price,
+        }
+    ]
+    with (
+        patch(
+            "monitoring.cycle_activity_export._same_day_entry_breakdown",
+            return_value=(0.0, 50.0, "2026-05-08T10:00:00Z"),
+        ),
+        patch(
+            "monitoring.cycle_activity_export._stock_entry_held_hours",
+            return_value=48.0,
+        ),
+        patch(
+            "monitoring.cycle_activity_export._exit_peak_price",
+            return_value=None,
+        ),
+        patch(
+            "execution.capital_rotation._latest_combined_signal_by_symbol",
+            return_value={},
+        ),
+    ):
+        return build_sell_readiness(
+            open_positions=positions,
+            recent_signals=[],
+            position_exit_decisions=exit_decisions or [],
+            market_open_now=market_open,
+            worker_sell_gate_open_now=market_open,
+            exit_runtime={
+                "stock_take_profit_pct": stock_tp,
+                "stock_stop_loss_pct": stock_sl,
+                "stock_trailing_stop_pct": 0.02,
+                "stock_automated_exits_enabled": 1.0,
+            },
+            db_path=None,
+        )
+
+
+def test_hao_tp_hit_market_closed_shows_take_profit_blocked():
+    """HAO: pnl 15.6%, stock_take_profit_pct=0.1 (10%), market closed =>
+    TAKE_PROFIT + EXIT_BLOCKED_MARKET_CLOSED, not NO_EXIT_SIGNAL."""
+    exit_decisions = [
+        {
+            "symbol": "HAO",
+            "asset_class": "stock",
+            "final_action": "MARKET_CLOSED",
+            "blocked_reason": "EXIT_BLOCKED_MARKET_CLOSED",
+            "current_price": 1.156,
+            "broker_qty": 50.0,
+            "rotation_eval": {
+                "rule_triggered": True,
+                "automated_rule": "TAKE_PROFIT",
+                "exit_allowed": False,
+                "blocked_reason_code": "EXIT_BLOCKED_MARKET_CLOSED",
+            },
+        }
+    ]
+    rows = _make_sell_readiness_v2(
+        symbol="HAO",
+        entry_price=1.0,
+        current_price=1.156,
+        market_open=False,
+        exit_decisions=exit_decisions,
+        stock_tp=0.1,
+    )
+    assert len(rows) >= 1
+    r = rows[0]
+    assert r["exit_condition_hit"] is True
+    assert r["automated_rule"] == "TAKE_PROFIT"
+    assert r["final_action"] == "EXIT_BLOCKED_MARKET_CLOSED"
+    assert r["blocked_reason"] == "EXIT_BLOCKED_MARKET_CLOSED"
+    assert r["final_action"] != "NO_EXIT_SIGNAL"
+    assert "TAKE_PROFIT" in (r.get("human_reason") or "")
+    assert "market is closed" in (r.get("human_reason") or "").lower()
+
+
+def test_hao_tp_hit_market_closed_uses_own_pnl_when_engine_agrees():
+    """sell_readiness own pnl_frac (15.6%) > stock_tp (10%) => take_profit_hit from own calc too."""
+    rows = _make_sell_readiness_v2(
+        symbol="HAO",
+        entry_price=1.0,
+        current_price=1.156,
+        market_open=False,
+        stock_tp=0.1,
+    )
+    assert len(rows) >= 1
+    r = rows[0]
+    assert r["take_profit_hit"] is True
+    assert r["exit_condition_hit"] is True
+    assert r["final_action"] == "EXIT_BLOCKED_MARKET_CLOSED"
+    assert r["final_action"] != "NO_EXIT_SIGNAL"
+
+
+def test_ezgo_price_mismatch_surfaced():
+    """EZGO: open_positions pnl=11.4%, exit_decision pnl=0.6% => price mismatch warning."""
+    exit_decisions = [
+        {
+            "symbol": "EZGO",
+            "asset_class": "stock",
+            "final_action": "HOLD",
+            "current_price": 1.006,
+            "broker_qty": 10.0,
+            "rotation_eval": {"rule_triggered": False},
+        }
+    ]
+    rows = _make_sell_readiness_v2(
+        symbol="EZGO",
+        entry_price=1.0,
+        current_price=1.114,
+        market_open=False,
+        exit_decisions=exit_decisions,
+        stock_tp=0.1,
+    )
+    assert len(rows) >= 1
+    r = rows[0]
+    delta = r.get("position_price_vs_exit_price_delta_pct")
+    assert delta is not None
+    assert abs(delta) > 3.0
+    assert r["price_mismatch_warning"] == "EXIT_PRICE_POSITION_PRICE_MISMATCH"
+
+
+def test_threshold_raw_and_display_fields_exported():
+    """stock_take_profit_threshold_raw and _pct_display are in every row."""
+    rows = _make_sell_readiness_v2(stock_tp=0.1, stock_sl=0.05)
+    assert len(rows) >= 1
+    r = rows[0]
+    assert r["stock_take_profit_threshold_raw"] == 0.1
+    assert r["stock_take_profit_threshold_pct_display"] == 10.0
+    assert r["stock_stop_loss_threshold_raw"] == 0.05
+    assert r["stock_stop_loss_threshold_pct_display"] == 5.0
+    assert "pnl_pct_used_for_exit" in r
+    assert "pnl_pct_source" in r
+    assert r["pnl_pct_source"] == "open_position_current_price"
+
+
+def test_market_open_tp_hit_submits_sell():
+    """Market open + TP hit => TAKE_PROFIT_SELL_SUBMITTED."""
+    rows = _make_sell_readiness_v2(
+        symbol="HAO",
+        entry_price=1.0,
+        current_price=1.156,
+        market_open=True,
+        stock_tp=0.1,
+    )
+    assert len(rows) >= 1
+    r = rows[0]
+    assert r["take_profit_hit"] is True
+    assert r["exit_condition_hit"] is True
+    assert r["final_action"] == "TAKE_PROFIT_SELL_SUBMITTED"
+    assert r["sell_allowed_now"] is True
+
+
+def test_engine_rotation_eval_overrides_local_calc():
+    """Exit engine rotation_eval.automated_rule = TAKE_PROFIT overrides local calc
+    even when local pnl_frac is below threshold (engine uses different price)."""
+    exit_decisions = [
+        {
+            "symbol": "XYZ",
+            "asset_class": "stock",
+            "final_action": "MARKET_CLOSED",
+            "current_price": 1.05,
+            "broker_qty": 10.0,
+            "rotation_eval": {
+                "rule_triggered": True,
+                "automated_rule": "TAKE_PROFIT",
+                "exit_allowed": False,
+                "blocked_reason_code": "EXIT_BLOCKED_MARKET_CLOSED",
+            },
+        }
+    ]
+    rows = _make_sell_readiness_v2(
+        symbol="XYZ",
+        entry_price=1.0,
+        current_price=1.05,
+        market_open=False,
+        exit_decisions=exit_decisions,
+        stock_tp=0.1,
+    )
+    assert len(rows) >= 1
+    r = rows[0]
+    assert r["take_profit_hit"] is True
+    assert r["exit_condition_hit"] is True
+    assert r["automated_rule"] == "TAKE_PROFIT"
+    assert r["final_action"] == "EXIT_BLOCKED_MARKET_CLOSED"
+    assert r["exit_engine_triggered"] is True
+    assert r["exit_engine_rule"] == "TAKE_PROFIT"
+
+
+def test_no_price_mismatch_when_prices_close():
+    """No EXIT_PRICE_POSITION_PRICE_MISMATCH when prices are within 3%."""
+    exit_decisions = [
+        {
+            "symbol": "HAO",
+            "asset_class": "stock",
+            "current_price": 1.15,
+            "broker_qty": 50.0,
+            "rotation_eval": {"rule_triggered": False},
+        }
+    ]
+    rows = _make_sell_readiness_v2(
+        symbol="HAO",
+        entry_price=1.0,
+        current_price=1.156,
+        market_open=False,
+        exit_decisions=exit_decisions,
+    )
+    assert len(rows) >= 1
+    r = rows[0]
+    assert r.get("price_mismatch_warning") is None
