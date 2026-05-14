@@ -707,6 +707,7 @@ _PAGE = """<!DOCTYPE html>
     <button type="button" class="tab-btn" data-tab="positions">Positions</button>
     <button type="button" class="tab-btn" data-tab="activity">Activity</button>
     <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
+    <button type="button" class="tab-btn" data-tab="ai">AI Console</button>
   </nav>
 
   <main>
@@ -960,6 +961,69 @@ _PAGE = """<!DOCTYPE html>
           <pre id="btLastRunDebug" class="mono sec">{}</pre>
         </div>
       </details>
+    </section>
+
+    <section id="panel-ai" class="tab-panel">
+      <div class="card">
+        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">AI Status</h2>
+        <div class="grid-metrics" id="aiStatusMetrics">
+          <div class="metric"><div class="lab">Provider</div><div class="val mono" id="aiProvider">—</div></div>
+          <div class="metric"><div class="lab">Model</div><div class="val mono" id="aiModel">—</div></div>
+          <div class="metric"><div class="lab">Observer</div><div class="val mono" id="aiEnabled">—</div></div>
+          <div class="metric"><div class="lab">Notes</div><div class="val mono" id="aiNotesCount">—</div></div>
+          <div class="metric"><div class="lab">Patterns</div><div class="val mono" id="aiPatternsCount">—</div></div>
+          <div class="metric"><div class="lab">Skills</div><div class="val mono" id="aiSkillsCount">—</div></div>
+          <div class="metric"><div class="lab">Last run</div><div class="val mono" id="aiLastRun">—</div></div>
+        </div>
+        <p style="margin:10px 0 0;font-size:12px;color:var(--muted);">
+          can_submit_orders: <strong style="color:var(--bad);">false</strong> &middot;
+          can_update_config: <strong style="color:var(--bad);">false</strong> &middot;
+          allowed_to_execute: <strong style="color:var(--bad);">false</strong>
+        </p>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Ask Jarvis</h2>
+        <textarea id="aiChatInput" placeholder="e.g. Why did HAO not sell? What is the current capital allocation status?" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+          <button type="button" class="primary" id="aiChatSend" style="padding:6px 18px;">Ask AI</button>
+          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncExport" checked> Activity export</label>
+          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncBroker"> Broker diagnostic</label>
+          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncMemory" checked> AI memory</label>
+        </div>
+        <div id="aiChatResult" style="display:none;margin-top:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
+          <div style="margin-bottom:8px;font-weight:600;font-size:13px;">Jarvis <span id="aiChatProvider" class="mono" style="font-size:11px;color:var(--muted);"></span></div>
+          <div id="aiChatAnswer" class="mono" style="font-size:13px;line-height:1.6;white-space:pre-wrap;"></div>
+          <div id="aiChatEvidence" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
+          <div id="aiChatActions" style="margin-top:8px;font-size:12px;"></div>
+          <p style="margin:8px 0 0;font-size:11px;color:var(--bad);">AI is observe-only. Cannot execute trades or change configuration.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Latest AI Notes</h2>
+        <div class="scroll-table">
+          <table class="data" id="tblAiNotes"><thead><tr>
+            <th>Time</th><th>Severity</th><th>Category</th><th>Symbol</th><th>Finding</th><th>Action</th><th>Conf.</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Patterns &amp; Skills</h2>
+        <h3 style="font-size:0.85rem;font-weight:600;margin:0 0 6px;">Repeated Patterns</h3>
+        <div class="scroll-table">
+          <table class="data" id="tblAiPatterns"><thead><tr>
+            <th>Pattern</th><th>Seen</th><th>Symbols</th><th>Risk</th><th>Conf.</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+        <h3 style="font-size:0.85rem;font-weight:600;margin:12px 0 6px;">Candidate Skills</h3>
+        <div class="scroll-table">
+          <table class="data" id="tblAiSkills"><thead><tr>
+            <th>Skill</th><th>Purpose</th><th>Status</th><th>Conf.</th><th>Executable</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
     </section>
 
     <details class="section dev-diagnostics" id="devDiagnosticsSec">
@@ -1377,6 +1441,12 @@ def create_app() -> Flask:
         logger.exception(
             "init_schema failed; /health still OK but DB-backed routes may fail: {}", exc
         )
+
+    try:
+        from monitoring.ai_observer import log_startup_status
+        log_startup_status()
+    except Exception as exc:
+        logger.warning("[ai_memory] startup log failed: {}", str(exc)[:100])
 
     if not app.config.get("TESTING") and not os.environ.get("PYTEST_CURRENT_TEST"):
         start_alpaca_background_cache_thread()
@@ -2337,6 +2407,31 @@ def create_app() -> Flask:
             mimetype="application/javascript",
             headers={"Cache-Control": "no-store"},
         )
+
+    # ── AI Console / Jarvis endpoints ─────────────────────────────────────
+    @app.get("/api/ai/status")
+    def api_ai_status() -> Response:
+        from monitoring.ai_observer import get_ai_status
+        data = get_ai_status()
+        return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.post("/api/ai/chat")
+    def api_ai_chat() -> Response:
+        from monitoring.ai_observer import handle_chat
+        body = request.get_json(silent=True) or {}
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return Response(json.dumps({
+                "ok": False, "error": "message is required",
+                "allowed_to_execute": False,
+            }), status=400, mimetype="application/json")
+        result = handle_chat(
+            message,
+            include_activity_export=bool(body.get("include_activity_export", True)),
+            include_broker_diagnostic=bool(body.get("include_broker_diagnostic", False)),
+            include_memory=bool(body.get("include_memory", True)),
+        )
+        return Response(json.dumps(result, default=str), mimetype="application/json")
 
     # ── AI Observer endpoints ──────────────────────────────────────────────
     @app.get("/api/ai/observer/latest")

@@ -46,6 +46,66 @@ AI_MEMORY_DB_PATH: Path = _resolve_ai_memory_db_path()
 
 _SCHEMA_VERSION: Final[str] = "1"
 
+
+def log_startup_status() -> dict[str, Any]:
+    """Log sanitized AI status on startup. Never logs secrets."""
+    key_present = _gemini_api_key() is not None
+    provider = "gemini" if key_present else "disabled_missing_key"
+    model = _gemini_model() if key_present else None
+    logger.info("[ai_memory] AI_MEMORY_DB_PATH={}", str(AI_MEMORY_DB_PATH))
+    try:
+        init_ai_memory_schema()
+        logger.info("[ai_memory] schema_initialized=true")
+    except Exception as exc:
+        logger.warning("[ai_memory] schema_initialized=false error={}", str(exc)[:100])
+    logger.info("[ai_provider] provider={} model={}", provider, model or "none")
+    logger.info("[ai_observer] enabled=true write_to_db=true use_gemini={}", key_present)
+    logger.info("[ai_routes] enabled /api/ai/observer/latest /api/ai/chat /api/ai/status")
+    return {
+        "provider": provider,
+        "model": model,
+        "db_path": str(AI_MEMORY_DB_PATH),
+        "key_present": key_present,
+    }
+
+
+def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
+    """Build /api/ai/status response."""
+    key_present = _gemini_api_key() is not None
+    provider = "gemini" if key_present else "disabled_missing_key"
+    model = _gemini_model() if key_present else None
+    schema_ok = False
+    notes_count = 0
+    patterns_count = 0
+    skills_count = 0
+    last_run_at = None
+    try:
+        conn = get_ai_memory_connection(db_path)
+        schema_ok = True
+        notes_count = conn.execute("SELECT COUNT(*) FROM ai_observer_notes").fetchone()[0]
+        patterns_count = conn.execute("SELECT COUNT(*) FROM ai_experience_patterns").fetchone()[0]
+        skills_count = conn.execute("SELECT COUNT(*) FROM ai_candidate_skills").fetchone()[0]
+        row = conn.execute("SELECT created_at FROM ai_observer_notes ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            last_run_at = row[0]
+        conn.close()
+    except Exception:
+        pass
+    return {
+        "enabled": True,
+        "provider": provider,
+        "model": model,
+        "ai_memory_db_path": str(AI_MEMORY_DB_PATH),
+        "schema_initialized": schema_ok,
+        "notes_count": notes_count,
+        "patterns_count": patterns_count,
+        "skills_count": skills_count,
+        "last_run_at": last_run_at,
+        "allowed_to_execute": False,
+        "can_submit_orders": False,
+        "can_update_config": False,
+    }
+
 _AI_SCHEMA_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS ai_observer_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -914,4 +974,198 @@ def export_memory(db_path: Path | str | None = None) -> dict[str, Any]:
         "patterns": patterns,
         "skills": skills,
         "schema_version": _SCHEMA_VERSION,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Jarvis chat
+# ═══════════════════════════════════════════════════════════════════════════
+
+_JARVIS_SYSTEM_INSTRUCTION: Final[str] = (
+    "You are Jarvis, an observe-only trading bot analyst. "
+    "You can inspect sanitized bot state, diagnostics, and AI memory. "
+    "You cannot place trades, update config, bypass preflight, or create buy/sell signals. "
+    "Answer with evidence-backed analysis. If data is missing, say insufficient_data. "
+    "Do not reveal secrets. Return concise JSON with keys: "
+    "answer, evidence_used (list of strings), confidence (0-1), "
+    "warnings (list), suggested_operator_actions (list)."
+)
+
+
+def handle_chat(
+    message: str,
+    *,
+    include_activity_export: bool = True,
+    include_broker_diagnostic: bool = False,
+    include_memory: bool = True,
+) -> dict[str, Any]:
+    """Process a user question via Gemini or deterministic fallback.
+
+    SAFETY: Read-only. No broker calls, no config changes, no order submission.
+    """
+    evidence_used: list[str] = []
+    context_parts: list[str] = []
+
+    if include_activity_export:
+        try:
+            from monitoring.cycle_activity_export import build_activity_export
+            raw_export = build_activity_export()
+            context_parts.append("=== ACTIVITY EXPORT ===\n" + json.dumps(
+                _sanitize_for_gemini(raw_export), default=str)[:8000])
+            evidence_used.append("activity_export")
+        except Exception:
+            context_parts.append("=== ACTIVITY EXPORT === unavailable")
+
+    if include_broker_diagnostic:
+        try:
+            from monitoring.broker_diagnostic import build_broker_diagnostic
+            diag = build_broker_diagnostic()
+            context_parts.append("=== BROKER DIAGNOSTIC ===\n" + json.dumps(
+                _sanitize_for_gemini(diag), default=str)[:4000])
+            evidence_used.append("broker_diagnostic")
+        except Exception:
+            context_parts.append("=== BROKER DIAGNOSTIC === unavailable")
+
+    if include_memory:
+        try:
+            mem = export_memory()
+            notes_trunc = mem.get("notes", [])[:20]
+            context_parts.append("=== AI MEMORY NOTES ===\n" + json.dumps(
+                notes_trunc, default=str)[:4000])
+            evidence_used.append("ai_memory_notes")
+        except Exception:
+            context_parts.append("=== AI MEMORY === unavailable")
+
+    full_prompt = (
+        f"User question: {message}\n\n" + "\n\n".join(context_parts)
+    )
+
+    key_present = _gemini_api_key() is not None
+    provider = "gemini" if key_present else "deterministic"
+    gemini_resp: dict[str, Any] | None = None
+
+    if key_present:
+        gemini_resp = _call_gemini_chat(full_prompt)
+
+    if gemini_resp and isinstance(gemini_resp, dict):
+        return {
+            "ok": True,
+            "provider": provider,
+            "answer": str(gemini_resp.get("answer", "")),
+            "evidence_used": gemini_resp.get("evidence_used", evidence_used),
+            "confidence": _clamp_confidence(gemini_resp.get("confidence", 0.5)),
+            "warnings": gemini_resp.get("warnings", []),
+            "suggested_operator_actions": gemini_resp.get("suggested_operator_actions", []),
+            "allowed_to_execute": False,
+        }
+
+    return _deterministic_chat(message, evidence_used, include_activity_export)
+
+
+def _call_gemini_chat(prompt: str) -> dict[str, Any] | None:
+    """Call Gemini with Jarvis system instruction."""
+    key = _gemini_api_key()
+    if not key:
+        return None
+
+    model = _gemini_model()
+    base = _gemini_api_base()
+    url = f"{base}/models/{model}:generateContent"
+
+    body = json.dumps({
+        "system_instruction": {"parts": [{"text": _JARVIS_SYSTEM_INSTRUCTION}]},
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.3,
+        },
+    })
+
+    req = Request(url, data=body.encode("utf-8"), method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("x-goog-api-key", key)
+
+    try:
+        with urlopen(req, timeout=45) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+        text = (
+            raw.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+        return json.loads(text)
+    except Exception as exc:
+        logger.warning("[jarvis_chat] Gemini call failed: {}", str(exc)[:200])
+        return None
+
+
+def _deterministic_chat(
+    message: str,
+    evidence_used: list[str],
+    has_export: bool,
+) -> dict[str, Any]:
+    """Rule-based fallback when Gemini is unavailable."""
+    msg_lower = message.lower()
+    answer = "I can provide analysis based on available data. "
+    warnings: list[str] = []
+    actions: list[str] = []
+
+    if has_export:
+        try:
+            from monitoring.cycle_activity_export import build_activity_export
+            export = build_activity_export()
+            sell_readiness = export.get("sell_readiness") or []
+            positions = export.get("open_positions") or []
+            account = export.get("account") or {}
+            market = export.get("market_status") or {}
+            risk = export.get("risk_summary") or {}
+
+            if any(k in msg_lower for k in ("sell", "exit", "tp", "take profit", "why")):
+                blocked = [sr for sr in sell_readiness
+                           if sr.get("final_action", "").upper() not in ("SELL", "SUBMIT_SELL")]
+                if blocked:
+                    syms = ", ".join(sr.get("symbol", "?") for sr in blocked[:5])
+                    reasons = "; ".join(f"{sr.get('symbol','?')}: {sr.get('final_action','?')}"
+                                        for sr in blocked[:3])
+                    answer += f"Blocked sells: {syms}. Reasons: {reasons}. "
+                else:
+                    answer += "No blocked sells detected. "
+
+            if any(k in msg_lower for k in ("capital", "cash", "money", "buying power")):
+                cash = account.get("cash", "unknown")
+                equity = account.get("equity", "unknown")
+                answer += f"Cash: ${cash}, Equity: ${equity}. "
+
+            if any(k in msg_lower for k in ("position", "holding", "stock")):
+                count = len(positions)
+                syms = ", ".join(p.get("symbol", "?") for p in positions[:8])
+                answer += f"{count} positions: {syms}. "
+
+            if any(k in msg_lower for k in ("market", "session", "open", "close")):
+                session = market.get("trading_session_mode", "unknown")
+                answer += f"Session: {session}. "
+
+            if any(k in msg_lower for k in ("risk", "exposure")):
+                answer += f"Risk summary: {json.dumps(risk, default=str)[:300]}. "
+
+        except Exception:
+            answer += "Could not fetch live data. "
+            warnings.append("activity_export_unavailable")
+    else:
+        answer += "No activity export included in context. Enable 'include activity export' for detailed analysis. "
+
+    answer = answer.strip()
+    if not answer or answer == "I can provide analysis based on available data.":
+        answer = "I don't have enough data to answer that question. Try enabling activity export and broker diagnostic."
+
+    return {
+        "ok": True,
+        "provider": "deterministic",
+        "answer": answer,
+        "evidence_used": evidence_used,
+        "confidence": 0.0,
+        "warnings": warnings,
+        "suggested_operator_actions": actions,
+        "allowed_to_execute": False,
     }

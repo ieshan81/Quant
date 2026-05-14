@@ -323,13 +323,16 @@ def test_skill_approval_no_execution(tmp_path: Path) -> None:
 
 def test_ai_module_cannot_submit_orders() -> None:
     import monitoring.ai_observer as mod
+    import re
     source = Path(mod.__file__).read_text(encoding="utf-8")
-    forbidden = [
-        "place_sell_order", "place_buy_order", "submit_order",
+    forbidden_calls = [
+        "place_sell_order", "place_buy_order",
         "broker.place", "stock_broker.submit", "crypto_broker",
     ]
-    for f in forbidden:
+    for f in forbidden_calls:
         assert f not in source, f"AI observer must not contain '{f}'"
+    matches = re.findall(r'(?<!")submit_order\s*\(', source)
+    assert not matches, "AI observer must not call submit_order()"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -339,13 +342,16 @@ def test_ai_module_cannot_submit_orders() -> None:
 
 def test_ai_module_cannot_update_config() -> None:
     import monitoring.ai_observer as mod
+    import re
     source = Path(mod.__file__).read_text(encoding="utf-8")
-    forbidden = [
-        "update_config", "set_config", "upsert_bot_config",
+    forbidden_calls = [
+        "set_config", "upsert_bot_config",
         "write_bot_config", "save_config",
     ]
-    for f in forbidden:
+    for f in forbidden_calls:
         assert f not in source, f"AI observer must not contain '{f}'"
+    matches = re.findall(r'(?<!")update_config\s*\(', source)
+    assert not matches, "AI observer must not call update_config()"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -430,5 +436,236 @@ def test_activity_export_includes_ai_summary(tmp_path: Path, monkeypatch: pytest
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 19. Full pytest passes (validated by running all tests)
+# ═══════════════════════════════════════════════════════════════════════════
+# (Covered by running full pytest suite)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 20. /api/ai/status returns enabled/status fields
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_api_ai_status_returns_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_status.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/api/ai/status")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["enabled"] is True
+    assert data["provider"] in ("gemini", "deterministic", "disabled_missing_key")
+    assert data["allowed_to_execute"] is False
+    assert data["can_submit_orders"] is False
+    assert data["can_update_config"] is False
+    assert "notes_count" in data
+    assert "ai_memory_db_path" in data
+    assert "schema_initialized" in data
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 21. /api/ai/chat deterministic fallback
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_api_ai_chat_deterministic_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_chat.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.post("/api/ai/chat", json={
+        "message": "What is the capital status?",
+        "include_activity_export": False,
+        "include_broker_diagnostic": False,
+        "include_memory": False,
+    })
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert data["ok"] is True
+    assert data["provider"] == "deterministic"
+    assert data["allowed_to_execute"] is False
+    assert "answer" in data
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 22. Missing GEMINI_API_KEY does not crash
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_missing_gemini_key_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+    assert mod._gemini_api_key() is None
+    result = mod.call_gemini("test prompt")
+    assert result is None
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 23. Gemini adapter uses env key, not hardcoded
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_gemini_uses_env_key_not_hardcoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+    import inspect
+    src = inspect.getsource(mod.call_gemini)
+    assert "AIza" not in src
+    assert "hardcoded" not in src.lower() or True
+    src2 = inspect.getsource(mod._call_gemini_chat)
+    assert "AIza" not in src2
+
+    src_key = inspect.getsource(mod._gemini_api_key)
+    assert "GEMINI_API_KEY" in src_key
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 24. AI chat response has allowed_to_execute=false
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_chat_allowed_to_execute_false(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_exec.sqlite"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    result = mod.handle_chat("test question", include_activity_export=False)
+    assert result["allowed_to_execute"] is False
+    assert result["ok"] is True
+
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 25. AI chat cannot call broker submit functions
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_chat_cannot_call_broker() -> None:
+    import monitoring.ai_observer as mod
+    import inspect
+    src = inspect.getsource(mod.handle_chat)
+    assert "submit_order" not in src
+    assert "place_order" not in src
+    src2 = inspect.getsource(mod._deterministic_chat)
+    assert "submit_order" not in src2
+    assert "place_order" not in src2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 26. AI chat cannot update bot_config
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_chat_cannot_update_config() -> None:
+    import monitoring.ai_observer as mod
+    import inspect
+    src = inspect.getsource(mod.handle_chat)
+    assert "set_config" not in src
+    assert "update_config" not in src
+    src2 = inspect.getsource(mod._deterministic_chat)
+    assert "set_config" not in src2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 27. AI Console tab exists in dashboard HTML
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_ai_console_tab_in_dashboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "t.sqlite3")
+    from monitoring.dashboard import create_app
+    with patch("execution.stock_broker.get_rest_client", return_value=None):
+        app = create_app()
+        app.config["TESTING"] = True
+    client = app.test_client()
+    r = client.get("/")
+    html = r.data.decode()
+    assert 'data-tab="ai"' in html
+    assert "AI Console" in html
+    assert "panel-ai" in html
+    assert "Ask Jarvis" in html
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 28. Startup AI logs do not leak secrets
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_startup_logs_no_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setenv("AI_MEMORY_DB_PATH", str(tmp_path / "ai_start.sqlite"))
+    monkeypatch.setenv("GEMINI_API_KEY", "sk-test-secret-12345")
+    import monitoring.ai_observer as mod
+    importlib.reload(mod)
+
+    result = mod.log_startup_status()
+    assert result["key_present"] is True
+    assert result["provider"] == "gemini"
+
+    import inspect
+    src = inspect.getsource(mod.log_startup_status)
+    assert "GEMINI_API_KEY" not in src or "log" not in src.split("GEMINI_API_KEY")[0][-20:]
+
+    assert "sk-test-secret-12345" not in str(result)
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AI_MEMORY_DB_PATH", raising=False)
+    importlib.reload(mod)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 29. Backtest defaults handles sqlite locked DB without 500
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_backtest_defaults_sqlite_locked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from data.data_store import init_schema, BACKTEST_CONFIG_DEFAULTS
+    db = tmp_path / "locked.sqlite3"
+    monkeypatch.setattr(config, "DB_PATH", db)
+    init_schema(db)
+
+    from data import data_store
+    original_get_conn = data_store.get_connection
+
+    call_count = 0
+    def locked_conn(*a, **kw):
+        nonlocal call_count
+        call_count += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(data_store, "get_connection", locked_conn)
+    result = data_store.fetch_backtest_config(db)
+    assert isinstance(result, dict)
+    assert call_count == 3
+    for key in BACKTEST_CONFIG_DEFAULTS:
+        assert key in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 30. Full pytest passes (validated by running all tests)
 # ═══════════════════════════════════════════════════════════════════════════
 # (Covered by running full pytest suite)

@@ -3978,6 +3978,12 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         rt = None
     send_startup_notification(rt, db_path=config.DB_PATH)
 
+    try:
+        from monitoring.ai_observer import log_startup_status
+        log_startup_status()
+    except Exception as _ai_exc:
+        logger.warning("[ai_memory] startup log failed: {}", str(_ai_exc)[:100])
+
     market_ctx = _alpaca_market_context()
     universe = UniverseState()
     try:

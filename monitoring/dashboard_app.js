@@ -1542,6 +1542,135 @@
     });
   }
 
+  // ── AI Console ──────────────────────────────────────────────────────────
+
+  var _aiLoaded = false;
+
+  function loadAiStatus() {
+    fetch("/api/ai/status").then(function (r) { return r.json(); }).then(function (d) {
+      var el = function (id) { return document.getElementById(id); };
+      if (el("aiProvider")) el("aiProvider").textContent = d.provider || "—";
+      if (el("aiModel")) el("aiModel").textContent = d.model || "—";
+      if (el("aiEnabled")) el("aiEnabled").textContent = d.enabled ? "enabled" : "disabled";
+      if (el("aiNotesCount")) el("aiNotesCount").textContent = d.notes_count != null ? d.notes_count : "—";
+      if (el("aiPatternsCount")) el("aiPatternsCount").textContent = d.patterns_count != null ? d.patterns_count : "—";
+      if (el("aiSkillsCount")) el("aiSkillsCount").textContent = d.skills_count != null ? d.skills_count : "—";
+      if (el("aiLastRun")) el("aiLastRun").textContent = d.last_run_at || "—";
+    }).catch(function () {});
+  }
+
+  function loadAiNotes() {
+    fetch("/api/ai/observer/latest?limit=30").then(function (r) { return r.json(); }).then(function (d) {
+      var tbody = document.querySelector("#tblAiNotes tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      (d.notes || []).forEach(function (n) {
+        var sev = esc(n.severity || "");
+        var sevColor = sev === "critical" ? "var(--bad)" : sev === "warning" ? "#fbbf24" : "var(--muted)";
+        tbody.innerHTML += "<tr>" +
+          "<td>" + esc((n.created_at || "").slice(0, 19)) + "</td>" +
+          "<td style='color:" + sevColor + ";font-weight:600'>" + sev + "</td>" +
+          "<td>" + esc(n.category || "") + "</td>" +
+          "<td>" + esc(n.symbol || "") + "</td>" +
+          "<td style='max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>" + esc(n.finding || "") + "</td>" +
+          "<td style='max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>" + esc(n.suggested_action || "") + "</td>" +
+          "<td>" + (n.confidence != null ? Number(n.confidence).toFixed(2) : "—") + "</td>" +
+          "</tr>";
+      });
+    }).catch(function () {});
+  }
+
+  function loadAiPatterns() {
+    fetch("/api/ai/patterns").then(function (r) { return r.json(); }).then(function (d) {
+      var tbody = document.querySelector("#tblAiPatterns tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      (d.patterns || []).forEach(function (p) {
+        var syms = "";
+        try { syms = JSON.parse(p.symbols_seen_json || "[]").join(", "); } catch(e) { syms = p.symbols_seen_json || ""; }
+        tbody.innerHTML += "<tr>" +
+          "<td>" + esc(p.pattern_name || p.pattern_key || "") + "</td>" +
+          "<td>" + (p.seen_count || 0) + "</td>" +
+          "<td>" + esc(syms) + "</td>" +
+          "<td style='max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>" + esc(p.risk_summary || "") + "</td>" +
+          "<td>" + (p.confidence != null ? Number(p.confidence).toFixed(2) : "—") + "</td>" +
+          "</tr>";
+      });
+    }).catch(function () {});
+  }
+
+  function loadAiSkills() {
+    fetch("/api/ai/skills").then(function (r) { return r.json(); }).then(function (d) {
+      var tbody = document.querySelector("#tblAiSkills tbody");
+      if (!tbody) return;
+      tbody.innerHTML = "";
+      (d.skills || []).forEach(function (s) {
+        var stColor = s.status === "rejected" ? "var(--bad)" : s.status === "approved_observe_only" ? "var(--good)" : "var(--muted)";
+        tbody.innerHTML += "<tr>" +
+          "<td>" + esc(s.skill_name || s.skill_key || "") + "</td>" +
+          "<td style='max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>" + esc(s.purpose || "") + "</td>" +
+          "<td style='color:" + stColor + "'>" + esc(s.status || "proposed") + "</td>" +
+          "<td>" + (s.confidence != null ? Number(s.confidence).toFixed(2) : "—") + "</td>" +
+          "<td style='color:var(--bad);font-weight:600'>false</td>" +
+          "</tr>";
+      });
+    }).catch(function () {});
+  }
+
+  function wireAiChat() {
+    var btn = document.getElementById("aiChatSend");
+    if (!btn) return;
+    btn.addEventListener("click", function () {
+      var input = document.getElementById("aiChatInput");
+      var msg = (input ? input.value : "").trim();
+      if (!msg) return;
+      btn.disabled = true;
+      btn.textContent = "Thinking...";
+      var body = {
+        message: msg,
+        include_activity_export: document.getElementById("aiIncExport") ? document.getElementById("aiIncExport").checked : true,
+        include_broker_diagnostic: document.getElementById("aiIncBroker") ? document.getElementById("aiIncBroker").checked : false,
+        include_memory: document.getElementById("aiIncMemory") ? document.getElementById("aiIncMemory").checked : true
+      };
+      fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        var wrap = document.getElementById("aiChatResult");
+        if (wrap) wrap.style.display = "block";
+        var prov = document.getElementById("aiChatProvider");
+        if (prov) prov.textContent = "(" + (d.provider || "unknown") + ", conf=" + (d.confidence != null ? Number(d.confidence).toFixed(2) : "—") + ")";
+        var ans = document.getElementById("aiChatAnswer");
+        if (ans) ans.textContent = d.answer || "No answer.";
+        var ev = document.getElementById("aiChatEvidence");
+        if (ev) ev.textContent = d.evidence_used && d.evidence_used.length ? "Evidence: " + d.evidence_used.join(", ") : "";
+        var acts = document.getElementById("aiChatActions");
+        if (acts) {
+          var actions = d.suggested_operator_actions || [];
+          acts.innerHTML = actions.length ? "<strong>Suggested actions:</strong> " + actions.map(esc).join("; ") : "";
+        }
+      }).catch(function (e) {
+        var ans = document.getElementById("aiChatAnswer");
+        if (ans) ans.textContent = "Error: " + e;
+        var wrap = document.getElementById("aiChatResult");
+        if (wrap) wrap.style.display = "block";
+      }).finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Ask AI";
+      });
+    });
+  }
+
+  function loadAiTab() {
+    if (_aiLoaded) return;
+    _aiLoaded = true;
+    loadAiStatus();
+    loadAiNotes();
+    loadAiPatterns();
+    loadAiSkills();
+  }
+
   function startDashboard() {
     bindTabs();
     wireBacktest();
@@ -1549,8 +1678,14 @@
     wireBrokerDiagnosticCopy();
     wireCapitalAllocatorCopy();
     wireManualSell();
+    wireAiChat();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
+    document.querySelectorAll("nav .tab-btn").forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (b.getAttribute("data-tab") === "ai") loadAiTab();
+      });
+    });
   }
 
   if (document.readyState === "loading") {

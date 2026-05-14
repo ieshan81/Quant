@@ -896,18 +896,38 @@ def _parse_backtest_config_value(value: str, value_type: str) -> Any:
     return value
 
 
-def fetch_backtest_config(db_path: Path | str | None = None) -> dict[str, Any]:
-    with get_connection(db_path) as conn:
-        _seed_backtest_config_if_empty(conn)
-        rows = conn.execute(
-            "SELECT key, value, value_type FROM backtest_config ORDER BY key ASC"
-        ).fetchall()
+def _backtest_config_safe_defaults() -> dict[str, Any]:
+    """Return in-memory defaults when DB is locked."""
     out: dict[str, Any] = {}
-    for row in rows:
-        out[str(row["key"])] = _parse_backtest_config_value(
-            str(row["value"]), str(row["value_type"])
-        )
+    for key, (value, value_type, _desc) in BACKTEST_CONFIG_DEFAULTS.items():
+        out[key] = _parse_backtest_config_value(value, value_type)
     return out
+
+
+def fetch_backtest_config(db_path: Path | str | None = None) -> dict[str, Any]:
+    retries = 3
+    for attempt in range(retries):
+        try:
+            with get_connection(db_path) as conn:
+                try:
+                    _seed_backtest_config_if_empty(conn)
+                except sqlite3.OperationalError:
+                    pass
+                rows = conn.execute(
+                    "SELECT key, value, value_type FROM backtest_config ORDER BY key ASC"
+                ).fetchall()
+            out: dict[str, Any] = {}
+            for row in rows:
+                out[str(row["key"])] = _parse_backtest_config_value(
+                    str(row["value"]), str(row["value_type"])
+                )
+            return out
+        except sqlite3.OperationalError:
+            if attempt < retries - 1:
+                import time
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            return _backtest_config_safe_defaults()
 
 
 def set_backtest_config(
