@@ -568,7 +568,7 @@ def test_execute_cycle_stock_sell_blocked_when_market_closed() -> None:
         mw.execute_cycle_results(t, [sig], rt, cycle_id="mclosed")
     sm.assert_not_called()
     reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]
-    assert mw.reason_codes.MARKET_CLOSED in reasons
+    assert mw.reason_codes.MARKET_CLOSED in reasons or mw.reason_codes.EXIT_BLOCKED_MARKET_CLOSED in reasons
 
 
 def test_execute_cycle_crypto_sell_ok_when_stock_market_closed() -> None:
@@ -614,7 +614,7 @@ def test_execute_cycle_stock_sell_preflight_blocks_pdt_same_day() -> None:
         mw.execute_cycle_results(t, [sig], rt, cycle_id="pdtsd")
     sm.assert_not_called()
     reasons = [c.kwargs.get("reason_code") for c in pers.call_args_list]
-    assert mw.reason_codes.PDT_PROTECTION in reasons
+    assert mw.reason_codes.PDT_PROTECTION in reasons or mw.reason_codes.PREFLIGHT_BLOCKED_PDT in reasons
     assert mw.reason_codes.MARKET_CLOSED not in reasons
 
 

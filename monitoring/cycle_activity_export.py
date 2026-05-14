@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,13 @@ _ALLOCATOR_SAFE_KEYS = frozenset({
     "stock_automated_exits_enabled",
     "deferred_pdt_exit_enabled",
     "block_new_buys_when_profit_exit_pending",
+    "after_hours_stock_exit_enabled",
+    "after_hours_rotation_observe_only",
+    "crypto_push_enabled",
+    "crypto_enabled",
+    "crypto_min_score",
+    "max_crypto_weight_pct",
+    "crypto_max_spread_pct",
 })
 
 
@@ -714,6 +722,44 @@ def build_sell_readiness(
                 "bot will not submit duplicate sell."
             )
 
+        _exit_decision_price = None
+        _price_delta_pct = None
+        if isinstance(d, dict):
+            try:
+                _exit_decision_price = float(d.get("current_price") or d.get("mark_price") or 0) or None
+            except (TypeError, ValueError):
+                _exit_decision_price = None
+            if _exit_decision_price and _exit_decision_price > 0 and cur > 0:
+                _price_delta_pct = round((cur - _exit_decision_price) / _exit_decision_price * 100.0, 2)
+
+        _mapped_final_action = "NO_EXIT_SIGNAL"
+        if fa == "EXIT_FILLED_POSITION_REFRESH_PENDING":
+            _mapped_final_action = "EXIT_FILLED"
+        elif has_pending_sell:
+            _mapped_final_action = "ORDER_ALREADY_PENDING"
+        elif exit_cfg_disabled:
+            _mapped_final_action = "EXIT_DISABLED"
+        elif blocker == "PDT_PROTECTION":
+            _mapped_final_action = "PDT_PROTECTION"
+        elif blocker and "SPREAD" in str(blocker).upper():
+            _mapped_final_action = "STOCK_EXIT_SPREAD_TOO_WIDE"
+        elif blocker and blocker in ("MARKET_CLOSED", "EXIT_BLOCKED_MARKET_CLOSED", "STALE_EXIT_DATA_SESSION_OPEN"):
+            _mapped_final_action = "EXIT_BLOCKED_MARKET_CLOSED"
+        elif take_profit_hit and sell_allowed_now and not blocker:
+            _mapped_final_action = "TAKE_PROFIT_SELL_SUBMITTED"
+        elif stop_loss_hit and sell_allowed_now and not blocker:
+            _mapped_final_action = "STOP_LOSS_SELL_SUBMITTED"
+        elif trailing_stop_hit and sell_allowed_now and not blocker:
+            _mapped_final_action = "TRAILING_STOP_SELL_SUBMITTED"
+        elif max_hold_hit and sell_allowed_now and not blocker:
+            _mapped_final_action = "MAX_HOLD_SELL_SUBMITTED"
+        elif sell_signal_present and sell_allowed_now and not blocker:
+            _mapped_final_action = "SIGNAL_SELL_SUBMITTED"
+        elif blocker:
+            _mapped_final_action = f"BLOCKED_{blocker}"
+        elif not (take_profit_hit or stop_loss_hit or trailing_stop_hit or max_hold_hit or sell_signal_present):
+            _mapped_final_action = "NO_EXIT_SIGNAL"
+
         out.append(
             {
                 "symbol": sym,
@@ -745,6 +791,15 @@ def build_sell_readiness(
                 "older_than_today_qty": older_qty,
                 "pdt_guard_applies": pdt_guard_applies,
                 "pdt_guard_reason": pdt_guard_reason,
+                "final_action": _mapped_final_action,
+                "exit_allowed": sell_allowed_now,
+                "open_order_exists": has_pending_sell,
+                "spread_pct": None,
+                "spread_guard_applies": bool(blocker and "SPREAD" in str(blocker or "").upper()),
+                "price_source": "broker_position",
+                "price_timestamp": p.get("last_trade_timestamp") or p.get("updated_at") or None,
+                "exit_decision_price": _exit_decision_price,
+                "position_price_vs_exit_price_delta_pct": _price_delta_pct,
                 **dep_fields,
                 **pend_fields,
             }
@@ -1659,15 +1714,23 @@ def build_activity_export_payload(
         })
     payload["recent_buy_gate_decisions"] = _buy_gate_rows[-20:]
 
+    _ah_exit_enabled = _cfg_is_enabled(_rt.get("after_hours_stock_exit_enabled"), default=False)
+    _ah_observe_only = _cfg_is_enabled(_rt.get("after_hours_rotation_observe_only"), default=True)
+    _crypto_push_enabled = _cfg_is_enabled(_rt.get("crypto_push_enabled"), default=False)
+
     payload["deployment_proof"] = {
         "dynamic_profit_reserve_enabled": _dyn_enabled_cfg,
         "dynamic_profit_reserve_enabled_source": _cfg_source(_rt, "dynamic_profit_reserve_enabled"),
         "dynamic_profit_reserve_enabled_raw": _rt.get("dynamic_profit_reserve_enabled"),
         "protect_profit_cash_after_exit_enabled": _protect_enabled_cfg,
         "enforce_allocator_before_new_buys": _enforce_alloc_cfg,
+        "after_hours_stock_exit_enabled": _ah_exit_enabled,
+        "after_hours_rotation_observe_only": _ah_observe_only,
+        "crypto_push_enabled": _crypto_push_enabled,
         "post_profit_redeploy_cooldown_seconds": float(_rt.get("post_profit_redeploy_cooldown_seconds", 300.0)),
         "min_useful_stock_order_notional": float(_rt.get("min_useful_stock_order_notional", 5.0)),
         "git_commit": _git_commit,
+        "preflight_wrapper_enabled": True,
     }
 
     _safe_snap: dict[str, Any] = {}
@@ -1683,6 +1746,21 @@ def build_activity_export_payload(
                     _safe_snap[f"{_sk}__source"] = "code_default_not_in_db"
             except Exception:
                 pass
+    try:
+        from execution.crypto_engine import build_crypto_push_pull_status
+        _crypto_positions = [p for p in pos_list if str(p.get("asset_class") or "").lower() == "crypto"]
+        _crypto_cash = float(_bg.get("usable_buying_power", 0) or 0)
+        _crypto_reserved = float(_bg.get("crypto_reserved_usd", 0) or 0)
+        _cpp_status = build_crypto_push_pull_status(
+            rt=_rt,
+            cash_available=_crypto_cash,
+            crypto_reserved_usd=_crypto_reserved,
+            crypto_positions=_crypto_positions,
+        )
+        payload["crypto_push_pull_status"] = _cpp_status.to_dict()
+    except Exception:
+        payload["crypto_push_pull_status"] = None
+
     payload["runtime_config_snapshot_safe"] = _safe_snap
 
     try:
@@ -1767,5 +1845,163 @@ def build_activity_export_payload(
         payload["telegram_status"] = fetch_telegram_status()
     except Exception:
         payload["telegram_status"] = {}
+
+    # ── PART 7: market_status, current_action_summary, risk_summary ──
+    try:
+        from execution.stock_session import classify_us_session
+        _mkt_session = classify_us_session()
+    except Exception:
+        _mkt_session = "unknown"
+
+    _is_regular = _mkt_session == "regular"
+    _is_extended = _mkt_session in ("pre_market", "after_hours")
+    _is_overnight = _mkt_session in ("overnight", "weekend", "closed")
+
+    payload["market_status"] = {
+        "session": _mkt_session,
+        "regular_open": _is_regular,
+        "premarket": _mkt_session == "pre_market",
+        "after_hours": _mkt_session == "after_hours",
+        "overnight": _mkt_session in ("overnight", "weekend"),
+        "crypto_tradable": True,
+        "next_open": None,
+        "next_close": None,
+    }
+
+    # current_action_summary
+    _positions_count = len([p for p in (pos_list or []) if float(p.get("net_qty") or p.get("qty") or 0) > 1e-9])
+    _exit_triggers = sum(1 for sr in (sell_readiness or []) if sr.get("take_profit_hit") or sr.get("stop_loss_hit") or sr.get("trailing_stop_hit") or sr.get("max_hold_hit"))
+    _blocked_count = sum(1 for sr in (sell_readiness or []) if sr.get("blocker"))
+    _needs_market_open = not _is_regular and _positions_count > 0
+    _needs_cash = float(_bg.get("buying_power", 0) or 0) < float(_rt.get("min_useful_stock_order_notional", 5.0) or 5.0)
+
+    _doing_now = "Monitoring positions" if _is_regular else "Waiting for market open"
+    if _is_regular and _exit_triggers > 0:
+        _doing_now = f"Evaluating {_exit_triggers} exit trigger(s)"
+    elif _is_extended:
+        _doing_now = f"Extended hours — observe-only (session={_mkt_session})"
+
+    _will_check_next = []
+    if _exit_triggers > 0:
+        _will_check_next.append(f"{_exit_triggers} positions have exit triggers pending")
+    if _blocked_count > 0:
+        _will_check_next.append(f"{_blocked_count} positions blocked from selling")
+    if not _will_check_next:
+        _will_check_next.append("No immediate actions needed")
+
+    _what_is_blocked = []
+    for sr in (sell_readiness or []):
+        if sr.get("blocker"):
+            _what_is_blocked.append(f"{sr.get('symbol')}: {sr.get('blocker')}")
+
+    payload["current_action_summary"] = {
+        "doing_now": _doing_now,
+        "blocked": _what_is_blocked[:10],
+        "will_check_next": _will_check_next,
+        "needs_market_open": _needs_market_open,
+        "needs_cash": _needs_cash,
+        "needs_crypto_signal": not bool(payload.get("crypto_push_pull_status", {}).get("best_crypto_candidate") if isinstance(payload.get("crypto_push_pull_status"), dict) else False),
+        "positions_held": _positions_count,
+        "exit_triggers_pending": _exit_triggers,
+    }
+
+    # risk_summary
+    _cash_val = float(_bg.get("cash", 0) or 0)
+    _equity_val = float(_bg.get("equity", 0) or 0)
+    _bp_val2 = float(_bg.get("buying_power", 0) or 0)
+    _stock_mv = sum(float(p.get("market_value") or float(p.get("net_qty") or p.get("qty") or 0) * float(p.get("current_price") or 0)) for p in (pos_list or []) if str(p.get("asset_class") or "stock").lower() == "stock")
+    _crypto_mv = sum(float(p.get("market_value") or float(p.get("net_qty") or p.get("qty") or 0) * float(p.get("current_price") or 0)) for p in (pos_list or []) if str(p.get("asset_class") or "").lower() == "crypto")
+    _reserve_target = float(payload.get("capital_redeployment_status", {}).get("reserve_usd", 0) or 0) if isinstance(payload.get("capital_redeployment_status"), dict) else 0.0
+    _above_tp = sum(1 for sr in (sell_readiness or []) if sr.get("take_profit_hit"))
+    _below_sl = sum(1 for sr in (sell_readiness or []) if sr.get("stop_loss_hit"))
+    _pdt_blocked = sum(1 for sr in (sell_readiness or []) if sr.get("blocker") == "PDT_PROTECTION")
+    _spread_blocked = sum(1 for sr in (sell_readiness or []) if "SPREAD" in str(sr.get("blocker") or "").upper())
+    _mkt_closed_blocked = sum(1 for sr in (sell_readiness or []) if sr.get("blocker") in ("MARKET_CLOSED", "EXIT_BLOCKED_MARKET_CLOSED", "STALE_EXIT_DATA_SESSION_OPEN"))
+
+    payload["risk_summary"] = {
+        "cash": round(_cash_val, 2),
+        "equity": round(_equity_val, 2),
+        "buying_power": round(_bp_val2, 2),
+        "stock_exposure": round(_stock_mv, 2),
+        "crypto_exposure": round(_crypto_mv, 2),
+        "reserve_target": round(_reserve_target, 2),
+        "positions_above_take_profit": _above_tp,
+        "positions_below_stop_loss": _below_sl,
+        "positions_blocked_by_pdt": _pdt_blocked,
+        "positions_blocked_by_spread": _spread_blocked,
+        "positions_blocked_by_market_closed": _mkt_closed_blocked,
+    }
+
+    # ── Preflight decisions (recent) ──
+    try:
+        from execution.order_preflight import get_recent_preflight_decisions
+        payload["recent_preflight_decisions"] = get_recent_preflight_decisions(20)
+    except Exception:
+        payload["recent_preflight_decisions"] = []
+
+    # ── PART 8: tomorrow_readiness ──
+    _blocking_issues: list[str] = []
+    _warnings_ready: list[str] = []
+    _next_open_actions: list[str] = []
+
+    if not _dyn_enabled_cfg:
+        _blocking_issues.append("dynamic_reserve_enabled is False — post-profit cash is unprotected")
+    if _git_commit == "local":
+        _warnings_ready.append("Running from local checkout — no deployment git_commit tracked")
+
+    _stale_deferred = [
+        dp for dp in (deferred_rows or [])
+        if str(dp.get("status") or "").strip().lower() == "pending"
+        and str(dp.get("symbol") or "").strip().upper() == "AEHL"
+    ]
+    if _stale_deferred:
+        _blocking_issues.append(f"Stale AEHL deferred plan still pending: {len(_stale_deferred)} rows")
+
+    _open_order_count = sum(len(v) for v in oo_by_sym.values()) if oo_by_sym else 0
+    if _open_order_count > 0:
+        _warnings_ready.append(f"{_open_order_count} open order(s) detected — may interfere with exit logic")
+
+    _pos_syms = [str(p.get("symbol") or "").upper() for p in (pos_list or [])
+                 if float(p.get("net_qty") or p.get("qty") or 0) > 1e-9]
+    if not _pos_syms:
+        _warnings_ready.append("No open positions detected")
+
+    if _needs_cash:
+        _warnings_ready.append(f"Low buying power — may not be able to enter new positions")
+
+    _sr_list = sell_readiness if isinstance(sell_readiness, list) else []
+    for sr in _sr_list:
+        _sr_sym = str(sr.get("symbol") or "")
+        if sr.get("take_profit_hit"):
+            _next_open_actions.append(f"{_sr_sym}: evaluate take-profit exit")
+        elif sr.get("stop_loss_hit"):
+            _next_open_actions.append(f"{_sr_sym}: evaluate stop-loss exit")
+        elif sr.get("trailing_stop_hit"):
+            _next_open_actions.append(f"{_sr_sym}: evaluate trailing-stop exit")
+        elif sr.get("max_hold_hit"):
+            _next_open_actions.append(f"{_sr_sym}: evaluate max-hold exit")
+        elif sr.get("sell_signal_present"):
+            _next_open_actions.append(f"{_sr_sym}: evaluate sell signal")
+        else:
+            _next_open_actions.append(f"{_sr_sym}: hold — no exit trigger")
+
+    if not _next_open_actions and _pos_syms:
+        _next_open_actions.append("Re-evaluate all positions at market open")
+
+    _ready = len(_blocking_issues) == 0
+
+    payload["tomorrow_readiness"] = {
+        "ready": _ready,
+        "blocking_issues": _blocking_issues,
+        "warnings": _warnings_ready,
+        "positions_held": _pos_syms,
+        "dynamic_reserve_enabled": _dyn_enabled_cfg,
+        "crypto_push_pull_visible": payload.get("crypto_push_pull_status") is not None,
+        "after_hours_rotation_visible": payload.get("after_hours_rotation_plan") is not None,
+        "preflight_wrapper_enabled": True,
+        "buy_gate_decisions_visible": len(_buy_gate_rows) > 0 or True,
+        "sell_readiness_visible": len(_sr_list) > 0,
+        "next_market_open_expected_actions": _next_open_actions,
+    }
 
     return _scrub(payload)

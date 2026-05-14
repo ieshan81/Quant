@@ -111,6 +111,27 @@ def build_stock_session_state(
     }
 
 
+def classify_us_session(*, now_utc: datetime | None = None) -> str:
+    """Return a single session label string for the current moment.
+
+    Used by the activity export, after-hours planner, and market_state module.
+    """
+    info = classify_us_equity_session_local(now_utc)
+    if info.get("weekend"):
+        return "weekend"
+    if info.get("regular"):
+        return "regular"
+    if info.get("pre_market"):
+        return "pre_market"
+    if info.get("after_hours"):
+        return "after_hours"
+    if info.get("overnight"):
+        return "overnight"
+    if info.get("closed"):
+        return "closed"
+    return "unknown"
+
+
 def _fmt_ts(v: Any) -> str | None:
     if v is None:
         return None

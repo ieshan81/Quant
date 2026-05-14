@@ -431,25 +431,34 @@ class _StockExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
+        from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
         rt = load_runtime_config_dict()
         dbp = _position_db_path(self._trader) or Path(config.DB_PATH)
-        ok_pf, rcode, _ = _routed_sell_preflight(
-            asset_class="stock",
-            symbol=symbol,
-            broker_qty=float(qty),
-            mid=float(mid),
-            rt=rt,
-            db_path=dbp,
+        ok_pf, rcode, pf_meta = _routed_sell_preflight(
+            asset_class="stock", symbol=symbol, broker_qty=float(qty),
+            mid=float(mid), rt=rt, db_path=dbp,
+        )
+        pf = run_preflight_checks(
+            symbol=symbol, asset_class="stock", side="sell", qty=qty,
+            notional=qty * mid, price=mid,
+            pdt_blocked=(rcode == reason_codes.PDT_PROTECTION if not ok_pf else False),
+            pdt_reason=str(pf_meta.get("reason_detail", "")) if not ok_pf else "",
+            session_state="closed" if (not ok_pf and rcode == reason_codes.MARKET_CLOSED) else "regular",
+            config_snapshot={"reason_code": reason_code or "stock_exit"},
         )
         if not ok_pf:
-            return SimpleNamespace(
-                ok=False,
-                broker_order_id=None,
-                message=str(rcode or "sell_preflight_blocked"),
-                raw=None,
-                reason_code=rcode,
+            pf = run_preflight_checks(
+                symbol=symbol, asset_class="stock", side="sell", qty=qty,
+                notional=qty * mid, price=mid,
+                pdt_blocked=(rcode == reason_codes.PDT_PROTECTION),
+                pdt_reason=str(pf_meta.get("reason_detail", rcode)),
+                session_state="closed" if rcode == reason_codes.MARKET_CLOSED else "regular",
+                config_snapshot={"reason_code": reason_code or "stock_exit", "legacy_block": rcode},
             )
-        return stock_broker.submit_market_order("sell", symbol, qty)
+        return submit_order_with_preflight(
+            preflight=pf,
+            broker_submit_fn=lambda: stock_broker.submit_market_order("sell", symbol, qty),
+        )
 
     def place_buy_order(
         self,
@@ -460,7 +469,16 @@ class _StockExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
-        return stock_broker.submit_market_order("buy", symbol, qty)
+        from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
+        pf = run_preflight_checks(
+            symbol=symbol, asset_class="stock", side="buy", qty=qty,
+            notional=qty * mid, price=mid,
+            config_snapshot={"reason_code": reason_code or "stock_exit_buy"},
+        )
+        return submit_order_with_preflight(
+            preflight=pf,
+            broker_submit_fn=lambda: stock_broker.submit_market_order("buy", symbol, qty),
+        )
 
 
 class _CryptoExitBroker:
@@ -511,25 +529,33 @@ class _CryptoExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
+        from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
         rt = load_runtime_config_dict()
         dbp = _position_db_path(self._trader) or Path(config.DB_PATH)
-        ok_pf, rcode, _ = _routed_sell_preflight(
-            asset_class="crypto",
-            symbol=symbol,
-            broker_qty=float(qty),
-            mid=float(mid),
-            rt=rt,
-            db_path=dbp,
+        ok_pf, rcode, pf_meta = _routed_sell_preflight(
+            asset_class="crypto", symbol=symbol, broker_qty=float(qty),
+            mid=float(mid), rt=rt, db_path=dbp,
+        )
+        pf = run_preflight_checks(
+            symbol=symbol, asset_class="crypto", side="sell", qty=qty,
+            notional=qty * mid, price=mid,
+            pdt_blocked=False,
+            session_state="crypto_24_7",
+            config_snapshot={"reason_code": reason_code or "crypto_exit"},
         )
         if not ok_pf:
-            return SimpleNamespace(
-                ok=False,
-                broker_order_id=None,
-                message=str(rcode or "sell_preflight_blocked"),
-                raw=None,
-                reason_code=rcode,
+            pf = run_preflight_checks(
+                symbol=symbol, asset_class="crypto", side="sell", qty=qty,
+                notional=qty * mid, price=mid,
+                pdt_blocked=(rcode == reason_codes.PDT_PROTECTION),
+                pdt_reason=str(pf_meta.get("reason_detail", rcode)),
+                session_state="crypto_24_7",
+                config_snapshot={"reason_code": reason_code or "crypto_exit", "legacy_block": rcode},
             )
-        return stock_broker.submit_market_order("sell", symbol, qty)
+        return submit_order_with_preflight(
+            preflight=pf,
+            broker_submit_fn=lambda: stock_broker.submit_market_order("sell", symbol, qty),
+        )
 
     def place_buy_order(
         self,
@@ -540,7 +566,17 @@ class _CryptoExitBroker:
         reason_code: str | None = None,
         meta: dict[str, Any] | None = None,
     ) -> Any:
-        return stock_broker.submit_market_order("buy", symbol, qty)
+        from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
+        pf = run_preflight_checks(
+            symbol=symbol, asset_class="crypto", side="buy", qty=qty,
+            notional=qty * mid, price=mid,
+            session_state="crypto_24_7",
+            config_snapshot={"reason_code": reason_code or "crypto_exit_buy"},
+        )
+        return submit_order_with_preflight(
+            preflight=pf,
+            broker_submit_fn=lambda: stock_broker.submit_market_order("buy", symbol, qty),
+        )
 
 
 def _exit_mark_price(_market_ctx: Any, pos: Any) -> float | None:
@@ -2284,16 +2320,28 @@ def _submit_routed_order(
     meta: dict[str, Any] | None = None,
     rt: dict[str, float] | None = None,
 ) -> Any:
+    """Route orders through preflight then to the appropriate broker.
+
+    All broker submissions go through submit_order_with_preflight.
     """
-    Route orders based on mode/endpoint:
-      - paper + paper endpoint -> Alpaca paper broker (default)
-      - paper + USE_LOCAL_PAPER_TRADER=1 -> local PaperTrader fills
-      - live -> Alpaca live broker (strict safety in stock_broker)
-    """
+    from execution.order_preflight import (
+        run_preflight_checks,
+        submit_order_with_preflight,
+    )
+
     s_side = str(side or "").strip().lower()
+    ac = str(asset_class or "stock").strip().lower()
+    sym = str(symbol or "").strip().upper()
+    eff_notional = float(notional or qty * mid or 0.0)
+
+    pdt_blocked = False
+    pdt_reason = ""
+    session_state = "regular"
+    legacy_sell_ok = False
+
     if s_side == "sell":
         rt_eff = rt if rt is not None else load_runtime_config_dict()
-        ok_pf, rcode, _ = _routed_sell_preflight(
+        ok_pf, rcode, pf_meta = _routed_sell_preflight(
             asset_class=asset_class,
             symbol=symbol,
             broker_qty=float(qty),
@@ -2301,71 +2349,90 @@ def _submit_routed_order(
             rt=rt_eff,
             db_path=config.DB_PATH,
         )
-        if not ok_pf:
-            return SimpleNamespace(
-                ok=False,
-                broker_order_id=None,
-                message=str(rcode or "sell_preflight_blocked"),
-                raw=None,
-                reason_code=rcode,
+        if ok_pf:
+            legacy_sell_ok = True
+        elif rcode == reason_codes.PDT_PROTECTION:
+            pdt_blocked = True
+            pdt_reason = str(pf_meta.get("reason_detail", "same_day_round_trip"))
+        elif rcode == reason_codes.MARKET_CLOSED:
+            session_state = "closed"
+        else:
+            return submit_order_with_preflight(
+                preflight=run_preflight_checks(
+                    symbol=sym, asset_class=ac, side=s_side, qty=qty,
+                    notional=eff_notional, price=mid, session_state="regular",
+                    pdt_blocked=True, pdt_reason=str(rcode),
+                ),
+                broker_submit_fn=lambda: None,
             )
 
-    if _use_local_paper_trader():
-        logger.info(
-            "[order_route] mode={} broker=local_paper_trader symbol={} side={}",
-            config.MODE,
-            symbol,
-            side,
-        )
-        if side == "buy":
-            fr = order_manager.paper_market_buy(
-                trader,
-                asset_class,
-                symbol,
-                qty,
-                mid,
-                reason_code=reason_code,
-                meta=meta,
+    if not legacy_sell_ok and s_side != "sell":
+        try:
+            from execution.stock_session import classify_us_session
+            if ac != "crypto":
+                session_state = classify_us_session()
+        except Exception:
+            pass
+
+    preflight = run_preflight_checks(
+        symbol=sym,
+        asset_class=ac,
+        side=s_side,
+        qty=qty,
+        notional=eff_notional,
+        price=mid,
+        session_state=session_state,
+        pdt_blocked=pdt_blocked,
+        pdt_reason=pdt_reason,
+        config_snapshot={"reason_code": reason_code, "mode": str(config.MODE)},
+        extra_meta=meta,
+    )
+
+    def _do_broker_submit() -> Any:
+        if _use_local_paper_trader():
+            logger.info(
+                "[order_route] mode={} broker=local_paper_trader symbol={} side={}",
+                config.MODE, symbol, side,
+            )
+            if side == "buy":
+                fr = order_manager.paper_market_buy(
+                    trader, asset_class, symbol, qty, mid,
+                    reason_code=reason_code, meta=meta,
+                )
+            else:
+                fr = order_manager.paper_market_sell(
+                    trader, asset_class, symbol, qty, mid,
+                    reason_code=reason_code, meta=meta,
+                )
+            return SimpleNamespace(
+                ok=bool(fr.ok),
+                broker_order_id=fr.broker_order_id,
+                message=fr.message,
+                raw=fr,
+                reason_code="PAPER_FILL" if fr.ok else "PAPER_REJECTED",
+            )
+
+        if config.alpaca_paper_trading_allowed():
+            logger.info(
+                "[order_route] mode=paper broker=alpaca_paper symbol={} side={}",
+                symbol, side,
+            )
+        elif config.trading_is_live():
+            logger.info(
+                "[order_route] mode=live broker=alpaca_live symbol={} side={}",
+                symbol, side,
             )
         else:
-            fr = order_manager.paper_market_sell(
-                trader,
-                asset_class,
-                symbol,
-                qty,
-                mid,
-                reason_code=reason_code,
-                meta=meta,
+            logger.info(
+                "[order_route] mode={} broker=alpaca_blocked symbol={} side={} (endpoint={})",
+                config.MODE, symbol, side, config.ALPACA_BASE_URL,
             )
-        return SimpleNamespace(
-            ok=bool(fr.ok),
-            broker_order_id=fr.broker_order_id,
-            message=fr.message,
-            raw=fr,
-            reason_code="PAPER_FILL" if fr.ok else "PAPER_REJECTED",
-        )
+        return stock_broker.submit_market_order(side, symbol, qty, notional=notional)
 
-    if config.alpaca_paper_trading_allowed():
-        logger.info(
-            "[order_route] mode=paper broker=alpaca_paper symbol={} side={}",
-            symbol,
-            side,
-        )
-    elif config.trading_is_live():
-        logger.info(
-            "[order_route] mode=live broker=alpaca_live symbol={} side={}",
-            symbol,
-            side,
-        )
-    else:
-        logger.info(
-            "[order_route] mode={} broker=alpaca_blocked symbol={} side={} (endpoint={})",
-            config.MODE,
-            symbol,
-            side,
-            config.ALPACA_BASE_URL,
-        )
-    return stock_broker.submit_market_order(side, symbol, qty, notional=notional)
+    return submit_order_with_preflight(
+        preflight=preflight,
+        broker_submit_fn=_do_broker_submit,
+    )
 
 
 def _persist_decision(
