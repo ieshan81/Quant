@@ -47,39 +47,8 @@ _ALLOCATOR_SAFE_KEYS = frozenset({
 })
 
 
-def _cfg_is_enabled(val: Any, default: bool = True) -> bool:
-    """Parse a config value as boolean (handles float, int, str "1"/"true"/etc.)."""
-    if val is None:
-        return default
-    s = str(val).strip().lower()
-    if s in ("1", "1.0", "true", "yes", "on"):
-        return True
-    if s in ("0", "0.0", "false", "no", "off", ""):
-        return False
-    try:
-        return float(val) >= 0.5
-    except (TypeError, ValueError):
-        return default
-
-
-def _cfg_source(rt: dict, key: str, defaults: dict | None = None) -> str:
-    """Determine the source of a config value: 'db_override', 'default', or 'missing'."""
-    if defaults is None:
-        try:
-            from data.data_store import BOT_CONFIG_DEFAULTS
-            defaults = BOT_CONFIG_DEFAULTS
-        except Exception:
-            defaults = {}
-    if key in rt:
-        default_val = defaults.get(key, (None,))[0] if isinstance(defaults.get(key), tuple) else defaults.get(key)
-        if default_val is not None:
-            try:
-                if abs(float(rt[key]) - float(default_val)) < 1e-9:
-                    return "default"
-            except (TypeError, ValueError):
-                pass
-        return "db_override"
-    return "missing_using_code_default"
+from execution.trading_constants import cfg_is_enabled as _cfg_is_enabled
+from execution.trading_constants import cfg_source as _cfg_source
 
 
 _SECRET_KEY_NAMES = frozenset(
@@ -337,9 +306,8 @@ def _exit_peak_price(db_path: str | Path | None, asset_class: str, symbol: str) 
         return None
 
 
-_SYNTHETIC_REASON_CODES = (
-    "ALPACA_SYNC_OPEN", "ALPACA_SYNC", "ALPACA_REAL", "BROKER_RECONCILE_ADJUST",
-)
+from execution.trading_constants import SYNTHETIC_REASON_CODES as _SYNTHETIC_REASON_CODES_SET
+_SYNTHETIC_REASON_CODES = tuple(_SYNTHETIC_REASON_CODES_SET)
 
 
 def _stock_entry_held_hours(db_path: str | Path | None, symbol: str, qty_signed: float) -> float | None:
@@ -1663,7 +1631,7 @@ def build_activity_export_payload(
     }
 
     _buy_gate_rows: list[dict] = []
-    _sync_codes = {"ALPACA_SYNC_OPEN", "ALPACA_SYNC", "ALPACA_REAL", "BROKER_RECONCILE_ADJUST"}
+    _sync_codes = _SYNTHETIC_REASON_CODES_SET
     for d in (decisions or [])[-50:]:
         _side = str(d.get("side") or "").lower()
         _ac = str(d.get("asset_class") or "").lower()
@@ -1716,6 +1684,33 @@ def build_activity_export_payload(
             except Exception:
                 pass
     payload["runtime_config_snapshot_safe"] = _safe_snap
+
+    try:
+        from execution.after_hours_rotation import build_after_hours_rotation_plan
+        from execution.stock_session import classify_us_session
+        _ah_session = classify_us_session()
+        _ah_pos = pos_list if isinstance(pos_list, list) else []
+        _ah_plan = build_after_hours_rotation_plan(
+            rt=_rt,
+            stock_session_state=_ah_session,
+            positions=_ah_pos,
+            cash_available=float(buy_gate.get("cash", 0) if isinstance(buy_gate, dict) else 0),
+            broker_qty_fn=lambda sym: float(next(
+                (p.get("net_qty") or p.get("qty") or 0 for p in _ah_pos
+                 if str(p.get("symbol") or "").upper() == sym.upper()), 0)),
+            mid_price_fn=lambda sym: float(next(
+                (p.get("current_price") or 0 for p in _ah_pos
+                 if str(p.get("symbol") or "").upper() == sym.upper()), 0)),
+            spread_fn=lambda sym: None,
+            same_day_entry_fn=lambda sym: bool(
+                _same_day_entry_breakdown(config.DB_PATH, sym, 1.0)[0] > 1e-9
+            ),
+            open_sell_order_fn=lambda sym: bool(oo_by_sym.get(sym.upper())),
+            crypto_enabled=False,
+        )
+        payload["after_hours_rotation_plan"] = _ah_plan.to_dict()
+    except Exception:
+        payload["after_hours_rotation_plan"] = None
 
     last_cid = _cid
     rp_cid = ""

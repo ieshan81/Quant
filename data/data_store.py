@@ -48,6 +48,16 @@ _EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "min_crypto_reserved_after_profit_usd": (3.0, "Min USD reserved for crypto after profit exit"),
     "max_stock_redeploy_fraction_after_profit_pct": (60.0, "Max pct of buying power that stock can redeploy after profit exit"),
     "min_useful_stock_order_notional": (5.0, "Min USD for a stock buy to be useful during post-profit reserve"),
+    "after_hours_stock_exit_enabled": (0.0, "1=enable after-hours stock exit planning, 0=disabled"),
+    "after_hours_rotation_observe_only": (1.0, "1=observe only (no orders), 0=allow execution"),
+    "max_after_hours_exit_spread_pct": (2.0, "Max spread pct to allow after-hours exit"),
+    "after_hours_exit_stage_fraction_pct": (50.0, "Pct of position to exit per after-hours cycle"),
+    "after_hours_limit_price_source": (0.0, "0=mid_minus_0.2pct, 1=bid"),
+    "min_after_hours_exit_notional": (5.0, "Min USD notional for after-hours exit"),
+    "require_crypto_edge_for_after_hours_exit": (1.0, "1=require crypto edge before stock liquidation"),
+    "crypto_vs_stock_edge_min_delta": (0.01, "Min score delta for crypto to beat stock hold"),
+    "max_cash_to_rotate_to_crypto_pct": (30.0, "Max pct of freed cash to deploy into crypto"),
+    "after_hours_allow_loss_exit": (0.0, "1=allow after-hours exits on losing positions"),
 }
 
 _BOT_KEY_DESCRIPTIONS: dict[str, str] = {

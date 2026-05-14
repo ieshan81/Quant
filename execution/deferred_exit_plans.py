@@ -17,6 +17,7 @@ from loguru import logger
 import config
 from data.data_store import get_connection
 from execution import reason_codes as rc
+from execution.trading_constants import cfg_float
 from monitoring import trade_logger
 
 def next_eligible_pdt_check_iso() -> str:
@@ -63,12 +64,6 @@ def _before_earliest_check(earliest_iso: str | None) -> bool:
     return _utc_now() < t
 
 
-def _rt_float(rt: dict[str, float], key: str, default: float) -> float:
-    try:
-        return float(rt.get(key, default) or default)
-    except (TypeError, ValueError):
-        return default
-
 
 def record_pdt_deferred_exit(
     db_path: Path | str,
@@ -85,7 +80,7 @@ def record_pdt_deferred_exit(
     cycle_id: str | None,
     meta: dict[str, Any] | None = None,
 ) -> None:
-    if _rt_float(rt, "deferred_pdt_exit_enabled", 1.0) < 0.5:
+    if cfg_float(rt, "deferred_pdt_exit_enabled", 1.0) < 0.5:
         return
     if str(asset_class or "").lower() != "stock":
         return
@@ -255,13 +250,13 @@ def process_deferred_exit_plans(
     log_lines: list[str] | None = None,
 ) -> None:
     """Run after automated exits, before new buys. Uses broker qty and live mid only."""
-    if _rt_float(rt, "deferred_pdt_exit_enabled", 1.0) < 0.5:
+    if cfg_float(rt, "deferred_pdt_exit_enabled", 1.0) < 0.5:
         return
-    if _rt_float(rt, "deferred_exit_check_first_in_cycle", 1.0) < 0.5:
+    if cfg_float(rt, "deferred_exit_check_first_in_cycle", 1.0) < 0.5:
         return
-    min_profit = _rt_float(rt, "deferred_exit_min_profit_pct", 2.0)
-    cancel_below = _rt_float(rt, "deferred_exit_cancel_if_profit_below_pct", 0.0)
-    max_attempts = int(_rt_float(rt, "deferred_exit_max_attempts", 5.0))
+    min_profit = cfg_float(rt, "deferred_exit_min_profit_pct", 2.0)
+    cancel_below = cfg_float(rt, "deferred_exit_cancel_if_profit_below_pct", 0.0)
+    max_attempts = int(cfg_float(rt, "deferred_exit_max_attempts", 5.0))
 
     lines = log_lines if log_lines is not None else []
 

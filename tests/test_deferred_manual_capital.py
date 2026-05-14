@@ -856,8 +856,10 @@ def test_pdt_no_block_old_position_aehl(tmp_path: Path) -> None:
 
 def test_pdt_blocks_same_day_stock(tmp_path: Path) -> None:
     """Stock bought today, TP hit => PDT_PROTECTION still blocks if guard enabled."""
-    from datetime import datetime, timezone as _tz
-    today_str = datetime.now(_tz.utc).strftime("%Y-%m-%d 10:00:00")
+    from datetime import datetime as _dt
+    import pytz
+    et = pytz.timezone("America/New_York")
+    today_str = _dt.now(et).strftime("%Y-%m-%d 10:00:00")
     db = _make_test_db_with_real_trade(tmp_path, symbol="NEWB", created_at=today_str)
     positions = [
         {"symbol": "NEWB", "asset_class": "stock", "net_qty": 10.0, "avg_entry_price": 1.00, "current_price": 1.50}
@@ -903,8 +905,10 @@ def test_mixed_lot_older_qty_not_falsely_blocked(tmp_path: Path) -> None:
                VALUES ('paper', 'stock', 'MIX', 'buy', 20.0, 1.0, 20.0, 'filled', 'old-1', 'signal_buy')""",
         )
         conn.execute("UPDATE trades SET created_at = '2026-05-05 10:00:00' WHERE broker_order_id = 'old-1'")
-        from datetime import datetime, timezone as _tz
-        today_str = datetime.now(_tz.utc).strftime("%Y-%m-%d 11:00:00")
+        from datetime import datetime as _dt
+        import pytz
+        et = pytz.timezone("America/New_York")
+        today_str = _dt.now(et).strftime("%Y-%m-%d 11:00:00")
         conn.execute(
             """INSERT INTO trades (mode, asset_class, symbol, side, quantity, price, notional,
                status, broker_order_id, reason_code)
