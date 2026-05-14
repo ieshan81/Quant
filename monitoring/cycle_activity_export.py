@@ -48,6 +48,25 @@ _ALLOCATOR_SAFE_KEYS = frozenset({
     "after_hours_stock_exit_enabled",
     "after_hours_rotation_observe_only",
     "crypto_push_enabled",
+    "crypto_night_mode_enabled",
+    "reserve_cash_for_crypto_after_close_enabled",
+    "minutes_before_close_to_start_crypto_reserve",
+    "overnight_crypto_cash_reserve_pct",
+    "min_overnight_crypto_cash_usd",
+    "max_overnight_crypto_cash_pct_of_equity",
+    "block_late_day_stock_buys_when_crypto_reserve_needed",
+    "allow_stock_entries_during_crypto_reserve_window",
+    "crypto_night_aggressive_enabled",
+    "crypto_night_cycle_seconds",
+    "crypto_night_max_position_pct_equity",
+    "crypto_night_max_total_allocation_pct_equity",
+    "crypto_night_min_score",
+    "crypto_night_take_profit_pct",
+    "crypto_night_trailing_pullback_pct",
+    "crypto_night_stop_loss_pct",
+    "crypto_night_max_hold_minutes",
+    "crypto_night_cooldown_seconds",
+    "crypto_night_max_spread_pct",
     "crypto_enabled",
     "crypto_min_score",
     "max_crypto_weight_pct",
@@ -1800,6 +1819,9 @@ def build_activity_export_payload(
         "after_hours_stock_exit_enabled": _ah_exit_enabled,
         "after_hours_rotation_observe_only": _ah_observe_only,
         "crypto_push_enabled": _crypto_push_enabled,
+        "crypto_night_mode_enabled": _cfg_is_enabled(_rt.get("crypto_night_mode_enabled"), default=True),
+        "reserve_cash_for_crypto_after_close_enabled": _cfg_is_enabled(_rt.get("reserve_cash_for_crypto_after_close_enabled"), default=True),
+        "crypto_night_aggressive_enabled": _cfg_is_enabled(_rt.get("crypto_night_aggressive_enabled"), default=True),
         "post_profit_redeploy_cooldown_seconds": float(_rt.get("post_profit_redeploy_cooldown_seconds", 300.0)),
         "min_useful_stock_order_notional": float(_rt.get("min_useful_stock_order_notional", 5.0)),
         "git_commit": _git_commit,
@@ -1830,7 +1852,9 @@ def build_activity_export_payload(
             crypto_reserved_usd=_crypto_reserved,
             crypto_positions=_crypto_positions,
         )
-        payload["crypto_push_pull_status"] = _cpp_status.to_dict()
+        _cpp_dict = _cpp_status.to_dict()
+        _cpp_dict["cash_available_for_crypto"] = _crypto_cash
+        payload["crypto_push_pull_status"] = _cpp_dict
     except Exception:
         payload["crypto_push_pull_status"] = None
 
@@ -1930,16 +1954,52 @@ def build_activity_export_payload(
     _is_extended = _mkt_session in ("pre_market", "after_hours")
     _is_overnight = _mkt_session in ("overnight", "weekend", "closed")
 
+    try:
+        from execution.crypto_night_session import (
+            build_crypto_night_session_status,
+            is_crypto_night_active as _is_cn_active,
+            is_stock_orders_allowed as _is_stock_allowed,
+        )
+        _crypto_en = _cfg_is_enabled(_rt.get("crypto_enabled"), default=False)
+        _stock_mv_total = sum(
+            float(p.get("market_value") or float(p.get("net_qty") or p.get("qty") or 0) * float(p.get("current_price") or 0))
+            for p in (pos_list or []) if str(p.get("asset_class") or "stock").lower() == "stock"
+        )
+        _stock_exp_pct = (_stock_mv_total / max(equity_f, 1.0)) * 100.0 if equity_f > 1 else 0.0
+        _cn_status = build_crypto_night_session_status(
+            rt=_rt,
+            stock_session=_mkt_session,
+            equity=equity_f,
+            cash=cash_f,
+            stock_exposure_pct=_stock_exp_pct,
+            crypto_signal_strength=0.0,
+            recent_profit_exit=bool(_filled_sell_symbols) or bool(_bg.get("profit_cooldown_active")),
+        )
+        _trading_session_mode = _cn_status.get("trading_session_mode", "UNKNOWN")
+    except Exception:
+        _cn_status = None
+        _trading_session_mode = "REGULAR_STOCK_SESSION" if _is_regular else "MARKET_CLOSED_NO_TRADING"
+
     payload["market_status"] = {
         "session": _mkt_session,
+        "trading_session_mode": _trading_session_mode,
         "regular_open": _is_regular,
         "premarket": _mkt_session == "pre_market",
         "after_hours": _mkt_session == "after_hours",
         "overnight": _mkt_session in ("overnight", "weekend"),
         "crypto_tradable": True,
+        "stock_orders_allowed": _trading_session_mode == "REGULAR_STOCK_SESSION",
+        "crypto_night_active": _cn_status.get("crypto_night_active", False) if _cn_status else False,
         "next_open": None,
         "next_close": None,
     }
+
+    payload["crypto_night_reserve_status"] = (
+        _cn_status.get("crypto_night_reserve") if _cn_status else None
+    )
+
+    if isinstance(payload.get("crypto_push_pull_status"), dict):
+        payload["crypto_push_pull_status"]["session_mode"] = _trading_session_mode
 
     # current_action_summary
     _positions_count = len([p for p in (pos_list or []) if float(p.get("net_qty") or p.get("qty") or 0) > 1e-9])
@@ -1948,9 +2008,12 @@ def build_activity_export_payload(
     _needs_market_open = not _is_regular and _positions_count > 0
     _needs_cash = float(_bg.get("buying_power", 0) or 0) < float(_rt.get("min_useful_stock_order_notional", 5.0) or 5.0)
 
+    _cn_active = bool(_cn_status and _cn_status.get("crypto_night_active"))
     _doing_now = "Monitoring positions" if _is_regular else "Waiting for market open"
     if _is_regular and _exit_triggers > 0:
         _doing_now = f"Evaluating {_exit_triggers} exit trigger(s)"
+    elif _cn_active:
+        _doing_now = f"Stock market closed. Crypto-only mode active (session={_mkt_session})"
     elif _is_extended:
         _doing_now = f"Extended hours — observe-only (session={_mkt_session})"
 
@@ -1967,8 +2030,25 @@ def build_activity_export_payload(
         if sr.get("blocker"):
             _what_is_blocked.append(f"{sr.get('symbol')}: {sr.get('blocker')}")
 
+    _action_messages: list[str] = []
+    if _cn_active:
+        _action_messages.append("Stock market closed. Crypto-only mode active.")
+        _action_messages.append("Stocks frozen until regular session.")
+        _cn_reserve_d = _cn_status.get("crypto_night_reserve", {}) if _cn_status else {}
+        _cn_cash_display = round(float(_cn_reserve_d.get("target_reserve_usd", 0) or 0), 2)
+        _action_messages.append(f"Crypto cash reserve: ${_cn_cash_display}.")
+        _cpp_blocked = payload.get("crypto_push_pull_status", {}).get("push_blocked_reason") if isinstance(payload.get("crypto_push_pull_status"), dict) else None
+        if _cpp_blocked:
+            _action_messages.append(f"Crypto push blocked because {_cpp_blocked}.")
+        _action_messages.append("Next stock action at market open.")
+    elif _is_regular:
+        _action_messages.append("Regular session — stock + crypto trading active.")
+    else:
+        _action_messages.append(f"Session: {_mkt_session}.")
+
     payload["current_action_summary"] = {
         "doing_now": _doing_now,
+        "messages": _action_messages,
         "blocked": _what_is_blocked[:10],
         "will_check_next": _will_check_next,
         "needs_market_open": _needs_market_open,
@@ -1976,6 +2056,7 @@ def build_activity_export_payload(
         "needs_crypto_signal": not bool(payload.get("crypto_push_pull_status", {}).get("best_crypto_candidate") if isinstance(payload.get("crypto_push_pull_status"), dict) else False),
         "positions_held": _positions_count,
         "exit_triggers_pending": _exit_triggers,
+        "trading_session_mode": _trading_session_mode,
     }
 
     # risk_summary
@@ -1991,6 +2072,18 @@ def build_activity_export_payload(
     _spread_blocked = sum(1 for sr in (sell_readiness or []) if "SPREAD" in str(sr.get("blocker") or "").upper())
     _mkt_closed_blocked = sum(1 for sr in (sell_readiness or []) if sr.get("blocker") in ("MARKET_CLOSED", "EXIT_BLOCKED_MARKET_CLOSED", "STALE_EXIT_DATA_SESSION_OPEN"))
 
+    _cn_reserve_usd = 0.0
+    _cn_night_alloc_cap = 0.0
+    if _cn_status and isinstance(_cn_status.get("crypto_night_reserve"), dict):
+        _cn_reserve_usd = float(_cn_status["crypto_night_reserve"].get("target_reserve_usd", 0) or 0)
+    if _cn_status and isinstance(_cn_status.get("crypto_night_config"), dict):
+        _cn_night_alloc_cap = float(_cn_status["crypto_night_config"].get("max_total_allocation_pct_equity", 25) or 25)
+    _stock_overnight = len([
+        p for p in (pos_list or [])
+        if str(p.get("asset_class") or "stock").lower() == "stock"
+        and float(p.get("net_qty") or p.get("qty") or 0) > 1e-9
+    ]) if not _is_regular else 0
+
     payload["risk_summary"] = {
         "cash": round(_cash_val, 2),
         "equity": round(_equity_val, 2),
@@ -1998,6 +2091,9 @@ def build_activity_export_payload(
         "stock_exposure": round(_stock_mv, 2),
         "crypto_exposure": round(_crypto_mv, 2),
         "reserve_target": round(_reserve_target, 2),
+        "crypto_reserved_cash": round(_cn_reserve_usd, 2),
+        "crypto_night_allocation_cap_pct": round(_cn_night_alloc_cap, 1),
+        "stock_positions_held_overnight": _stock_overnight,
         "positions_above_take_profit": _above_tp,
         "positions_below_stop_loss": _below_sl,
         "positions_blocked_by_pdt": _pdt_blocked,
@@ -2063,12 +2159,28 @@ def build_activity_export_payload(
 
     _ready = len(_blocking_issues) == 0
 
+    _cn_night_enabled = _cfg_is_enabled(_rt.get("crypto_night_mode_enabled"), default=True)
+    _cn_has_reserve = bool(_cn_reserve_usd > 0 and cash_f >= _cn_reserve_usd * 0.5)
+
+    if _cn_night_enabled and not _cn_has_reserve and cash_f < 5.0:
+        _warnings_ready.append(
+            f"Crypto night mode enabled but only ${cash_f:.2f} cash — "
+            "insufficient for meaningful overnight crypto trading"
+        )
+
     payload["tomorrow_readiness"] = {
         "ready": _ready,
         "blocking_issues": _blocking_issues,
         "warnings": _warnings_ready,
         "positions_held": _pos_syms,
         "dynamic_reserve_enabled": _dyn_enabled_cfg,
+        "crypto_night_mode_enabled": _cn_night_enabled,
+        "crypto_night_has_reserved_cash": _cn_has_reserve,
+        "crypto_night_reserve_target_usd": round(_cn_reserve_usd, 2),
+        "stock_buys_blocked_before_close_for_crypto": bool(
+            _cn_status and isinstance(_cn_status.get("crypto_night_reserve"), dict)
+            and _cn_status["crypto_night_reserve"].get("stock_buys_blocked", False)
+        ),
         "crypto_push_pull_visible": payload.get("crypto_push_pull_status") is not None,
         "after_hours_rotation_visible": payload.get("after_hours_rotation_plan") is not None,
         "preflight_wrapper_enabled": True,
@@ -2076,5 +2188,13 @@ def build_activity_export_payload(
         "sell_readiness_visible": len(_sr_list) > 0,
         "next_market_open_expected_actions": _next_open_actions,
     }
+
+    try:
+        from monitoring.ai_observer import run_observer as _run_ai_observer
+        payload["ai_supervisor_summary"] = _run_ai_observer(
+            payload, cycle_id=last_cid, rt=_rt,
+        )
+    except Exception:
+        payload["ai_supervisor_summary"] = {"enabled": False, "mode": "error", "provider": "unavailable"}
 
     return _scrub(payload)

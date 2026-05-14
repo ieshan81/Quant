@@ -2338,6 +2338,59 @@ def create_app() -> Flask:
             headers={"Cache-Control": "no-store"},
         )
 
+    # ── AI Observer endpoints ──────────────────────────────────────────────
+    @app.get("/api/ai/observer/latest")
+    def api_ai_observer_latest() -> Response:
+        from monitoring.ai_observer import fetch_latest_notes
+        limit = int(request.args.get("limit", 50) or 50)
+        notes = fetch_latest_notes(limit=limit)
+        return Response(json.dumps({"notes": notes}, default=str), mimetype="application/json")
+
+    @app.get("/api/ai/observer/history")
+    def api_ai_observer_history() -> Response:
+        from monitoring.ai_observer import fetch_latest_notes
+        limit = int(request.args.get("limit", 50) or 50)
+        notes = fetch_latest_notes(limit=limit)
+        return Response(json.dumps({"notes": notes}, default=str), mimetype="application/json")
+
+    @app.get("/api/ai/patterns")
+    def api_ai_patterns() -> Response:
+        from monitoring.ai_observer import fetch_patterns
+        patterns = fetch_patterns(limit=50)
+        return Response(json.dumps({"patterns": patterns}, default=str), mimetype="application/json")
+
+    @app.get("/api/ai/skills")
+    def api_ai_skills() -> Response:
+        from monitoring.ai_observer import fetch_skills
+        skills = fetch_skills(limit=50)
+        return Response(json.dumps({"skills": skills}, default=str), mimetype="application/json")
+
+    @app.get("/api/ai/memory/export")
+    def api_ai_memory_export() -> Response:
+        from monitoring.ai_observer import export_memory
+        data = export_memory()
+        return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.post("/api/ai/skills/<int:skill_id>/approve_observe_only")
+    def api_ai_skill_approve(skill_id: int) -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        from monitoring.ai_observer import get_ai_memory_connection, approve_skill_observe_only
+        conn = get_ai_memory_connection()
+        ok = approve_skill_observe_only(conn, skill_id)
+        conn.close()
+        return jsonify({"ok": ok, "status": "approved_observe_only", "allowed_to_execute": False})
+
+    @app.post("/api/ai/skills/<int:skill_id>/reject")
+    def api_ai_skill_reject(skill_id: int) -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        from monitoring.ai_observer import get_ai_memory_connection, reject_skill
+        conn = get_ai_memory_connection()
+        ok = reject_skill(conn, skill_id)
+        conn.close()
+        return jsonify({"ok": ok, "status": "rejected", "allowed_to_execute": False})
+
     @app.get("/")
     def index() -> str:
         """Static shell; live data from GET /api/dashboard (browser polling)."""
