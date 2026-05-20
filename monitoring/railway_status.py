@@ -226,6 +226,29 @@ def get_railway_status(*, force_refresh: bool = False) -> dict[str, Any]:
         )
 
     if not enabled:
+        on_railway = bool(
+            os.environ.get("RAILWAY_ENVIRONMENT", "").strip()
+            or os.environ.get("RAILWAY_SERVICE_ID", "").strip()
+            or os.environ.get("RAILWAY_PROJECT_ID", "").strip()
+        )
+        if on_railway:
+            return _with_common_fields(
+                {
+                    "connected": False,
+                    "last_poll_at": _cache.get("last_poll_at"),
+                    "last_success_at": _cache.get("last_success_at"),
+                    "reason": "api_polling_off",
+                    "safe_error": None,
+                    "status_code": None,
+                    "volume_ops_active": True,
+                    "note": (
+                        "Deployed on Railway — volume, DB, and ops logs work without GraphQL. "
+                        "Optional: set RAILWAY_API_ENABLED=1 for live Railway API metrics."
+                    ),
+                    "service_id": os.environ.get("RAILWAY_SERVICE_ID", "").strip() or None,
+                    "environment": os.environ.get("RAILWAY_ENVIRONMENT", "").strip() or None,
+                }
+            )
         return _with_common_fields(
             {
                 "connected": False,
@@ -234,6 +257,7 @@ def get_railway_status(*, force_refresh: bool = False) -> dict[str, Any]:
                 "reason": "RAILWAY_API_ENABLED is not 1",
                 "safe_error": "Set RAILWAY_API_ENABLED=1 to enable Railway GraphQL polling.",
                 "status_code": None,
+                "volume_ops_active": False,
             }
         )
 
@@ -315,7 +339,10 @@ def build_railway_usage_payload(*, force_refresh: bool = False) -> dict[str, Any
         "last_poll_at": full.get("last_poll_at"),
         "last_success_at": full.get("last_success_at"),
         # Legacy UI key
-        "note": full.get("safe_error") or full.get("reason") or "",
+        "note": full.get("note") or full.get("safe_error") or full.get("reason") or "",
+        "volume_ops_active": bool(full.get("volume_ops_active")),
+        "service_id": full.get("service_id"),
+        "environment": full.get("environment"),
     }
     return out
 

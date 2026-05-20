@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import base64
 import mimetypes
 import os
+import re
 import shutil
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -145,6 +146,12 @@ def read_file(root: str, rel_path: str) -> dict[str, Any]:
     size = target.stat().st_size
     editable = _is_text_editable(target)
     if not editable:
+        note = "binary_or_large_file_use_download"
+        low = target.name.lower()
+        if low.endswith("-wal") or low.endswith("-shm"):
+            note = "sqlite_sidecar_open_main_db"
+        elif _is_sqlite_main_db(target):
+            note = "sqlite_use_table_browser"
         return {
             "root": root,
             "path": str(rel_path).strip().replace("\\", "/").lstrip("/"),
@@ -153,7 +160,8 @@ def read_file(root: str, rel_path: str) -> dict[str, Any]:
             "editable": False,
             "encoding": None,
             "content": None,
-            "note": "binary_or_large_file_use_download",
+            "note": note,
+            "sqlite": _is_sqlite_main_db(target),
         }
     if size > _MAX_READ_BYTES:
         raise ValueError(f"file_too_large:{size}")
@@ -211,6 +219,83 @@ def mkdir(root: str, rel_path: str) -> dict[str, Any]:
     target = resolve_volume_path(root, rel_path)
     target.mkdir(parents=True, exist_ok=True)
     return {"ok": True, "root": root, "path": str(rel_path).strip().replace("\\", "/").lstrip("/")}
+
+
+def _is_sqlite_main_db(path: Path) -> bool:
+    name = path.name.lower()
+    if not (name.endswith(".sqlite") or name.endswith(".sqlite3") or name.endswith(".db")):
+        return False
+    return not (name.endswith("-wal") or name.endswith("-shm"))
+
+
+def sqlite_list_tables(root: str, rel_path: str) -> dict[str, Any]:
+    target = resolve_volume_path(root, rel_path)
+    if not target.is_file() or not _is_sqlite_main_db(target):
+        raise ValueError("not_sqlite_database")
+    uri = f"file:{target.as_posix()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=10.0)
+    try:
+        rows = conn.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+            """
+        ).fetchall()
+        tables: list[dict[str, Any]] = []
+        for (name,) in rows:
+            tname = str(name)
+            if not re.fullmatch(r"[A-Za-z0-9_]+", tname):
+                continue
+            try:
+                n = conn.execute(f'SELECT COUNT(*) FROM "{tname}"').fetchone()
+                count = int(n[0]) if n else 0
+            except sqlite3.Error:
+                count = None
+            tables.append({"name": tname, "row_count": count})
+    finally:
+        conn.close()
+    return {
+        "root": root,
+        "path": str(rel_path).strip().replace("\\", "/").lstrip("/"),
+        "name": target.name,
+        "size": target.stat().st_size,
+        "tables": tables,
+    }
+
+
+def sqlite_preview_table(
+    root: str,
+    rel_path: str,
+    table: str,
+    *,
+    limit: int = 40,
+) -> dict[str, Any]:
+    tname = str(table or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]+", tname):
+        raise ValueError("invalid_table_name")
+    lim = max(1, min(200, int(limit)))
+    target = resolve_volume_path(root, rel_path)
+    if not _is_sqlite_main_db(target):
+        raise ValueError("not_sqlite_database")
+    uri = f"file:{target.as_posix()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.execute(f'SELECT * FROM "{tname}" LIMIT ?', (lim,))
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else []
+        items = [{k: r[k] for k in r.keys()} for r in rows]
+    finally:
+        conn.close()
+    return {
+        "root": root,
+        "path": str(rel_path).strip().replace("\\", "/").lstrip("/"),
+        "table": tname,
+        "columns": cols,
+        "rows": items,
+        "limit": lim,
+    }
 
 
 def file_download_bytes(root: str, rel_path: str) -> tuple[bytes, str, str]:

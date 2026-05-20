@@ -1753,8 +1753,6 @@
   }
 
   function loadOpsTab() {
-    if (_opsLoaded) return;
-    _opsLoaded = true;
     Promise.all([
       fetch("/api/ops/status", { cache: "no-store" }).then(function (r) {
         if (!r.ok) throw new Error("ops/status HTTP " + r.status);
@@ -1785,10 +1783,15 @@
         if (railway.railway_api_connected) {
           rs.textContent = "Railway API: connected";
           rs.className = "empty-hint pos-good";
+        } else if (railway.volume_ops_active || railway.reason === "api_polling_off") {
+          rs.textContent =
+            (railway.note || "Running on Railway — volume, DB, and ops logs are active.") +
+            (railway.service_id ? " Service: " + railway.service_id : "");
+          rs.className = "empty-hint pos-good";
         } else {
-          var err = railway.reason || railway.safe_error || railway.note || "Railway data unavailable";
-          rs.textContent = "Railway API: disconnected — " + err;
-          rs.className = "empty-hint pos-bad";
+          var err = railway.safe_error || railway.note || railway.reason || "Railway data unavailable";
+          rs.textContent = "Railway API: optional — " + err;
+          rs.className = "empty-hint";
         }
       }
 
@@ -1816,6 +1819,10 @@
       }
 
       renderOpsLogsTable(_opsLogsCache);
+      if (!_opsLogsCache.length) {
+        _opsStamp("No ops log rows yet — worker cycle events will appear after the next trading cycle.");
+      }
+      _opsLoaded = true;
     }).catch(function (e) {
       _opsStamp("Ops load failed: " + (e && e.message ? e.message : e));
       var rs = document.getElementById("opsRailwayStatus");
@@ -1936,8 +1943,84 @@
       });
   }
 
+  function hideVolSqlitePanel() {
+    var panel = document.getElementById("volSqlitePanel");
+    if (panel) panel.style.display = "none";
+  }
+
+  function showVolSqliteTables(path) {
+    var panel = document.getElementById("volSqlitePanel");
+    var host = document.getElementById("volSqliteTables");
+    var pre = document.getElementById("volSqlitePreview");
+    if (!panel || !host) return;
+    panel.style.display = "block";
+    host.innerHTML = "<span class='empty-hint'>Loading tables…</span>";
+    if (pre) pre.textContent = "";
+    var q =
+      "/api/volume/sqlite/tables?root=" +
+      encodeURIComponent(_volRoot) +
+      "&path=" +
+      encodeURIComponent(path);
+    fetch(q, { cache: "no-store" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (!j.ok) throw new Error(j.error || "tables failed");
+        host.innerHTML = "";
+        (j.tables || []).forEach(function (t) {
+          var b = document.createElement("button");
+          b.type = "button";
+          b.className = "tab-btn";
+          b.style.fontSize = "11px";
+          b.textContent = t.name + (t.row_count != null ? " (" + t.row_count + ")" : "");
+          b.addEventListener("click", function () {
+            loadVolSqlitePreview(path, t.name);
+          });
+          host.appendChild(b);
+        });
+        if (!(j.tables || []).length && pre) {
+          pre.textContent = "No user tables in this database.";
+        }
+      })
+      .catch(function (e) {
+        host.innerHTML = "";
+        if (pre) pre.textContent = "SQLite browse failed: " + (e && e.message ? e.message : e);
+      });
+  }
+
+  function loadVolSqlitePreview(path, table) {
+    var pre = document.getElementById("volSqlitePreview");
+    if (!pre) return;
+    pre.textContent = "Loading " + table + "…";
+    var q =
+      "/api/volume/sqlite/preview?root=" +
+      encodeURIComponent(_volRoot) +
+      "&path=" +
+      encodeURIComponent(path) +
+      "&table=" +
+      encodeURIComponent(table) +
+      "&limit=40";
+    fetch(q, { cache: "no-store" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (!j.ok) throw new Error(j.error || "preview failed");
+        pre.textContent = JSON.stringify(
+          { table: j.table, columns: j.columns, rows: j.rows },
+          null,
+          2
+        );
+      })
+      .catch(function (e) {
+        pre.textContent = "Preview failed: " + (e && e.message ? e.message : e);
+      });
+  }
+
   function openVolumeFile(path) {
     _volSelectedFile = path;
+    hideVolSqlitePanel();
     var q =
       "/api/volume/read?root=" + encodeURIComponent(_volRoot) + "&path=" + encodeURIComponent(path);
     fetch(q, { cache: "no-store" })
@@ -1953,10 +2036,19 @@
             j.name +
             " · " +
             (j.size != null ? j.size + " bytes" : "") +
-            (j.editable ? " · editable" : " · download only");
+            (j.editable ? " · editable" : " · browse/download");
         }
         if (!ed) return;
-        if (j.editable) {
+        if (j.note === "sqlite_use_table_browser" || j.sqlite) {
+          ed.disabled = true;
+          ed.value =
+            "SQLite database — use the table buttons below to preview rows (read-only).";
+          showVolSqliteTables(path);
+        } else if (j.note === "sqlite_sidecar_open_main_db") {
+          ed.disabled = true;
+          ed.value =
+            "WAL/SHM sidecar file — open quantbot.sqlite3 (not -wal) to browse tables.";
+        } else if (j.editable) {
           ed.disabled = false;
           ed.value = j.content != null ? j.content : "";
         } else {
@@ -1972,22 +2064,21 @@
   }
 
   function loadFilesTab() {
-    if (!_volLoaded) {
-      _volLoaded = true;
-      loadVolumeRoots()
-        .then(function () {
-          return loadVolumeDir("");
-        })
-        .catch(function (e) {
-          volStatus(String(e && e.message ? e.message : e), true);
-        });
-    } else {
-      loadVolumeDir(_volPath);
-    }
+    loadVolumeRoots()
+      .then(function () {
+        return loadVolumeDir(_volPath || "");
+      })
+      .then(function () {
+        _volLoaded = true;
+      })
+      .catch(function (e) {
+        volStatus(String(e && e.message ? e.message : e), true);
+      });
   }
 
   function wireVolumeFiles() {
     var sel = document.getElementById("volRootSelect");
+    var quick = document.querySelectorAll(".vol-quick");
     var btnRef = document.getElementById("btnVolRefresh");
     var btnSave = document.getElementById("btnVolSave");
     var btnNew = document.getElementById("btnVolNewFile");
@@ -1995,6 +2086,22 @@
     var btnDel = document.getElementById("btnVolDelete");
     var btnDl = document.getElementById("btnVolDownload");
     if (!sel) return;
+
+    quick.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var rel = btn.getAttribute("data-rel") || "";
+        if (rel && (rel.endsWith(".sqlite3") || rel.endsWith(".sqlite"))) {
+          _volPath = "";
+          loadVolumeDir("").then(function () {
+            openVolumeFile(rel);
+          });
+        } else if (rel) {
+          loadVolumeDir(rel);
+        } else {
+          loadVolumeDir("");
+        }
+      });
+    });
 
     sel.addEventListener("change", function () {
       _volRoot = sel.value;

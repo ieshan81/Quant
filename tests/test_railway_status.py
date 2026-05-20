@@ -45,8 +45,9 @@ def test_railway_env_present_api_disabled_clear_reason(monkeypatch) -> None:
     assert st["enabled"] is False
     assert st["connected"] is False
     assert st["railway_api_connected"] is False
-    assert st["reason"] == "RAILWAY_API_ENABLED is not 1"
-    assert "RAILWAY_API_ENABLED" in (st.get("safe_error") or "")
+    assert st["reason"] == "api_polling_off"
+    assert st.get("volume_ops_active") is True
+    assert st.get("note")
     assert st["railway_env_present"]["RAILWAY_PROJECT_TOKEN"] is True
     assert "secret-token-value-xyz" not in json.dumps(st)
 

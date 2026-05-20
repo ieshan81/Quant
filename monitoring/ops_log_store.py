@@ -264,6 +264,92 @@ def fetch_ops_logs(
                 except json.JSONDecodeError:
                     pass
         out.append(d)
+    if out:
+        return out
+    return _fetch_ops_logs_fallback(limit=limit)
+
+
+def _fetch_ops_logs_fallback(*, limit: int) -> list[dict[str, Any]]:
+    """When ops_log_events is empty, surface JSONL tails and cycle journal rows."""
+    lim = max(1, min(500, int(limit)))
+    merged: list[dict[str, Any]] = []
+    merged.extend(_tail_jsonl_ops_logs(lim))
+    if len(merged) < lim:
+        merged.extend(_cycle_journal_as_ops_logs(lim - len(merged)))
+    merged.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return merged[:lim]
+
+
+def _tail_jsonl_ops_logs(limit: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    try:
+        files = sorted(ops_log_dir().glob("quantbot_*.jsonl"), reverse=True)
+    except OSError:
+        return out
+    for path in files[:5]:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines[-limit:]):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            out.append({
+                "id": None,
+                "created_at": str(obj.get("ts") or ""),
+                "level": str(obj.get("level") or "info"),
+                "source": str(obj.get("source") or "jsonl"),
+                "event_type": str(obj.get("event_type") or "jsonl"),
+                "message": str(obj.get("message") or "")[:2000],
+                "evidence": obj.get("evidence") if isinstance(obj.get("evidence"), dict) else {},
+                "tags": [],
+            })
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _cycle_journal_as_ops_logs(limit: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    try:
+        with _open_ops_db() as conn:
+            rows = conn.execute(
+                """
+                SELECT created_at, cycle_id, mission_mode, session_mode, summary_json, errors_json
+                FROM cycle_journal
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+    except sqlite3.Error:
+        return out
+    for r in rows:
+        summary = {}
+        try:
+            summary = json.loads(str(r["summary_json"] or "{}")) if r["summary_json"] else {}
+        except json.JSONDecodeError:
+            summary = {}
+        msg = (
+            f"cycle {r['cycle_id']} mode={r['mission_mode'] or '—'} "
+            f"buys={summary.get('buys', 0)} sells={summary.get('sells', 0)} holds={summary.get('holds', 0)}"
+        )
+        out.append({
+            "id": None,
+            "created_at": str(r["created_at"] or ""),
+            "level": "info",
+            "source": "cycle_journal",
+            "event_type": "cycle_summary",
+            "cycle_id": str(r["cycle_id"] or ""),
+            "message": msg[:2000],
+            "evidence": summary,
+            "tags": [],
+        })
     return out
 
 

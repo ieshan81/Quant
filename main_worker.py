@@ -4473,6 +4473,28 @@ def run_trading_cycle_once(
         )
     except Exception:
         logger.debug("[resource] worker snapshot skipped", exc_info=True)
+    try:
+        from monitoring.ops_log_store import write_ops_event
+
+        _errs = summary.get("errors") or []
+        write_ops_event(
+            level="error" if _errs else "info",
+            source="worker",
+            event_type="cycle_complete",
+            cycle_id=str(summary.get("cycle_id") or cid),
+            message=(
+                f"cycle complete buys={summary.get('buys', 0)} "
+                f"sells={summary.get('sells', 0)} holds={summary.get('holds', 0)}"
+            ),
+            evidence={
+                "buys": summary.get("buys"),
+                "sells": summary.get("sells"),
+                "holds": summary.get("holds"),
+                "errors": _errs[:5] if isinstance(_errs, list) else _errs,
+            },
+        )
+    except Exception:
+        logger.debug("[ops_log] cycle event skipped", exc_info=True)
     return summary
 
 
@@ -4587,6 +4609,17 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     )
     logger.info(f"[startup] market_open_right_now={nyse_regular_session_open()}")
     logger.info("QuantBot worker | mode={} | db={}", config.MODE, config.DB_PATH)
+
+    try:
+        from monitoring.ops_log_store import write_ops_event
+        write_ops_event(
+            level="info",
+            source="worker",
+            event_type="startup",
+            message=f"Worker started mode={config.MODE} db={config.DB_PATH}",
+        )
+    except Exception:
+        logger.debug("[ops_log] worker startup event skipped", exc_info=True)
 
     from monitoring.notification_gate import send_startup_notification
     try:

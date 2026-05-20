@@ -1209,7 +1209,18 @@ _PAGE = """<!DOCTYPE html>
             </div>
             <p class="vol-breadcrumb" id="volBreadcrumb">/</p>
             <p id="volFileMeta">No file selected</p>
-            <textarea id="volEditor" spellcheck="false" placeholder="Select a text file to edit…" disabled></textarea>
+            <div id="volQuickPaths" class="vol-toolbar" style="margin-bottom:0.35rem;">
+              <button type="button" class="tab-btn vol-quick" data-rel="" style="font-size:11px;">📂 volume root</button>
+              <button type="button" class="tab-btn vol-quick" data-rel="quantbot.sqlite3" style="font-size:11px;">🗄 quantbot.sqlite3</button>
+              <button type="button" class="tab-btn vol-quick" data-rel="ops.sqlite" style="font-size:11px;">🗄 ops.sqlite</button>
+              <button type="button" class="tab-btn vol-quick" data-rel="logs" style="font-size:11px;">📁 logs/</button>
+            </div>
+            <div id="volSqlitePanel" class="card" style="display:none;padding:0.6rem;margin:0;">
+              <h3 style="margin:0 0 6px;font-size:0.85rem;">SQLite tables</h3>
+              <div id="volSqliteTables" class="vol-toolbar" style="margin-bottom:0.5rem;"></div>
+              <pre id="volSqlitePreview" class="sec" style="max-height:220px;margin:0;"></pre>
+            </div>
+            <textarea id="volEditor" spellcheck="false" placeholder="Select a text file to edit, or a .sqlite3 file to browse tables…" disabled></textarea>
             <p id="volStatus"></p>
           </div>
         </div>
@@ -1655,6 +1666,16 @@ def create_app() -> Flask:
             start_resource_snapshot_collector(interval_sec=60.0, process_label="dashboard")
         except Exception as exc:
             logger.warning("[resource] snapshot collector failed to start: {}", exc)
+        try:
+            from monitoring.ops_log_store import write_ops_event
+            write_ops_event(
+                level="info",
+                source="dashboard",
+                event_type="startup",
+                message="Dashboard started",
+            )
+        except Exception:
+            logger.debug("[ops_log] dashboard startup event skipped", exc_info=True)
 
     from flask_socketio import SocketIO
 
@@ -1960,6 +1981,37 @@ def create_app() -> Flask:
             out = vf.mkdir(root, rel)
             return jsonify({"ok": True, **out})
         except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.get("/api/volume/sqlite/tables")
+    def api_volume_sqlite_tables() -> Any:
+        from monitoring import volume_files as vf
+        root = str(request.args.get("root", "persist") or "persist")
+        rel = str(request.args.get("path", "") or "")
+        if not rel:
+            return jsonify({"ok": False, "error": "path_required"}), 400
+        try:
+            body = vf.sqlite_list_tables(root, rel)
+            return jsonify({"ok": True, **body})
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.get("/api/volume/sqlite/preview")
+    def api_volume_sqlite_preview() -> Any:
+        from monitoring import volume_files as vf
+        root = str(request.args.get("root", "persist") or "persist")
+        rel = str(request.args.get("path", "") or "")
+        table = str(request.args.get("table", "") or "")
+        try:
+            lim = int(request.args.get("limit", 40))
+        except ValueError:
+            lim = 40
+        if not rel or not table:
+            return jsonify({"ok": False, "error": "path_and_table_required"}), 400
+        try:
+            body = vf.sqlite_preview_table(root, rel, table, limit=lim)
+            return jsonify({"ok": True, **body})
+        except (ValueError, FileNotFoundError) as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
 
     @app.delete("/api/volume/delete")
