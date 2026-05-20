@@ -112,8 +112,14 @@ _DEPLOY_COMMIT = os.environ.get("RAILWAY_GIT_COMMIT_SHA", os.environ.get("GIT_CO
 def _open_ops_db() -> sqlite3.Connection:
     path = ops_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), timeout=15.0)
+    conn = sqlite3.connect(str(path), timeout=30.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.Error:
+        pass
     conn.executescript(_OPS_SCHEMA)
     return conn
 

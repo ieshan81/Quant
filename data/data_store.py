@@ -1084,7 +1084,11 @@ def get_connection(db_path: Path | str | None = None) -> Generator[sqlite3.Conne
     conn.row_factory = sqlite3.Row
     try:
         yield conn
-        conn.commit()
+
+        def _commit() -> None:
+            conn.commit()
+
+        with_sqlite_retry(_commit)
     finally:
         conn.close()
 
@@ -1860,16 +1864,19 @@ def create_backtest_run(
     parameter_snapshot_json: str | None = None,
     db_path: Path | str | None = None,
 ) -> int:
-    with get_connection(db_path) as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO backtest_runs (
-                strategy_name, status, request_json, parameter_snapshot_json
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (strategy_name, status, request_json, parameter_snapshot_json),
-        )
-        return int(cur.lastrowid)
+    def _do_insert() -> int:
+        with get_connection(db_path) as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO backtest_runs (
+                    strategy_name, status, request_json, parameter_snapshot_json
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (strategy_name, status, request_json, parameter_snapshot_json),
+            )
+            return int(cur.lastrowid)
+
+    return int(with_sqlite_retry(_do_insert))
 
 
 def update_backtest_status(
@@ -1881,17 +1888,20 @@ def update_backtest_status(
     error_message: str | None = None,
     db_path: Path | str | None = None,
 ) -> None:
-    with get_connection(db_path) as conn:
-        conn.execute(
-            """
-            UPDATE backtest_runs
-            SET status = ?, summary_json = COALESCE(?, summary_json),
-                rejection_summary_json = COALESCE(?, rejection_summary_json),
-                error_message = ?
-            WHERE id = ?
-            """,
-            (status, summary_json, rejection_summary_json, error_message, int(run_id)),
-        )
+    def _do_update() -> None:
+        with get_connection(db_path) as conn:
+            conn.execute(
+                """
+                UPDATE backtest_runs
+                SET status = ?, summary_json = COALESCE(?, summary_json),
+                    rejection_summary_json = COALESCE(?, rejection_summary_json),
+                    error_message = ?
+                WHERE id = ?
+                """,
+                (status, summary_json, rejection_summary_json, error_message, int(run_id)),
+            )
+
+    with_sqlite_retry(_do_update)
 
 
 def insert_backtest_equity_curve(
@@ -1979,61 +1989,69 @@ def insert_backtest_trades(run_id: int, rows: list[dict[str, Any]], db_path: Pat
 def insert_backtest_rejections(run_id: int, rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
     if not rows:
         return
-    with get_connection(db_path) as conn:
-        conn.executemany(
-            """
-            INSERT INTO backtest_rejections (
-                run_id, timestamp, symbol, asset_class, attempted_side, reason_code, meta_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    int(run_id),
-                    str(r["timestamp"]),
-                    str(r["symbol"]),
-                    str(r.get("asset_class") or ""),
-                    str(r.get("attempted_side") or ""),
-                    str(r["reason_code"]),
+
+    def _do_insert() -> None:
+        with get_connection(db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO backtest_rejections (
+                    run_id, timestamp, symbol, asset_class, attempted_side, reason_code, meta_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
                     (
-                        None
-                        if r.get("meta_json") is None
-                        else json.dumps(r.get("meta_json"), default=str)
-                    ),
-                )
-                for r in rows
-            ],
-        )
+                        int(run_id),
+                        str(r["timestamp"]),
+                        str(r["symbol"]),
+                        str(r.get("asset_class") or ""),
+                        str(r.get("attempted_side") or ""),
+                        str(r["reason_code"]),
+                        (
+                            None
+                            if r.get("meta_json") is None
+                            else json.dumps(r.get("meta_json"), default=str)
+                        ),
+                    )
+                    for r in rows
+                ],
+            )
+
+    with_sqlite_retry(_do_insert)
 
 
 def insert_backtest_signal_events(run_id: int, rows: list[dict[str, Any]], db_path: Path | str | None = None) -> None:
     if not rows:
         return
-    with get_connection(db_path) as conn:
-        conn.executemany(
-            """
-            INSERT INTO backtest_signal_events (
-                run_id, timestamp, symbol, asset_class, strategy_action, classification, reason_code, score, meta_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    int(run_id),
-                    str(r["timestamp"]),
-                    str(r["symbol"]),
-                    str(r.get("asset_class") or ""),
-                    str(r.get("strategy_action") or ""),
-                    str(r.get("classification") or ""),
-                    str(r.get("reason_code") or ""),
-                    (None if r.get("score") is None else float(r["score"])),
+
+    def _do_insert() -> None:
+        with get_connection(db_path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO backtest_signal_events (
+                    run_id, timestamp, symbol, asset_class, strategy_action, classification, reason_code, score, meta_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
                     (
-                        None
-                        if r.get("meta_json") is None
-                        else json.dumps(r.get("meta_json"), default=str)
-                    ),
-                )
-                for r in rows
-            ],
-        )
+                        int(run_id),
+                        str(r["timestamp"]),
+                        str(r["symbol"]),
+                        str(r.get("asset_class") or ""),
+                        str(r.get("strategy_action") or ""),
+                        str(r.get("classification") or ""),
+                        str(r.get("reason_code") or ""),
+                        (None if r.get("score") is None else float(r["score"])),
+                        (
+                            None
+                            if r.get("meta_json") is None
+                            else json.dumps(r.get("meta_json"), default=str)
+                        ),
+                    )
+                    for r in rows
+                ],
+            )
+
+    with_sqlite_retry(_do_insert)
 
 
 def fetch_backtest_runs(limit: int = 20, db_path: Path | str | None = None) -> list[dict[str, Any]]:

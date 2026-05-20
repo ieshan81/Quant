@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,8 @@ from monitoring.ops_paths import ai_memory_db_path, data_dir, ops_db_path, ops_e
 _start_time = time.time()
 _last_snapshot_at = 0.0
 _SNAPSHOT_INTERVAL = 60.0
+_collector_thread: threading.Thread | None = None
+_collector_lock = threading.Lock()
 
 
 def _file_mb(path: Path) -> float:
@@ -72,7 +75,7 @@ def collect_resource_snapshot(
         sys_mem_pct = round(psutil.virtual_memory().percent, 1)
         threads = proc.num_threads()
     except ImportError:
-        pass
+        logger.debug("[resource] psutil not installed — CPU/memory rings will be zero")
     except Exception:
         logger.debug("[resource] psutil read failed", exc_info=True)
 
@@ -104,7 +107,8 @@ def collect_resource_snapshot(
 
 def persist_resource_snapshot(snap: dict[str, Any]) -> None:
     try:
-        with _open_ops_db() as conn:
+        conn = _open_ops_db()
+        try:
             conn.execute(
                 """
                 INSERT INTO resource_snapshots (
@@ -138,6 +142,8 @@ def persist_resource_snapshot(snap: dict[str, Any]) -> None:
                 ),
             )
             conn.commit()
+        finally:
+            conn.close()
     except sqlite3.Error:
         logger.debug("[resource] persist failed", exc_info=True)
 
@@ -155,13 +161,94 @@ def maybe_collect_and_persist(**kwargs: Any) -> dict[str, Any] | None:
 
 def fetch_latest_resource_snapshot() -> dict[str, Any] | None:
     try:
-        with _open_ops_db() as conn:
+        conn = _open_ops_db()
+        try:
             row = conn.execute(
                 "SELECT * FROM resource_snapshots ORDER BY id DESC LIMIT 1"
             ).fetchone()
+        finally:
+            conn.close()
         return dict(row) if row else None
     except sqlite3.Error:
         return None
+
+
+def fetch_resource_snapshots_history(limit: int = 50) -> list[dict[str, Any]]:
+    lim = max(1, min(500, int(limit)))
+    try:
+        conn = _open_ops_db()
+        try:
+            rows = conn.execute(
+                """
+                SELECT * FROM resource_snapshots
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (lim,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+def _snapshot_age_seconds(snap: dict[str, Any]) -> float | None:
+    raw = str(snap.get("created_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        s = raw.replace(" UTC", "").replace("T", " ")
+        dt = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+    except ValueError:
+        return None
+
+
+def resolve_resource_snapshot_for_api(*, max_age_sec: float = 120.0) -> dict[str, Any]:
+    """Return latest persisted snapshot if fresh; otherwise collect and persist."""
+    latest = fetch_latest_resource_snapshot()
+    if latest:
+        age = _snapshot_age_seconds(latest)
+        if age is None or age <= max_age_sec:
+            return latest
+    snap = collect_resource_snapshot()
+    persist_resource_snapshot(snap)
+    return snap
+
+
+def start_resource_snapshot_collector(
+    *,
+    interval_sec: float = 60.0,
+    process_label: str = "dashboard",
+) -> None:
+    """Daemon thread: periodic resource snapshots (dashboard or worker process)."""
+    global _collector_thread
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    with _collector_lock:
+        if _collector_thread is not None and _collector_thread.is_alive():
+            return
+
+        def _loop() -> None:
+            global _last_snapshot_at
+            while True:
+                try:
+                    snap = collect_resource_snapshot(
+                        worker_health="ok" if process_label == "worker" else "dashboard_only",
+                    )
+                    persist_resource_snapshot(snap)
+                    _last_snapshot_at = time.time()
+                except Exception:
+                    logger.debug("[resource] collector tick failed", exc_info=True)
+                time.sleep(max(15.0, float(interval_sec)))
+
+        _collector_thread = threading.Thread(
+            target=_loop,
+            name=f"resource-snapshot-{process_label}",
+            daemon=True,
+        )
+        _collector_thread.start()
 
 
 def fetch_railway_usage_hint() -> dict[str, Any]:

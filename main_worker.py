@@ -4463,6 +4463,16 @@ def run_trading_cycle_once(
         meta={"source": "run_trading_cycle_once"},
         alpaca_account=cycle_alpaca_account,
     )
+    try:
+        from monitoring.resource_monitor import maybe_collect_and_persist
+
+        maybe_collect_and_persist(
+            last_cycle_id=str(summary.get("cycle_id") or cid),
+            worker_health="ok",
+            broker_connection_health="ok" if cycle_alpaca_account is not None else "degraded",
+        )
+    except Exception:
+        logger.debug("[resource] worker snapshot skipped", exc_info=True)
     return summary
 
 

@@ -642,6 +642,83 @@ _PAGE = """<!DOCTYPE html>
       font-size: 13px;
     }
     .bt-sub { margin: 0.75rem 0 0.35rem; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+    .vol-layout {
+      display: grid;
+      grid-template-columns: minmax(200px, 280px) 1fr;
+      gap: 0.75rem;
+      min-height: 420px;
+    }
+    @media (max-width: 800px) {
+      .vol-layout { grid-template-columns: 1fr; }
+    }
+    .vol-tree {
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.5rem;
+      max-height: 520px;
+      overflow: auto;
+      font-size: 12px;
+    }
+    .vol-tree-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      padding: 0.25rem 0.35rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+    }
+    .vol-tree-item:hover { background: rgba(56, 189, 248, 0.12); }
+    .vol-tree-item.active { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
+    .vol-tree-dir { color: var(--muted); font-weight: 600; margin-top: 0.35rem; }
+    .vol-editor-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      min-height: 320px;
+    }
+    .vol-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      align-items: center;
+    }
+    .vol-toolbar select, .vol-toolbar input[type="text"] {
+      background: #0b1220;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 0.35rem 0.5rem;
+      font-size: 12px;
+    }
+    .vol-breadcrumb {
+      font-size: 12px;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      word-break: break-all;
+    }
+    #volEditor {
+      flex: 1;
+      min-height: 280px;
+      width: 100%;
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      padding: 0.6rem;
+      resize: vertical;
+      line-height: 1.45;
+    }
+    #volEditor:disabled { opacity: 0.55; cursor: not-allowed; }
+    #volFileMeta { font-size: 11px; color: var(--muted); margin: 0; }
+    #volStatus { font-size: 12px; color: var(--muted); margin: 0; }
     .bt-sub:first-child { margin-top: 0; }
     #btStrategy { max-width: min(100%, 420px); }
     pre.sec { font-size: 11px; overflow: auto; max-height: 180px; margin: 0.35rem 0 0; color: var(--muted); }
@@ -722,6 +799,7 @@ _PAGE = """<!DOCTYPE html>
     <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
     <button type="button" class="tab-btn" data-tab="ai">AI Console</button>
     <button type="button" class="tab-btn" data-tab="ops">Ops Center</button>
+    <button type="button" class="tab-btn" data-tab="files">Files</button>
   </nav>
 
   <main>
@@ -1101,6 +1179,39 @@ _PAGE = """<!DOCTYPE html>
           <table class="data" id="tblOpsLogs"><thead><tr>
             <th>Time</th><th>Level</th><th>Type</th><th>Message</th>
           </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-files" class="tab-panel">
+      <div class="card">
+        <h2 style="margin:0 0 6px;font-size:1rem;font-weight:600;">Volume files</h2>
+        <p class="empty-hint" style="margin:0 0 10px;">
+          Browse and edit bot storage (SQLite DBs, logs, exports). Paths stay inside the Railway persist volume.
+          Editing <span class="mono">.sqlite</span> files while the worker runs can corrupt data — stop the worker or use copies.
+        </p>
+        <div class="vol-layout">
+          <div>
+            <div class="vol-toolbar" style="margin-bottom:0.5rem;">
+              <label class="mono" style="font-size:11px;color:var(--muted);">Root</label>
+              <select id="volRootSelect" aria-label="Volume root"></select>
+              <button type="button" class="tab-btn" id="btnVolRefresh" style="font-size:12px;">Refresh</button>
+            </div>
+            <div class="vol-tree" id="volTree" aria-label="File tree"></div>
+          </div>
+          <div class="vol-editor-wrap">
+            <div class="vol-toolbar">
+              <button type="button" class="tab-btn" id="btnVolSave" style="font-size:12px;">Save</button>
+              <button type="button" class="tab-btn" id="btnVolNewFile" style="font-size:12px;">New file</button>
+              <button type="button" class="tab-btn" id="btnVolNewFolder" style="font-size:12px;">New folder</button>
+              <button type="button" class="tab-btn" id="btnVolDelete" style="font-size:12px;">Delete</button>
+              <button type="button" class="tab-btn" id="btnVolDownload" style="font-size:12px;">Download</button>
+            </div>
+            <p class="vol-breadcrumb" id="volBreadcrumb">/</p>
+            <p id="volFileMeta">No file selected</p>
+            <textarea id="volEditor" spellcheck="false" placeholder="Select a text file to edit…" disabled></textarea>
+            <p id="volStatus"></p>
+          </div>
         </div>
       </div>
     </section>
@@ -1539,6 +1650,11 @@ def create_app() -> Flask:
 
     if not app.config.get("TESTING") and not os.environ.get("PYTEST_CURRENT_TEST"):
         start_alpaca_background_cache_thread()
+        try:
+            from monitoring.resource_monitor import start_resource_snapshot_collector
+            start_resource_snapshot_collector(interval_sec=60.0, process_label="dashboard")
+        except Exception as exc:
+            logger.warning("[resource] snapshot collector failed to start: {}", exc)
 
     from flask_socketio import SocketIO
 
@@ -1665,9 +1781,9 @@ def create_app() -> Flask:
 
     @app.get("/api/ops/status")
     def api_ops_status() -> Response:
-        from monitoring.resource_monitor import fetch_latest_resource_snapshot, fetch_railway_usage_hint
+        from monitoring.resource_monitor import resolve_resource_snapshot_for_api, fetch_railway_usage_hint
         from monitoring.usage_counters import build_runtime_cost_control_status
-        snap = fetch_latest_resource_snapshot() or {}
+        snap = resolve_resource_snapshot_for_api()
         railway = fetch_railway_usage_hint()
         cost = build_runtime_cost_control_status(
             current_cycle_interval=30,
@@ -1692,7 +1808,7 @@ def create_app() -> Flask:
     @app.get("/api/ops/critical-bundle")
     def api_ops_critical_bundle() -> Response:
         from monitoring.ops_log_store import fetch_ops_logs
-        from monitoring.resource_monitor import fetch_latest_resource_snapshot, fetch_railway_usage_hint
+        from monitoring.resource_monitor import resolve_resource_snapshot_for_api, fetch_railway_usage_hint
         from monitoring.usage_counters import increment_usage
 
         increment_usage("export_downloads")
@@ -1704,7 +1820,7 @@ def create_app() -> Flask:
         railway = fetch_railway_usage_hint()
         bundle = {
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "resource_snapshot": fetch_latest_resource_snapshot() or {},
+            "resource_snapshot": resolve_resource_snapshot_for_api(),
             "railway": railway,
             "critical_logs": critical,
             "critical_log_count": len(critical),
@@ -1716,15 +1832,11 @@ def create_app() -> Flask:
     def api_ops_daily_report_xlsx() -> Response:
         from monitoring.ops_daily_report import build_daily_report_xlsx
         from monitoring.ops_log_store import fetch_ops_logs
-        from monitoring.resource_monitor import (
-            collect_resource_snapshot,
-            fetch_latest_resource_snapshot,
-            fetch_railway_usage_hint,
-        )
+        from monitoring.resource_monitor import resolve_resource_snapshot_for_api, fetch_railway_usage_hint
         from monitoring.usage_counters import build_runtime_cost_control_status, increment_usage
 
         increment_usage("export_downloads")
-        snap = fetch_latest_resource_snapshot() or collect_resource_snapshot()
+        snap = resolve_resource_snapshot_for_api()
         logs = fetch_ops_logs(limit=50)
         railway = fetch_railway_usage_hint()
         status = {
@@ -1751,18 +1863,122 @@ def create_app() -> Flask:
 
     @app.get("/api/ops/resources/latest")
     def api_ops_resources_latest() -> Response:
-        from monitoring.resource_monitor import fetch_latest_resource_snapshot, collect_resource_snapshot
-        snap = fetch_latest_resource_snapshot() or collect_resource_snapshot()
+        from monitoring.resource_monitor import resolve_resource_snapshot_for_api
+        snap = resolve_resource_snapshot_for_api()
         return Response(json.dumps(snap or {}, default=str), mimetype="application/json")
 
     @app.get("/api/ops/resources/history")
     def api_ops_resources_history() -> Response:
-        """Time-series of resource snapshots (minimal stub until dedicated query exists)."""
+        from monitoring.resource_monitor import fetch_resource_snapshots_history
         try:
             lim = max(1, min(500, int(request.args.get("limit", 50))))
         except ValueError:
             lim = 50
-        return Response(json.dumps({"items": [], "limit": lim, "note": "no_history_store"}, default=str), mimetype="application/json")
+        items = fetch_resource_snapshots_history(lim)
+        return Response(json.dumps({"items": items, "limit": lim}, default=str), mimetype="application/json")
+
+    @app.get("/api/volume/roots")
+    def api_volume_roots() -> Response:
+        from monitoring.volume_files import volume_roots
+        roots = {
+            k: {"path": str(v), "label": k}
+            for k, v in sorted(volume_roots().items())
+        }
+        return Response(
+            json.dumps({"roots": roots, "db_path": str(config.DB_PATH)}, default=str),
+            mimetype="application/json",
+        )
+
+    @app.get("/api/volume/list")
+    def api_volume_list() -> Any:
+        from monitoring import volume_files as vf
+        root = str(request.args.get("root", "persist") or "persist")
+        rel = str(request.args.get("path", "") or "")
+        try:
+            body = vf.list_directory(root, rel)
+            return jsonify({"ok": True, **body})
+        except (ValueError, FileNotFoundError, NotADirectoryError, PermissionError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.get("/api/volume/read")
+    def api_volume_read() -> Any:
+        from monitoring import volume_files as vf
+        root = str(request.args.get("root", "persist") or "persist")
+        rel = str(request.args.get("path", "") or "")
+        if not rel:
+            return jsonify({"ok": False, "error": "path_required"}), 400
+        try:
+            body = vf.read_file(root, rel)
+            return jsonify({"ok": True, **body})
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.get("/api/volume/download")
+    def api_volume_download() -> Any:
+        from monitoring import volume_files as vf
+        root = str(request.args.get("root", "persist") or "persist")
+        rel = str(request.args.get("path", "") or "")
+        if not rel:
+            return jsonify({"ok": False, "error": "path_required"}), 400
+        try:
+            data, name, mime = vf.file_download_bytes(root, rel)
+            return Response(
+                data,
+                mimetype=mime,
+                headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.put("/api/volume/write")
+    def api_volume_write() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring import volume_files as vf
+        body = request.get_json(force=True, silent=True) or {}
+        root = str(body.get("root", "persist") or "persist")
+        rel = str(body.get("path", "") or "")
+        content = str(body.get("content", ""))
+        create = bool(body.get("create", False))
+        try:
+            out = vf.write_file(root, rel, content, create=create)
+            return jsonify({"ok": True, **out})
+        except (ValueError, FileNotFoundError, IsADirectoryError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.post("/api/volume/mkdir")
+    def api_volume_mkdir() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring import volume_files as vf
+        body = request.get_json(force=True, silent=True) or {}
+        root = str(body.get("root", "persist") or "persist")
+        rel = str(body.get("path", "") or "")
+        if not rel:
+            return jsonify({"ok": False, "error": "path_required"}), 400
+        try:
+            out = vf.mkdir(root, rel)
+            return jsonify({"ok": True, **out})
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.delete("/api/volume/delete")
+    def api_volume_delete() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring import volume_files as vf
+        body = request.get_json(force=True, silent=True) or {}
+        root = str(body.get("root", "persist") or body.get("root", "persist"))
+        if request.args.get("root"):
+            root = str(request.args.get("root"))
+        rel = str(body.get("path", "") or request.args.get("path", "") or "")
+        if not rel:
+            return jsonify({"ok": False, "error": "path_required"}), 400
+        try:
+            out = vf.delete_path(root, rel)
+            return jsonify({"ok": True, **out})
+        except (ValueError, FileNotFoundError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
     @app.get("/api/ops/buying-power-diagnostic")
     def api_ops_buying_power_diagnostic() -> Response:
@@ -2175,30 +2391,48 @@ def create_app() -> Flask:
                 use_market_hours=bool(body.get("use_market_hours", True)),
                 pyramiding_enabled=bool(body.get("pyramiding_enabled", False)),
             )
-            run_id = data_store.create_backtest_run(
-                json.dumps(req.__dict__, default=str),
-                strategy_name=req.strategy_name,
-                status="running",
-                parameter_snapshot_json=json.dumps({"backtest_config": bt_cfg}, default=str),
-            )
             parameter_snapshot = {"backtest_config": bt_cfg}
             result = backtest_runner.execute(req, parameter_snapshot=parameter_snapshot)
-            data_store.insert_backtest_equity_curve(run_id, [p.__dict__ for p in result.equity_curve])
-            data_store.insert_backtest_trades(run_id, [t.__dict__ for t in result.trades])
-            data_store.insert_backtest_rejections(run_id, [r.__dict__ for r in result.rejections])
-            data_store.insert_backtest_signal_events(
-                run_id, [s.__dict__ for s in (getattr(result, "signal_events", []) or [])]
-            )
-            data_store.update_backtest_status(
-                run_id,
-                status=result.status,
-                summary_json=json.dumps(result.summary_json, default=str),
-                rejection_summary_json=json.dumps(result.rejection_summary_json, default=str),
-            )
+            req_json = json.dumps(req.__dict__, default=str)
+            param_json = json.dumps({"backtest_config": bt_cfg}, default=str)
+            equity_rows = [p.__dict__ for p in result.equity_curve]
+            trade_rows = [t.__dict__ for t in result.trades]
+            rejection_rows = [r.__dict__ for r in result.rejections]
+            signal_rows = [s.__dict__ for s in (getattr(result, "signal_events", []) or [])]
+            summary_json = json.dumps(result.summary_json, default=str)
+            rejection_summary_json = json.dumps(result.rejection_summary_json, default=str)
+
+            def _persist_backtest() -> int:
+                rid = data_store.create_backtest_run(
+                    req_json,
+                    strategy_name=req.strategy_name,
+                    status=result.status,
+                    parameter_snapshot_json=param_json,
+                )
+                data_store.insert_backtest_equity_curve(rid, equity_rows)
+                data_store.insert_backtest_trades(rid, trade_rows)
+                data_store.insert_backtest_rejections(rid, rejection_rows)
+                data_store.insert_backtest_signal_events(rid, signal_rows)
+                data_store.update_backtest_status(
+                    rid,
+                    status=result.status,
+                    summary_json=summary_json,
+                    rejection_summary_json=rejection_summary_json,
+                )
+                return rid
+
+            run_id = data_store.with_sqlite_retry(_persist_backtest)
             return jsonify({"ok": True, "run_id": run_id, "status": result.status})
         except Exception as exc:
             logger.exception("api/backtest/run failed")
-            return jsonify({"ok": False, "error": str(exc)}), 400
+            import sqlite3 as _sqlite3
+            msg = str(exc)
+            if isinstance(exc, _sqlite3.OperationalError) and "locked" in msg.lower():
+                msg = (
+                    "Database is busy (worker and dashboard share the same SQLite file). "
+                    "Wait a few seconds and try again."
+                )
+            return jsonify({"ok": False, "error": msg}), 400
 
     @app.post("/api/backtest/compare")
     def api_backtest_compare() -> Any:

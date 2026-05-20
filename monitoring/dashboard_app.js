@@ -1277,6 +1277,7 @@
       syncHashToTab(name);
       if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
       if (name === "ops") loadOpsTab();
+      if (name === "files") loadFilesTab();
     }
     var t;
     for (t = 0; t < tabs.length; t++) {
@@ -1825,6 +1826,321 @@
     });
   }
 
+  var _volLoaded = false;
+  var _volRoot = "persist";
+  var _volPath = "";
+  var _volSelectedFile = null;
+
+  function volHeaders(json) {
+    var h = { "X-Dashboard-Secret": DASHBOARD_SECRET };
+    if (json) {
+      h["Content-Type"] = "application/json";
+    }
+    return h;
+  }
+
+  function volStatus(msg, isBad) {
+    var el = document.getElementById("volStatus");
+    if (!el) return;
+    el.textContent = msg || "";
+    el.className = isBad ? "pos-bad" : "";
+  }
+
+  function volJoinPath(base, name) {
+    if (!base) return name;
+    return base.replace(/\/+$/, "") + "/" + name;
+  }
+
+  function loadVolumeRoots() {
+    return fetch("/api/volume/roots", { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (j) {
+        var sel = document.getElementById("volRootSelect");
+        if (!sel) return;
+        sel.innerHTML = "";
+        var roots = j.roots || {};
+        Object.keys(roots).forEach(function (key) {
+          var opt = document.createElement("option");
+          opt.value = key;
+          opt.textContent = key + " — " + (roots[key].path || "");
+          sel.appendChild(opt);
+        });
+        if (sel.options.length) {
+          sel.value = _volRoot;
+          if (!sel.value) {
+            sel.value = sel.options[0].value;
+            _volRoot = sel.value;
+          }
+        }
+        var meta = document.getElementById("volFileMeta");
+        if (meta && j.db_path) {
+          meta.setAttribute("data-db-path", j.db_path);
+        }
+      });
+  }
+
+  function renderVolumeTree(data) {
+    var tree = document.getElementById("volTree");
+    var crumb = document.getElementById("volBreadcrumb");
+    if (!tree) return;
+    tree.innerHTML = "";
+    _volPath = data.path || "";
+    if (crumb) {
+      crumb.textContent = (_volRoot || "persist") + ":/" + (_volPath || "");
+    }
+    if (data.parent !== undefined && _volPath) {
+      var up = document.createElement("button");
+      up.type = "button";
+      up.className = "vol-tree-item";
+      up.textContent = "..";
+      up.addEventListener("click", function () {
+        loadVolumeDir(data.parent || "");
+      });
+      tree.appendChild(up);
+    }
+    (data.entries || []).forEach(function (ent) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      var icon = ent.type === "dir" ? "📁 " : "📄 ";
+      btn.className = "vol-tree-item" + (_volSelectedFile === volJoinPath(_volPath, ent.name) ? " active" : "");
+      btn.textContent = icon + ent.name + (ent.size != null ? " (" + ent.size + " B)" : "");
+      btn.addEventListener("click", function () {
+        var full = volJoinPath(_volPath, ent.name);
+        if (ent.type === "dir") {
+          loadVolumeDir(full);
+        } else {
+          openVolumeFile(full);
+        }
+      });
+      tree.appendChild(btn);
+    });
+  }
+
+  function loadVolumeDir(path) {
+    _volPath = path || "";
+    var q = "/api/volume/list?root=" + encodeURIComponent(_volRoot) + "&path=" + encodeURIComponent(_volPath);
+    return fetch(q, { cache: "no-store" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (!j.ok) throw new Error(j.error || "list failed");
+        renderVolumeTree(j);
+        volStatus("");
+      })
+      .catch(function (e) {
+        volStatus("List failed: " + (e && e.message ? e.message : e), true);
+      });
+  }
+
+  function openVolumeFile(path) {
+    _volSelectedFile = path;
+    var q =
+      "/api/volume/read?root=" + encodeURIComponent(_volRoot) + "&path=" + encodeURIComponent(path);
+    fetch(q, { cache: "no-store" })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (j) {
+        if (!j.ok) throw new Error(j.error || "read failed");
+        var ed = document.getElementById("volEditor");
+        var meta = document.getElementById("volFileMeta");
+        if (meta) {
+          meta.textContent =
+            j.name +
+            " · " +
+            (j.size != null ? j.size + " bytes" : "") +
+            (j.editable ? " · editable" : " · download only");
+        }
+        if (!ed) return;
+        if (j.editable) {
+          ed.disabled = false;
+          ed.value = j.content != null ? j.content : "";
+        } else {
+          ed.disabled = true;
+          ed.value = j.note || "Binary or non-text file — use Download.";
+        }
+        volStatus("Opened " + path);
+        loadVolumeDir(_volPath);
+      })
+      .catch(function (e) {
+        volStatus("Read failed: " + (e && e.message ? e.message : e), true);
+      });
+  }
+
+  function loadFilesTab() {
+    if (!_volLoaded) {
+      _volLoaded = true;
+      loadVolumeRoots()
+        .then(function () {
+          return loadVolumeDir("");
+        })
+        .catch(function (e) {
+          volStatus(String(e && e.message ? e.message : e), true);
+        });
+    } else {
+      loadVolumeDir(_volPath);
+    }
+  }
+
+  function wireVolumeFiles() {
+    var sel = document.getElementById("volRootSelect");
+    var btnRef = document.getElementById("btnVolRefresh");
+    var btnSave = document.getElementById("btnVolSave");
+    var btnNew = document.getElementById("btnVolNewFile");
+    var btnMk = document.getElementById("btnVolNewFolder");
+    var btnDel = document.getElementById("btnVolDelete");
+    var btnDl = document.getElementById("btnVolDownload");
+    if (!sel) return;
+
+    sel.addEventListener("change", function () {
+      _volRoot = sel.value;
+      _volPath = "";
+      _volSelectedFile = null;
+      loadVolumeDir("");
+    });
+    if (btnRef) {
+      btnRef.addEventListener("click", function () {
+        loadVolumeDir(_volPath);
+      });
+    }
+    if (btnSave) {
+      btnSave.addEventListener("click", function () {
+        if (!_volSelectedFile) {
+          volStatus("Select a file first", true);
+          return;
+        }
+        var ed = document.getElementById("volEditor");
+        fetch("/api/volume/write", {
+          method: "PUT",
+          headers: volHeaders(true),
+          body: JSON.stringify({
+            root: _volRoot,
+            path: _volSelectedFile,
+            content: ed ? ed.value : ""
+          })
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (j) {
+            if (!j.ok) throw new Error(j.error || "save failed");
+            volStatus("Saved " + _volSelectedFile);
+            loadVolumeDir(_volPath);
+          })
+          .catch(function (e) {
+            volStatus("Save failed: " + (e && e.message ? e.message : e), true);
+          });
+      });
+    }
+    if (btnNew) {
+      btnNew.addEventListener("click", function () {
+        var name = window.prompt("New file name (relative to current folder):", "notes.txt");
+        if (!name) return;
+        var rel = volJoinPath(_volPath, name.trim());
+        var ed = document.getElementById("volEditor");
+        var content = ed && !ed.disabled ? ed.value : "";
+        fetch("/api/volume/write", {
+          method: "PUT",
+          headers: volHeaders(true),
+          body: JSON.stringify({
+            root: _volRoot,
+            path: rel,
+            content: content,
+            create: true
+          })
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (j) {
+            if (!j.ok) throw new Error(j.error || "create failed");
+            _volSelectedFile = rel;
+            volStatus("Created " + rel);
+            loadVolumeDir(_volPath);
+            openVolumeFile(rel);
+          })
+          .catch(function (e) {
+            volStatus("Create failed: " + (e && e.message ? e.message : e), true);
+          });
+      });
+    }
+    if (btnMk) {
+      btnMk.addEventListener("click", function () {
+        var name = window.prompt("New folder name:", "archive");
+        if (!name) return;
+        fetch("/api/volume/mkdir", {
+          method: "POST",
+          headers: volHeaders(true),
+          body: JSON.stringify({
+            root: _volRoot,
+            path: volJoinPath(_volPath, name.trim())
+          })
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (j) {
+            if (!j.ok) throw new Error(j.error || "mkdir failed");
+            volStatus("Created folder");
+            loadVolumeDir(_volPath);
+          })
+          .catch(function (e) {
+            volStatus("Folder failed: " + (e && e.message ? e.message : e), true);
+          });
+      });
+    }
+    if (btnDel) {
+      btnDel.addEventListener("click", function () {
+        var target = _volSelectedFile;
+        if (!target) {
+          volStatus("Select a file in the tree first", true);
+          return;
+        }
+        if (!window.confirm("Delete " + target + " ? This cannot be undone.")) return;
+        fetch("/api/volume/delete", {
+          method: "DELETE",
+          headers: volHeaders(true),
+          body: JSON.stringify({ root: _volRoot, path: target })
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (j) {
+            if (!j.ok) throw new Error(j.error || "delete failed");
+            _volSelectedFile = null;
+            var ed = document.getElementById("volEditor");
+            if (ed) {
+              ed.value = "";
+              ed.disabled = true;
+            }
+            volStatus("Deleted");
+            loadVolumeDir(_volPath);
+          })
+          .catch(function (e) {
+            volStatus("Delete failed: " + (e && e.message ? e.message : e), true);
+          });
+      });
+    }
+    if (btnDl) {
+      btnDl.addEventListener("click", function () {
+        if (!_volSelectedFile) {
+          volStatus("Select a file first", true);
+          return;
+        }
+        var url =
+          "/api/volume/download?root=" +
+          encodeURIComponent(_volRoot) +
+          "&path=" +
+          encodeURIComponent(_volSelectedFile);
+        window.open(url, "_blank");
+      });
+    }
+  }
+
   function wireOpsCenter() {
     var btnStatus = document.getElementById("btnCopyOpsStatus");
     var btnSnap = document.getElementById("btnCopyResourceSnapshot");
@@ -2103,6 +2419,7 @@
     wireBrokerDiagnosticCopy();
     wireCapitalAllocatorCopy();
     wireOpsCenter();
+    wireVolumeFiles();
     wireManualSell();
     wireAiChat();
     wireAiMemoryButtons();
@@ -2113,6 +2430,7 @@
       b.addEventListener("click", function () {
         if (b.getAttribute("data-tab") === "ai") loadAiTab();
         if (b.getAttribute("data-tab") === "ops") loadOpsTab();
+        if (b.getAttribute("data-tab") === "files") loadFilesTab();
       });
     });
   }
