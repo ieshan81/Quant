@@ -39,6 +39,26 @@ _social_pipeline: Any = None
 _social_pipeline_lock = threading.Lock()
 _social_load_failed: bool = False
 
+_ml_available_cache: bool | None = None
+_ml_available_lock = threading.Lock()
+
+
+def sentiment_inference_available() -> bool:
+    """True when torch+transformers are installed (optional on Railway deploy)."""
+    global _ml_available_cache
+    if _ml_available_cache is not None:
+        return _ml_available_cache
+    with _ml_available_lock:
+        if _ml_available_cache is not None:
+            return _ml_available_cache
+        try:
+            import torch  # noqa: F401
+            from transformers import pipeline  # noqa: F401
+            _ml_available_cache = True
+        except ImportError:
+            _ml_available_cache = False
+        return _ml_available_cache
+
 
 def _yahoo_ticker(symbol: str) -> str:
     s = symbol.strip().upper()
@@ -205,6 +225,8 @@ def score_news_text(text: str) -> float:
     t = text.strip()
     if len(t) < 8:
         return 0.0
+    if not sentiment_inference_available():
+        return 0.0
     if _finbert_load_failed:
         return 0.0
     if _finbert_pipeline is None:
@@ -257,6 +279,8 @@ def score_social_text(text: str) -> float:
     global _social_pipeline, _social_load_failed
     t = text.strip()
     if len(t) < 8:
+        return 0.0
+    if not sentiment_inference_available():
         return 0.0
     if _social_load_failed:
         return 0.0
@@ -327,11 +351,16 @@ def aggregate_sentiment_score(symbol: str) -> tuple[float, dict[str, Any]]:
     sym = _normalize_symbol(symbol)
     rss = collect_rss_texts(sym)
     rd = collect_reddit_texts(sym)
+    ml_on = sentiment_inference_available()
     meta: dict[str, Any] = {
         "symbol": sym,
         "rss_snippets": len(rss),
         "reddit_posts": len(rd),
+        "sentiment_inference_available": ml_on,
     }
+    if not ml_on:
+        meta["sentiment_inference_reason"] = "ml_dependencies_not_installed"
+        return 0.0, meta
     news_scores: list[float] = []
     for chunk in rss:
         if len(chunk.strip()) >= 8:

@@ -2910,6 +2910,12 @@ def execute_cycle_results(
     stock_buy_attempts = 0
     crypto_buy_attempts = 0
     buy_gate_skipped_count = 0
+    try:
+        from data.sentiment_feed import sentiment_inference_available
+
+        _sentiment_ml = sentiment_inference_available()
+    except Exception:
+        _sentiment_ml = False
     execution_health = {
         "cash": float(alpaca_snapshot.get("cash", 0.0)),
         "buying_power": float(alpaca_snapshot.get("buying_power", 0.0)),
@@ -2918,6 +2924,7 @@ def execute_cycle_results(
         "pdt_blocked_symbols": [],
         "stale_local_positions_count": 0,
         "broker_local_mismatch_count": 0,
+        "sentiment_inference_available": bool(_sentiment_ml),
     }
     try:
         execution_health["mission_control"] = _effective_mission_control(rt)
@@ -4610,10 +4617,19 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     except Exception:
         logger.debug("PumpDetector init failed", exc_info=True)
 
-    logger.info(
-        "HuggingFace sentiment models (FinBERT + social RoBERTa) load lazily on first inference — "
-        "no startup download (Railway healthcheck friendly)"
-    )
+    try:
+        from data.sentiment_feed import sentiment_inference_available
+
+        if sentiment_inference_available():
+            logger.info(
+                "HuggingFace sentiment (FinBERT + social RoBERTa) available — lazy load on first inference"
+            )
+        else:
+            logger.info(
+                "Sentiment ML stack not installed (deploy lean mode); sentiment signal stays neutral"
+            )
+    except Exception:
+        logger.debug("Sentiment availability check skipped", exc_info=True)
 
     trader = create_paper_trader(telegram_on_fills=False)
     alpaca_ok, alpaca_account = False, None

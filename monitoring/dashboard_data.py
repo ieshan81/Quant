@@ -874,6 +874,14 @@ def build_dashboard_payload(
     alpaca_cache_age_seconds = round(time.time() - lu_out, 1) if lu_out else None
     alpaca_cache_last_error = snap_out.get("last_error")
 
+    try:
+        from data.sentiment_feed import sentiment_inference_available
+
+        sentiment_inference_available_flag = sentiment_inference_available()
+    except Exception:
+        sentiment_inference_available_flag = False
+    eh_safe["sentiment_inference_available"] = bool(sentiment_inference_available_flag)
+
     bg = buy_gate if isinstance(buy_gate, dict) else {}
     eh_pre = execution_health if isinstance(execution_health, dict) else {}
     cash_d = 0.0
@@ -1035,6 +1043,7 @@ def build_dashboard_payload(
         "capital_status": _json_safe(capital_status) if isinstance(capital_status, dict) else {},
         "dynamic_capital_plan": _json_safe(dca_plan) if isinstance(dca_plan, dict) else None,
         "capital_allocator_summary": _json_safe(cap_alloc_summary) if isinstance(cap_alloc_summary, dict) else {},
+        "sentiment_inference_available": bool(sentiment_inference_available_flag),
     }
 
 

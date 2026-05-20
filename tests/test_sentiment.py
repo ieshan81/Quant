@@ -10,6 +10,20 @@ from data import sentiment_feed
 from signals import sentiment_signal
 
 
+@patch("data.sentiment_feed.sentiment_inference_available", return_value=False)
+@patch("data.sentiment_feed.collect_reddit_texts", return_value=[])
+@patch("data.sentiment_feed.collect_rss_texts", return_value=[])
+def test_aggregate_sentiment_degrades_without_ml(
+    _mock_rss: MagicMock,
+    _mock_rd: MagicMock,
+    _mock_ml: MagicMock,
+) -> None:
+    score, meta = sentiment_feed.aggregate_sentiment_score("TEST")
+    assert score == 0.0
+    assert meta.get("sentiment_inference_available") is False
+    assert meta.get("sentiment_inference_reason") == "ml_dependencies_not_installed"
+
+
 def test_finbert_score_to_direction() -> None:
     assert sentiment_signal.finbert_score_to_direction(0.7) == 1.0
     assert sentiment_signal.finbert_score_to_direction(-0.7) == -1.0

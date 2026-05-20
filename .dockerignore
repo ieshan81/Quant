@@ -74,3 +74,14 @@ models
 models/
 *.md
 !README.md
+
+# Deploy manifests (must be in build context)
+!requirements.txt
+!requirements-deploy.txt
+!requirements-ml.txt
+!railpack.json
+!railway.toml
+!railway.json
+!runtime.txt
+!start.sh
+!Procfile
