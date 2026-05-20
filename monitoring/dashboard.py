@@ -1499,9 +1499,6 @@ def _dashboard_host_port() -> tuple[str, int]:
 def create_app() -> Flask:
     from data import data_store
     from data.data_store import get_connection, init_schema
-    from backtesting.models import BacktestRequest
-    from backtesting import runner as backtest_runner
-    from backtesting import experiments as backtest_experiments
     from monitoring.dashboard_data import (
         build_dashboard_payload,
         start_alpaca_background_cache_thread,
@@ -1513,6 +1510,19 @@ def create_app() -> Flask:
     def health():
         """Railway liveness: no DB, Alpaca, or worker dependency."""
         return jsonify({"ok": True, "service": "quantbot-dashboard"}), 200
+
+    try:
+        from backtesting.models import BacktestRequest
+        from backtesting import runner as backtest_runner
+        from backtesting import experiments as backtest_experiments
+    except ImportError as exc:
+        logger.warning("Backtesting unavailable (dashboard backtest API disabled): {}", exc)
+        BacktestRequest = None  # type: ignore[misc, assignment]
+        backtest_runner = None  # type: ignore[assignment]
+        backtest_experiments = None  # type: ignore[assignment]
+
+    def _backtest_unavailable() -> tuple[Any, int]:
+        return jsonify({"ok": False, "error": "backtesting_module_unavailable"}), 503
 
     try:
         init_schema()
@@ -2136,6 +2146,8 @@ def create_app() -> Flask:
 
     @app.post("/api/backtest/run")
     def api_backtest_run() -> Any:
+        if BacktestRequest is None or backtest_runner is None:
+            return _backtest_unavailable()
         if not _check_auth():
             return jsonify({"error": "unauthorized"}), 401
         body = request.get_json(force=True, silent=True) or {}
@@ -2190,6 +2202,8 @@ def create_app() -> Flask:
 
     @app.post("/api/backtest/compare")
     def api_backtest_compare() -> Any:
+        if BacktestRequest is None or backtest_runner is None:
+            return _backtest_unavailable()
         if not _check_auth():
             return jsonify({"error": "unauthorized"}), 401
         body = request.get_json(force=True, silent=True) or {}
@@ -2392,6 +2406,8 @@ def create_app() -> Flask:
 
     @app.post("/api/backtest/experiments/run")
     def api_backtest_experiments_run() -> Any:
+        if BacktestRequest is None or backtest_experiments is None:
+            return _backtest_unavailable()
         if not _check_auth():
             return jsonify({"error": "unauthorized"}), 401
         body = request.get_json(force=True, silent=True) or {}

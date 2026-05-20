@@ -54,6 +54,7 @@ Thumbs.db
 *.whl
 
 # Dev / docs / tests (not needed in production image)
+# NOTE: backtesting/ is required at runtime (dashboard /api/backtest/*) — do not exclude.
 tests
 tests/
 docs
@@ -62,8 +63,6 @@ scripts
 scripts/
 tools
 tools/
-backtesting
-backtesting/
 .cursor
 .claude
 .code-review-graph
