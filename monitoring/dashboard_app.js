@@ -1785,7 +1785,7 @@
           rs.textContent = "Railway API: connected";
           rs.className = "empty-hint pos-good";
         } else {
-          var err = railway.safe_error || railway.note || "Railway data unavailable";
+          var err = railway.reason || railway.safe_error || railway.note || "Railway data unavailable";
           rs.textContent = "Railway API: disconnected — " + err;
           rs.className = "empty-hint pos-bad";
         }

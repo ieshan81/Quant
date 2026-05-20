@@ -1671,6 +1671,14 @@ def create_app() -> Flask:
             "railway": railway,
         }, default=str), mimetype="application/json")
 
+    @app.get("/api/ops/railway/status")
+    def api_ops_railway_status() -> Response:
+        from monitoring.railway_status import get_railway_status
+
+        force = str(request.args.get("force", "") or "").strip().lower() in ("1", "true", "yes")
+        body = get_railway_status(force_refresh=force)
+        return Response(json.dumps(body, default=str), mimetype="application/json")
+
     @app.get("/api/ops/critical-bundle")
     def api_ops_critical_bundle() -> Response:
         from monitoring.ops_log_store import fetch_ops_logs

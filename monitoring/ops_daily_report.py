@@ -73,7 +73,9 @@ def build_daily_report_xlsx(
         [
             [],
             ["Railway"],
+            ["railway_api_enabled", railway.get("enabled")],
             ["railway_api_connected", railway.get("railway_api_connected")],
+            ["railway_reason", railway.get("reason")],
             ["safe_error", railway.get("safe_error") or railway.get("note")],
             [],
             ["Recent ops logs (up to 50)"],

@@ -165,15 +165,6 @@ def fetch_latest_resource_snapshot() -> dict[str, Any] | None:
 
 
 def fetch_railway_usage_hint() -> dict[str, Any]:
-    token = os.environ.get("RAILWAY_PROJECT_TOKEN", "").strip()
-    if not token:
-        return {
-            "railway_api_connected": False,
-            "safe_error": "RAILWAY_PROJECT_TOKEN not set",
-            "note": "RAILWAY_PROJECT_TOKEN not set",
-        }
-    return {
-        "railway_api_connected": False,
-        "safe_error": "Railway GraphQL polling not configured in this build",
-        "note": "Railway GraphQL polling not configured in this build",
-    }
+    from monitoring.railway_status import build_railway_usage_payload
+
+    return build_railway_usage_payload()

@@ -250,7 +250,7 @@ def test_ops_api_railway_disconnected_safe_error(dash_app) -> None:
     data = json.loads(r.data)
     railway = data.get("railway") or {}
     assert railway.get("railway_api_connected") is False
-    assert railway.get("safe_error")
+    assert railway.get("safe_error") or railway.get("reason")
 
 
 def test_ops_copy_buttons_wired_in_dashboard_js(dash_app) -> None:
