@@ -1,13 +1,8 @@
-# Railway config-as-code — Railpack (current builder). No Dockerfile in repo.
-# Root directory: "." (repository root). See railpack.json for pip install override.
-
 [build]
 builder = "RAILPACK"
-dockerfilePath = null
 
 [deploy]
 startCommand = "bash start.sh"
 healthcheckPath = "/health"
-healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
