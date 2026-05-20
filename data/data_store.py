@@ -90,6 +90,55 @@ _EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "ai_memory_max_notes": (5000.0, "Max notes before compaction"),
     "ai_memory_pattern_min_seen_count": (3.0, "Min observations to create pattern"),
     "ai_memory_compaction_enabled": (1.0, "1=auto-compact old notes"),
+    # Startup recovery / drawdown
+    "startup_recovery_enabled": (1.0, "1=enable downtime recovery on startup"),
+    "max_safe_offline_seconds": (600.0, "Max seconds offline before recovery mode"),
+    "startup_recovery_block_new_buys": (1.0, "1=block buys during startup recovery"),
+    "startup_recovery_require_clean_reconcile": (1.0, "1=require clean reconcile before normal ops"),
+    "startup_recovery_skip_scanners_until_clean": (1.0, "1=skip scanners until reconcile clean"),
+    "startup_recovery_exit_only": (1.0, "1=exit-only during startup recovery"),
+    "startup_drawdown_recovery_enabled": (1.0, "1=enable drawdown recovery on startup"),
+    "startup_drawdown_threshold_pct": (5.0, "Pct equity drop vs last heartbeat to trigger drawdown recovery"),
+    "startup_drawdown_block_new_buys": (1.0, "1=block buys during drawdown recovery"),
+    "startup_drawdown_exit_only": (1.0, "1=exit-only during drawdown recovery"),
+    "startup_drawdown_requires_operator_review": (1.0, "1=require operator review flag in drawdown recovery"),
+    # Daily drawdown kill switch
+    "daily_drawdown_kill_switch_enabled": (1.0, "1=enable intraday drawdown kill switch"),
+    "daily_drawdown_threshold_pct": (5.0, "Intraday drawdown pct to activate kill switch"),
+    "daily_drawdown_exit_only": (1.0, "1=exit-only when kill switch active"),
+    "daily_drawdown_force_liquidate_enabled": (0.0, "1=force liquidate on kill switch (dangerous)"),
+    "daily_drawdown_operator_review_required": (1.0, "1=flag operator review on kill switch"),
+    # Pre-close / overnight
+    "preclose_risk_scan_enabled": (1.0, "1=scan overnight risk before close"),
+    "minutes_before_close_preclose_scan": (30.0, "Minutes before close for pre-close scan"),
+    "block_new_buys_near_close_if_no_overnight_plan": (1.0, "1=block late stock buys without overnight plan"),
+    "overnight_hold_requires_reason": (1.0, "1=require reason to hold overnight"),
+    "preclose_exit_winners_enabled": (1.0, "1=advise exit winners before close"),
+    "preclose_exit_losers_above_risk_enabled": (1.0, "1=advise exit risky losers before close"),
+    # Broker-side protection (paper)
+    "paper_broker_side_protection_enabled": (1.0, "1=attempt paper broker-side stops"),
+    "broker_side_protection_enabled": (0.0, "1=live broker-side protection (off by default)"),
+    "protective_order_after_entry_enabled": (1.0, "1=place protective orders after entry"),
+    "protective_order_cancel_replace_enabled": (1.0, "1=cancel/replace protective on position change"),
+    # Adaptive runtime
+    "regular_cycle_seconds": (30.0, "Cycle interval during regular session"),
+    "market_closed_cycle_seconds": (180.0, "Cycle interval when market closed"),
+    "crypto_active_cycle_seconds": (30.0, "Cycle interval when crypto active overnight"),
+    "crypto_idle_cycle_seconds": (180.0, "Cycle interval when crypto idle"),
+    "weekend_idle_cycle_seconds": (300.0, "Cycle interval on weekend idle"),
+    "recovery_cycle_seconds": (30.0, "Cycle interval during recovery mode"),
+    "ai_observer_min_interval_seconds": (300.0, "Min seconds between AI observer runs"),
+    "social_scan_min_interval_seconds": (300.0, "Min seconds between social scans"),
+    "universe_refresh_min_interval_seconds": (300.0, "Min seconds between universe refreshes"),
+    "sentiment_inference_enabled": (1.0, "1=enable sentiment inference"),
+    "sentiment_inference_market_closed_enabled": (0.0, "1=run sentiment when market closed"),
+    "skip_heavy_scanners_in_recovery": (1.0, "1=skip heavy scanners in recovery"),
+    # Ops log retention
+    "ops_log_retention_days": (30.0, "Days to retain ops_log_events"),
+    "ops_max_events": (100000.0, "Max ops log events before prune"),
+    "ops_raw_log_jsonl_enabled": (1.0, "1=write daily JSONL ops logs"),
+    "ops_raw_log_retention_days": (14.0, "Days to retain JSONL ops logs"),
+    "resource_snapshot_retention_days": (14.0, "Days to retain resource snapshots"),
 }
 
 _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
@@ -669,6 +718,38 @@ CREATE TABLE IF NOT EXISTS reconciliation_events (
 
 CREATE INDEX IF NOT EXISTS idx_reconciliation_created ON reconciliation_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reconciliation_symbol ON reconciliation_events(asset_class, symbol);
+
+-- Detailed per-symbol reconciliation actions (ghost quarantine, negative local, etc.).
+CREATE TABLE IF NOT EXISTS position_reconciliation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    symbol TEXT NOT NULL,
+    asset_class TEXT NOT NULL,
+    broker_qty REAL,
+    local_qty_before REAL,
+    local_qty_after REAL,
+    classification TEXT,
+    action_taken TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    evidence_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_pos_recon_created ON position_reconciliation_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pos_recon_symbol ON position_reconciliation_events(asset_class, symbol);
+
+-- Worker runtime heartbeat for downtime / drawdown recovery.
+CREATE TABLE IF NOT EXISTS bot_runtime_heartbeat (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_worker_heartbeat_at TEXT,
+    last_successful_cycle_at TEXT,
+    last_equity REAL,
+    last_cash REAL,
+    last_buying_power REAL,
+    last_positions_snapshot_json TEXT,
+    last_market_session TEXT,
+    last_cycle_id TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- Deferred PDT-blocked stock exits (retry next session with fresh guards).
 CREATE TABLE IF NOT EXISTS deferred_exit_plans (
@@ -1470,18 +1551,23 @@ def reconcile_positions_on_startup(
             summary["errors"].append(f"alpaca_positions: {exc}")
 
     try:
+        from execution.position_reconciliation import compute_local_audit_positions
+
         with get_connection(db_path) as conn:
+            audit_map = compute_local_audit_positions(conn)
+            summary["sqlite_open_positions"] = len(audit_map)
+            summary["sqlite_open_positions_raw"] = 0
             cur = conn.execute(
                 """
-                SELECT asset_class, symbol,
-                       SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
-                FROM trades
-                WHERE status = 'filled'
-                GROUP BY asset_class, symbol
-                HAVING ABS(net_qty) > 1e-8
+                SELECT COUNT(*) FROM (
+                    SELECT asset_class, symbol
+                    FROM trades WHERE status = 'filled'
+                    GROUP BY asset_class, symbol
+                    HAVING ABS(SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END)) > 1e-8
+                )
                 """
             )
-            summary["sqlite_open_positions"] = len(cur.fetchall())
+            summary["sqlite_open_positions_raw"] = int(cur.fetchone()[0] or 0)
     except Exception as exc:
         summary["errors"].append(f"open_positions_count: {exc}")
 

@@ -400,23 +400,9 @@ def _local_net_qty_by_symbol_excluding_reconcile(
     conn: sqlite3.Connection,
 ) -> dict[tuple[str, str], float]:
     """SQLite net qty per (asset_class, symbol), excluding synthetic reconciliation rows."""
-    cur = conn.execute(
-        """
-        SELECT asset_class, symbol,
-               SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
-        FROM trades
-        WHERE status = 'filled'
-          AND (reason_code IS NULL OR reason_code != 'BROKER_RECONCILE_ADJUST')
-        GROUP BY asset_class, symbol
-        HAVING ABS(net_qty) > 1e-8
-        """
-    )
-    m: dict[tuple[str, str], float] = {}
-    for r in cur.fetchall():
-        ac = str(r["asset_class"] or "").strip().lower()
-        sym = str(r["symbol"] or "").strip().upper()
-        m[(ac, sym)] = float(r["net_qty"] or 0.0)
-    return m
+    from execution.position_reconciliation import compute_local_audit_positions
+
+    return compute_local_audit_positions(conn)
 
 
 def merge_open_positions_with_local_audit(
@@ -960,6 +946,24 @@ def build_dashboard_payload(
         "market_open": market_open,
     }
 
+    _recon_health: dict[str, Any] = {}
+    try:
+        from execution import stock_broker
+        from execution.position_reconciliation import build_reconciliation_health
+
+        _cli_d = stock_broker.get_rest_client()
+        _recon_health = build_reconciliation_health(
+            conn,
+            _cli_d,
+            reconcile_queue_count=int(eh_safe.get("reconcile_queue_count") or 0),
+            last_reconciliation_at=eh_safe.get("last_reconciliation_at"),
+        )
+        eh_safe["stale_local_positions_count"] = _recon_health.get("stale_local_rows_count", 0)
+        eh_safe["broker_local_mismatch_count"] = _recon_health.get("broker_local_mismatch_count", 0)
+        eh_safe["reconciliation_message"] = _recon_health.get("message")
+    except Exception:
+        logger.debug("[dashboard] reconciliation_health failed", exc_info=True)
+
     return {
         "mode": latest.get("mode") if latest else None,
         "portfolio": _json_safe(latest) if latest is not None else None,
@@ -985,6 +989,8 @@ def build_dashboard_payload(
         "buy_gate": _json_safe(buy_gate) if isinstance(buy_gate, dict) else {},
         "execution_health": eh_safe,
         "exit_evaluation_health": _exit_eval_health,
+        "reconciliation_health": _json_safe(_recon_health) if _recon_health else {},
+        "mismatch_details": _json_safe(_recon_health.get("mismatches") or []) if _recon_health else [],
         "position_exit_rows": list(pe_clean),
         "promotion_gates": _json_safe(promotion_status) if isinstance(promotion_status, dict) else {},
         "live_safety": _json_safe(safety) if isinstance(safety, dict) else {},

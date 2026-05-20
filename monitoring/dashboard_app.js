@@ -153,6 +153,8 @@
       sectionStatus: p.section_status && typeof p.section_status === "object" ? p.section_status : {},
       executionHealth: ehIn,
       exitEvaluationHealth: p.exit_evaluation_health && typeof p.exit_evaluation_health === "object" ? p.exit_evaluation_health : {},
+      reconciliationHealth: p.reconciliation_health && typeof p.reconciliation_health === "object" ? p.reconciliation_health : {},
+      mismatchDetails: Array.isArray(p.mismatch_details) ? p.mismatch_details : [],
       positionExitRows: pe,
       payloadDegraded: p.degraded === true,
       ghostPositionCount: num(p.ghost_position_count, null),
@@ -366,9 +368,11 @@
 
   function renderExecutionHealth(vm) {
     var eh = vm.executionHealth || {};
+    var rh = vm.reconciliationHealth || {};
     var blocked = numOr(eh.blocked_exits_count, 0);
-    var stale = numOr(eh.stale_local_positions_count, 0);
-    var mismatch = numOr(eh.broker_local_mismatch_count, 0);
+    var stale = numOr(rh.stale_local_rows_count != null ? rh.stale_local_rows_count : eh.stale_local_positions_count, 0);
+    var mismatch = numOr(rh.broker_local_mismatch_count != null ? rh.broker_local_mismatch_count : eh.broker_local_mismatch_count, 0);
+    var currMismatch = numOr(rh.current_broker_position_mismatches, 0);
     var degraded = vm.payloadDegraded === true;
     var warnAny = blocked > 0 || stale > 0 || mismatch > 0 || degraded;
     var badAny = stale > 2 || mismatch > 2 || blocked > 5;
@@ -381,7 +385,14 @@
         var parts = [];
         if (blocked > 0) parts.push(blocked + " blocked exit(s)");
         if (stale > 0) parts.push(stale + " stale local row(s)");
-        if (mismatch > 0) parts.push(mismatch + " broker/local mismatch(es)");
+        if (mismatch > 0) {
+          if (currMismatch === 0 && stale > 0) {
+            parts.push(mismatch + " stale-only (current broker positions reconciled)");
+          } else {
+            parts.push(mismatch + " broker/local mismatch(es)");
+          }
+        }
+        if (rh.message) parts.push(String(rh.message));
         if (degraded) parts.push("dashboard payload degraded");
         banner.textContent = "Attention: " + parts.join(" · ") + ".";
         banner.className = badAny ? "eh-banner bad" : "eh-banner warn";
@@ -414,12 +425,36 @@
       html += tile("", "Usable buy power", ubp);
       html += tile(blocked > 0 ? "warn" : "", "Blocked exits", String(blocked));
       html += tile(mismatch > 0 ? "warn" : "", "Broker/local mismatches", String(mismatch));
+      html += tile(currMismatch > 0 ? "warn" : "", "Current broker mismatches", String(currMismatch));
       html += tile(stale > 0 ? "warn" : "", "Stale local rows", String(stale));
       html += tile("", "DB lock waits/retries (24h)", dblk);
       html += tile("", "Alpaca cache age", cacheAge);
       html += tile("", "Last broker snapshot", lastSync);
       html += tile(pdtCount > 0 ? "warn" : "", "PDT guarded symbols", String(pdtCount));
       grid.innerHTML = html;
+    }
+
+    var mmSec = document.getElementById("mismatchDetailsSec");
+    var mmMsg = document.getElementById("mismatchReconciledMsg");
+    var mmTb = document.querySelector("#tblMismatchDetails tbody");
+    var details = vm.mismatchDetails || [];
+    if (mmSec) {
+      if (details.length > 0 || (rh.message && String(rh.message).length)) {
+        mmSec.style.display = "block";
+        if (mmMsg && currMismatch === 0 && stale > 0) {
+          mmMsg.style.display = "block";
+          mmMsg.textContent = rh.message || "Current broker positions are reconciled. Stale local rows remain separately.";
+        } else if (mmMsg) mmMsg.style.display = "none";
+      } else {
+        mmSec.style.display = "none";
+      }
+    }
+    if (mmTb) {
+      mmTb.innerHTML = details.map(function (m) {
+        return "<tr><td>" + esc(m.symbol) + "</td><td>" + esc(m.asset_class) + "</td><td class=\"mono\">" +
+          esc(m.broker_qty) + "</td><td class=\"mono\">" + esc(m.local_qty) + "</td><td class=\"mono\">" +
+          esc(m.delta) + "</td><td>" + esc(m.classification) + "</td><td>" + esc(m.recommended_action) + "</td></tr>";
+      }).join("");
     }
 
     var cacheErr = vm.alpacaCacheLastError ? String(vm.alpacaCacheLastError).trim() : "";

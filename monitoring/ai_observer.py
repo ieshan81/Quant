@@ -485,7 +485,57 @@ def run_deterministic_checks(payload: dict[str, Any]) -> list[dict[str, Any]]:
             confidence=0.75,
         ))
 
-    # 10. Stale exit evaluations while market is open
+    # 10. Broker/local reconciliation
+    recon = payload.get("reconciliation_health") or {}
+    if recon and not recon.get("clean", True):
+        mm = recon.get("mismatches") or []
+        neg = recon.get("negative_local_qty_symbols") or []
+        stale_n = int(recon.get("stale_local_rows_count") or 0)
+        if neg or stale_n > 0 or mm:
+            notes.append(_note(
+                "critical" if neg else "warning",
+                "data_quality",
+                f"Broker/local mismatch: {len(mm)} detail row(s), {stale_n} stale local, {len(neg)} negative local.",
+                evidence={
+                    "stale_local_rows": stale_n,
+                    "negative_symbols": neg[:10],
+                    "current_broker_mismatches": recon.get("current_broker_position_mismatches"),
+                },
+                suggested_action="Run startup reconciliation; exclude synthetic sync rows from local audit.",
+                confidence=0.95,
+            ))
+
+    rec_st = payload.get("startup_recovery_status") or {}
+    if rec_st.get("recovery_active"):
+        notes.append(_note(
+            "critical", "risk",
+            f"Worker recovery active: {rec_st.get('reason')}",
+            evidence=rec_st,
+            suggested_action="Allow reconcile to complete; exit-only until recovery clears.",
+            confidence=0.99,
+        ))
+
+    dd_st = payload.get("startup_drawdown_status") or {}
+    if dd_st.get("drawdown_active"):
+        notes.append(_note(
+            "critical", "risk",
+            f"Startup drawdown recovery: {dd_st.get('drawdown_pct')}% vs threshold {dd_st.get('threshold_pct')}%",
+            evidence=dd_st,
+            suggested_action="Exit-only until operator review; do not open new positions.",
+            confidence=0.99,
+        ))
+
+    dd_daily = payload.get("daily_drawdown_status") or {}
+    if dd_daily.get("kill_switch_active"):
+        notes.append(_note(
+            "critical", "risk",
+            f"Daily drawdown kill switch active: {dd_daily.get('drawdown_pct')}% intraday",
+            evidence=dd_daily,
+            suggested_action="Exit-only for remainder of session.",
+            confidence=0.99,
+        ))
+
+    # 11. Stale exit evaluations while market is open
     eeh = payload.get("exit_evaluation_health") or {}
     eeh_mkt = eeh.get("market_open", False)
     eeh_fresh = eeh.get("fresh", True)

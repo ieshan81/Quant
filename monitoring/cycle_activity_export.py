@@ -2067,6 +2067,76 @@ def build_activity_export_payload(
         "market_open": market_open,
     }
 
+    try:
+        from execution import stock_broker
+        from execution.position_reconciliation import build_reconciliation_health
+
+        _cli_recon = stock_broker.get_rest_client()
+        _rq = int(eh.get("reconcile_queue_count") or 0) if isinstance(eh, dict) else 0
+        _recon_health = build_reconciliation_health(
+            conn,
+            _cli_recon,
+            reconcile_queue_count=_rq,
+            last_reconciliation_at=eh.get("last_reconciliation_at") if isinstance(eh, dict) else None,
+        )
+        payload["reconciliation_health"] = _scrub(_recon_health)
+        payload["mismatch_details"] = _scrub(_recon_health.get("mismatches") or [])
+    except Exception:
+        payload["reconciliation_health"] = {"clean": None, "error": "reconciliation_health_unavailable"}
+        payload["mismatch_details"] = []
+
+    try:
+        from execution.startup_recovery import evaluate_startup_recovery
+
+        _startup_eval = evaluate_startup_recovery(
+            _rt,
+            current_equity=equity_f,
+            reconciliation_clean=bool(payload.get("reconciliation_health", {}).get("clean")),
+        )
+        payload["startup_recovery_status"] = _startup_eval.get("startup_recovery_status")
+        payload["startup_drawdown_status"] = _startup_eval.get("startup_drawdown_status")
+    except Exception:
+        payload["startup_recovery_status"] = {}
+        payload["startup_drawdown_status"] = {}
+
+    try:
+        from execution.daily_drawdown import evaluate_daily_drawdown
+
+        payload["daily_drawdown_status"] = evaluate_daily_drawdown(_rt, current_equity=equity_f)
+    except Exception:
+        payload["daily_drawdown_status"] = {}
+
+    try:
+        from monitoring.adaptive_runtime import build_adaptive_runtime_status
+        from monitoring.usage_counters import build_runtime_cost_control_status
+
+        _rec_active = bool(payload.get("startup_recovery_status", {}).get("recovery_active"))
+        _adapt = build_adaptive_runtime_status(
+            _rt,
+            market_open=market_open,
+            recovery_active=_rec_active,
+            crypto_night_active=bool(payload.get("market_status", {}).get("crypto_night_active")),
+            crypto_enabled=_cfg_is_enabled(_rt.get("crypto_enabled"), default=False),
+            has_crypto_cash=cash_f > float(_rt.get("min_useful_crypto_order_notional", 5.0) or 5.0),
+            buying_power=usable_bp,
+            min_order_notional=float(_rt.get("min_useful_stock_order_notional", 5.0) or 5.0),
+            can_exit=bool(position_exit_decisions),
+            current_interval=float(_rt.get("regular_cycle_seconds", 30.0)),
+            skip_scanners=_rec_active,
+            throttle_ai=True,
+            throttle_social=True,
+            throttle_sentiment=not market_open,
+        )
+        payload["adaptive_runtime_status"] = _adapt
+        payload["runtime_cost_control_status"] = build_runtime_cost_control_status(
+            current_cycle_interval=_adapt.get("current_cycle_interval_seconds", 30.0),
+            recommended_cycle_interval=_adapt.get("recommended_cycle_interval_seconds", 30.0),
+            reason=str(_adapt.get("reason") or ""),
+        )
+    except Exception:
+        payload["adaptive_runtime_status"] = {}
+        payload["runtime_cost_control_status"] = {}
+
     from execution.dynamic_capital_allocator import build_capital_allocator_summary, fetch_latest_dynamic_capital_plan
 
     _dcp = None

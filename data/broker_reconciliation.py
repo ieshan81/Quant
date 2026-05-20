@@ -60,26 +60,10 @@ def _log_event(
 
 
 def _local_net_positions(conn: Any) -> dict[tuple[str, str], float]:
-    """(asset_class, canonical_symbol) -> net long qty from filled trades."""
-    cur = conn.execute(
-        """
-        SELECT asset_class, symbol,
-               SUM(CASE WHEN side = 'buy' THEN quantity ELSE -quantity END) AS net_qty
-        FROM trades
-        WHERE status = 'filled'
-        GROUP BY asset_class, symbol
-        HAVING ABS(net_qty) > 1e-12
-        """
-    )
-    out: dict[tuple[str, str], float] = {}
-    for row in cur.fetchall():
-        ac = str(row[0] or "").strip().lower()
-        sym_raw = str(row[1] or "").strip()
-        acn = normalize_asset_class(sym_raw, hint=ac)
-        canon = normalize_symbol_for_db(acn, sym_raw) or sym_raw
-        net = float(row[2] or 0.0)
-        out[(acn, canon)] = net
-    return out
+    """(asset_class, canonical_symbol) -> audit net qty (synthetic rows excluded)."""
+    from execution.position_reconciliation import compute_local_audit_positions
+
+    return compute_local_audit_positions(conn)
 
 
 def _broker_index(rest_client: Any) -> dict[tuple[str, str], dict[str, Any]]:

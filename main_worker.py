@@ -100,6 +100,12 @@ _reconcile_queue: set[tuple[str, str]] = set()
 _crypto_last_exit_ts: dict[str, float] = {}
 _ghost_stale_cooldown: dict[str, float] = {}
 _last_reconcile_iso: str | None = None
+_startup_recovery_state: dict[str, Any] = {
+    "block_new_buys": False,
+    "exit_only": False,
+    "skip_scanners": False,
+    "reconciliation_health": {},
+}
 _prev_us_stock_session_open: bool | None = None
 _last_profit_exit_ts: float = 0.0
 _last_profit_exit_notional: float = 0.0
@@ -2601,10 +2607,14 @@ def execute_cycle_results(
         crypto_min_notional = float(rt.get("crypto_min_order_notional", min_notional))
     except (TypeError, ValueError):
         crypto_min_notional = min_notional
+    _recovery_block_buys = bool(_startup_recovery_state.get("block_new_buys"))
     stock_buys_disabled_cycle = (
-        (not _use_local_paper_trader())
-        and (config.alpaca_paper_trading_allowed() or config.trading_is_live())
-        and max_usable_for_new_buys_stock < min_notional
+        _recovery_block_buys
+        or (
+            (not _use_local_paper_trader())
+            and (config.alpaca_paper_trading_allowed() or config.trading_is_live())
+            and max_usable_for_new_buys_stock < min_notional
+        )
     )
     crypto_buys_disabled_cycle = (
         (not _use_local_paper_trader())
@@ -4081,6 +4091,54 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
             ensure_bot_config_keys_migrated(config.DB_PATH)
         except Exception:
             logger.exception("[startup] reconcile_positions_on_startup failed")
+        try:
+            from execution.position_reconciliation import run_startup_reconciliation
+            from execution.startup_recovery import evaluate_startup_recovery, upsert_heartbeat
+
+            _recon_out = run_startup_reconciliation(config.DB_PATH, cli, mode=config.MODE)
+            _recon_health = _recon_out.get("health") or {}
+            _last_reconcile_iso = dt_et.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+            _eq_start = float(getattr(alpaca_account, "equity", 0) or 0) if alpaca_ok else 0.0
+            _cash_start = float(getattr(alpaca_account, "cash", 0) or 0) if alpaca_ok else 0.0
+            _bp_start = float(getattr(alpaca_account, "buying_power", 0) or 0) if alpaca_ok else 0.0
+            with get_connection(config.DB_PATH) as conn:
+                upsert_heartbeat(
+                    conn,
+                    equity=_eq_start,
+                    cash=_cash_start,
+                    buying_power=_bp_start,
+                    positions_snapshot=_recon_health.get("visible_broker_positions"),
+                )
+                conn.commit()
+            _rec_eval = evaluate_startup_recovery(
+                _startup_rt or {},
+                current_equity=_eq_start,
+                reconciliation_clean=bool(_recon_health.get("clean")),
+            )
+            global _startup_recovery_state
+            _startup_recovery_state = {
+                "block_new_buys": bool(_rec_eval.get("block_new_buys")),
+                "exit_only": bool(_rec_eval.get("exit_only")),
+                "skip_scanners": bool(_rec_eval.get("skip_scanners")),
+                "reconciliation_health": _recon_health,
+                "startup_recovery_status": _rec_eval.get("startup_recovery_status"),
+                "startup_drawdown_status": _rec_eval.get("startup_drawdown_status"),
+            }
+            if _rec_eval.get("block_new_buys"):
+                from monitoring.ops_log_store import write_ops_event
+                from execution import reason_codes as _rc
+                write_ops_event(
+                    level="critical",
+                    source="worker",
+                    event_type="recovery",
+                    reason_code=_rc.WORKER_DOWNTIME_RECOVERY_STARTED,
+                    message=str(_rec_eval.get("startup_recovery_status", {}).get("reason")
+                                or _rec_eval.get("startup_drawdown_status", {}).get("drawdown_pct")),
+                    evidence=_rec_eval,
+                )
+            logger.info("[startup] reconciliation clean={} recovery={}", _recon_health.get("clean"), _rec_eval.get("block_new_buys"))
+        except Exception:
+            logger.exception("[startup] run_startup_reconciliation failed")
     logger.info(
         "[startup] live_safety={} scalper_enabled={}",
         config.live_safety_status(),

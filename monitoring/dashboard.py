@@ -821,6 +821,15 @@ _PAGE = """<!DOCTYPE html>
               <th>Symbol</th><th>Class</th><th>Local qty</th><th>Broker qty</th><th>Recommended</th><th>Block reason</th><th>PDT</th><th>Cooldown</th><th>uPnL</th>
             </tr></thead><tbody></tbody></table>
           </div>
+          <details id="mismatchDetailsSec" style="margin-top:0.75rem;display:none;">
+            <summary>Mismatch details</summary>
+            <p class="empty-hint" id="mismatchReconciledMsg" style="display:none;"></p>
+            <div style="overflow-x:auto;">
+              <table class="data" id="tblMismatchDetails"><thead><tr>
+                <th>Symbol</th><th>Class</th><th>Broker qty</th><th>Local qty</th><th>Delta</th><th>Classification</th><th>Action</th>
+              </tr></thead><tbody></tbody></table>
+            </div>
+          </details>
         </details>
       </div>
 
@@ -1597,6 +1606,53 @@ def create_app() -> Flask:
             "count": len(series),
             "warning": warning,
         }, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/status")
+    def api_ops_status() -> Response:
+        from monitoring.resource_monitor import fetch_latest_resource_snapshot, fetch_railway_usage_hint
+        from monitoring.usage_counters import build_runtime_cost_control_status
+        snap = fetch_latest_resource_snapshot() or {}
+        cost = build_runtime_cost_control_status(30, 30, "dashboard_poll", railway_api_connected=False)
+        return Response(json.dumps({
+            "resource_snapshot": snap,
+            "runtime_cost_control_status": cost,
+            "railway": fetch_railway_usage_hint(),
+        }, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/resources/latest")
+    def api_ops_resources_latest() -> Response:
+        from monitoring.resource_monitor import fetch_latest_resource_snapshot, collect_resource_snapshot
+        snap = fetch_latest_resource_snapshot() or collect_resource_snapshot()
+        return Response(json.dumps(snap or {}, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/logs")
+    def api_ops_logs() -> Response:
+        from monitoring.ops_log_store import fetch_ops_logs
+        from monitoring.usage_counters import increment_usage
+        increment_usage("dashboard_requests")
+        logs = fetch_ops_logs(
+            limit=int(request.args.get("limit", 200)),
+            level=request.args.get("level"),
+            event_type=request.args.get("event_type"),
+            symbol=request.args.get("symbol"),
+            cycle_id=request.args.get("cycle_id"),
+            reason_code=request.args.get("reason_code"),
+            search=request.args.get("search"),
+        )
+        return Response(json.dumps({"logs": logs}, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/logs/export.csv")
+    def api_ops_logs_csv() -> Response:
+        import csv
+        import io
+        from monitoring.ops_log_store import fetch_ops_logs
+        logs = fetch_ops_logs(limit=int(request.args.get("limit", 500)))
+        buf = io.StringIO()
+        if logs:
+            w = csv.DictWriter(buf, fieldnames=list(logs[0].keys()), extrasaction="ignore")
+            w.writeheader()
+            w.writerows(logs)
+        return Response(buf.getvalue(), mimetype="text/csv")
 
     @app.get("/api/dashboard")
     def api_dashboard() -> Response:
