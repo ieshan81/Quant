@@ -1,5 +1,9 @@
+# Nixpacks build — no Dockerfile. Root directory: "."
+# If Railway UI ignores NIXPACKS in config-as-code, set Builder → Nixpacks manually.
+
 [build]
-builder = "RAILPACK"
+builder = "NIXPACKS"
+nixpacksConfigPath = "nixpacks.toml"
 
 [deploy]
 startCommand = "bash start.sh"

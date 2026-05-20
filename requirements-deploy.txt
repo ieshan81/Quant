@@ -1,4 +1,4 @@
-# Railway / production install (lean). Installed by railpack.json:
+# Railway / production install (lean). Installed by nixpacks.toml:
 #   pip install --no-cache-dir -r requirements-deploy.txt
 #
 # Heavy ML (torch, transformers, huggingface_hub) intentionally omitted.

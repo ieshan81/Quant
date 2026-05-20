@@ -1,0 +1,22 @@
+# Railway Nixpacks — active build config (see railway.toml / railway.json).
+# Railpack disabled (railpack.json removed) due to install-layer ordering issue.
+
+providers = ["python"]
+
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.11"
+PIP_NO_CACHE_DIR = "1"
+PIP_DISABLE_PIP_VERSION_CHECK = "1"
+
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[phases.install]
+dependsOn = ["setup"]
+cmds = [
+  "python -m pip install --upgrade pip",
+  "pip install --no-cache-dir -r requirements-deploy.txt",
+]
+
+[start]
+cmd = "bash start.sh"

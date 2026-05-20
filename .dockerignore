@@ -79,7 +79,7 @@ models/
 !requirements.txt
 !requirements-deploy.txt
 !requirements-ml.txt
-!railpack.json
+!nixpacks.toml
 !railway.toml
 !railway.json
 !runtime.txt
