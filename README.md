@@ -29,9 +29,9 @@ Set `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` for stock quotes. Crypto uses CCXT wi
 
 **Railway.app (read this before deploying):** The Python package lives in a folder named **`data/`** (`data.data_store`, etc.). A Railway **volume must not** be mounted at **`/app/data`**, or Linux replaces that directory with an empty disk mount and imports fail with **`ModuleNotFoundError: No module named 'data.data_store'`**. SQLite and anything else that must survive restarts belongs under **`persist/`** (`config.PERSIST_DIR`, default DB `persist/quantbot.sqlite3`). Mount the volume at **`/app/persist`** only.
 
-1. Connect the GitHub repo; set **Root Directory** to **`quantbot`** (if the monorepo root is the parent folder).
-2. Use **`railway.json`**: **`bash start.sh`** — worker in background, Flask dashboard in foreground; health check **`/health`**.
-3. **Build:** Nixpacks + **`runtime.txt`** (`python-3.11.0`). Prefer **`pip install -r requirements-deploy.txt`** (CPU-only `torch`).
+1. Connect the GitHub repo; set **Root Directory** to **`.`** (repository root). Do **not** use the nested **`quantbot/`** folder as root — it may contain a local **`.venv`** (~1GB) and will exhaust Railway BuildKit disk.
+2. Use **`railway.json`** + **`nixpacks.toml`**: **`bash start.sh`** — worker in background, Flask dashboard in foreground; health check **`/health`**.
+3. **Build:** Nixpacks (not Dockerfile). **`runtime.txt`** (`python-3.11.0`) + **`pip install --no-cache-dir -r requirements-deploy.txt`** (CPU-only `torch`). Ensure **`.dockerignore`** is committed so build context excludes **`.venv`**, **`persist/`**, **`quantbot/`**, tests, and caches.
 4. **Volume:** add one volume, mount path **`/app/persist`** (not `/app/data`). Optional: set **`QUANTBOT_PERSIST_DIR=/app/persist`** if you mount elsewhere.
 5. **Env:** copy variables from `.env.example` / local `.env` (`QUANTBOT_MODE=paper`, Alpaca paper keys, `TELEGRAM_*`, etc.).
 6. **Deploy / logs:** after changing the volume path, redeploy; confirm logs show **`Universe loaded`** and no import errors, then hit **`/health`** on the service URL.

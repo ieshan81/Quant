@@ -1,18 +1,65 @@
+# Secrets
 .env
-venv/
+.env.*
+
+# Virtualenvs
 .venv/
+venv/
+env/
+
+# Python
 __pycache__/
 *.py[cod]
-*.sqlite3
-*.sqlite3-wal
-*.sqlite3-shm
-*.db
+*.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-*.log
-.DS_Store
-# Runtime / local volume mirror (e.g. cross_asset_edges.json); Railway uses mounted persist
+*.egg-info/
+.coverage
+coverage/
+htmlcov/
+dist/
+build/
+
+# Runtime data / logs / exports (SQLite lives here locally; Railway uses mounted persist/)
+logs/
+exports/
+backups/
 persist/
-# Added by code-review-graph
+data/*.sqlite
+data/*.sqlite3
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.log
+data/*.json
+!data/**/*.py
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Nested duplicate workspace (venv + DBs — never commit)
+quantbot/
+
+# Node / OS
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Archives
+*.tar
+*.tar.gz
+*.zip
+*.gz
+
+# Local IDE / agent tooling
 .code-review-graph/
+.cursor/
+.claude/
+
+# Debug scratch
+debug-*.log
+_tmpdash.sqlite3

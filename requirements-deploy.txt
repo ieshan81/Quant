@@ -6,7 +6,7 @@ torch==2.5.1+cpu
 python-dotenv>=1.0.0
 loguru>=0.7.0
 pytz>=2024.1
-pytest>=7.4.0
+# pytest omitted — use requirements.txt for local/CI tests only
 Flask>=3.0.0
 flask-socketio>=5.3.0
 eventlet>=0.35.0

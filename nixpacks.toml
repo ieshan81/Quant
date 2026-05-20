@@ -1,0 +1,19 @@
+# Railway Nixpacks — single deterministic install path (see railway.json).
+# Build context should respect .dockerignore at repo root.
+
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.11"
+PIP_NO_CACHE_DIR = "1"
+PIP_DISABLE_PIP_VERSION_CHECK = "1"
+
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[phases.install]
+cmds = [
+  "python -m pip install --upgrade pip",
+  "pip install --no-cache-dir -r requirements-deploy.txt",
+]
+
+[start]
+cmd = "bash start.sh"

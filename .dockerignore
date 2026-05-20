@@ -1,0 +1,106 @@
+# Railway / Docker build context — keep image lean; Nixpacks also respects this file.
+# Do NOT use bare `data` — that would exclude the Python package at data/*.py.
+
+# Virtualenvs
+.venv
+venv
+env
+ENV
+
+# Python bytecode / caches
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+.coverage
+coverage
+htmlcov
+dist
+build
+
+# VCS / CI / IDE
+.git
+.github
+.gitattributes
+.cursor
+.claude
+.code-review-graph
+.obsidian
+.windsurfrules
+.cursorrules
+.opencode.json
+.mcp.json
+
+# Node
+node_modules
+
+# Runtime volumes / mirrors (never bake into image)
+logs
+logs/
+exports
+exports/
+backups
+backups/
+persist
+persist/
+# Nested duplicate workspace (often contains .venv ~1GB+)
+quantbot
+quantbot/
+
+# Runtime blobs under repo data/ (Python sources data/*.py must remain)
+data/**/*.sqlite
+data/**/*.sqlite3
+data/**/*.db
+data/**/*.db-wal
+data/**/*.db-shm
+data/**/*.log
+data/**/*.json
+!data/**/*.py
+
+# Secrets / env
+.env
+.env.*
+
+# OS / junk
+.DS_Store
+Thumbs.db
+
+# Archives / large artifacts
+*.tar
+*.tar.gz
+*.zip
+*.gz
+*.whl
+
+# DB / logs anywhere in tree
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Tests / docs (not needed at runtime)
+tests
+tests/
+docs
+docs/
+scripts
+scripts/
+tools
+tools/
+backtesting
+backtesting/
+*.md
+!README.md
+
+# HuggingFace / model caches (if present locally)
+.cache
+**/.cache
+models
+models/

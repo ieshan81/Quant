@@ -1,5 +1,9 @@
 {
-  "build": { "builder": "nixpacks" },
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "nixpacksConfigPath": "nixpacks.toml"
+  },
   "deploy": {
     "startCommand": "python main_worker.py",
     "restartPolicyType": "ON_FAILURE",
