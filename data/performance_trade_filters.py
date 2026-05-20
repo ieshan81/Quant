@@ -1,22 +1,16 @@
 """Reason codes excluded from performance metrics, FIFO stats, and learning summaries.
 
-``BROKER_RECONCILE_ADJUST`` rows are synthetic ledger corrections — they must appear only
-in reconciliation/audit views, not in realized P&L, win rate, trade counts, or RL windows.
+Broker sync / synthetic ledger rows must not pollute P&L or trade counts. The canonical
+list is :data:`execution.trading_constants.SYNTHETIC_REASON_CODES`.
 """
 
 from __future__ import annotations
 
-# Alpaca→SQLite sync artifacts; broker reconciliation synthetic adjustments.
-TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE: tuple[str, ...] = (
-    "alpaca_sync",
-    "alpaca_sync_open",
-    "alpaca_real",
-    "BROKER_RECONCILE_ADJUST",
-)
+from execution.trading_constants import SYNTHETIC_REASON_CODES, synthetic_reason_codes_for_sql
 
-# Alpaca→SQLite broker sync rows — not user-facing “trades” in activity export.
-BROKER_SYNC_TRADE_REASON_CODES: tuple[str, ...] = (
-    "alpaca_sync",
-    "alpaca_sync_open",
-    "alpaca_real",
+TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE: tuple[str, ...] = synthetic_reason_codes_for_sql()
+
+# Rows that represent Alpaca→SQLite sync or broker-only adjustments (subset of synthetic).
+BROKER_SYNC_TRADE_REASON_CODES: tuple[str, ...] = tuple(
+    sorted(c for c in SYNTHETIC_REASON_CODES if c.startswith("ALPACA_") or c == "BROKER_RECONCILE_ADJUST")
 )

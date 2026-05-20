@@ -1745,6 +1745,59 @@ def create_app() -> Flask:
         snap = fetch_latest_resource_snapshot() or collect_resource_snapshot()
         return Response(json.dumps(snap or {}, default=str), mimetype="application/json")
 
+    @app.get("/api/ops/resources/history")
+    def api_ops_resources_history() -> Response:
+        """Time-series of resource snapshots (minimal stub until dedicated query exists)."""
+        try:
+            lim = max(1, min(500, int(request.args.get("limit", 50))))
+        except ValueError:
+            lim = 50
+        return Response(json.dumps({"items": [], "limit": lim, "note": "no_history_store"}, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/buying-power-diagnostic")
+    def api_ops_buying_power_diagnostic() -> Response:
+        from monitoring.dashboard_data import get_alpaca_background_snapshot
+
+        snap = get_alpaca_background_snapshot()
+        port = snap.get("portfolio") or {}
+        out = {
+            "cash": port.get("cash"),
+            "buying_power": port.get("buying_power"),
+            "usable_buying_power": port.get("buying_power"),
+            "equity": port.get("equity"),
+            "why_zero": [],
+            "capital_trap_detected": False,
+            "suggested_operator_actions": [],
+        }
+        return Response(json.dumps(out, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/why-no-trade")
+    def api_ops_why_no_trade() -> Response:
+        return Response(json.dumps({"reasons": ["see_execution_health_and_cycle_summary"]}, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/why-no-sell")
+    def api_ops_why_no_sell() -> Response:
+        return Response(json.dumps({"reasons": ["see_position_exit_decisions"]}, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/cycle-journal/recent")
+    def api_ops_cycle_journal_recent() -> Response:
+        from monitoring.ops_log_store import fetch_cycle_journal_recent
+
+        try:
+            lim = max(1, min(200, int(request.args.get("limit", 20))))
+        except ValueError:
+            lim = 20
+        rows = fetch_cycle_journal_recent(limit=lim)
+        return Response(json.dumps({"items": rows}, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/cycle-journal")
+    def api_ops_cycle_journal() -> Response:
+        from monitoring.ops_log_store import fetch_cycle_journal_by_id
+
+        cid = str(request.args.get("cycle_id") or "").strip()
+        row = fetch_cycle_journal_by_id(cycle_id=cid) if cid else None
+        return Response(json.dumps({"cycle": row}, default=str), mimetype="application/json")
+
     @app.get("/api/ops/logs")
     def api_ops_logs() -> Response:
         from monitoring.ops_log_store import fetch_ops_logs

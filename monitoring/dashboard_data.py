@@ -178,7 +178,29 @@ def _alpaca_background_refresh_once() -> None:
 def _alpaca_background_loop() -> None:
     while True:
         _alpaca_background_refresh_once()
-        time.sleep(max(5.0, _ALPACA_BG_REFRESH_SEC))
+        try:
+            from data.data_store import load_runtime_config_dict
+            from execution.trading_constants import cfg_float
+
+            _rt = load_runtime_config_dict()
+            _reg = cfg_float(_rt, "alpaca_bg_refresh_regular_seconds", 30.0)
+            _closed = cfg_float(_rt, "alpaca_bg_refresh_closed_seconds", 180.0)
+            _wknd = cfg_float(_rt, "alpaca_bg_refresh_weekend_seconds", 300.0)
+            import datetime as _dtmod
+
+            nowu = _dtmod.datetime.now(_dtmod.timezone.utc)
+            if nowu.weekday() >= 5:
+                sleep_s = max(5.0, _wknd)
+            elif nyse_regular_session_open():
+                sleep_s = max(5.0, _reg)
+            else:
+                sleep_s = max(5.0, _closed)
+        except Exception:
+            sleep_s = max(5.0, float(os.environ.get("ALPACA_BG_REFRESH_SEC", "30")))
+        with _alpaca_bg_lock:
+            _alpaca_bg_cache["background_refresh_interval_seconds"] = sleep_s
+            _alpaca_bg_cache["background_refresh_reason"] = "session_adaptive"
+        time.sleep(sleep_s)
 
 
 def start_alpaca_background_cache_thread() -> None:
@@ -241,18 +263,18 @@ def fetch_recent_trades(conn: sqlite3.Connection | None = None, limit: int = 30)
     if conn is None:
         with _open_dashboard_sqlite() as local_conn:
             return fetch_recent_trades(local_conn, limit)
-    sync_ph = ",".join(["?"] * len(BROKER_SYNC_TRADE_REASON_CODES))
+    _excl_tr = TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
+    _ph_tr = ",".join(["?"] * len(_excl_tr))
     cur = conn.execute(
         f"""
         SELECT id, created_at, mode, asset_class, symbol, side, quantity, price, notional,
                status, broker_order_id, reason_code, meta_json
         FROM trades
-        WHERE (reason_code IS NULL OR reason_code != 'BROKER_RECONCILE_ADJUST')
-          AND (reason_code IS NULL OR reason_code NOT IN ({sync_ph}))
+        WHERE (reason_code IS NULL OR UPPER(TRIM(reason_code)) NOT IN ({_ph_tr}))
         ORDER BY id DESC
         LIMIT ?
         """,
-        (*BROKER_SYNC_TRADE_REASON_CODES, int(limit)),
+        (*_excl_tr, int(limit)),
     )
     out: list[dict[str, Any]] = []
     for r in cur.fetchall():
@@ -283,7 +305,7 @@ def fetch_recent_broker_sync_trades(
             SELECT id, created_at, mode, asset_class, symbol, side, quantity, price, notional,
                    status, broker_order_id, reason_code, meta_json
             FROM trades
-            WHERE reason_code IN ({sync_ph})
+            WHERE UPPER(TRIM(reason_code)) IN ({sync_ph})
             ORDER BY id DESC
             LIMIT ?
             """,
@@ -466,15 +488,17 @@ def _closed_round_trip_pairs(conn: sqlite3.Connection | None = None) -> list[tup
             return _closed_round_trip_pairs(local_conn)
     from collections import deque
 
+    _excl = TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
+    _phx = ",".join(["?"] * len(_excl))
     cur = conn.execute(
-        """
+        f"""
         SELECT mode, asset_class, symbol, side, price, status, reason_code
         FROM trades
         WHERE status = 'filled' AND price IS NOT NULL
-          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
+          AND (reason_code IS NULL OR UPPER(TRIM(reason_code)) NOT IN ({_phx}))
         ORDER BY id ASC
         """,
-        _SYNC_REASON_CODES_FOR_MATCHING,
+        _excl,
     )
     stacks: dict[tuple[str, str], deque[float]] = {}
     closed: list[tuple[float, float]] = []
@@ -494,13 +518,15 @@ def fetch_performance_summary(conn: sqlite3.Connection | None = None) -> dict[st
     if conn is None:
         with _open_dashboard_sqlite() as local_conn:
             return fetch_performance_summary(local_conn)
+    _excl2 = TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE
+    _phx2 = ",".join(["?"] * len(_excl2))
     cur = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) FROM trades
         WHERE status = 'filled'
-          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
+          AND (reason_code IS NULL OR UPPER(TRIM(reason_code)) NOT IN ({_phx2}))
         """,
-        _SYNC_REASON_CODES_FOR_STATS,
+        _excl2,
     )
     total_trades = int(cur.fetchone()[0])
     pairs = _closed_round_trip_pairs(conn)

@@ -62,11 +62,11 @@ def _closed_round_trips(conn: sqlite3.Connection) -> list[float]:
     """FIFO matched (sell-buy) pnl in dollars for closed pairs, paper+live."""
     try:
         cur = conn.execute(
-            """
+            f"""
             SELECT mode, asset_class, symbol, side, price, quantity
             FROM trades
             WHERE status = 'filled' AND price IS NOT NULL
-              AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
+              AND (reason_code IS NULL OR UPPER(TRIM(reason_code)) NOT IN ({",".join(["?"] * len(TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE))}))
             ORDER BY id ASC
             """,
             TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE,

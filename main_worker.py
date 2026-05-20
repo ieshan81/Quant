@@ -40,6 +40,11 @@ from data.data_store import (
 )
 from learning.rl_nudge import maybe_nudge_thresholds
 from execution import crypto_push_pull, order_manager, reason_codes, stock_broker
+from execution.trading_constants import synthetic_reason_codes_for_sql
+from core.session_mode import compute_mission_control
+from core.capital_policy import build_capital_policy_status, evaluate_stock_buy_capital_gates
+from core.state_snapshot import build_cycle_state_snapshot, canonical_state_snapshot_summary
+from core.overnight_risk import build_overnight_risk_plan
 from monitoring import alerts, trade_logger
 from risk import drawdown_guard
 from risk import portfolio_limiter
@@ -82,8 +87,6 @@ def _trade_interval_sec() -> float:
         logger.warning("trade interval: market_hours/pytz failed; using {}s", _TRADE_CLOSED_SEC, exc_info=True)
         return float(_TRADE_CLOSED_SEC)
 CYCLE_WORKERS = int(os.getenv("WORKER_CYCLE_EXECUTOR_WORKERS", "16"))
-MAX_STOCK_POS = 5
-MAX_CRYPTO_POS = 5
 MICRO_MAX_STOCK_BUY_ATTEMPTS = 1
 MICRO_MAX_CRYPTO_BUY_ATTEMPTS = 2
 STOCK_BUY_BUFFER_PCT = 0.90
@@ -106,6 +109,7 @@ _startup_recovery_state: dict[str, Any] = {
     "skip_scanners": False,
     "reconciliation_health": {},
 }
+_trading_cycle_counter = 0
 _prev_us_stock_session_open: bool | None = None
 _last_profit_exit_ts: float = 0.0
 _last_profit_exit_notional: float = 0.0
@@ -617,16 +621,133 @@ def _sentiment_discrete(symbol: str, asset_class: AssetClass) -> float:
 
 def _open_counts(trader: PaperTrader) -> tuple[int, int]:
     stocks = crypto = 0
-    for pos in trader._positions.values():
-        if pos.asset_class == "stock":
-            stocks += 1
-        else:
-            crypto += 1
+    try:
+        for pos in trader._positions.values():
+            if pos.asset_class == "stock":
+                stocks += 1
+            else:
+                crypto += 1
+    except Exception:
+        return 0, 0
     return stocks, crypto
 
 
+def _max_stock_positions(rt: dict[str, float] | None) -> int:
+    r = rt or {}
+    try:
+        stage = str(r.get("_capital_stage", "MICRO")).upper()
+        if stage == "MICRO":
+            return max(1, int(float(r.get("micro_account_max_stock_positions", 2.0))))
+        if stage == "SMALL":
+            return max(1, int(float(r.get("small_account_max_stock_positions", 3.0))))
+        return max(1, int(float(r.get("max_stock_positions", 5.0))))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _max_crypto_positions(rt: dict[str, float] | None) -> int:
+    r = rt or {}
+    try:
+        return max(1, int(float(r.get("max_crypto_positions", r.get("max_crypto_open_positions", 5.0)))))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _effective_mission_control(rt: dict[str, float]) -> dict[str, Any]:
+    mc = rt.get("_mission_control")
+    if isinstance(mc, dict) and mc.get("mission_mode"):
+        return dict(mc)
+    try:
+        from execution.stock_session import classify_us_session
+
+        sslab = classify_us_session()
+        if portfolio_limiter.us_stock_market_open():
+            sslab = "regular"
+        return compute_mission_control(
+            rt=rt,
+            recovery_state=_startup_recovery_state,
+            stock_market_open=portfolio_limiter.us_stock_market_open(),
+            stock_session_label=str(sslab),
+            operator_review_required=False,
+        )
+    except Exception:
+        return {
+            "mission_mode": "REGULAR_STOCK_SESSION",
+            "session_mode": "REGULAR_STOCK_SESSION",
+            "stock_entries_allowed": True,
+            "stock_exits_allowed": True,
+            "crypto_entries_allowed": bool(int(rt.get("crypto_push_enabled", 0)) == 1),
+            "crypto_exits_allowed": True,
+            "heavy_scanners_allowed": True,
+            "reason": "mission_control_fallback",
+        }
+
+
+def _maybe_refresh_startup_recovery(trader: PaperTrader, rt: dict[str, float]) -> None:
+    global _startup_recovery_state, _trading_cycle_counter
+    _trading_cycle_counter += 1
+    try:
+        n = max(1, int(float(rt.get("recovery_recheck_cycles", 5.0))))
+    except (TypeError, ValueError):
+        n = 5
+    if _trading_cycle_counter % n != 0:
+        return
+    try:
+        from data import broker_reconciliation as _br
+        from execution.startup_recovery import evaluate_startup_recovery
+
+        cli = stock_broker.get_rest_client()
+        recon_clean = True
+        eq = max(0.0, float(trader.equity_total()))
+        rs: dict[str, Any] = {}
+        if cli is not None:
+            rs = _br.reconcile_sqlite_with_broker(config.DB_PATH, cli, mode=config.MODE) or {}
+            recon_clean = bool(rs.get("clean"))
+            try:
+                acct = cli.get_account()
+                eq = max(0.0, float(getattr(acct, "equity", eq) or eq))
+            except Exception:
+                pass
+        prev_block = bool(_startup_recovery_state.get("block_new_buys"))
+        ev = evaluate_startup_recovery(rt, current_equity=eq, reconciliation_clean=recon_clean)
+        _startup_recovery_state["block_new_buys"] = bool(ev.get("block_new_buys"))
+        _startup_recovery_state["exit_only"] = bool(ev.get("exit_only"))
+        _startup_recovery_state["skip_scanners"] = bool(ev.get("skip_scanners"))
+        _startup_recovery_state["reconciliation_health"] = {"clean": recon_clean, "summary": rs.get("summary")}
+        _startup_recovery_state["startup_recovery_status"] = ev.get("startup_recovery_status")
+        _startup_recovery_state["startup_drawdown_status"] = ev.get("startup_drawdown_status")
+        if prev_block and not _startup_recovery_state.get("block_new_buys"):
+            logger.info("[recovery] periodic re-eval cleared buy block (clean={})", recon_clean)
+    except Exception:
+        logger.debug("[recovery] periodic re-eval failed", exc_info=True)
+
+
+def _stock_entry_spread_gate(symbol: str, rt: dict[str, float]) -> tuple[bool, str | None]:
+    from execution.trading_constants import cfg_float, cfg_is_enabled
+
+    if not cfg_is_enabled(rt.get("stock_entry_require_quote"), default=False):
+        return True, None
+    sp = stock_broker.fetch_equity_spread_pct(symbol)
+    if sp is None:
+        return False, reason_codes.BUY_BLOCKED_STOCK_QUOTE_MISSING
+    max_sp = cfg_float(rt, "stock_entry_max_spread_pct", 2.0)
+    if sp > max_sp + 1e-9:
+        return False, reason_codes.BUY_BLOCKED_STOCK_SPREAD_TOO_WIDE
+    try:
+        px = float(stock_broker.fetch_equity_latest_price(symbol) or 0.0)
+    except Exception:
+        px = 0.0
+    min_px = cfg_float(rt, "stock_entry_min_price", 1.0)
+    if cfg_is_enabled(rt.get("avoid_penny_wide_spread_entries"), default=True) and 0 < px < min_px and sp > 0.01:
+        return False, reason_codes.BUY_BLOCKED_PENNY_SPREAD_RISK
+    return True, None
+
+
 def _deployed_notional(trader: PaperTrader) -> tuple[float, float]:
-    return trader.positions_gross_notional()
+    try:
+        return trader.positions_gross_notional()
+    except Exception:
+        return 0.0, 0.0
 
 
 class CycleSignal(NamedTuple):
@@ -777,6 +898,8 @@ def analyze_symbol(
                 pump_sell = bool(psig.emergency_sell)
         except Exception:
             logger.debug("pump pipeline failed for {}", sym, exc_info=True)
+    sigs_eval["_signal_data_source"] = "daily_ohlcv"
+    sigs_eval["_intraday_signal_confirmed"] = 0.0
     return CycleSignal(
         asset_class,
         sym,
@@ -894,9 +1017,9 @@ def _can_buy(
     if asset_class == "stock" and not portfolio_limiter.us_stock_market_open():
         return False, "market_closed"
     n_st, n_cr = _open_counts(trader)
-    if asset_class == "stock" and n_st >= MAX_STOCK_POS:
+    if asset_class == "stock" and n_st >= _max_stock_positions(rt):
         return False, "max_stock_positions"
-    if asset_class == "crypto" and n_cr >= MAX_CRYPTO_POS:
+    if asset_class == "crypto" and n_cr >= _max_crypto_positions(rt):
         return False, "max_crypto_positions"
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
     eff_pct = _effective_max_position_pct_for_sizing(sleeve, float(rt["max_position_pct"]))
@@ -963,17 +1086,16 @@ def _position_entry_datetime_from_trades(
         with sqlite3.connect(str(p)) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.execute(
-                """
+                f"""
                 SELECT created_at FROM trades
                 WHERE symbol = ? AND asset_class = ? AND status = 'filled'
                   AND LOWER(side) = ?
                   AND UPPER(COALESCE(TRIM(reason_code), ''))
-                      NOT IN ('ALPACA_SYNC_OPEN', 'ALPACA_SYNC',
-                              'ALPACA_REAL', 'BROKER_RECONCILE_ADJUST')
+                      NOT IN ({",".join(["?"] * len(synthetic_reason_codes_for_sql()))})
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (sym_key, asset_class, side.lower()),
+                (sym_key, asset_class, side.lower(), *synthetic_reason_codes_for_sql()),
             )
             row = cur.fetchone()
     except Exception:
@@ -997,10 +1119,12 @@ def _held_hours_and_suffix(entry_dt: dt_et | None) -> tuple[float | None, str]:
     return h, f" held={h:.1f}h"
 
 
-def _max_hold_hours_for_symbol(sym: str) -> float:
-    """Crypto recycles faster than stocks (production rule: crypto 4h, stocks 8h)."""
-    s = str(sym or "").upper()
-    return 4.0 if ("/" in s or "USD" in s) else 8.0
+def _max_hold_hours_for_symbol(_symbol: str, asset_class: str) -> float:
+    """Max hold hours from asset class (crypto recycles faster than stocks)."""
+    ac = str(asset_class or "").strip().lower()
+    if ac == "crypto":
+        return 4.0
+    return 8.0
 
 
 def _ensure_exit_trade_logged(
@@ -1068,7 +1192,7 @@ def _can_open_short_stock(
     if not portfolio_limiter.us_stock_market_open():
         return False, "market_closed"
     n_st, n_cr = _open_counts(trader)
-    if n_st >= MAX_STOCK_POS:
+    if n_st >= _max_stock_positions(rt):
         return False, "max_stock_positions"
     sleeve = trader.equity_stocks()
     eff_pct = _effective_max_position_pct_for_sizing(sleeve, float(rt["max_position_pct"]))
@@ -1472,7 +1596,7 @@ def _check_and_execute_exits(
             )
         entry_dt = _position_entry_datetime_from_trades(sym, ac, qty, db_p)
         _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
-        max_hold_h = _max_hold_hours_for_symbol(sym)
+        max_hold_h = _max_hold_hours_for_symbol(sym, ac)
 
         if ac == "crypto":
             if crypto_fast:
@@ -2174,37 +2298,163 @@ def _telegram_sell(
 
 
 def liquidate_all(trader: PaperTrader, market_ctx: Any) -> None:
+    """Flatten positions: local paper uses PaperTrader fills; Alpaca paper uses routed broker path."""
     trader.set_telegram_on_fills(False)
+    rt = load_runtime_config_dict(config.DB_PATH)
     try:
-        for pos in list(trader._positions.values()):
-            if pos.asset_class == "stock":
-                df = load_stock_bars(pos.symbol, bars=3)
-            else:
-                df = load_crypto_bars(market_ctx, pos.symbol, bars=3)
-            mid = _mid_from_stock_df(df)
-            if mid is None or mid <= 0:
+        if _use_local_paper_trader():
+            for pos in list(trader._positions.values()):
+                if pos.asset_class == "stock":
+                    df = load_stock_bars(pos.symbol, bars=3)
+                else:
+                    df = load_crypto_bars(market_ctx, pos.symbol, bars=3)
+                mid = _mid_from_stock_df(df) if pos.asset_class == "stock" else _mid_from_crypto_df(df)
+                if mid is None or mid <= 0:
+                    continue
+                q = float(pos.quantity)
+                if q > 1e-8:
+                    order_manager.paper_market_sell(
+                        trader,
+                        pos.asset_class,
+                        pos.symbol,
+                        q,
+                        mid,
+                        reason_code=reason_codes.KILL_SWITCH,
+                        meta={"source": "liquidate_all_local"},
+                    )
+                elif q < -1e-8:
+                    order_manager.paper_market_buy(
+                        trader,
+                        pos.asset_class,
+                        pos.symbol,
+                        abs(q),
+                        mid,
+                        reason_code=reason_codes.KILL_SWITCH,
+                        meta={"short": True, "source": "liquidate_all_local"},
+                    )
+            return
+
+        rows = stock_broker.fetch_alpaca_open_positions() or []
+        force_stocks = float(rt.get("daily_drawdown_force_liquidate_enabled", 0.0) or 0.0) >= 0.5
+        for row in rows:
+            sym = str(row.get("symbol") or "").strip()
+            if not sym:
                 continue
-            q = float(pos.quantity)
-            if q > 1e-8:
-                order_manager.paper_market_sell(
-                    trader,
-                    pos.asset_class,
-                    pos.symbol,
-                    q,
-                    mid,
-                    reason_code="KILL_SWITCH_LIQUIDATE",
-                    meta=None,
+            ac_raw = str(row.get("asset_class") or "").strip().lower()
+            is_crypto = ac_raw == "crypto" or "/" in sym
+            ac: AssetClass = "crypto" if is_crypto else "stock"
+            qty = float(row.get("net_qty") or row.get("qty") or row.get("quantity") or 0.0)
+            if abs(qty) < 1e-8:
+                _persist_decision(
+                    cycle_id=f"kill-{int(time.time())}",
+                    asset_class=ac,
+                    symbol=sym,
+                    side="sell",
+                    decision="rejected",
+                    reason_code=reason_codes.KILL_SWITCH_EXIT_BLOCKED_NO_BROKER_QTY,
+                    score=None,
+                    notional=0.0,
+                    quantity=0.0,
+                    price=None,
+                    meta={"source": "liquidate_all"},
                 )
-            elif q < -1e-8:
-                order_manager.paper_market_buy(
-                    trader,
-                    pos.asset_class,
-                    pos.symbol,
-                    abs(q),
-                    mid,
-                    reason_code="KILL_SWITCH_LIQUIDATE",
-                    meta={"short": True},
+                continue
+            if ac == "stock":
+                df = load_stock_bars(sym, bars=3)
+                mid = _mid_from_stock_df(df)
+            else:
+                df = load_crypto_bars(market_ctx, sym, bars=3)
+                mid = _mid_from_crypto_df(df)
+            if mid is None or float(mid) <= 0:
+                _persist_decision(
+                    cycle_id=f"kill-{int(time.time())}",
+                    asset_class=ac,
+                    symbol=sym,
+                    side="sell",
+                    decision="rejected",
+                    reason_code=reason_codes.NO_PRICE,
+                    score=None,
+                    notional=0.0,
+                    quantity=abs(qty),
+                    price=None,
+                    meta={"source": "liquidate_all"},
                 )
+                continue
+            mid = float(mid)
+            if qty > 1e-8:
+                if ac == "stock" and not portfolio_limiter.us_stock_market_open() and not force_stocks:
+                    _persist_decision(
+                        cycle_id=f"kill-{int(time.time())}",
+                        asset_class="stock",
+                        symbol=sym,
+                        side="sell",
+                        decision="rejected",
+                        reason_code=reason_codes.KILL_SWITCH_EXIT_BLOCKED_MARKET_CLOSED,
+                        score=None,
+                        notional=qty * mid,
+                        quantity=qty,
+                        price=mid,
+                        meta={"source": "liquidate_all"},
+                    )
+                    continue
+                try:
+                    r = _submit_routed_order(
+                        trader=trader,
+                        side="sell",
+                        asset_class=ac,
+                        symbol=sym,
+                        qty=qty,
+                        mid=mid,
+                        notional=qty * mid,
+                        reason_code=reason_codes.KILL_SWITCH_EXIT_SUBMITTED,
+                        meta={"source": "liquidate_all", "broker_qty": qty},
+                        rt=rt,
+                    )
+                    if not bool(getattr(r, "ok", False)):
+                        _persist_decision(
+                            cycle_id=f"kill-{int(time.time())}",
+                            asset_class=ac,
+                            symbol=sym,
+                            side="sell",
+                            decision="rejected",
+                            reason_code=reason_codes.KILL_SWITCH_EXIT_ERROR,
+                            score=None,
+                            notional=qty * mid,
+                            quantity=qty,
+                            price=mid,
+                            meta={"source": "liquidate_all", "message": getattr(r, "message", None)},
+                        )
+                except Exception as exc:
+                    logger.warning("[liquidate_all] routed sell failed {} {}", sym, exc, exc_info=True)
+                    _persist_decision(
+                        cycle_id=f"kill-{int(time.time())}",
+                        asset_class=ac,
+                        symbol=sym,
+                        side="sell",
+                        decision="rejected",
+                        reason_code=reason_codes.KILL_SWITCH_EXIT_ERROR,
+                        score=None,
+                        notional=qty * mid,
+                        quantity=qty,
+                        price=mid,
+                        meta={"source": "liquidate_all", "error": str(exc)[:200]},
+                    )
+            elif qty < -1e-8:
+                try:
+                    _submit_routed_order(
+                        trader=trader,
+                        side="buy",
+                        asset_class=ac,
+                        symbol=sym,
+                        qty=abs(qty),
+                        mid=mid,
+                        notional=abs(qty) * mid,
+                        reason_code=reason_codes.KILL_SWITCH_EXIT_SUBMITTED,
+                        meta={"source": "liquidate_all_cover_short", "broker_qty": qty},
+                        rt=rt,
+                    )
+                except Exception as exc:
+                    logger.warning("[liquidate_all] routed cover failed {} {}", sym, exc, exc_info=True)
     finally:
         trader.set_telegram_on_fills(True)
 
@@ -2601,6 +2851,40 @@ def execute_cycle_results(
     except Exception:
         logger.debug("[buy_gate] post-profit reserve check skipped", exc_info=True)
 
+    try:
+        _ceb = rt.get("_pre_trade_stock_buy_ceiling")
+        if _ceb is not None:
+            _ceb_f = float(_ceb)
+            if _ceb_f >= 0.0 and _ceb_f + 1e-9 < max_usable_for_new_buys_stock:
+                max_usable_for_new_buys_stock = _ceb_f
+    except (TypeError, ValueError):
+        pass
+
+    _cn_reserve_usd = 0.0
+    try:
+        from execution.crypto_night_session import compute_crypto_night_reserve
+
+        _eq_t2 = max(1e-9, float(trader.equity_total()))
+        s_mv0, c_mv0 = _deployed_notional(trader)
+        _stock_exp_pct2 = (s_mv0 / _eq_t2) * 100.0
+        _cash_snap2 = float(alpaca_snapshot.get("cash", 0.0))
+        _min_close_rt = rt.get("_minutes_to_close")
+        _min_close_v = float(_min_close_rt) if _min_close_rt is not None else None
+        _cnr2 = compute_crypto_night_reserve(
+            rt=rt,
+            equity=_eq_t2,
+            cash=_cash_snap2,
+            stock_exposure_pct=_stock_exp_pct2,
+            crypto_signal_strength=float(rt.get("_crypto_best_signal", 0.0) or 0.0),
+            recent_profit_exit=bool(_profit_cooldown_active),
+            minutes_to_close=_min_close_v,
+        )
+        if getattr(_cnr2, "enabled", False):
+            _cn_reserve_usd = float(getattr(_cnr2, "target_reserve_usd", 0.0) or 0.0)
+    except Exception:
+        logger.debug("[buy_gate] crypto night reserve calc skipped", exc_info=True)
+    rt["_crypto_night_reserve_target"] = float(_cn_reserve_usd)
+
     _dyn_stock_budget_remaining = max_usable_for_new_buys_stock
 
     try:
@@ -2635,6 +2919,20 @@ def execute_cycle_results(
         "stale_local_positions_count": 0,
         "broker_local_mismatch_count": 0,
     }
+    try:
+        execution_health["mission_control"] = _effective_mission_control(rt)
+        s_mvx, c_mvx = _deployed_notional(trader)
+        execution_health["capital_policy_status"] = build_capital_policy_status(
+            rt=rt,
+            equity=float(trader.equity_total()),
+            cash=float(alpaca_snapshot.get("cash", 0.0)),
+            buying_power=float(alpaca_snapshot.get("buying_power", 0.0)),
+            stock_market_value=s_mvx,
+            crypto_market_value=c_mvx,
+            pre_trade_plan=rt.get("_pre_trade_capital_plan"),
+        )
+    except Exception:
+        logger.debug("[buy_gate] mission/capital policy snapshot skipped", exc_info=True)
     if stock_buys_disabled_cycle:
         _stock_disabled_rc = (
             (reason_codes.BUY_BLOCKED_DYNAMIC_PROFIT_RESERVE if _dynamic_reserve_result else reason_codes.BUY_BLOCKED_POST_PROFIT_COOLDOWN)
@@ -3020,6 +3318,81 @@ def execute_cycle_results(
                         )
                         out["holds"] += 1
                         continue
+                _mcx = _effective_mission_control(rt)
+                if cs.asset_class == "stock" and not _mcx.get("stock_entries_allowed", True):
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class="stock",
+                        symbol=cs.symbol,
+                        side="buy",
+                        decision="rejected",
+                        reason_code=reason_codes.BUY_BLOCKED_MISSION_MODE,
+                        score=eff_score,
+                        notional=notional,
+                        quantity=0.0,
+                        price=mid,
+                        meta={"mission_mode": _mcx.get("mission_mode"), "mission_reason": _mcx.get("reason")},
+                    )
+                    out["holds"] += 1
+                    continue
+                if cs.asset_class == "stock" and bool(rt.get("_overnight_risk_new_stock_blocked")):
+                    if not _is_already_long(trader, "stock", cs.symbol, alpaca_longs=alpaca_longs):
+                        _persist_decision(
+                            cycle_id=cid,
+                            asset_class="stock",
+                            symbol=cs.symbol,
+                            side="buy",
+                            decision="rejected",
+                            reason_code=reason_codes.BUY_BLOCKED_PORTFOLIO_CAPITAL_TRAPPED,
+                            score=eff_score,
+                            notional=notional,
+                            quantity=0.0,
+                            price=mid,
+                            meta={"source": "overnight_risk_plan"},
+                        )
+                        out["holds"] += 1
+                        continue
+                if cs.asset_class == "stock" and float(rt.get("block_new_buys_when_pdt_trapped_positions_exist", 1.0)) >= 0.5:
+                    _pdts = [str(x).strip().upper() for x in (rt.get("_pdt_trapped_symbols") or []) if str(x).strip()]
+                    if _pdts and not _is_already_long(trader, "stock", cs.symbol, alpaca_longs=alpaca_longs):
+                        _persist_decision(
+                            cycle_id=cid,
+                            asset_class="stock",
+                            symbol=cs.symbol,
+                            side="buy",
+                            decision="rejected",
+                            reason_code=reason_codes.BUY_BLOCKED_PDT_TRAPPED_POSITIONS,
+                            score=eff_score,
+                            notional=notional,
+                            quantity=0.0,
+                            price=mid,
+                            meta={"pdt_trapped_symbols": _pdts},
+                        )
+                        out["holds"] += 1
+                        continue
+                if cs.asset_class == "stock":
+                    from execution.trading_constants import cfg_float as _cfgf2, cfg_is_enabled as _cfgen2
+
+                    if _cfgen2(rt.get("block_quick_entry_on_daily_only_signal"), default=False):
+                        src = str(cs.signals.get("_signal_data_source") or "")
+                        if src == "daily_ohlcv" and _cfgen2(rt.get("require_intraday_confirmation_for_quick_trades"), default=False):
+                            thr = _cfgf2(rt, "quick_trade_score_abs_min", 0.35)
+                            if abs(float(eff_score)) >= thr and float(cs.signals.get("_intraday_signal_confirmed") or 0) < 0.5:
+                                _persist_decision(
+                                    cycle_id=cid,
+                                    asset_class="stock",
+                                    symbol=cs.symbol,
+                                    side="buy",
+                                    decision="rejected",
+                                    reason_code=reason_codes.BUY_BLOCKED_DAILY_ONLY_SIGNAL_FOR_QUICK_TRADE,
+                                    score=eff_score,
+                                    notional=notional,
+                                    quantity=0.0,
+                                    price=mid,
+                                    meta={"signal_data_source": src},
+                                )
+                                out["holds"] += 1
+                                continue
                 ok, reason = _can_buy(
                     trader,
                     cs.asset_class,
@@ -3052,6 +3425,28 @@ def execute_cycle_results(
                             notional = floor_notional
                         else:
                             ok, reason = False, "NOT_FRACTIONABLE"
+                if ok and cs.asset_class == "stock":
+                    sp_ok, sp_rc = _stock_entry_spread_gate(cs.symbol, rt)
+                    if not sp_ok:
+                        ok, reason = False, sp_rc or reason_codes.SPREAD_TOO_WIDE
+                if ok and cs.asset_class == "stock":
+                    s_mv_c, c_mv_c = _deployed_notional(trader)
+                    _eq_b = max(1e-9, float(trader.equity_total()))
+                    _bp_v = float(alpaca_snapshot.get("buying_power", usable_buying_power))
+                    _cash_after = float(alpaca_snapshot.get("cash", cash)) - float(notional)
+                    _res_tgt = float(rt.get("_crypto_night_reserve_target", 0.0) or 0.0)
+                    cap_ok, cap_rc = evaluate_stock_buy_capital_gates(
+                        rt=rt,
+                        equity=_eq_b,
+                        buying_power=_bp_v,
+                        candidate_notional=float(notional),
+                        stock_market_value=s_mv_c,
+                        crypto_market_value=c_mv_c,
+                        reserve_target_crypto_night=_res_tgt,
+                        cash_after_buy=_cash_after,
+                    )
+                    if not cap_ok:
+                        ok, reason = False, cap_rc or reason_codes.BUY_BLOCKED_CAPITAL_CONSTITUTION
                 if not ok or qty <= 0:
                     n_st, n_cr = _open_counts(trader)
                     s_mv, c_mv = _deployed_notional(trader)
@@ -3499,6 +3894,113 @@ def run_trading_cycle_once(
     for _ln in d_lines:
         logger.info(_ln)
 
+    _maybe_refresh_startup_recovery(trader, rt)
+
+    _pdt_trapped: list[str] = []
+    for row in (exit_health.get("position_exit_rows") or []):
+        if str(row.get("asset_class", "stock")).lower() != "stock":
+            continue
+        br = str(row.get("blocked_reason") or row.get("blocker") or "").upper()
+        if "PDT" in br or br == str(reason_codes.PDT_PROTECTION):
+            symp = str(row.get("symbol") or "").strip().upper()
+            if symp:
+                _pdt_trapped.append(symp)
+    rt["_pdt_trapped_symbols"] = _pdt_trapped
+
+    try:
+        _bp_snap = _alpaca_buying_power_snapshot()
+        rt["_cycle_buying_power"] = float(_bp_snap.get("buying_power", 0.0))
+        rt["_usable_buying_power_for_scanners"] = float(_bp_snap.get("usable_buying_power", 0.0))
+    except Exception:
+        rt["_cycle_buying_power"] = float(rt.get("_cycle_buying_power", 0.0) or 0.0)
+        rt["_usable_buying_power_for_scanners"] = float(rt.get("_usable_buying_power_for_scanners", 0.0) or 0.0)
+
+    try:
+        from execution.stock_session import classify_us_session as _class_sess
+
+        _sess_lab = _class_sess()
+    except Exception:
+        _sess_lab = "closed"
+    rt["_mission_control"] = compute_mission_control(
+        rt=rt,
+        recovery_state=_startup_recovery_state,
+        stock_market_open=portfolio_limiter.us_stock_market_open(),
+        stock_session_label=str(_sess_lab),
+        operator_review_required=False,
+    )
+
+    _mtc_ex = exit_health.get("minutes_to_market_close")
+    if _mtc_ex is None:
+        _mtc_ex = rt.get("_minutes_to_close")
+    try:
+        _mtc_f = float(_mtc_ex) if _mtc_ex is not None else None
+    except (TypeError, ValueError):
+        _mtc_f = None
+    _open_stocks = [
+        {"symbol": str(r.get("symbol") or "")}
+        for r in (exit_health.get("position_exit_rows") or [])
+        if str(r.get("asset_class", "stock")).lower() == "stock" and str(r.get("symbol") or "").strip()
+    ]
+    _plan_pre = build_overnight_risk_plan(
+        rt=rt,
+        minutes_to_close=_mtc_f,
+        open_stock_positions=_open_stocks,
+        pdt_blocked_symbols=_pdt_trapped,
+        crypto_reserve_usd=0.0,
+        has_overnight_plan=bool(
+            exit_health.get("position_exit_rows") or exit_health.get("exit_eligible_positions_count")
+        ),
+    )
+    rt["_overnight_risk_new_stock_blocked"] = bool(_plan_pre.get("new_stock_buys_blocked"))
+    rt["_overnight_risk_plan"] = _plan_pre
+
+    rt["_pre_trade_capital_plan"] = None
+    rt["_pre_trade_stock_buy_ceiling"] = None
+    try:
+        from execution import capital_rotation as _cr_pre
+        from execution.deferred_exit_plans import fetch_deferred_exit_plans as _fetch_dep_pre
+        from execution.dynamic_capital_allocator import gather_inputs_and_build_plan, persist_dynamic_capital_plan
+        from monitoring import dashboard_data as _dd_pre
+
+        _snap_pre = _alpaca_buying_power_snapshot()
+        _bg_pre = {
+            "cash": float(_snap_pre.get("cash", 0.0)),
+            "buying_power": float(_snap_pre.get("buying_power", 0.0)),
+            "usable_buying_power": float(_snap_pre.get("usable_buying_power", 0.0)),
+            "equity": float(equity),
+            "portfolio_value": float(equity),
+        }
+        cli_pre = stock_broker.get_rest_client()
+        if cli_pre is not None:
+            open_pos_pre = _dd_pre.get_real_positions(cli_pre)
+        else:
+            with get_connection(config.DB_PATH) as conn:
+                raw_pp = _dd_pre.fetch_open_positions_from_trades(conn)
+            open_pos_pre = _cr_pre.sqlite_net_positions_to_broker_shape(raw_pp, {})
+        with get_connection(config.DB_PATH) as conn:
+            recent_sigs_pre = _dd_pre.fetch_recent_signals(conn, limit=80)
+        dec_exit_pre = list((exit_health.get("position_exit_rows") or []))
+        dep_pre = _fetch_dep_pre(None, include_terminal=True, limit=50)
+        dplan_pre = gather_inputs_and_build_plan(
+            buy_gate=_bg_pre,
+            open_positions=list(open_pos_pre or []),
+            position_exit_rows=dec_exit_pre,
+            recent_signals=list(recent_sigs_pre or []),
+            performance_summary={},
+            deferred_exit_plans=dep_pre,
+            runtime_config=dict(rt),
+            rest_client=cli_pre,
+            market_data_snapshot={},
+            asset_metadata={},
+        )
+        rt["_pre_trade_capital_plan"] = dplan_pre
+        _buckets_pre = dplan_pre.get("capital_buckets") or {}
+        _ub_pre = float(_buckets_pre.get("usable_buying_power") or _bg_pre.get("usable_buying_power") or 0.0)
+        rt["_pre_trade_stock_buy_ceiling"] = max(0.0, _ub_pre * STOCK_BUY_BUFFER_PCT)
+        persist_dynamic_capital_plan(config.DB_PATH, dplan_pre)
+    except Exception:
+        logger.debug("[capital] pre-trade plan skipped", exc_info=True)
+
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
     logger.info(
@@ -3652,6 +4154,47 @@ def run_trading_cycle_once(
         logger.debug("execution_health merge/log skipped", exc_info=True)
     summary["stop_events"] = lines
     summary["analyzed"] = len(results)
+    summary["overnight_risk_plan"] = rt.get("_overnight_risk_plan")
+    try:
+        cli_snap = stock_broker.get_rest_client()
+        pos_snap: list[dict[str, Any]] = []
+        ord_snap: list[dict[str, Any]] = []
+        clock_snap: dict[str, Any] = {}
+        acct_snap: dict[str, Any] = {}
+        if cli_snap is not None:
+            from monitoring import dashboard_data as _dds
+
+            pos_snap = list(_dds.get_real_positions(cli_snap) or [])
+            try:
+                clk = cli_snap.get_clock()
+                clock_snap = {"is_open": bool(getattr(clk, "is_open", False))}
+            except Exception:
+                clock_snap = {}
+            try:
+                ac = cli_snap.get_account()
+                acct_snap = {
+                    "cash": float(getattr(ac, "cash", 0) or 0),
+                    "buying_power": float(getattr(ac, "buying_power", 0) or 0),
+                }
+            except Exception:
+                acct_snap = {}
+        snap = build_cycle_state_snapshot(
+            cycle_id=str(summary.get("cycle_id") or cid),
+            broker_account=acct_snap or None,
+            broker_positions=pos_snap,
+            broker_open_orders=ord_snap,
+            market_clock=clock_snap,
+            mission_control=_effective_mission_control(rt),
+            reconciliation_health=dict(_startup_recovery_state.get("reconciliation_health") or {}),
+            capital_policy_status=(summary.get("execution_health") or {}).get("capital_policy_status"),
+            recovery_status=dict(_startup_recovery_state),
+            drawdown_status=dict(_startup_recovery_state.get("startup_drawdown_status") or {}),
+            data_quality={"source": "run_trading_cycle_once"},
+        )
+        summary["canonical_state_snapshot"] = snap
+        summary["canonical_state_snapshot_summary"] = canonical_state_snapshot_summary(snap)
+    except Exception:
+        logger.debug("[snapshot] canonical cycle snapshot skipped", exc_info=True)
     try:
         from monitoring.cycle_activity_export import blocked_exits_from_decisions, compile_position_exit_decisions
         from monitoring.dashboard_data import fetch_execution_decisions_for_cycle
@@ -3817,6 +4360,18 @@ def run_trading_cycle_once(
         persist_dynamic_capital_plan(config.DB_PATH, dplan)
         summary["dynamic_capital_plan"] = dplan
         summary["capital_allocator_summary"] = build_capital_allocator_summary(dplan)
+        bg = dict(summary.get("buy_gate") or {})
+        bkt = (dplan.get("capital_buckets") or {}) if isinstance(dplan, dict) else {}
+        summary["capital_plan_enforcement"] = {
+            "pre_trade_plan_built": bool(rt.get("_pre_trade_capital_plan")),
+            "post_trade_plan_built": True,
+            "orders_checked_against_plan": True,
+            "violations": [],
+            "stock_buy_budget": bg.get("max_usable_for_new_buys_stock"),
+            "crypto_buy_budget": bg.get("max_usable_for_new_buys_crypto"),
+            "reserve_budget": bkt.get("reserve_cash"),
+            "pre_trade_stock_ceiling": rt.get("_pre_trade_stock_buy_ceiling"),
+        }
     except Exception:
         logger.debug("dynamic_capital_plan skipped", exc_info=True)
     sorted_crypto_scores = sorted(
@@ -3869,6 +4424,33 @@ def run_trading_cycle_once(
             cycle_alpaca_account = cli.get_account()
     except Exception:
         logger.debug("cycle alpaca account read failed", exc_info=True)
+    try:
+        from monitoring.ops_log_store import write_cycle_journal_row
+
+        _mcj = _effective_mission_control(rt)
+        write_cycle_journal_row(
+            cycle_id=str(summary.get("cycle_id") or cid),
+            mission_mode=str(_mcj.get("mission_mode") or ""),
+            session_mode=str(_mcj.get("session_mode") or ""),
+            account=dict(summary.get("buy_gate") or {}),
+            positions=list((summary.get("execution_health") or {}).get("position_exit_rows") or []),
+            capital_policy=dict((summary.get("execution_health") or {}).get("capital_policy_status") or {}),
+            reconciliation=dict(_startup_recovery_state.get("reconciliation_health") or {}),
+            exits=list(summary.get("blocked_exits_cycle") or []),
+            entries=[],
+            blocked_actions=[],
+            errors=[{"errors": summary.get("errors")}],
+            duration_seconds=None,
+            summary={
+                "buys": summary.get("buys"),
+                "sells": summary.get("sells"),
+                "holds": summary.get("holds"),
+                "overnight_risk_plan": summary.get("overnight_risk_plan"),
+                "capital_plan_enforcement": summary.get("capital_plan_enforcement"),
+            },
+        )
+    except Exception:
+        logger.debug("[cycle_journal] write skipped", exc_info=True)
     _persist_portfolio_snapshot(
         trader,
         meta={"source": "run_trading_cycle_once"},

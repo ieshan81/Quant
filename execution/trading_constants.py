@@ -25,6 +25,11 @@ SYNTHETIC_REASON_CODES: Final[frozenset[str]] = frozenset({
 })
 
 
+def synthetic_reason_codes_for_sql() -> tuple[str, ...]:
+    """Ordered tuple for SQL ``NOT IN`` placeholders (single source of truth)."""
+    return tuple(sorted(SYNTHETIC_REASON_CODES))
+
+
 # ---------------------------------------------------------------------------
 # Market session types
 # ---------------------------------------------------------------------------

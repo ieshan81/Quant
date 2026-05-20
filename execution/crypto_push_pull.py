@@ -60,7 +60,7 @@ def push_allowed(
     if open_crypto_positions >= max_open:
         return False, "MAX_POSITIONS"
     t = now if now is not None else time.time()
-    cd = float(rt.get("crypto_reentry_cooldown_seconds", 0.0) or 0.0)
+    cd = float(rt.get("crypto_reentry_cooldown_seconds", 1800.0) or 0.0)
     if cd > 0.0 and last_exit_ts_by_symbol:
         ts = float(last_exit_ts_by_symbol.get(symbol, 0.0) or 0.0)
         if ts > 0.0 and (t - ts) < cd:

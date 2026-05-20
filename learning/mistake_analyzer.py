@@ -178,11 +178,11 @@ def classify_trade(t: ClosedTrade) -> Classification:
 def _fifo_closed_pairs_from_db(conn: sqlite3.Connection, *, limit: int = 50) -> list[ClosedTrade]:
     """Build ClosedTrade rows for the newest closed BUY/SELL pairs."""
     cur = conn.execute(
-        """
+        f"""
         SELECT id, mode, asset_class, symbol, side, quantity, price, reason_code, meta_json, created_at
         FROM trades
         WHERE status = 'filled' AND price IS NOT NULL
-          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
+          AND (reason_code IS NULL OR UPPER(TRIM(reason_code)) NOT IN ({",".join(["?"] * len(TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE))}))
         ORDER BY id ASC
         """,
         TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE,

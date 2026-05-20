@@ -33,11 +33,11 @@ def _fifo_closed_pairs(conn: sqlite3.Connection) -> list[tuple[float, float]]:
     Returns list of (buy_price, sell_price) for each closed round-trip.
     """
     cur = conn.execute(
-        """
+        f"""
         SELECT asset_class, symbol, side, price, status
         FROM trades
         WHERE status = 'filled' AND price IS NOT NULL
-          AND (reason_code IS NULL OR reason_code NOT IN (?, ?, ?, ?))
+          AND (reason_code IS NULL OR UPPER(TRIM(reason_code)) NOT IN ({",".join(["?"] * len(TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE))}))
         ORDER BY id ASC
         """,
         TRADE_REASON_CODES_EXCLUDED_FROM_PERFORMANCE,

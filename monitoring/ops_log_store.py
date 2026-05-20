@@ -78,6 +78,26 @@ CREATE TABLE IF NOT EXISTS usage_hourly (
     universe_refreshes INTEGER DEFAULT 0,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS cycle_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cycle_id TEXT NOT NULL,
+    mission_mode TEXT,
+    session_mode TEXT,
+    account_json TEXT,
+    positions_json TEXT,
+    capital_policy_json TEXT,
+    reconciliation_json TEXT,
+    exits_json TEXT,
+    entries_json TEXT,
+    blocked_actions_json TEXT,
+    errors_json TEXT,
+    duration_seconds REAL,
+    summary_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cycle_journal_cycle ON cycle_journal(cycle_id);
+CREATE INDEX IF NOT EXISTS idx_cycle_journal_created ON cycle_journal(created_at DESC);
 """
 
 _SECRET_PATTERNS = [
@@ -239,3 +259,72 @@ def fetch_ops_logs(
                     pass
         out.append(d)
     return out
+
+
+def write_cycle_journal_row(
+    *,
+    cycle_id: str,
+    mission_mode: str | None = None,
+    session_mode: str | None = None,
+    account: dict[str, Any] | None = None,
+    positions: list[dict[str, Any]] | None = None,
+    capital_policy: dict[str, Any] | None = None,
+    reconciliation: dict[str, Any] | None = None,
+    exits: list[dict[str, Any]] | None = None,
+    entries: list[dict[str, Any]] | None = None,
+    blocked_actions: list[dict[str, Any]] | None = None,
+    errors: list[dict[str, Any]] | None = None,
+    duration_seconds: float | None = None,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    """Best-effort append-only cycle journal (secrets scrubbed)."""
+    try:
+        with _open_ops_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO cycle_journal (
+                    cycle_id, mission_mode, session_mode,
+                    account_json, positions_json, capital_policy_json, reconciliation_json,
+                    exits_json, entries_json, blocked_actions_json, errors_json,
+                    duration_seconds, summary_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(cycle_id or "")[:64],
+                    mission_mode,
+                    session_mode,
+                    json.dumps(scrub_evidence(account or {}), separators=(",", ":"), default=str)[:200000],
+                    json.dumps(scrub_evidence(positions or []), separators=(",", ":"), default=str)[:500000],
+                    json.dumps(scrub_evidence(capital_policy or {}), separators=(",", ":"), default=str)[:200000],
+                    json.dumps(scrub_evidence(reconciliation or {}), separators=(",", ":"), default=str)[:200000],
+                    json.dumps(scrub_evidence(exits or []), separators=(",", ":"), default=str)[:500000],
+                    json.dumps(scrub_evidence(entries or []), separators=(",", ":"), default=str)[:200000],
+                    json.dumps(scrub_evidence(blocked_actions or []), separators=(",", ":"), default=str)[:200000],
+                    json.dumps(scrub_evidence(errors or []), separators=(",", ":"), default=str)[:200000],
+                    duration_seconds,
+                    json.dumps(scrub_evidence(summary or {}), separators=(",", ":"), default=str)[:500000],
+                ),
+            )
+            conn.commit()
+    except Exception:
+        logger.debug("[cycle_journal] write failed", exc_info=True)
+
+
+def fetch_cycle_journal_recent(*, limit: int = 20) -> list[dict[str, Any]]:
+    with _open_ops_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM cycle_journal ORDER BY id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_cycle_journal_by_id(*, cycle_id: str) -> dict[str, Any] | None:
+    if not cycle_id:
+        return None
+    with _open_ops_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM cycle_journal WHERE cycle_id = ? ORDER BY id DESC LIMIT 1",
+            (str(cycle_id).strip(),),
+        ).fetchone()
+    return dict(row) if row else None
