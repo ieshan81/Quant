@@ -4463,10 +4463,11 @@ def run_trading_cycle_once(
         meta={"source": "run_trading_cycle_once"},
         alpaca_account=cycle_alpaca_account,
     )
+    _resource_snap = None
     try:
         from monitoring.resource_monitor import maybe_collect_and_persist
 
-        maybe_collect_and_persist(
+        _resource_snap = maybe_collect_and_persist(
             last_cycle_id=str(summary.get("cycle_id") or cid),
             worker_health="ok",
             broker_connection_health="ok" if cycle_alpaca_account is not None else "degraded",
@@ -4495,6 +4496,17 @@ def run_trading_cycle_once(
         )
     except Exception:
         logger.debug("[ops_log] cycle event skipped", exc_info=True)
+    try:
+        from monitoring.cycle_brief import log_cycle_brief
+
+        log_cycle_brief(
+            cycle_id=str(summary.get("cycle_id") or cid),
+            mission_mode=str(_effective_mission_control(rt).get("mission_mode") or ""),
+            summary=summary,
+            resource_snap=_resource_snap if isinstance(_resource_snap, dict) else None,
+        )
+    except Exception:
+        logger.debug("[cycle_brief] skipped", exc_info=True)
     return summary
 
 

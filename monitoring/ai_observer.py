@@ -91,7 +91,7 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
         conn.close()
     except Exception:
         pass
-    return {
+    return _attach_momo_exports({
         "enabled": True,
         "provider": provider,
         "model": model,
@@ -104,7 +104,19 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
         "allowed_to_execute": False,
         "can_submit_orders": False,
         "can_update_config": False,
-    }
+        "assistant_name": "Momo",
+    })
+
+
+def _attach_momo_exports(status: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from monitoring.momo import build_momo_status, build_momo_authority_status
+        status["momo_status"] = build_momo_status()
+        status["momo_authority_status"] = build_momo_authority_status()
+        status["assistant_name"] = "Momo"
+    except Exception:
+        pass
+    return status
 
 _AI_SCHEMA_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS ai_observer_notes (
@@ -1188,6 +1200,7 @@ def build_ai_bundle_export(db_path: Path | str | None = None) -> dict[str, Any]:
         "ai_latest_notes": ai_memories.get("latest_notes", []),
         "ai_patterns": ai_memories.get("patterns", []),
         "ai_skills": ai_memories.get("candidate_skills", []),
+        "momo_last_answer": None,
         "jarvis_last_answer": None,
         "copied_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "allowed_to_execute": False,
@@ -1196,11 +1209,11 @@ def build_ai_bundle_export(db_path: Path | str | None = None) -> dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Jarvis chat
+# Momo chat (internal: gemini chat handler)
 # ═══════════════════════════════════════════════════════════════════════════
 
-_JARVIS_SYSTEM_INSTRUCTION: Final[str] = (
-    "You are Jarvis, an observe-only trading bot analyst. "
+_MOMO_SYSTEM_INSTRUCTION: Final[str] = (
+    "You are Momo, an observe-only trading bot analyst. "
     "You can inspect sanitized bot state, diagnostics, and AI memory. "
     "You cannot place trades, update config, bypass preflight, or create buy/sell signals. "
     "Answer with evidence-backed analysis. If data is missing, say insufficient_data. "
@@ -1277,13 +1290,15 @@ def handle_chat(
             "warnings": gemini_resp.get("warnings", []),
             "suggested_operator_actions": gemini_resp.get("suggested_operator_actions", []),
             "allowed_to_execute": False,
-        }
+        })
 
-    return _deterministic_chat(message, evidence_used, include_activity_export)
+    out = _deterministic_chat(message, evidence_used, include_activity_export)
+    out["assistant_name"] = "Momo"
+    return _attach_momo_exports(out)
 
 
 def _call_gemini_chat(prompt: str) -> dict[str, Any] | None:
-    """Call Gemini with Jarvis system instruction."""
+    """Call Gemini with Momo system instruction."""
     key = _gemini_api_key()
     if not key:
         return None
@@ -1293,7 +1308,7 @@ def _call_gemini_chat(prompt: str) -> dict[str, Any] | None:
     url = f"{base}/models/{model}:generateContent"
 
     body = json.dumps({
-        "system_instruction": {"parts": [{"text": _JARVIS_SYSTEM_INSTRUCTION}]},
+        "system_instruction": {"parts": [{"text": _MOMO_SYSTEM_INSTRUCTION}]},
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
@@ -1316,7 +1331,7 @@ def _call_gemini_chat(prompt: str) -> dict[str, Any] | None:
         )
         return json.loads(text)
     except Exception as exc:
-        logger.warning("[jarvis_chat] Gemini call failed: {}", str(exc)[:200])
+        logger.warning("[momo_chat] Gemini call failed: {}", str(exc)[:200])
         return None
 
 

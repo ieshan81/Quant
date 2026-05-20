@@ -608,7 +608,7 @@ def test_ai_console_tab_in_dashboard(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert 'data-tab="ai"' in html
     assert "AI Console" in html
     assert "panel-ai" in html
-    assert "Ask Jarvis" in html
+    assert "Ask Momo" in html
 
 
 # ═══════════════════════════════════════════════════════════════════════════

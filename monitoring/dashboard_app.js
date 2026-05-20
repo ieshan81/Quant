@@ -1244,8 +1244,9 @@
   function tabNameFromHash() {
     var raw = (typeof location !== "undefined" && location.hash) ? String(location.hash) : "";
     var h = raw.replace(/^#/, "").trim().toLowerCase();
-    if (h === "positions" || h === "activity" || h === "backtest" || h === "overview") return h;
-    return "overview";
+    var valid = ["mission", "overview", "positions", "activity", "backtest", "ai", "ops", "files"];
+    if (valid.indexOf(h) >= 0) return h;
+    return "mission";
   }
 
   function syncHashToTab(name) {
@@ -1275,9 +1276,11 @@
         panels[i].classList.toggle("active", panels[i].id === "panel-" + name);
       }
       syncHashToTab(name);
+      if (name === "mission") loadMissionTab();
       if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
       if (name === "ops") loadOpsTab();
       if (name === "files") loadFilesTab();
+      if (name === "ai") loadAiTab();
     }
     var t;
     for (t = 0; t < tabs.length; t++) {
@@ -2393,6 +2396,147 @@
     }).catch(function () {});
   }
 
+  function loadMissionTab() {
+    var st = document.getElementById("mcStatus");
+    fetch("/api/mission-control/summary", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) {
+          if (st) st.textContent = d.error || "Mission Control unavailable";
+          return;
+        }
+        if (st) st.textContent = "Updated " + new Date().toLocaleString();
+        var ac = d.account || {};
+        setMcCard("mcAccount",
+          "Equity: " + fmtUsd(ac.equity) + "\nCash: " + fmtUsd(ac.cash) +
+          "\nBP: " + fmtUsd(ac.buying_power) + "\nMode: " + (ac.mode || "paper"));
+        var mi = d.mission || {};
+        setMcCard("mcMission",
+          "Mode: " + (mi.mission_mode || "—") + "\nSession: " + (mi.session_mode || "—") +
+          "\nRecovery: " + JSON.stringify(mi.recovery_status || {}));
+        var cp = d.capital_protection || {};
+        var pr = cp.dynamic_profile || {};
+        setMcCard("mcCapital",
+          "Profile: " + (pr.profile || "—") + "\nReserve: " + (pr.hard_cash_reserve_pct || "—") + "%\n" +
+          "Avail stock: " + fmtUsd(pr.available_for_stock));
+        var pos = d.positions || {};
+        setMcCard("mcPositions", "Open: " + (pos.count || 0));
+        var cr = d.crypto_night || {};
+        setMcCard("mcCrypto",
+          "Push: " + (cr.push_possible != null ? cr.push_possible : "—") +
+          "\nMomo in loop: false\nBlocked: " + (cr.blocked_reason || "—"));
+        var ms = d.momo_summary || {};
+        setMcCard("mcMomo",
+          "Saw: " + (ms.saw || []).join("; ") + "\nAttention: " + (ms.attention || []).join("; "));
+        var oh = d.ops_health || {};
+        setMcCard("mcOps",
+          "CPU: " + (oh.process_cpu_pct != null ? oh.process_cpu_pct + "%" : "—") +
+          "\nMem: " + (oh.system_memory_pct != null ? oh.system_memory_pct + "%" : "—"));
+      })
+      .catch(function (e) {
+        if (st) st.textContent = "Load failed: " + (e && e.message ? e.message : e);
+      });
+  }
+
+  function setMcCard(id, text) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var body = el.querySelector(".mc-body");
+    if (body) body.textContent = text;
+  }
+
+  function wireMissionActions() {
+    function postReset(includeLogs) {
+      var conf = window.prompt("Type RESET RUNTIME to confirm:");
+      if (conf !== "RESET RUNTIME") return;
+      fetch("/api/ops/reset-runtime", {
+        method: "POST",
+        headers: volHeaders(true),
+        body: JSON.stringify({ confirm: "RESET RUNTIME", include_cycle_logs: includeLogs })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        var el = document.getElementById("mcResetStatus");
+        if (el) el.textContent = JSON.stringify(d, null, 2);
+        loadMissionTab();
+      });
+    }
+    function backup() {
+      fetch("/api/ops/backup-dbs", { method: "POST", headers: volHeaders(true) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var el = document.getElementById("mcResetStatus");
+          if (el) el.textContent = "Backup: " + (d.backup_path || "ok");
+        });
+    }
+    var b1 = document.getElementById("btnMcBackup");
+    var b2 = document.getElementById("btnMcResetRuntime");
+    var b3 = document.getElementById("btnMcResetRuntimeLogs");
+    var b4 = document.getElementById("btnMcResetMomoMemory");
+    if (b1) b1.addEventListener("click", backup);
+    if (b2) b2.addEventListener("click", function () { postReset(false); });
+    if (b3) b3.addEventListener("click", function () { postReset(true); });
+    if (b4) b4.addEventListener("click", function () {
+      if (!window.confirm("Delete ALL Momo memory? Type RESET MOMO MEMORY in next prompt.")) return;
+      var c = window.prompt("Type RESET MOMO MEMORY:");
+      if (c !== "RESET MOMO MEMORY") return;
+      fetch("/api/ops/reset-momo-memory", {
+        method: "POST",
+        headers: volHeaders(true),
+        body: JSON.stringify({ confirm: "RESET MOMO MEMORY" })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        var el = document.getElementById("mcResetStatus");
+        if (el) el.textContent = JSON.stringify(d, null, 2);
+      });
+    });
+    ["btnOpsBackup", "btnOpsResetRuntime", "btnFilesBackup", "btnFilesResetRuntime"].forEach(function (id) {
+      var btn = document.getElementById(id);
+      if (!btn) return;
+      if (id.indexOf("Backup") >= 0) btn.addEventListener("click", backup);
+      else btn.addEventListener("click", function () { postReset(false); });
+    });
+  }
+
+  function wireGptAnalyze() {
+    function fetchBundle() {
+      return fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store" }).then(function (r) { return r.json(); });
+    }
+    var copy = document.getElementById("btnCopyGPTAnalyzeBundle");
+    var dl = document.getElementById("btnDownloadGPTAnalyzeBundle");
+    var tg = document.getElementById("btnSendGPTAnalyzeBundleTelegram");
+    var main = document.getElementById("btnGPTAnalyzeLogs");
+    if (copy) copy.addEventListener("click", function () {
+      fetchBundle().then(function (d) {
+        return navigator.clipboard.writeText(JSON.stringify(d, null, 2));
+      }).then(function () {
+        var st = document.getElementById("mcStatus");
+        if (st) st.textContent = "GPT bundle copied.";
+      });
+    });
+    if (dl) dl.addEventListener("click", function () {
+      fetchBundle().then(function (d) { _downloadJson(d, "gpt_analyze_" + _timestamp() + ".json"); });
+    });
+    if (main) main.addEventListener("click", function () {
+      if (copy) copy.click();
+    });
+    if (tg) tg.addEventListener("click", function () {
+      fetchBundle().then(function (d) {
+        return fetch("/api/ai/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
+          body: JSON.stringify({ message: "Send this GPT analyze bundle summary to operator via Telegram if configured.", include_activity_export: true })
+        });
+      });
+    });
+    var ask = document.getElementById("btnAskMomoWhatHappened");
+    if (ask) ask.addEventListener("click", function () {
+      var ai = document.getElementById("aiChatInput");
+      if (ai) ai.value = "What happened in the last trading cycles? Summarize for operator.";
+      show("ai");
+      loadAiTab();
+      var send = document.getElementById("aiChatSend");
+      if (send) send.click();
+    });
+  }
+
   function wireAiChat() {
     var btn = document.getElementById("aiChatSend");
     if (!btn) return;
@@ -2413,6 +2557,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       }).then(function (r) { return r.json();       }).then(function (d) {
+        _lastMomoAnswer = d;
         _lastJarvisAnswer = d;
         var wrap = document.getElementById("aiChatResult");
         if (wrap) wrap.style.display = "block";
@@ -2434,11 +2579,12 @@
         if (wrap) wrap.style.display = "block";
       }).finally(function () {
         btn.disabled = false;
-        btn.textContent = "Ask AI";
+        btn.textContent = "Ask Momo";
       });
     });
   }
 
+  var _lastMomoAnswer = null;
   var _lastJarvisAnswer = null;
 
   function _aiStatus(msg) {
@@ -2485,7 +2631,10 @@
     if (btnBundle) btnBundle.addEventListener("click", function () {
       _aiStatus("Fetching full AI bundle...");
       fetch("/api/ai/bundle/export").then(function (r) { return r.json(); }).then(function (d) {
-        if (_lastJarvisAnswer) d.jarvis_last_answer = _lastJarvisAnswer;
+        if (_lastMomoAnswer) {
+          d.momo_last_answer = _lastMomoAnswer;
+          d.jarvis_last_answer = _lastMomoAnswer;
+        }
         return navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(function () {
           _aiStatus("Full AI bundle copied.");
         });
@@ -2503,7 +2652,10 @@
     if (btnDlBundle) btnDlBundle.addEventListener("click", function () {
       _aiStatus("Preparing download...");
       fetch("/api/ai/bundle/export").then(function (r) { return r.json(); }).then(function (d) {
-        if (_lastJarvisAnswer) d.jarvis_last_answer = _lastJarvisAnswer;
+        if (_lastMomoAnswer) {
+          d.momo_last_answer = _lastMomoAnswer;
+          d.jarvis_last_answer = _lastMomoAnswer;
+        }
         _downloadJson(d, "quantbot_ai_bundle_" + _timestamp() + ".json");
         _aiStatus("Download ready.");
       }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
@@ -2521,6 +2673,8 @@
 
   function startDashboard() {
     bindTabs();
+    wireMissionActions();
+    wireGptAnalyze();
     wireBacktest();
     wireActivityExport();
     wireBrokerDiagnosticCopy();

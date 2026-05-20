@@ -719,6 +719,13 @@ _PAGE = """<!DOCTYPE html>
     #volEditor:disabled { opacity: 0.55; cursor: not-allowed; }
     #volFileMeta { font-size: 11px; color: var(--muted); margin: 0; }
     #volStatus { font-size: 12px; color: var(--muted); margin: 0; }
+    .mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.75rem; }
+    .mc-card { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; }
+    .mc-card h3 { margin: 0 0 0.5rem; font-size: 0.9rem; color: var(--accent); }
+    .mc-card .mc-val { font-size: 1.1rem; font-weight: 600; }
+    .mc-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    .danger-zone { border: 1px solid rgba(248,113,113,0.45); border-radius: 8px; padding: 0.75rem; margin-top: 0.75rem; }
+    .danger-zone h3 { color: #fecaca; margin: 0 0 0.5rem; font-size: 0.85rem; }
     .bt-sub:first-child { margin-top: 0; }
     #btStrategy { max-width: min(100%, 420px); }
     pre.sec { font-size: 11px; overflow: auto; max-height: 180px; margin: 0.35rem 0 0; color: var(--muted); }
@@ -793,7 +800,8 @@ _PAGE = """<!DOCTYPE html>
   <div id="dashError" role="alert"></div>
   <div id="dashToast" role="status" aria-live="polite"></div>
   <nav aria-label="Tabs">
-    <button type="button" class="tab-btn active" data-tab="overview">Overview</button>
+    <button type="button" class="tab-btn active" data-tab="mission">Mission Control</button>
+    <button type="button" class="tab-btn" data-tab="overview">Overview</button>
     <button type="button" class="tab-btn" data-tab="positions">Positions</button>
     <button type="button" class="tab-btn" data-tab="activity">Activity</button>
     <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
@@ -803,7 +811,37 @@ _PAGE = """<!DOCTYPE html>
   </nav>
 
   <main>
-    <section id="panel-overview" class="tab-panel active">
+    <section id="panel-mission" class="tab-panel active">
+      <div class="mc-actions">
+        <button type="button" id="btnGPTAnalyzeLogs" class="tab-btn" style="font-size:12px;">GPT Analyze Logs</button>
+        <button type="button" id="btnCopyGPTAnalyzeBundle" class="tab-btn" style="font-size:12px;">Copy GPT Bundle</button>
+        <button type="button" id="btnDownloadGPTAnalyzeBundle" class="tab-btn" style="font-size:12px;">Download GPT Bundle</button>
+        <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="tab-btn" style="font-size:12px;">Send Bundle to Telegram</button>
+        <button type="button" id="btnAskMomoWhatHappened" class="tab-btn" style="font-size:12px;">Ask Momo What Happened</button>
+      </div>
+      <p id="mcStatus" class="empty-hint" style="margin:0.5rem 0;"></p>
+      <div class="mc-grid" id="mcGrid">
+        <div class="mc-card" id="mcAccount"><h3>Account</h3><div class="mc-body mono">Loading…</div></div>
+        <div class="mc-card" id="mcMission"><h3>Mission</h3><div class="mc-body mono">Loading…</div></div>
+        <div class="mc-card" id="mcCapital"><h3>Capital Protection</h3><div class="mc-body mono">Loading…</div></div>
+        <div class="mc-card" id="mcPositions"><h3>Positions</h3><div class="mc-body mono">Loading…</div></div>
+        <div class="mc-card" id="mcCrypto"><h3>Crypto Night</h3><div class="mc-body mono">Loading…</div></div>
+        <div class="mc-card" id="mcMomo"><h3>Momo Summary</h3><div class="mc-body mono">Loading…</div></div>
+        <div class="mc-card" id="mcOps"><h3>Ops Health</h3><div class="mc-body mono">Loading…</div></div>
+      </div>
+      <div class="danger-zone">
+        <h3>Danger zone — runtime reset</h3>
+        <p class="empty-hint" style="margin:0 0 8px;">Preserves Momo memory. Clears stale runtime cache. Type RESET RUNTIME to confirm.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <button type="button" id="btnMcBackup" class="tab-btn" style="font-size:12px;">Backup DBs Now</button>
+          <button type="button" id="btnMcResetRuntime" class="tab-btn" style="font-size:12px;">Reset Runtime State Only</button>
+          <button type="button" id="btnMcResetRuntimeLogs" class="tab-btn" style="font-size:12px;">Reset Runtime + Cycle Logs</button>
+          <button type="button" id="btnMcResetMomoMemory" class="tab-btn" style="font-size:12px;opacity:0.7;">Reset Momo Memory (destructive)</button>
+        </div>
+        <p id="mcResetStatus" class="mono" style="font-size:11px;margin-top:8px;color:var(--muted);"></p>
+      </div>
+    </section>
+    <section id="panel-overview" class="tab-panel">
       <div class="grid-metrics">
         <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mMode">—</div></div>
         <div class="metric"><div class="lab">Total equity</div><div class="val mono" id="mEq">—</div></div>
@@ -1094,7 +1132,7 @@ _PAGE = """<!DOCTYPE html>
       </div>
 
       <div class="card">
-        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Ask Jarvis</h2>
+        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Ask Momo</h2>
         <textarea id="aiChatInput" placeholder="e.g. Why did HAO not sell? What is the current capital allocation status?" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
           <button type="button" class="primary" id="aiChatSend" style="padding:6px 18px;">Ask AI</button>
@@ -1103,7 +1141,7 @@ _PAGE = """<!DOCTYPE html>
           <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncMemory" checked> AI memory</label>
         </div>
         <div id="aiChatResult" style="display:none;margin-top:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
-          <div style="margin-bottom:8px;font-weight:600;font-size:13px;">Jarvis <span id="aiChatProvider" class="mono" style="font-size:11px;color:var(--muted);"></span></div>
+          <div style="margin-bottom:8px;font-weight:600;font-size:13px;">Momo <span id="aiChatProvider" class="mono" style="font-size:11px;color:var(--muted);"></span></div>
           <div id="aiChatAnswer" class="mono" style="font-size:13px;line-height:1.6;white-space:pre-wrap;"></div>
           <div id="aiChatEvidence" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
           <div id="aiChatActions" style="margin-top:8px;font-size:12px;"></div>
@@ -1173,6 +1211,11 @@ _PAGE = """<!DOCTYPE html>
         </div>
         <p id="opsCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
       </div>
+      <div class="danger-zone card">
+        <h3>Danger zone</h3>
+        <button type="button" id="btnOpsBackup" class="tab-btn" style="font-size:12px;">Backup DBs</button>
+        <button type="button" id="btnOpsResetRuntime" class="tab-btn" style="font-size:12px;">Reset Runtime</button>
+      </div>
       <div class="card">
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Recent ops logs</h2>
         <div class="ops-log-preview">
@@ -1223,6 +1266,11 @@ _PAGE = """<!DOCTYPE html>
             <textarea id="volEditor" spellcheck="false" placeholder="Select a text file to edit, or a .sqlite3 file to browse tables…" disabled></textarea>
             <p id="volStatus"></p>
           </div>
+        </div>
+        <div class="danger-zone" style="margin-top:12px;">
+          <h3>Danger zone</h3>
+          <button type="button" id="btnFilesBackup" class="tab-btn" style="font-size:12px;">Backup DBs</button>
+          <button type="button" id="btnFilesResetRuntime" class="tab-btn" style="font-size:12px;">Reset Runtime</button>
         </div>
       </div>
     </section>
@@ -1672,10 +1720,15 @@ def create_app() -> Flask:
                 level="info",
                 source="dashboard",
                 event_type="startup",
-                message="Dashboard started",
+                message="Momo dashboard started",
             )
         except Exception:
             logger.debug("[ops_log] dashboard startup event skipped", exc_info=True)
+        try:
+            from monitoring.telegram_momo import start_telegram_momo_polling
+            start_telegram_momo_polling()
+        except Exception as exc:
+            logger.warning("[momo_telegram] start failed: {}", exc)
 
     from flask_socketio import SocketIO
 
@@ -2013,6 +2066,85 @@ def create_app() -> Flask:
             return jsonify({"ok": True, **body})
         except (ValueError, FileNotFoundError) as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.get("/api/mission-control/summary")
+    def api_mission_control_summary() -> Response:
+        from monitoring.mission_control_api import build_mission_control_summary
+        return Response(json.dumps(build_mission_control_summary(), default=str), mimetype="application/json")
+
+    @app.get("/api/ops/gpt-analyze-bundle")
+    def api_gpt_analyze_bundle() -> Response:
+        from monitoring.gpt_analyze_bundle import build_gpt_analyze_bundle
+        return Response(json.dumps(build_gpt_analyze_bundle(), default=str), mimetype="application/json")
+
+    @app.get("/api/ops/gpt-analyze-bundle.json")
+    def api_gpt_analyze_bundle_json() -> Response:
+        from monitoring.gpt_analyze_bundle import build_gpt_analyze_bundle
+        return Response(json.dumps(build_gpt_analyze_bundle(), default=str), mimetype="application/json")
+
+    @app.get("/api/ops/gpt-analyze-bundle.txt")
+    def api_gpt_analyze_bundle_txt() -> Response:
+        from monitoring.gpt_analyze_bundle import build_gpt_analyze_bundle, bundle_as_text
+        return Response(bundle_as_text(build_gpt_analyze_bundle()), mimetype="text/plain")
+
+    @app.post("/api/ops/backup-dbs")
+    def api_ops_backup_dbs() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring.runtime_reset import backup_databases
+        return jsonify(backup_databases())
+
+    @app.post("/api/ops/reset-runtime")
+    def api_ops_reset_runtime() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        confirm = str(body.get("confirm", "") or "").strip().upper()
+        if confirm != "RESET RUNTIME":
+            return jsonify({"ok": False, "error": "confirm must be RESET RUNTIME"}), 400
+        from monitoring.runtime_reset import reset_runtime_state
+        from monitoring.telegram_momo_updates import send_momo_update
+        out = reset_runtime_state(include_cycle_logs=bool(body.get("include_cycle_logs")))
+        send_momo_update(action="runtime_reset_completed", reason="operator_reset")
+        return jsonify(out)
+
+    @app.post("/api/ops/reset-momo-memory")
+    def api_ops_reset_momo_memory() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        if str(body.get("confirm", "")).strip().upper() != "RESET MOMO MEMORY":
+            return jsonify({"ok": False, "error": "confirm must be RESET MOMO MEMORY"}), 400
+        from monitoring.runtime_reset import reset_momo_memory
+        return jsonify(reset_momo_memory())
+
+    @app.get("/api/memory/state-summary")
+    def api_memory_state_summary() -> Response:
+        from core.memory_state import build_memory_state_summary
+        return Response(json.dumps(build_memory_state_summary(), default=str), mimetype="application/json")
+
+    @app.post("/api/momo/backtest/run")
+    def api_momo_backtest_run() -> Any:
+        if not _check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        from monitoring.momo_backtest import run_momo_backtest
+        return jsonify(run_momo_backtest(strategy_name=str(body.get("strategy_name", "current_adaptive"))))
+
+    @app.get("/api/momo/backtest/latest")
+    def api_momo_backtest_latest() -> Response:
+        from monitoring.momo_backtest import fetch_momo_backtest_latest
+        return Response(json.dumps(fetch_momo_backtest_latest(), default=str), mimetype="application/json")
+
+    @app.post("/api/momo/backtest/recommend")
+    def api_momo_backtest_recommend() -> Any:
+        from monitoring.momo_backtest import recommend_from_backtest
+        return jsonify(recommend_from_backtest())
+
+    @app.get("/api/telegram/momo/status")
+    def api_telegram_momo_status() -> Response:
+        from monitoring.telegram_momo import build_telegram_momo_status
+        return Response(json.dumps(build_telegram_momo_status(), default=str), mimetype="application/json")
 
     @app.delete("/api/volume/delete")
     def api_volume_delete() -> Any:
@@ -2985,7 +3117,7 @@ def create_app() -> Flask:
             headers={"Cache-Control": "no-store"},
         )
 
-    # ── AI Console / Jarvis endpoints ─────────────────────────────────────
+    # ── AI Console / Momo endpoints ─────────────────────────────────────
     @app.get("/api/ai/status")
     def api_ai_status() -> Response:
         from monitoring.ai_observer import get_ai_status
