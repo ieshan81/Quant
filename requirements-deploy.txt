@@ -1,4 +1,4 @@
-# Linux / Railway — single `pip install -r requirements-deploy.txt` (see nixpacks.toml)
+# Linux / Railway — installed via railpack.json (requirements-deploy.txt, no pip cache)
 # CPU-only PyTorch: default PyPI torch pulls multi‑GB CUDA wheels; Railway hosts are usually CPU.
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu

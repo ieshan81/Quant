@@ -1,9 +1,9 @@
-# Railway config-as-code — Nixpacks only (no Dockerfile in this repo).
-# Dashboard builder must match; config in repo overrides dashboard on deploy.
+# Railway config-as-code — Railpack (current builder). No Dockerfile in repo.
+# Root directory: "." (repository root). See railpack.json for pip install override.
 
 [build]
-builder = "NIXPACKS"
-nixpacksConfigPath = "nixpacks.toml"
+builder = "RAILPACK"
+dockerfilePath = null
 
 [deploy]
 startCommand = "bash start.sh"
