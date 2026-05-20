@@ -1276,6 +1276,7 @@
       }
       syncHashToTab(name);
       if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
+      if (name === "ops") loadOpsTab();
     }
     var t;
     for (t = 0; t < tabs.length; t++) {
@@ -1682,6 +1683,218 @@
     });
   }
 
+  var _opsLoaded = false;
+  var _opsStatusCache = null;
+  var _opsResourceCache = null;
+  var _opsLogsCache = null;
+
+  function _opsStamp(msg) {
+    var st = document.getElementById("opsCopyStatus");
+    if (st) st.textContent = msg || "";
+  }
+
+  function _opsRingColor(pct) {
+    if (pct == null || isNaN(pct)) return "var(--border)";
+    if (pct >= 90) return "var(--bad)";
+    if (pct >= 75) return "#f59e0b";
+    return "var(--good)";
+  }
+
+  function renderOpsRing(label, value, unit, maxVal) {
+    var pct = null;
+    if (value != null && !isNaN(value) && maxVal > 0) {
+      pct = Math.min(100, Math.max(0, (Number(value) / maxVal) * 100));
+    } else if (value != null && !isNaN(value)) {
+      pct = Math.min(100, Math.max(0, Number(value)));
+    }
+    var display = value == null || isNaN(value) ? "—" : String(Math.round(Number(value) * 10) / 10) + (unit || "");
+    var border = _opsRingColor(pct);
+    var wrap = document.createElement("div");
+    wrap.className = "ops-ring-wrap";
+    var ring = document.createElement("div");
+    ring.className = "ops-ring";
+    ring.style.borderColor = border;
+    ring.textContent = display;
+    var lab = document.createElement("div");
+    lab.className = "ops-ring-lab";
+    lab.textContent = label;
+    wrap.appendChild(ring);
+    wrap.appendChild(lab);
+    return wrap;
+  }
+
+  function renderOpsRings(snap) {
+    var host = document.getElementById("opsRings");
+    if (!host) return;
+    host.innerHTML = "";
+    snap = snap || {};
+    host.appendChild(renderOpsRing("CPU", snap.process_cpu_pct, "%", 100));
+    host.appendChild(renderOpsRing("Memory", snap.system_memory_pct, "%", 100));
+    host.appendChild(renderOpsRing("/data disk", snap.disk_used_pct, "%", 100));
+    host.appendChild(renderOpsRing("Trading DB", snap.quantbot_db_mb, " MB", 1024));
+    host.appendChild(renderOpsRing("AI memory DB", snap.ai_memory_db_mb, " MB", 512));
+    host.appendChild(renderOpsRing("Ops DB/logs", (Number(snap.ops_db_mb) || 0) + (Number(snap.logs_dir_mb) || 0), " MB", 512));
+  }
+
+  function renderOpsLogsTable(logs) {
+    var tb = document.querySelector("#tblOpsLogs tbody");
+    if (!tb) return;
+    tb.innerHTML = "";
+    (logs || []).slice(0, 50).forEach(function (lg) {
+      var tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td class=\"mono\">" + esc(String(lg.created_at || "—")) + "</td>" +
+        "<td>" + esc(String(lg.level || "—")) + "</td>" +
+        "<td class=\"mono\">" + esc(String(lg.event_type || "—")) + "</td>" +
+        "<td>" + esc(String(lg.message || "—")) + "</td>";
+      tb.appendChild(tr);
+    });
+  }
+
+  function loadOpsTab() {
+    if (_opsLoaded) return;
+    _opsLoaded = true;
+    Promise.all([
+      fetch("/api/ops/status", { cache: "no-store" }).then(function (r) {
+        if (!r.ok) throw new Error("ops/status HTTP " + r.status);
+        return r.json();
+      }),
+      fetch("/api/ops/resources/latest", { cache: "no-store" }).then(function (r) {
+        if (!r.ok) throw new Error("ops/resources HTTP " + r.status);
+        return r.json();
+      }),
+      fetch("/api/ops/logs?limit=50", { cache: "no-store" }).then(function (r) {
+        if (!r.ok) throw new Error("ops/logs HTTP " + r.status);
+        return r.json();
+      })
+    ]).then(function (parts) {
+      var status = parts[0] || {};
+      var resource = parts[1] || {};
+      var logsPayload = parts[2] || {};
+      _opsStatusCache = status;
+      _opsResourceCache = resource;
+      _opsLogsCache = logsPayload.logs || [];
+
+      var snap = resource.created_at ? resource : (status.resource_snapshot || {});
+      renderOpsRings(snap);
+
+      var railway = status.railway || {};
+      var rs = document.getElementById("opsRailwayStatus");
+      if (rs) {
+        if (railway.railway_api_connected) {
+          rs.textContent = "Railway API: connected";
+          rs.className = "empty-hint pos-good";
+        } else {
+          var err = railway.safe_error || railway.note || "Railway data unavailable";
+          rs.textContent = "Railway API: disconnected — " + err;
+          rs.className = "empty-hint pos-bad";
+        }
+      }
+
+      var st = document.getElementById("opsSnapshotTime");
+      if (st) st.textContent = "Last snapshot: " + (snap.created_at || "—");
+
+      var lc = document.getElementById("opsLogCount");
+      if (lc) lc.textContent = String((_opsLogsCache || []).length);
+
+      var crit = (_opsLogsCache || []).filter(function (lg) {
+        var lv = String(lg.level || "").toLowerCase();
+        return lv === "critical" || lv === "error" || lv === "warning";
+      });
+      var cc = document.getElementById("opsCriticalCount");
+      if (cc) cc.textContent = String(crit.length);
+
+      var cost = status.runtime_cost_control_status || {};
+      var cp = document.getElementById("opsCostPressure");
+      if (cp) cp.textContent = String(cost.cost_pressure || "—");
+
+      var up = document.getElementById("opsUptime");
+      if (up) {
+        var sec = Number(snap.uptime_seconds);
+        up.textContent = isNaN(sec) ? "—" : Math.round(sec / 60) + " min";
+      }
+
+      renderOpsLogsTable(_opsLogsCache);
+    }).catch(function (e) {
+      _opsStamp("Ops load failed: " + (e && e.message ? e.message : e));
+      var rs = document.getElementById("opsRailwayStatus");
+      if (rs) {
+        rs.textContent = "Railway API: disconnected — ops endpoints unavailable";
+        rs.className = "empty-hint pos-bad";
+      }
+    });
+  }
+
+  function wireOpsCenter() {
+    var btnStatus = document.getElementById("btnCopyOpsStatus");
+    var btnSnap = document.getElementById("btnCopyResourceSnapshot");
+    var btnLogs = document.getElementById("btnCopyRecentOpsLogs");
+    var btnCrit = document.getElementById("btnCopyCriticalOpsBundle");
+    var btnCsv = document.getElementById("btnDownloadOpsLogsCsv");
+    var btnXlsx = document.getElementById("btnDownloadDailyReportXlsx");
+    if (!btnStatus) return;
+
+    btnStatus.addEventListener("click", async function () {
+      try {
+        var r = await fetch("/api/ops/status", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var j = await r.json();
+        await navigator.clipboard.writeText(JSON.stringify(j, null, 2));
+        _opsStamp("Copied ops status JSON");
+      } catch (e) {
+        _opsStamp(String(e && e.message ? e.message : e));
+      }
+    });
+
+    btnSnap.addEventListener("click", async function () {
+      try {
+        var r = await fetch("/api/ops/resources/latest", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var j = await r.json();
+        await navigator.clipboard.writeText(JSON.stringify(j, null, 2));
+        _opsStamp("Copied resource snapshot JSON");
+      } catch (e) {
+        _opsStamp(String(e && e.message ? e.message : e));
+      }
+    });
+
+    btnLogs.addEventListener("click", async function () {
+      try {
+        var r = await fetch("/api/ops/logs?limit=50", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var j = await r.json();
+        await navigator.clipboard.writeText(JSON.stringify(j, null, 2));
+        _opsStamp("Copied recent ops logs JSON");
+      } catch (e) {
+        _opsStamp(String(e && e.message ? e.message : e));
+      }
+    });
+
+    btnCrit.addEventListener("click", async function () {
+      try {
+        var r = await fetch("/api/ops/critical-bundle", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var j = await r.json();
+        await navigator.clipboard.writeText(JSON.stringify(j, null, 2));
+        _opsStamp("Copied critical ops bundle JSON");
+      } catch (e) {
+        _opsStamp(String(e && e.message ? e.message : e));
+      }
+    });
+
+    btnCsv.addEventListener("click", function () {
+      _opsStamp("Starting CSV download…");
+      window.location.href = "/api/ops/logs/export.csv?limit=500";
+      setTimeout(function () { _opsStamp("CSV download started"); }, 300);
+    });
+
+    btnXlsx.addEventListener("click", function () {
+      _opsStamp("Starting daily report download…");
+      window.location.href = "/api/ops/daily-report.xlsx";
+      setTimeout(function () { _opsStamp("XLSX download started"); }, 300);
+    });
+  }
+
   // ── AI Console ──────────────────────────────────────────────────────────
 
   var _aiLoaded = false;
@@ -1889,6 +2102,7 @@
     wireActivityExport();
     wireBrokerDiagnosticCopy();
     wireCapitalAllocatorCopy();
+    wireOpsCenter();
     wireManualSell();
     wireAiChat();
     wireAiMemoryButtons();
@@ -1898,6 +2112,7 @@
     document.querySelectorAll("nav .tab-btn").forEach(function (b) {
       b.addEventListener("click", function () {
         if (b.getAttribute("data-tab") === "ai") loadAiTab();
+        if (b.getAttribute("data-tab") === "ops") loadOpsTab();
       });
     });
   }

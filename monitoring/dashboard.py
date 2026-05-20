@@ -260,6 +260,16 @@ _PAGE = """<!DOCTYPE html>
     .eq-range-btn { background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:4px; padding:2px 10px; font-size:0.78rem; cursor:pointer; }
     .eq-range-btn:hover { border-color:var(--accent); }
     .eq-range-active { background:var(--accent); color:#fff; border-color:var(--accent); }
+    .ops-rings { display:flex; flex-wrap:wrap; gap:1rem; margin:0.75rem 0; }
+    .ops-ring-wrap { text-align:center; min-width:88px; }
+    .ops-ring {
+      width:72px; height:72px; border-radius:50%; margin:0 auto 6px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:0.75rem; font-weight:600; background:var(--surface);
+      border:3px solid var(--border);
+    }
+    .ops-ring-lab { font-size:0.7rem; color:var(--muted); }
+    .ops-log-preview { max-height:280px; overflow:auto; font-size:12px; }
     .pos-good { color: var(--good); }
     .pos-bad  { color: var(--bad); }
     .overview-split {
@@ -711,6 +721,7 @@ _PAGE = """<!DOCTYPE html>
     <button type="button" class="tab-btn" data-tab="activity">Activity</button>
     <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
     <button type="button" class="tab-btn" data-tab="ai">AI Console</button>
+    <button type="button" class="tab-btn" data-tab="ops">Ops Center</button>
   </nav>
 
   <main>
@@ -1054,6 +1065,41 @@ _PAGE = """<!DOCTYPE html>
         <div class="scroll-table">
           <table class="data" id="tblAiSkills"><thead><tr>
             <th>Skill</th><th>Purpose</th><th>Status</th><th>Conf.</th><th>Executable</th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-ops" class="tab-panel">
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Resource monitor</h2>
+        <p class="empty-hint" id="opsRailwayStatus" style="margin:0 0 10px;">Railway API: checking…</p>
+        <p class="mono" id="opsSnapshotTime" style="font-size:12px;color:var(--muted);margin:0 0 8px;">Last snapshot: —</p>
+        <div class="ops-rings" id="opsRings"></div>
+        <div class="grid-metrics" style="margin-top:12px;">
+          <div class="metric"><div class="lab">Ops logs (recent)</div><div class="val mono" id="opsLogCount">—</div></div>
+          <div class="metric"><div class="lab">Critical logs</div><div class="val mono" id="opsCriticalCount">—</div></div>
+          <div class="metric"><div class="lab">Cost pressure</div><div class="val mono" id="opsCostPressure">—</div></div>
+          <div class="metric"><div class="lab">Uptime</div><div class="val mono" id="opsUptime">—</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Ops export</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" id="btnCopyOpsStatus" class="tab-btn" style="font-size:12px;">Copy Ops Status JSON</button>
+          <button type="button" id="btnCopyResourceSnapshot" class="tab-btn" style="font-size:12px;">Copy Resource Snapshot JSON</button>
+          <button type="button" id="btnCopyRecentOpsLogs" class="tab-btn" style="font-size:12px;">Copy Recent Ops Logs JSON</button>
+          <button type="button" id="btnCopyCriticalOpsBundle" class="tab-btn" style="font-size:12px;">Copy Critical Ops Bundle</button>
+          <button type="button" id="btnDownloadOpsLogsCsv" class="tab-btn" style="font-size:12px;">Download Ops Logs CSV</button>
+          <button type="button" id="btnDownloadDailyReportXlsx" class="tab-btn" style="font-size:12px;">Download Daily Report XLSX</button>
+        </div>
+        <p id="opsCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
+      </div>
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Recent ops logs</h2>
+        <div class="ops-log-preview">
+          <table class="data" id="tblOpsLogs"><thead><tr>
+            <th>Time</th><th>Level</th><th>Type</th><th>Message</th>
           </tr></thead><tbody></tbody></table>
         </div>
       </div>
@@ -1612,12 +1658,78 @@ def create_app() -> Flask:
         from monitoring.resource_monitor import fetch_latest_resource_snapshot, fetch_railway_usage_hint
         from monitoring.usage_counters import build_runtime_cost_control_status
         snap = fetch_latest_resource_snapshot() or {}
-        cost = build_runtime_cost_control_status(30, 30, "dashboard_poll", railway_api_connected=False)
+        railway = fetch_railway_usage_hint()
+        cost = build_runtime_cost_control_status(
+            current_cycle_interval=30,
+            recommended_cycle_interval=30,
+            reason="dashboard_poll",
+            railway_api_connected=bool(railway.get("railway_api_connected")),
+        )
         return Response(json.dumps({
             "resource_snapshot": snap,
             "runtime_cost_control_status": cost,
-            "railway": fetch_railway_usage_hint(),
+            "railway": railway,
         }, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/critical-bundle")
+    def api_ops_critical_bundle() -> Response:
+        from monitoring.ops_log_store import fetch_ops_logs
+        from monitoring.resource_monitor import fetch_latest_resource_snapshot, fetch_railway_usage_hint
+        from monitoring.usage_counters import increment_usage
+
+        increment_usage("export_downloads")
+        all_logs = fetch_ops_logs(limit=500)
+        critical = [
+            lg for lg in all_logs
+            if str(lg.get("level") or "").lower() in ("critical", "error", "warning")
+        ][:100]
+        railway = fetch_railway_usage_hint()
+        bundle = {
+            "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "resource_snapshot": fetch_latest_resource_snapshot() or {},
+            "railway": railway,
+            "critical_logs": critical,
+            "critical_log_count": len(critical),
+            "recent_log_count": len(all_logs),
+        }
+        return Response(json.dumps(bundle, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/daily-report.xlsx")
+    def api_ops_daily_report_xlsx() -> Response:
+        from monitoring.ops_daily_report import build_daily_report_xlsx
+        from monitoring.ops_log_store import fetch_ops_logs
+        from monitoring.resource_monitor import (
+            collect_resource_snapshot,
+            fetch_latest_resource_snapshot,
+            fetch_railway_usage_hint,
+        )
+        from monitoring.usage_counters import build_runtime_cost_control_status, increment_usage
+
+        increment_usage("export_downloads")
+        snap = fetch_latest_resource_snapshot() or collect_resource_snapshot()
+        logs = fetch_ops_logs(limit=50)
+        railway = fetch_railway_usage_hint()
+        status = {
+            "resource_snapshot": snap,
+            "runtime_cost_control_status": build_runtime_cost_control_status(
+                current_cycle_interval=30,
+                recommended_cycle_interval=30,
+                reason="daily_report",
+                railway_api_connected=bool(railway.get("railway_api_connected")),
+            ),
+            "railway": railway,
+        }
+        data = build_daily_report_xlsx(
+            resource_snapshot=snap,
+            recent_logs=logs,
+            ops_status=status,
+        )
+        fname = f"quantbot_daily_ops_{datetime.now(timezone.utc).strftime('%Y%m%d')}.xlsx"
+        return Response(
+            data,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
 
     @app.get("/api/ops/resources/latest")
     def api_ops_resources_latest() -> Response:

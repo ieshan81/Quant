@@ -658,7 +658,7 @@ def test_hao_tp_hit_market_closed_shows_take_profit_blocked():
     assert r["final_action"] == "EXIT_BLOCKED_MARKET_CLOSED"
     assert r["blocked_reason"] == "EXIT_BLOCKED_MARKET_CLOSED"
     assert r["final_action"] != "NO_EXIT_SIGNAL"
-    assert "TAKE_PROFIT" in (r.get("human_reason") or "")
+    assert "take-profit" in (r.get("human_reason") or "").lower()
     assert "market is closed" in (r.get("human_reason") or "").lower()
 
 

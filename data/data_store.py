@@ -139,6 +139,11 @@ _EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "ops_raw_log_jsonl_enabled": (1.0, "1=write daily JSONL ops logs"),
     "ops_raw_log_retention_days": (14.0, "Days to retain JSONL ops logs"),
     "resource_snapshot_retention_days": (14.0, "Days to retain resource snapshots"),
+  # Exit price basis
+    "entry_price_mismatch_warn_pct": (3.0, "Warn when broker vs exit entry differ by this pct"),
+    "current_price_mismatch_warn_pct": (3.0, "Warn when broker vs exit current price differ by this pct"),
+    "prefer_broker_avg_entry_for_broker_positions": (1.0, "1=use broker avg entry for broker-held exit PnL"),
+    "prefer_broker_entry_in_recovery_mode": (1.0, "1=prefer broker entry during recovery mode"),
 }
 
 _BOT_KEY_DESCRIPTIONS: dict[str, str] = {

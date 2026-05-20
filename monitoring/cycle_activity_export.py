@@ -749,8 +749,9 @@ def build_sell_readiness(
                 _exit_decision_price = None
             if _exit_decision_price and _exit_decision_price > 0 and cur > 0:
                 _price_delta_pct = round((cur - _exit_decision_price) / _exit_decision_price * 100.0, 2)
-                if abs(_price_delta_pct) > 3.0:
-                    _price_mismatch_warning = "EXIT_PRICE_POSITION_PRICE_MISMATCH"
+                _cur_warn = float(xr.get("current_price_mismatch_warn_pct", 3.0) or 3.0)
+                if abs(_price_delta_pct) > _cur_warn:
+                    _price_mismatch_warning = rc.EXIT_PRICE_POSITION_PRICE_MISMATCH
 
         _rotation_eval = {}
         if isinstance(d, dict):
@@ -824,17 +825,18 @@ def build_sell_readiness(
         elif blocker:
             _mapped_final_action = f"BLOCKED_{blocker}"
 
-        if _exit_condition_hit and _mapped_final_action not in ("EXIT_FILLED", "ORDER_ALREADY_PENDING") and not has_pending_sell:
-            _pnl_display = f"{upf:.1f}" if upf is not None else "N/A"
-            if not sell_allowed_now:
-                human_reason = (
-                    f"{sym}: {_exit_rule_name} triggered (pnl={_pnl_display}% vs threshold={stock_tp * 100.0:.1f}%), "
-                    f"but {'market is closed' if not market_open_now else 'sell blocked: ' + str(_blocked_reason)}."
-                )
-            else:
-                human_reason = (
-                    f"{sym}: {_exit_rule_name} triggered — sell submitted."
-                )
+        if _exit_condition_hit and _mapped_final_action not in ("EXIT_FILLED", "ORDER_ALREADY_PENDING") and not has_pending_sell and human_reason is None:
+            from monitoring.exit_price_basis import human_reason_for_exit
+            human_reason = human_reason_for_exit(
+                sym,
+                ac,
+                automated_rule=_exit_rule_name or _engine_rule,
+                blocked_reason=_blocked_reason,
+                final_action=_mapped_final_action,
+                market_open=market_open_now,
+                pending_order=has_pending_sell,
+                spread_blocked=bool(_blocked_reason and "SPREAD" in str(_blocked_reason).upper()),
+            )
 
         _pnl_frac_display = round(pnl_frac * 100.0, 2) if pnl_frac is not None else None
 
@@ -1206,8 +1208,20 @@ def compile_position_exit_decisions(
             "exit_allowed": exit_allowed,
             "blocked_reason": blocked_reason,
             "final_action": final_action,
-            "human_reason": _human_blocked(sym, ac, blocked_reason, final_action),
+            "human_reason": "",
         }
+        if exit_condition_hit or final_action not in ("HOLD", "NO_EXIT_SIGNAL", "BROKER_QTY_ZERO"):
+            from monitoring.exit_price_basis import human_reason_for_exit
+
+            rec["human_reason"] = human_reason_for_exit(
+                sym,
+                ac,
+                automated_rule=str(rule_name) if rule_name else None,
+                blocked_reason=str(blocked_reason) if blocked_reason else None,
+                final_action=final_action,
+                market_open=bool(session_open_for_stock_sells) if ac == "stock" else True,
+                spread_blocked=bool(blocked_reason and "SPREAD" in str(blocked_reason).upper()),
+            )
         out_map[k] = rec
 
     for audit in sell_signal_audit or []:
@@ -1663,6 +1677,32 @@ def build_activity_export_payload(
         position_exit_decisions, oo_by_sym,
     )
 
+    _recovery_active = False
+    try:
+        from execution.startup_recovery import evaluate_startup_recovery
+
+        _sr_eval = evaluate_startup_recovery(
+            exit_runtime,
+            current_equity=equity_f,
+            reconciliation_clean=True,
+        )
+        _recovery_active = bool(_sr_eval.get("startup_recovery_status", {}).get("recovery_active"))
+    except Exception:
+        pass
+
+    from monitoring.exit_price_basis import (
+        build_exit_price_basis_health,
+        enrich_exit_decisions_with_broker_basis,
+    )
+
+    position_exit_decisions = enrich_exit_decisions_with_broker_basis(
+        position_exit_decisions,
+        pos_list if isinstance(pos_list, list) else [],
+        exit_runtime,
+        recovery_active=_recovery_active,
+        market_open=market_open,
+    )
+
     for _ped_fs in position_exit_decisions:
         _ped_sym_fs = str(_ped_fs.get("symbol") or "").strip().upper()
         if _ped_sym_fs in _filled_sell_symbols:
@@ -2056,6 +2096,12 @@ def build_activity_export_payload(
         elif _ps:
             _fresh_symbols.append(_ps)
     _exit_eval_fresh = not bool(_stale_symbols) or not market_open
+    payload["exit_price_basis_health"] = build_exit_price_basis_health(
+        position_exit_decisions,
+        exit_runtime,
+        recovery_active=_recovery_active,
+    )
+
     payload["exit_evaluation_health"] = {
         "fresh": _exit_eval_fresh,
         "latest_exit_evaluation_at": exit_snap_created_at,
