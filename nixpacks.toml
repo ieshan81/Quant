@@ -1,5 +1,4 @@
-# Railway Nixpacks — do not override [phases.install].cmds (that skips venv/pip bootstrap).
-# Use NIXPACKS_INSTALL_CMD so the default Python provider creates /opt/venv first.
+# Railway Nixpacks — installs requirements.txt (includes requirements-deploy.txt).
 
 providers = ["python"]
 
@@ -7,7 +6,6 @@ providers = ["python"]
 NIXPACKS_PYTHON_VERSION = "3.11"
 PIP_NO_CACHE_DIR = "1"
 PIP_DISABLE_PIP_VERSION_CHECK = "1"
-NIXPACKS_INSTALL_CMD = "pip install --no-cache-dir -r requirements-deploy.txt"
 
 [phases.setup]
 nixPkgs = ["python311", "gcc"]

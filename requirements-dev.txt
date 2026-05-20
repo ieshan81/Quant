@@ -1,0 +1,7 @@
+# Local development + pytest (includes lean deploy set + tests + optional ML).
+-r requirements-deploy.txt
+
+pytest>=7.4.0
+
+# Optional HuggingFace sentiment (not installed on Railway deploy)
+-r requirements-ml.txt

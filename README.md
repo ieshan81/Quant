@@ -7,7 +7,7 @@ Dual-market autonomous trading system (US equities + crypto). Quant-driven signa
 1. Python 3.11+
 2. `cd quantbot`
 3. `python -m venv .venv` then activate (`.venv\Scripts\activate` on Windows)
-4. `pip install -r requirements.txt`
+4. `pip install -r requirements-dev.txt` (Railway/Nixpacks uses lean `requirements.txt` → `requirements-deploy.txt`)
 5. Copy `.env.example` to `.env` and set keys when ready
 6. `python main.py` — initializes logging and SQLite schema (default DB under `persist/quantbot.sqlite3`; static assets remain in `data/`)
 7. `python main.py --quotes` — Sprint 2: live prices from Alpaca + Binance (console)

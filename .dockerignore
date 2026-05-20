@@ -79,6 +79,7 @@ models/
 !requirements.txt
 !requirements-deploy.txt
 !requirements-ml.txt
+!requirements-dev.txt
 !nixpacks.toml
 !railway.toml
 !railway.json

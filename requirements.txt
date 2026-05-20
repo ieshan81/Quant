@@ -1,28 +1,3 @@
-# Sprint 1+ core
-python-dotenv>=1.0.0
-loguru>=0.7.0
-pytz>=2024.1
-pytest>=7.4.0
-psutil>=5.9.0
-
-# Sprint 8 — monitoring dashboard
-Flask>=3.0.0
-flask-socketio>=5.3.0
-eventlet>=0.35.0
-
-# Sprint 2 — brokers & market data
-alpaca-trade-api>=3.0.0
-ccxt>=4.0.0
-
-# Sprint 3 — signals (pandas/numpy indicators)
-numpy>=1.24.0
-pandas>=2.0.0
-lxml>=5.0.0
-yfinance>=0.2.28
-
-# Sprint 7 — sentiment (Reddit + RSS + FinBERT)
-praw>=7.7.0
-feedparser>=6.0.0
-transformers>=4.36.0
-torch>=2.0.0
-# Sprint 12 — HF social model id (weights via transformers): cardiffnlp/twitter-roberta-base-sentiment
+# Nixpacks installs this file by default on Railway.
+# Local dev / full tests: pip install -r requirements-dev.txt
+-r requirements-deploy.txt
