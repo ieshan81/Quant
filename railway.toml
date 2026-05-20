@@ -1,0 +1,13 @@
+# Railway config-as-code — Nixpacks only (no Dockerfile in this repo).
+# Dashboard builder must match; config in repo overrides dashboard on deploy.
+
+[build]
+builder = "NIXPACKS"
+nixpacksConfigPath = "nixpacks.toml"
+
+[deploy]
+startCommand = "bash start.sh"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

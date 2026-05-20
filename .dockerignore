@@ -1,45 +1,24 @@
-# Railway / Docker build context — keep image lean; Nixpacks also respects this file.
-# Do NOT use bare `data` — that would exclude the Python package at data/*.py.
+# Strict build context for Railway (Nixpacks respects this file).
+# Python package sources live in data/*.py — do not exclude them (see negation below).
 
-# Virtualenvs
+.git
+.github
 .venv
 venv
 env
-ENV
-
-# Python bytecode / caches
 __pycache__
 **/__pycache__
 *.pyc
-*.pyo
-*.pyd
 .pytest_cache
 .mypy_cache
 .ruff_cache
-*.egg-info
-.coverage
-coverage
-htmlcov
+node_modules
 dist
 build
+htmlcov
+coverage
+.coverage
 
-# VCS / CI / IDE
-.git
-.github
-.gitattributes
-.cursor
-.claude
-.code-review-graph
-.obsidian
-.windsurfrules
-.cursorrules
-.opencode.json
-.mcp.json
-
-# Node
-node_modules
-
-# Runtime volumes / mirrors (never bake into image)
 logs
 logs/
 exports
@@ -48,44 +27,33 @@ backups
 backups/
 persist
 persist/
-# Nested duplicate workspace (often contains .venv ~1GB+)
 quantbot
 quantbot/
 
-# Runtime blobs under repo data/ (Python sources data/*.py must remain)
-data/**/*.sqlite
-data/**/*.sqlite3
-data/**/*.db
-data/**/*.db-wal
-data/**/*.db-shm
-data/**/*.log
-data/**/*.json
+# Runtime under data/ (package data/*.py must ship — negation below)
+data/**
+!data/
+!data/**
 !data/**/*.py
 
-# Secrets / env
-.env
-.env.*
-
-# OS / junk
-.DS_Store
-Thumbs.db
-
-# Archives / large artifacts
-*.tar
-*.tar.gz
-*.zip
-*.gz
-*.whl
-
-# DB / logs anywhere in tree
 *.sqlite
 *.sqlite3
 *.db
 *.db-wal
 *.db-shm
 *.log
+.env
+.env.*
 
-# Tests / docs (not needed at runtime)
+.DS_Store
+Thumbs.db
+*.tar
+*.tar.gz
+*.zip
+*.gz
+*.whl
+
+# Dev / docs / tests (not needed in production image)
 tests
 tests/
 docs
@@ -96,11 +64,13 @@ tools
 tools/
 backtesting
 backtesting/
-*.md
-!README.md
-
-# HuggingFace / model caches (if present locally)
+.cursor
+.claude
+.code-review-graph
+.obsidian
 .cache
 **/.cache
 models
 models/
+*.md
+!README.md

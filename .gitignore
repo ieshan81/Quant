@@ -21,18 +21,12 @@ htmlcov/
 dist/
 build/
 
-# Runtime data / logs / exports (SQLite lives here locally; Railway uses mounted persist/)
+# Runtime (Railway volume: persist/ — never commit DBs/logs)
 logs/
 exports/
 backups/
 persist/
-data/*.sqlite
-data/*.sqlite3
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/*.log
-data/*.json
+data/
 !data/**/*.py
 *.sqlite
 *.sqlite3
@@ -41,7 +35,7 @@ data/*.json
 *.db-shm
 *.log
 
-# Nested duplicate workspace (venv + DBs — never commit)
+# Nested duplicate workspace (~1GB .venv if present)
 quantbot/
 
 # Node / OS
