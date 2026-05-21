@@ -22,10 +22,15 @@ _OFFSET = 0
 
 
 def momo_chat_enabled() -> bool:
+    try:
+        from core.app_config_registry import get_bool
+        enabled = get_bool("telegram_momo_chat_enabled")
+    except Exception:
+        enabled = os.environ.get("TELEGRAM_MOMO_CHAT_ENABLED", "0").strip() == "1"
     return (
-        os.environ.get("TELEGRAM_MOMO_CHAT_ENABLED", "0").strip() == "1"
+        enabled
         and bool(os.environ.get("TELEGRAM_BOT_TOKEN", config.TELEGRAM_BOT_TOKEN or "").strip())
-        and bool(os.environ.get("TELEGRAM_CHAT_ID", str(config.TELEGRAM_CHAT_ID or "")).strip())
+        and bool(allowed_chat_id())
     )
 
 
@@ -38,11 +43,13 @@ def allowed_chat_id() -> str:
 
 def build_telegram_momo_status() -> dict[str, Any]:
     token = bool(os.environ.get("TELEGRAM_BOT_TOKEN", config.TELEGRAM_BOT_TOKEN or "").strip())
-    chat = bool(allowed_chat_id())
+    chat = bool(os.environ.get("TELEGRAM_CHAT_ID", str(config.TELEGRAM_CHAT_ID or "")).strip())
+    allowed = bool(allowed_chat_id())
     return {
         "enabled": momo_chat_enabled(),
         "token_configured": token,
         "chat_id_configured": chat,
+        "allowed_chat_id_configured": allowed,
         "polling_active": _POLL_THREAD is not None and _POLL_THREAD.is_alive(),
         "last_message_at": _LAST_MESSAGE_AT,
         "last_response_at": _LAST_RESPONSE_AT,

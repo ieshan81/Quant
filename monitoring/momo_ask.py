@@ -1,0 +1,156 @@
+"""POST /api/momo/ask — operator Q&A from live mission data only."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from monitoring.momo import build_momo_authority_status, build_momo_status
+
+
+def answer_momo_question(
+    question: str,
+    *,
+    include: dict[str, bool] | None = None,
+) -> dict[str, Any]:
+    include = include or {}
+    q = (question or "").strip()
+    if not q:
+        return {"ok": False, "error": "question required", "answer": ""}
+
+    ctx: dict[str, Any] = {"question": q}
+    missing: list[str] = []
+
+    if include.get("mission_control", True):
+        try:
+            from monitoring.mission_control_api import build_mission_control_summary
+            ctx["mission_control"] = build_mission_control_summary()
+        except Exception as exc:
+            missing.append(f"mission_control: {exc}")
+
+    if include.get("broker_diagnostic", True):
+        try:
+            from monitoring.broker_diagnostic import build_broker_diagnostic
+            ctx["broker_diagnostic"] = build_broker_diagnostic()
+        except Exception as exc:
+            missing.append(f"broker_diagnostic: {exc}")
+
+    if include.get("activity_export", True):
+        try:
+            from monitoring.cycle_activity_export import build_activity_export_payload
+            ctx["activity_export"] = build_activity_export_payload(limit=40)
+        except Exception as exc:
+            missing.append(f"activity_export: {exc}")
+
+    if include.get("ops_logs", False):
+        try:
+            from monitoring.ops_log_store import fetch_ops_logs
+            ctx["ops_logs"] = fetch_ops_logs(limit=15)
+        except Exception as exc:
+            missing.append(f"ops_logs: {exc}")
+
+    momo_st = build_momo_status()
+    auth = build_momo_authority_status()
+
+    # Deterministic path first (no hallucinated balances)
+    answer = _deterministic_answer(q, ctx, missing)
+    provider = "momo_rules"
+
+    if include.get("momo_memory", True):
+        try:
+            from monitoring.ai_observer import handle_chat
+            gemini = handle_chat(
+                q,
+                include_activity_export=bool(include.get("activity_export")),
+                include_broker_diagnostic=bool(include.get("broker_diagnostic")),
+                include_memory=True,
+            )
+            extra = str(gemini.get("answer") or "").strip()
+            generic = (
+                not extra
+                or "activity export included" in extra.lower()
+                or "enable 'include activity export'" in extra.lower()
+            )
+            if gemini.get("ok") and extra and not generic:
+                answer = answer + "\n\n" + extra
+                provider = str(gemini.get("provider") or provider)
+        except Exception:
+            pass
+
+    if "config" in q.lower() and "change" in q.lower():
+        answer += "\n\nConfig changes require operator approval (Momo cannot apply config)."
+
+    return {
+        "ok": True,
+        "assistant_name": "Momo",
+        "provider": provider,
+        "answer": answer,
+        "missing_data": missing,
+        "momo_status": momo_st,
+        "momo_authority_status": auth,
+        "can_submit_orders": False,
+        "can_update_config": False,
+        "allowed_to_execute": False,
+    }
+
+
+def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]) -> str:
+    ql = question.lower()
+    mc = ctx.get("mission_control") or {}
+    ac = mc.get("account") or {}
+    alloc = (mc.get("capital_protection") or {}).get("allocator") or {}
+    trans = mc.get("broker_account_transition_status") or {}
+    parts: list[str] = []
+
+    if missing:
+        parts.append("Missing data: " + "; ".join(missing[:5]))
+
+    if "buying power" in ql or "bp" in ql:
+        bp = ac.get("buying_power")
+        why = (mc.get("capital_protection") or {}).get("why_buying_power_low") or alloc.get("why_buying_power_low")
+        parts.append(
+            f"Buying power is ${bp if bp is not None else 'unknown'}. "
+            f"{why or 'No allocator explanation in payload.'}"
+        )
+
+    if "why" in ql and "trade" in ql:
+        act = ctx.get("activity_export") or {}
+        parts.append(str(act.get("why_no_trade") or "why_no_trade not in activity export."))
+
+    if "why" in ql and "sell" in ql:
+        act = ctx.get("activity_export") or {}
+        parts.append(str(act.get("why_no_sell") or "why_no_sell not in activity export."))
+
+    if "position" in ql:
+        pos = mc.get("positions") or {}
+        n = pos.get("count", len(pos.get("open") or []))
+        parts.append(f"Open positions (runtime): {n}.")
+
+    if "crypto" in ql and "tonight" in ql:
+        cr = mc.get("crypto_night") or {}
+        parts.append(
+            f"Crypto push possible: {cr.get('push_possible')}. Blocked: {cr.get('blocked_reason') or 'none stated'}."
+        )
+
+    if "reset" in ql and "runtime" in ql:
+        parts.append(trans.get("headline") or "Transition status unavailable.")
+        if trans.get("detection_reasons"):
+            parts.append("Reasons: " + ", ".join(trans["detection_reasons"]))
+
+    if "today" in ql or "happened" in ql:
+        ms = mc.get("momo_summary") or {}
+        saw = ms.get("saw") or []
+        att = ms.get("attention") or []
+        if saw:
+            parts.append("Saw: " + "; ".join(saw[:5]))
+        if att:
+            parts.append("Attention: " + "; ".join(att[:5]))
+
+    if not parts:
+        eq = ac.get("equity")
+        mode = ac.get("mode", "paper")
+        parts.append(
+            f"Mode {mode}. Equity ${eq if eq is not None else 'unknown'}. "
+            "Ask a specific question (buying power, positions, crypto tonight, reset)."
+        )
+
+    return "\n".join(parts)

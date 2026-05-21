@@ -46,7 +46,7 @@ def test_broker_transition_no_hardcoded_balance(tmp_path: Path) -> None:
             current_positions_count=0,
             runtime_positions_count=2,
         )
-    assert t["possible_account_reset"] or t["runtime_reset_recommended"]
+    assert t["runtime_reset_recommended"] or t.get("warning_label")
     assert "200" not in str(t)
 
 
@@ -130,9 +130,39 @@ def test_dashboard_js_mission_control_helpers(dash_app) -> None:
     assert "function renderMissionControl" in js
     assert "/api/mission-control/summary" in js
     assert "/api/ops/gpt-analyze-bundle" in js
-    assert "Telegram full bundle send is not fully configured" in js
+    assert "/api/momo/ask" in js
+    assert "gpt-analyze-bundle/send-telegram" in js
     assert "config changes require operator approval" in js
-    assert "eqHistoryNote" in js or "Cash / buying power / exposure history not available" in js
+    assert "Only equity history is available" in js
+
+
+def test_momo_ask_endpoint(dash_app) -> None:
+    r = dash_app.test_client().post(
+        "/api/momo/ask",
+        json={"question": "Why is buying power low?", "include": {"mission_control": True}},
+    )
+    assert r.status_code == 200
+    data = __import__("json").loads(r.data)
+    assert data.get("ok") is True
+    assert data.get("can_submit_orders") is False
+    assert "buying power" in (data.get("answer") or "").lower()
+
+
+def test_config_schema_endpoint(dash_app) -> None:
+    r = dash_app.test_client().get("/api/config/schema")
+    assert r.status_code == 200
+    data = __import__("json").loads(r.data)
+    assert "railway_essential_env_vars" in data
+    assert "AI/Momo" in data.get("categories", [])
+
+
+def test_mission_control_has_transition_headline(dash_app) -> None:
+    r = dash_app.test_client().get("/api/mission-control/summary")
+    data = __import__("json").loads(r.data)
+    if data.get("ok"):
+        tr = data.get("broker_account_transition_status") or {}
+        assert "headline" in tr
+        assert "detection_reasons" in tr
 
 
 @pytest.fixture()

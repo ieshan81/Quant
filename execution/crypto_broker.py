@@ -18,8 +18,12 @@ def _spot_exchange_options(exchange_id: str) -> dict[str, Any]:
 
 
 def get_crypto_exchange() -> ccxt.Exchange:
-    """Primary spot exchange for quotes (default: binance). Override with CRYPTO_CCXT_EXCHANGE in .env."""
-    ex_id = config.CRYPTO_CCXT_EXCHANGE or "binance"
+    """Primary spot exchange for quotes (default: binance). App config or CRYPTO_CCXT_EXCHANGE env."""
+    try:
+        from core.app_config_registry import get_value
+        ex_id = str(get_value("crypto_ccxt_exchange") or "binance")
+    except Exception:
+        ex_id = config.CRYPTO_CCXT_EXCHANGE or "binance"
     if not hasattr(ccxt, ex_id):
         ex_id = "binance"
     klass = getattr(ccxt, ex_id)

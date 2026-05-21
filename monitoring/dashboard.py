@@ -719,11 +719,31 @@ _PAGE = """<!DOCTYPE html>
     #volEditor:disabled { opacity: 0.55; cursor: not-allowed; }
     #volFileMeta { font-size: 11px; color: var(--muted); margin: 0; }
     #volStatus { font-size: 12px; color: var(--muted); margin: 0; }
+    button.btn, .btn {
+      border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface); color: var(--text);
+      transition: border-color 0.15s, background 0.15s, opacity 0.15s;
+    }
+    button.btn:hover:not(:disabled), .btn:hover:not(:disabled) { border-color: var(--accent); }
+    button.btn:disabled, .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.btn.primary, .btn.primary { background: rgba(56,189,248,0.18); border-color: var(--accent); color: #e0f2fe; }
+    button.btn.secondary, .btn.secondary { background: var(--card); }
+    button.btn.warning, .btn.warning { background: rgba(245,158,11,0.12); border-color: #f59e0b; color: #fcd34d; }
+    button.btn.danger, .btn.danger { background: rgba(248,113,113,0.12); border-color: var(--bad); color: #fecaca; }
+    .mc-top-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .mc-top-metrics .metric { text-align: center; }
+    .mc-top-metrics .val { font-size: 1.05rem; }
     .mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.75rem; }
-    .mc-card { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem; }
-    .mc-card h3 { margin: 0 0 0.5rem; font-size: 0.9rem; color: var(--accent); }
-    .mc-card .mc-val { font-size: 1.1rem; font-weight: 600; }
-    .mc-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    .mc-card { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 0.85rem; }
+    .mc-card h3 { margin: 0 0 0.35rem; font-size: 0.9rem; color: var(--accent); }
+    .mc-card .mc-ts { font-size: 10px; color: var(--muted); margin-bottom: 0.45rem; }
+    .mc-card .mc-body { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+    .mc-card.mc-ok { border-color: rgba(52,211,153,0.35); }
+    .mc-card.mc-warn { border-color: rgba(245,158,11,0.45); }
+    .mc-card.mc-bad { border-color: rgba(248,113,113,0.45); }
+    .mc-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    .mc-momo-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+    .mc-quick-btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
     .danger-zone { border: 1px solid rgba(248,113,113,0.45); border-radius: 8px; padding: 0.75rem; margin-top: 0.75rem; }
     .danger-zone h3 { color: #fecaca; margin: 0 0 0.5rem; font-size: 0.85rem; }
     .bt-sub:first-child { margin-top: 0; }
@@ -812,31 +832,61 @@ _PAGE = """<!DOCTYPE html>
 
   <main>
     <section id="panel-mission" class="tab-panel active">
+      <div class="mc-top-metrics grid-metrics" id="mcTopMetrics">
+        <div class="metric"><div class="lab">Equity</div><div class="val mono" id="mcTopEq">—</div></div>
+        <div class="metric"><div class="lab">Cash</div><div class="val mono" id="mcTopCash">—</div></div>
+        <div class="metric"><div class="lab">Buying Power</div><div class="val mono" id="mcTopBp">—</div></div>
+        <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mcTopMode">—</div></div>
+        <div class="metric"><div class="lab">Mission</div><div class="val mono" id="mcTopMission">—</div></div>
+        <div class="metric"><div class="lab">Crypto push</div><div class="val mono" id="mcTopCrypto">—</div></div>
+      </div>
       <div class="mc-actions">
-        <button type="button" id="btnGPTAnalyzeLogs" class="tab-btn" style="font-size:12px;">GPT Analyze Logs</button>
-        <button type="button" id="btnCopyGPTAnalyzeBundle" class="tab-btn" style="font-size:12px;">Copy GPT Bundle</button>
-        <button type="button" id="btnDownloadGPTAnalyzeBundle" class="tab-btn" style="font-size:12px;">Download GPT Bundle</button>
-        <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="tab-btn" style="font-size:12px;">Send Bundle to Telegram</button>
-        <button type="button" id="btnAskMomoWhatHappened" class="tab-btn" style="font-size:12px;">Ask Momo What Happened</button>
+        <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">GPT Analyze Logs</button>
+        <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy GPT Bundle</button>
+        <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT Bundle</button>
+        <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Bundle to Telegram</button>
+        <button type="button" id="btnExportRailwayEnv" class="btn secondary">Export Railway Env Template</button>
+        <button type="button" id="btnMcRefresh" class="btn secondary">Refresh</button>
       </div>
-      <p id="mcStatus" class="empty-hint" style="margin:0.5rem 0;"></p>
+      <p id="mcStatus" class="empty-hint" style="margin:0.35rem 0;"></p>
+      <pre id="mcGptPreview" class="mono sec" style="display:none;max-height:120px;"></pre>
       <div class="mc-grid" id="mcGrid">
-        <div class="mc-card" id="mcAccount"><h3>Account</h3><div class="mc-body mono">Loading…</div></div>
-        <div class="mc-card" id="mcMission"><h3>Mission</h3><div class="mc-body mono">Loading…</div></div>
-        <div class="mc-card" id="mcCapital"><h3>Capital Protection</h3><div class="mc-body mono">Loading…</div></div>
-        <div class="mc-card" id="mcPositions"><h3>Positions</h3><div class="mc-body mono">Loading…</div></div>
-        <div class="mc-card" id="mcCrypto"><h3>Crypto Night</h3><div class="mc-body mono">Loading…</div></div>
-        <div class="mc-card" id="mcMomo"><h3>Momo Summary</h3><div class="mc-body mono">Loading…</div></div>
-        <div class="mc-card" id="mcOps"><h3>Ops Health</h3><div class="mc-body mono">Loading…</div></div>
+        <div class="mc-card" id="mcAccount"><h3>Account</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcMission"><h3>Mission</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcCapital"><h3>Capital Protection</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcBroker"><h3>Broker / Runtime</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcPositions"><h3>Positions</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcCrypto"><h3>Crypto Night</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcMomo"><h3>Momo Summary</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcOps"><h3>Ops Health</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
       </div>
+      <div class="mc-momo-box">
+        <h3 style="margin:0 0 8px;font-size:0.95rem;">Ask Momo</h3>
+        <textarea id="mcMomoInput" rows="2" placeholder="Ask about buying power, positions, crypto tonight, runtime reset…" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:13px;"></textarea>
+        <div class="mc-quick-btns">
+          <button type="button" class="btn secondary mc-quick" data-q="Why no trade?">Why no trade?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Why no sell?">Why no sell?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Why is buying power low?">Why is buying power low?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Explain my positions">Explain my positions</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Can crypto run tonight?">Can crypto run tonight?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Should I reset runtime?">Should I reset runtime?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="What happened today?">What happened today?</button>
+        </div>
+        <button type="button" id="btnMcAskMomo" class="btn primary">Ask Momo</button>
+        <div id="mcMomoAnswer" class="mc-body" style="margin-top:10px;min-height:2rem;">—</div>
+      </div>
+      <details class="card" style="margin-top:8px;">
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Developer diagnostics (JSON)</summary>
+        <pre id="mcDevJson" class="mono sec" style="max-height:200px;">{}</pre>
+      </details>
       <div class="danger-zone">
         <h3>Danger zone — runtime reset</h3>
         <p class="empty-hint" style="margin:0 0 8px;">Preserves Momo memory. Clears stale runtime cache. Type RESET RUNTIME to confirm.</p>
         <div style="display:flex;flex-wrap:wrap;gap:8px;">
-          <button type="button" id="btnMcBackup" class="tab-btn" style="font-size:12px;">Backup DBs Now</button>
-          <button type="button" id="btnMcResetRuntime" class="tab-btn" style="font-size:12px;">Reset Runtime State Only</button>
-          <button type="button" id="btnMcResetRuntimeLogs" class="tab-btn" style="font-size:12px;">Reset Runtime + Cycle Logs</button>
-          <button type="button" id="btnMcResetMomoMemory" class="tab-btn" style="font-size:12px;opacity:0.7;">Reset Momo Memory (destructive)</button>
+          <button type="button" id="btnMcBackup" class="btn secondary">Backup DBs Now</button>
+          <button type="button" id="btnMcResetRuntime" class="btn warning">Reset Runtime State Only</button>
+          <button type="button" id="btnMcResetRuntimeLogs" class="btn warning">Reset Runtime + Cycle Logs</button>
+          <button type="button" id="btnMcResetMomoMemory" class="btn danger">Reset Momo Memory (destructive)</button>
         </div>
         <p id="mcResetStatus" class="mono" style="font-size:11px;margin-top:8px;color:var(--muted);"></p>
       </div>
@@ -2070,6 +2120,46 @@ def create_app() -> Flask:
     def api_mission_control_summary() -> Response:
         from monitoring.mission_control_api import build_mission_control_summary
         return Response(json.dumps(build_mission_control_summary(), default=str), mimetype="application/json")
+
+    @app.get("/api/config/schema")
+    def api_config_schema() -> Response:
+        from core.app_config_registry import build_config_schema
+        return Response(json.dumps(build_config_schema(), default=str), mimetype="application/json")
+
+    @app.get("/api/config/summary")
+    def api_config_summary() -> Response:
+        from core.app_config_registry import build_config_summary
+        return Response(json.dumps(build_config_summary(), default=str), mimetype="application/json")
+
+    @app.post("/api/config/update")
+    def api_config_update() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        updates = body.get("updates") or ([body] if body.get("key") else [])
+        from core.app_config_registry import apply_config_updates
+        return jsonify(apply_config_updates(updates))
+
+    @app.get("/api/config/railway-env-template")
+    def api_config_railway_template() -> Response:
+        from core.app_config_registry import export_railway_env_template
+        return Response(export_railway_env_template(), mimetype="text/plain")
+
+    @app.post("/api/momo/ask")
+    def api_momo_ask() -> Any:
+        body = request.get_json(force=True, silent=True) or {}
+        from monitoring.momo_ask import answer_momo_question
+        return jsonify(answer_momo_question(
+            str(body.get("question", "")),
+            include=body.get("include") if isinstance(body.get("include"), dict) else None,
+        ))
+
+    @app.post("/api/ops/gpt-analyze-bundle/send-telegram")
+    def api_gpt_bundle_send_telegram() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring.gpt_analyze_telegram import send_gpt_bundle_to_telegram
+        return jsonify(send_gpt_bundle_to_telegram())
 
     @app.get("/api/ops/gpt-analyze-bundle")
     def api_gpt_analyze_bundle() -> Response:

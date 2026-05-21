@@ -113,6 +113,7 @@ CRYPTO_QUOTE_SYMBOLS = _comma_separated_symbols(
     "CRYPTO_QUOTE_SYMBOLS", "BTC/USD,ETH/USD,SOL/USD"
 )
 CRYPTO_EXCHANGE = "alpaca"
+CRYPTO_CCXT_EXCHANGE = os.getenv("CRYPTO_CCXT_EXCHANGE", "binance").strip() or "binance"
 
 # Alpaca
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")

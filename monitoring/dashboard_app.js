@@ -889,25 +889,58 @@
     document.querySelectorAll(".eq-range-btn").forEach(function (b) {
       b.classList.toggle("eq-range-active", b.getAttribute("data-range") === range);
     });
-    fetch("/api/equity/history?range=" + encodeURIComponent(range), { headers: _authHeaders() })
-      .then(function (r) { return r.json(); })
+    if (equityChart) {
+      equityChart.destroy();
+      equityChart = null;
+    }
+    var eqHint = document.getElementById("eqEmptyHint");
+    if (eqHint) {
+      eqHint.style.display = "block";
+      eqHint.textContent = "Loading " + range + "…";
+    }
+    fetch("/api/equity/history?range=" + encodeURIComponent(range), { headers: _authHeaders(), cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("/api/equity/history HTTP " + r.status);
+        return r.json();
+      })
       .then(function (d) {
         var series = d.series || [];
+        var meta = document.getElementById("eqRangeChange");
+        if (meta) {
+          var start = series.length ? _fmtEqLabel(series[0].snapshot_at || series[0].ts || series[0].date) : "—";
+          var end = series.length ? _fmtEqLabel(series[series.length - 1].snapshot_at || series[series.length - 1].ts || series[series.length - 1].date) : "—";
+          meta.textContent = range + " · " + (d.count || series.length) + " pts · " + start + " → " + end;
+        }
+        if (d.warning && eqHint) {
+          eqHint.style.display = "block";
+          eqHint.textContent = d.warning.indexOf("Not enough") >= 0 ? d.warning : "Not enough history for this range yet.";
+        } else if (!series.length && eqHint) {
+          eqHint.style.display = "block";
+          eqHint.textContent = "Not enough history for " + range + " yet.";
+        } else if (eqHint) {
+          eqHint.style.display = "none";
+        }
         renderEquityChart({ equitySeries: series });
         var noteEl = document.getElementById("eqHistoryNote");
         if (noteEl) {
           var hasCash = series.some(function (p) { return p.cash != null || p.cash_total != null; });
           var hasBp = series.some(function (p) { return p.buying_power != null; });
-          if (!hasCash && !hasBp) {
+          var hasExp = series.some(function (p) { return p.stock_exposure != null || p.crypto_exposure != null; });
+          if (!hasCash && !hasBp && !hasExp) {
             noteEl.style.display = "block";
-            noteEl.textContent = "Showing equity only for " + range + ". Cash / buying power / exposure history not available yet.";
+            noteEl.textContent = "Only equity history is available. Cash/BP/exposure history will appear after snapshots accumulate.";
           } else {
             noteEl.style.display = "none";
             noteEl.textContent = "";
           }
         }
       })
-      .catch(function () {});
+      .catch(function (e) {
+        if (eqHint) {
+          eqHint.style.display = "block";
+          eqHint.textContent = safeText(e && e.message, "Equity history failed");
+        }
+      });
   }
 
   function wireEquityRangeButtons() {
@@ -2481,106 +2514,180 @@
     }).catch(function () {});
   }
 
+  var _mcCache = null;
+  var _mcPollTimer = null;
+
+  function _mcTopline(d) {
+    var t = d.topline || {};
+    var ac = d.account || {};
+    var elEq = document.getElementById("mcTopEq");
+    var elCash = document.getElementById("mcTopCash");
+    var elBp = document.getElementById("mcTopBp");
+    var elMode = document.getElementById("mcTopMode");
+    var elMis = document.getElementById("mcTopMission");
+    var elCr = document.getElementById("mcTopCrypto");
+    if (elEq) elEq.textContent = safeFmtMoney(t.equity != null ? t.equity : ac.equity);
+    if (elCash) elCash.textContent = safeFmtMoney(t.cash != null ? t.cash : ac.cash);
+    if (elBp) elBp.textContent = safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power);
+    if (elMode) elMode.textContent = safeText(t.mode || ac.mode, "paper");
+    if (elMis) elMis.textContent = safeText(t.mission_mode || (d.mission || {}).mission_mode, "—");
+    if (elCr) elCr.textContent = safeText(t.crypto_push_status, "—");
+  }
+
   function renderMissionControl(d) {
+    _mcCache = d;
+    var ts = new Date().toLocaleString();
+    _mcTopline(d);
+    var dev = document.getElementById("mcDevJson");
+    if (dev) {
+      try {
+        dev.textContent = JSON.stringify({
+          broker_account_transition_status: d.broker_account_transition_status,
+          topline: d.topline
+        }, null, 2);
+      } catch (eJ) {
+        dev.textContent = "{}";
+      }
+    }
     var cards = [
       {
         id: "mcAccount",
+        tone: "ok",
         render: function () {
           var ac = d.account || {};
           return (
-            "Equity: " + safeFmtMoney(ac.equity) + "\nCash: " + safeFmtMoney(ac.cash) +
-            "\nBP: " + safeFmtMoney(ac.buying_power) + "\nMode: " + safeText(ac.mode, "paper") +
-            (ac.live_enabled ? " (live flag set)" : " (paper)")
+            "Account is in " + safeText(ac.mode, "paper") + " mode with equity " + safeFmtMoney(ac.equity) +
+            ", cash " + safeFmtMoney(ac.cash) + ", and buying power " + safeFmtMoney(ac.buying_power) + "."
           );
         }
       },
       {
         id: "mcMission",
+        tone: "",
         render: function () {
           var mi = d.mission || {};
+          var mode = safeText(mi.mission_mode, "normal");
+          var sess = safeText(mi.session_mode, "—");
           var rec = mi.recovery_status;
-          var recTxt = "—";
-          try {
-            recTxt = rec && typeof rec === "object" ? JSON.stringify(rec) : safeText(rec, "—");
-          } catch (eR) {
-            recTxt = "—";
+          var recLine = "Recovery is not active.";
+          if (rec && typeof rec === "object" && (rec.active || rec.block_new_buys)) {
+            recLine = "Recovery is active — new buys may be blocked.";
           }
-          return (
-            "Mode: " + safeText(mi.mission_mode, "—") + "\nSession: " + safeText(mi.session_mode, "—") +
-            "\nRecovery: " + recTxt
-          );
+          return "Mission mode is " + mode + ". Session: " + sess + ". " + recLine;
         }
       },
       {
         id: "mcCapital",
+        tone: function () {
+          var cp = d.capital_protection || {};
+          var bp = (d.account || {}).buying_power;
+          if (bp != null && Number(bp) <= 0.01) return "warn";
+          return "";
+        },
         render: function () {
           var cp = d.capital_protection || {};
+          var human = cp.human_summary || cp.why_buying_power_low;
+          if (human) return String(human);
           var pr = cp.dynamic_profile || {};
-          var alloc = cp.allocator || {};
           return (
-            "Profile: " + safeText(pr.profile, "—") + "\nReserve: " + safeFmtPct(pr.hard_cash_reserve_pct) +
-            "\nAvail stock: " + safeFmtMoney(pr.available_for_stock) +
-            "\nWhy BP low: " + safeText(cp.why_buying_power_low || alloc.why_buying_power_low, "—")
+            "Capital profile " + safeText(pr.profile, "—") + ". Reserve " + safeFmtPct(pr.hard_cash_reserve_pct) +
+            ". Available for new stock trades: " + safeFmtMoney(pr.available_for_stock) + "."
           );
         }
       },
       {
+        id: "mcBroker",
+        tone: function () {
+          var tr = d.broker_account_transition_status || {};
+          return tr.runtime_reset_recommended ? "warn" : (tr.aligned_with_broker ? "ok" : "");
+        },
+        render: function () {
+          var tr = d.broker_account_transition_status || {};
+          var lines = [safeText(tr.headline, "—")];
+          if (tr.detection_reasons && tr.detection_reasons.length) {
+            lines.push("Reasons: " + tr.detection_reasons.join(", "));
+          }
+          lines.push(
+            "Confidence: " + safeText(tr.confidence, "low") +
+            ". Broker positions: " + safeText(tr.broker_positions_count, "—") +
+            ", runtime: " + safeText(tr.runtime_positions_count, "—") +
+            ", mismatches: " + safeText(tr.broker_local_mismatch_count, "0") + "."
+          );
+          if (tr.runtime_reset_recommended) {
+            lines.push("Runtime reset is recommended if issues persist after reviewing positions.");
+          }
+          return lines.join("\n");
+        }
+      },
+      {
         id: "mcPositions",
+        tone: "",
         render: function () {
           var pos = d.positions || {};
           var n = pos.count != null ? pos.count : (pos.open ? pos.open.length : 0);
-          return "Open positions: " + String(n);
+          return n === 0
+            ? "No open positions in runtime state."
+            : "You have " + String(n) + " open position(s) in runtime state.";
         }
       },
       {
         id: "mcCrypto",
+        tone: "",
         render: function () {
           var cr = d.crypto_night || {};
           var pol = cr.crypto_execution_policy || {};
+          var push = cr.push_possible === true ? "may run" : (cr.push_possible === false ? "is blocked" : "status unknown");
           return (
-            "Push possible: " + safeText(cr.push_possible, "—") +
-            "\nMomo in loop: " + (pol.ai_in_execution_loop === true ? "true" : "false") +
-            "\nBlocked: " + safeText(cr.blocked_reason || pol.blocked_reason, "—")
+            "Crypto night push " + push + ". " +
+            safeText(cr.blocked_reason || pol.blocked_reason, "No block reason listed.") +
+            " Execution uses deterministic math only (Momo not in the loop)."
           );
         }
       },
       {
         id: "mcMomo",
+        tone: "",
         render: function () {
           var ms = d.momo_summary || {};
-          var saw = Array.isArray(ms.saw) ? ms.saw.join("; ") : safeText(ms.saw, "");
-          var att = Array.isArray(ms.attention) ? ms.attention.join("; ") : safeText(ms.attention, "");
-          var learned = Array.isArray(ms.learned) ? ms.learned.join("; ") : safeText(ms.learned, "");
-          return (
-            "Saw: " + (saw || "—") + "\nLearned: " + (learned || "—") +
-            "\nAttention: " + (att || "—")
-          );
+          var saw = Array.isArray(ms.saw) ? ms.saw.join(" ") : "";
+          var att = Array.isArray(ms.attention) ? ms.attention.join(" ") : "";
+          var learned = Array.isArray(ms.learned) ? ms.learned.join(" ") : "";
+          var parts = [];
+          if (saw) parts.push("Recently: " + saw);
+          if (learned) parts.push("Learned: " + learned);
+          if (att) parts.push("Attention: " + att);
+          return parts.length ? parts.join("\n") : "Momo has no new summary items this cycle.";
         }
       },
       {
         id: "mcOps",
+        tone: "",
         render: function () {
           var oh = d.ops_health || {};
           return (
-            "CPU: " + (oh.process_cpu_pct != null ? safeFmtPct(oh.process_cpu_pct) : "—") +
-            "\nMem: " + (oh.system_memory_pct != null ? safeFmtPct(oh.system_memory_pct) : "—") +
-            "\nDisk: " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—")
+            "CPU " + (oh.process_cpu_pct != null ? safeFmtPct(oh.process_cpu_pct) : "—") +
+            ", memory " + (oh.system_memory_pct != null ? safeFmtPct(oh.system_memory_pct) : "—") +
+            ", disk " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—") + "."
           );
         }
       }
     ];
     cards.forEach(function (c) {
       try {
-        setMcCard(c.id, c.render());
+        var tone = typeof c.tone === "function" ? c.tone() : c.tone;
+        setMcCard(c.id, c.render(), ts, tone);
       } catch (cardErr) {
-        setMcCard(c.id, "Card error: " + safeText(cardErr && cardErr.message, "see console"));
+        setMcCard(c.id, "Card error: " + safeText(cardErr && cardErr.message, "see console"), ts, "bad");
       }
     });
   }
 
   function loadMissionTab() {
     var st = document.getElementById("mcStatus");
-    if (st) st.textContent = "Loading /api/mission-control/summary…";
+    if (_mcCache) {
+      try { renderMissionControl(_mcCache); } catch (e0) {}
+    }
+    if (st && !_mcCache) st.textContent = "Loading /api/mission-control/summary…";
     fetch("/api/mission-control/summary", { cache: "no-store" })
       .then(function (r) {
         if (!r.ok) {
@@ -2603,7 +2710,7 @@
           if (d) renderMissionControl(d);
           return;
         }
-        if (st) st.textContent = "Updated " + new Date().toLocaleString() + " · GET /api/mission-control/summary";
+        if (st) st.textContent = "Updated " + new Date().toLocaleString();
         try {
           renderMissionControl(d);
         } catch (renderErr) {
@@ -2612,17 +2719,68 @@
       })
       .catch(function (e) {
         if (st) st.textContent = safeText(e && e.message, String(e));
-        ["mcAccount", "mcMission", "mcCapital", "mcPositions", "mcCrypto", "mcMomo", "mcOps"].forEach(function (id) {
+        ["mcAccount", "mcMission", "mcCapital", "mcBroker", "mcPositions", "mcCrypto", "mcMomo", "mcOps"].forEach(function (id) {
           setMcCard(id, "—");
         });
       });
   }
 
-  function setMcCard(id, text) {
+  function setMcCard(id, text, ts, tone) {
     var el = document.getElementById(id);
     if (!el) return;
+    el.classList.remove("mc-ok", "mc-warn", "mc-bad");
+    if (tone === "ok") el.classList.add("mc-ok");
+    if (tone === "warn") el.classList.add("mc-warn");
+    if (tone === "bad") el.classList.add("mc-bad");
+    var tsEl = el.querySelector(".mc-ts");
+    if (tsEl && ts) tsEl.textContent = "Updated " + ts;
     var body = el.querySelector(".mc-body");
     if (body) body.textContent = text;
+  }
+
+  function wireMcMomoAsk() {
+    var askBtn = document.getElementById("btnMcAskMomo");
+    var input = document.getElementById("mcMomoInput");
+    var out = document.getElementById("mcMomoAnswer");
+    function sendQ(q) {
+      if (!q) return;
+      if (out) out.textContent = "Asking Momo…";
+      fetch("/api/momo/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question: q,
+          include: {
+            mission_control: true,
+            broker_diagnostic: true,
+            activity_export: true,
+            capital_allocator: true,
+            momo_memory: true,
+            ops_logs: false
+          }
+        })
+      })
+        .then(function (r) {
+          if (!r.ok) throw new Error("/api/momo/ask HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (d) {
+          if (out) out.textContent = d.answer || safeText(d.error, "No answer");
+        })
+        .catch(function (e) {
+          if (out) out.textContent = safeText(e && e.message, String(e));
+        });
+    }
+    if (askBtn) askBtn.addEventListener("click", function () {
+      sendQ(input ? input.value.trim() : "");
+    });
+    document.querySelectorAll(".mc-quick").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var q = btn.getAttribute("data-q") || "";
+        if (input) input.value = q;
+        sendQ(q);
+      });
+    });
   }
 
   function wireMissionActions() {
@@ -2688,12 +2846,47 @@
     var dl = document.getElementById("btnDownloadGPTAnalyzeBundle");
     var tg = document.getElementById("btnSendGPTAnalyzeBundleTelegram");
     var main = document.getElementById("btnGPTAnalyzeLogs");
+    var prev = document.getElementById("mcGptPreview");
+    var rail = document.getElementById("btnExportRailwayEnv");
+    var refresh = document.getElementById("btnMcRefresh");
+    if (refresh) refresh.addEventListener("click", loadMissionTab);
+    if (rail) rail.addEventListener("click", function () {
+      fetch("/api/config/railway-env-template", { cache: "no-store" })
+        .then(function (r) { return r.text(); })
+        .then(function (t) { return navigator.clipboard.writeText(t); })
+        .then(function () {
+          var st = document.getElementById("mcStatus");
+          if (st) st.textContent = "Railway env template copied (essential vars only).";
+        })
+        .catch(function (e) {
+          var st = document.getElementById("mcStatus");
+          if (st) st.textContent = safeText(e && e.message, String(e));
+        });
+    });
+    if (main) main.addEventListener("click", function () {
+      var st = document.getElementById("mcStatus");
+      if (st) st.textContent = "Building GPT analyze bundle…";
+      fetchBundle().then(function (d) {
+        if (prev) {
+          prev.style.display = "block";
+          prev.textContent = JSON.stringify({
+            generated_at: d.generated_at,
+            keys: Object.keys(d).slice(0, 20),
+            config_summary: !!(d.config_summary),
+            mission_control_summary: !!(d.mission_control_summary)
+          }, null, 2);
+        }
+        if (st) st.textContent = "GPT bundle ready — use Copy or Download.";
+      }).catch(function (e) {
+        if (st) st.textContent = safeText(e && e.message, String(e));
+      });
+    });
     if (copy) copy.addEventListener("click", function () {
       fetchBundle().then(function (d) {
         return navigator.clipboard.writeText(JSON.stringify(d, null, 2));
       }).then(function () {
         var st = document.getElementById("mcStatus");
-        if (st) st.textContent = "GPT bundle copied from /api/ops/gpt-analyze-bundle.";
+        if (st) st.textContent = "Copied — GPT bundle from /api/ops/gpt-analyze-bundle.";
       }).catch(function (e) {
         var st = document.getElementById("mcStatus");
         if (st) st.textContent = safeText(e && e.message, String(e));
@@ -2709,23 +2902,24 @@
         if (st) st.textContent = safeText(e && e.message, String(e));
       });
     });
-    if (main) main.addEventListener("click", function () {
-      if (copy) copy.click();
-    });
     if (tg) tg.addEventListener("click", function () {
       var st = document.getElementById("mcStatus");
-      if (st) {
-        st.textContent = "Telegram full bundle send is not fully configured — use Copy/Download and paste into Telegram, or enable TELEGRAM_MOMO_CHAT_ENABLED and /gpt_bundle.";
-      }
-    });
-    var ask = document.getElementById("btnAskMomoWhatHappened");
-    if (ask) ask.addEventListener("click", function () {
-      var ai = document.getElementById("aiChatInput");
-      if (ai) ai.value = "What happened in the last trading cycles? Summarize for operator.";
-      show("ai");
-      loadAiTab();
-      var send = document.getElementById("aiChatSend");
-      if (send) send.click();
+      if (st) st.textContent = "Sending bundle to Telegram…";
+      fetch("/api/ops/gpt-analyze-bundle/send-telegram", {
+        method: "POST",
+        headers: volHeaders(true)
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d.ok && d.errors) {
+            if (st) st.textContent = d.errors.join("; ");
+            return;
+          }
+          if (st) st.textContent = d.note || "Telegram bundle sent (summary + chunks).";
+        })
+        .catch(function (e) {
+          if (st) st.textContent = safeText(e && e.message, String(e));
+        });
     });
   }
 
@@ -2867,6 +3061,14 @@
     bindTabs();
     wireMissionActions();
     wireGptAnalyze();
+    wireMcMomoAsk();
+    if (!_mcPollTimer) {
+      _mcPollTimer = setInterval(function () {
+        if (document.getElementById("panel-mission") && document.getElementById("panel-mission").classList.contains("active")) {
+          loadMissionTab();
+        }
+      }, 45000);
+    }
     wireBacktest();
     wireActivityExport();
     wireBrokerDiagnosticCopy();

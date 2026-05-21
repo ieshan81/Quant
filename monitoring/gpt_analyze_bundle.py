@@ -107,8 +107,22 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     critical = [lg for lg in ops_logs if str(lg.get("level", "")).lower() in ("critical", "error", "warning")][:25]
     errors = [lg for lg in ops_logs if str(lg.get("level", "")).lower() == "error"]
 
+    try:
+        from core.app_config_registry import build_config_summary
+        config_summary = build_config_summary()
+    except Exception as exc:
+        config_summary = {"error": str(exc)[:120]}
+
+    try:
+        from monitoring.mission_control_api import build_mission_control_summary
+        mission_summary = build_mission_control_summary()
+    except Exception as exc:
+        mission_summary = {"ok": False, "error": str(exc)[:120]}
+
     bundle = {
         "generated_at": generated,
+        "config_summary": config_summary,
+        "mission_control_summary": mission_summary,
         "service_info": {
             "git_commit": (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT", ""))[:12],
             "railway_service": os.environ.get("RAILWAY_SERVICE_ID", ""),
