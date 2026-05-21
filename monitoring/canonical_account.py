@@ -18,9 +18,18 @@ def _parse_heartbeat_age_sec(ts: str | None) -> float | None:
         return None
 
 
-def _float(v: Any, default: float = 0.0) -> float:
+def _float(v: Any, default: float = 0.0, *, snapshot_key: str = "equity") -> float:
+    if v is None:
+        return default
     try:
-        return float(v) if v is not None else default
+        from core.safe_numeric import parse_float
+
+        return parse_float(
+            v,
+            allow_account_snapshot=True,
+            snapshot_key=snapshot_key,
+            field_name=snapshot_key,
+        )
     except (TypeError, ValueError):
         return default
 
@@ -50,9 +59,9 @@ def resolve_canonical_account_metrics(*, live_broker: bool = False) -> dict[str,
     hb = fetch_runtime_heartbeat()
     hb_age = _parse_heartbeat_age_sec(str(hb.get("last_worker_heartbeat_at") or ""))
     if hb and hb_age is not None and hb_age < 600:
-        eq = _float(hb.get("last_equity"), eq)
-        cash = _float(hb.get("last_cash"), cash)
-        bp = _float(hb.get("last_buying_power"), bp)
+        eq = _float(hb.get("last_equity"), eq, snapshot_key="equity")
+        cash = _float(hb.get("last_cash"), cash, snapshot_key="cash")
+        bp = _float(hb.get("last_buying_power"), bp, snapshot_key="buying_power")
         sources.append("worker_heartbeat")
 
     try:

@@ -107,7 +107,13 @@ def evaluate_startup_recovery(
         if last_dt:
             offline_sec = max(0.0, (datetime.now(timezone.utc) - last_dt).total_seconds())
         try:
-            last_equity = float(hb.get("last_equity") or 0)
+            from core.safe_numeric import parse_float_or_none
+
+            last_equity = parse_float_or_none(
+                hb.get("last_equity"),
+                allow_account_snapshot=True,
+                snapshot_key="equity",
+            )
         except (TypeError, ValueError):
             last_equity = None
         if last_equity and last_equity > 0 and current_equity > 0:

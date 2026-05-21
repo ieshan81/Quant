@@ -965,17 +965,26 @@ def init_schema(db_path: Path | str | None = None) -> None:
 
 def get_config(key: str, db_path: Path | str | None = None) -> float:
     """Return a single numeric bot parameter (must exist in ``bot_config``)."""
+    if key in BOT_CONFIG_NON_NUMERIC_KEYS:
+        raise KeyError(f"bot_config key {key!r} is non-numeric; use get_config_str or JSON helpers")
     with get_connection(db_path) as conn:
         row = conn.execute("SELECT value FROM bot_config WHERE key = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(f"unknown bot_config key: {key!r}")
-        return float(row[0])
+        from core.safe_numeric import parse_float
+
+        return parse_float(row[0], field_name=key)
 
 
 APP_CONFIG_STRING_KEYS: dict[str, tuple[str, str]] = {
     "crypto_ccxt_exchange": ("binance", "CCXT exchange id for crypto quotes"),
     "momo_authority_level": ("backtester", "Momo authority: backtester or observer"),
 }
+
+# Stored in bot_config but not loaded as float into runtime config (JSON blobs, strings).
+BOT_CONFIG_NON_NUMERIC_KEYS: frozenset[str] = frozenset(
+    {"broker_account_snapshot"} | set(APP_CONFIG_STRING_KEYS.keys())
+)
 
 
 def get_config_str(key: str, default: str = "", db_path: Path | str | None = None) -> str:
@@ -1044,10 +1053,18 @@ def reset_bot_config_to_defaults(db_path: Path | str | None = None) -> None:
 
 
 def load_runtime_config_dict(db_path: Path | str | None = None) -> dict[str, float]:
-    """All ``bot_config`` rows as ``key -> value`` (one query per trading cycle)."""
+    """Numeric ``bot_config`` rows as ``key -> float`` (skips JSON snapshots and string keys)."""
+    from core.safe_numeric import is_bot_config_numeric_value
+
     with get_connection(db_path) as conn:
         rows = conn.execute("SELECT key, value FROM bot_config").fetchall()
-    return {str(r[0]): float(r[1]) for r in rows}
+    out: dict[str, float] = {}
+    for key, val in rows:
+        k = str(key)
+        if not is_bot_config_numeric_value(k, val, non_numeric_keys=BOT_CONFIG_NON_NUMERIC_KEYS):
+            continue
+        out[k] = float(val)
+    return out
 
 
 def _parse_backtest_config_value(value: str, value_type: str) -> Any:
