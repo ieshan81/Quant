@@ -38,7 +38,9 @@ class FillResult:
 
 
 def _position_key(asset_class: AssetClass, symbol: str) -> tuple[AssetClass, str]:
-    return asset_class, symbol.strip()
+    from utils.symbols import position_key_symbol
+
+    return asset_class, position_key_symbol(asset_class, symbol)
 
 
 class PaperTrader:

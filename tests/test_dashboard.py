@@ -1297,7 +1297,7 @@ def test_crypto_paper_auto_enable_not_blocked_by_ghost_positions() -> None:
         "equity": 200.0,
         "reconciliation_clean": _effective_recon_clean,
         "recovery_block": False,
-        "worker_gate": {"blocked": False},
+        "worker_gate": {"blocked": False, "reason_code": None, "trading_will_run": True},
         "worker_scan_fresh": True,
     })
     # Executor is enabled; block reason is NOT reconciliation-related
@@ -1316,6 +1316,8 @@ def test_crypto_paper_auto_enable_not_blocked_by_ghost_positions() -> None:
         "equity": 200.0,
         "reconciliation_clean": _effective_recon_clean,
         "recovery_block": False,
+        "worker_gate": {"blocked": False, "reason_code": None, "trading_will_run": True},
+        "worker_scan_fresh": True,
     })
     assert dec_no_bp.get("reason_code") == "INSUFFICIENT_BUYING_POWER"
     assert dec_no_bp.get("executor_enabled") is True  # executor ON, just no cash

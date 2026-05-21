@@ -181,7 +181,7 @@ def build_crypto_trade_decision(
     elif not meta_ok and sym:
         human = f"Crypto metadata missing for {sym}"
 
-    return {
+    out = {
         "can_trade_crypto": can_trade,
         "push_allowed": push_allowed,
         "reason_code": str(blocker or ("OK" if can_trade else "CRYPTO_DISABLED")),
@@ -207,6 +207,18 @@ def build_crypto_trade_decision(
         "metadata_diagnostics": m_diag,
         "blockers": ready.get("blockers") or ([] if can_trade else [str(blocker or "blocked")]),
     }
+    try:
+        from execution.crypto_push_pull_status import build_crypto_session_status
+
+        out["crypto_session"] = build_crypto_session_status(
+            out,
+            positions=list(ctx.get("crypto_positions") or crypto_positions or []),
+            exit_rows=ctx.get("exit_rows"),
+            crypto_scan_gate=ctx.get("crypto_scan_gate") or ctx.get("_crypto_scan_gate"),
+        )
+    except Exception:
+        out["crypto_session"] = {}
+    return out
 
 
 def build_crypto_executor_readiness_from_context(context: dict[str, Any]) -> dict[str, Any]:

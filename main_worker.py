@@ -1511,22 +1511,30 @@ def _check_and_execute_exits(
         mark_ns = _mark_target_for_exit_dict(market_ctx, pos)
         sym = str(pos.get("symbol") or "").strip()
         ac = mark_ns.asset_class
+        from utils.symbols import crypto_symbols_equivalent, position_key_symbol
+
+        canon_sym = position_key_symbol(ac, sym)
         mid = _exit_mark_price(market_ctx, mark_ns)
         if mid is None or mid <= 0:
             logger.warning(
                 "[exits] skip {} {} — no mark price (TP/SL not evaluated)",
                 ac,
-                sym,
+                canon_sym,
             )
             continue
         entry = float(pos.get("avg_entry_price") or pos.get("cost_basis") or 0)
         if entry <= 0:
-            logger.warning("[exits] skip {} {} — invalid entry {}", ac, sym, entry)
+            logger.warning("[exits] skip {} {} — invalid entry {}", ac, canon_sym, entry)
             continue
         broker = _exit_broker_for_position(stock_trader, crypto_trader, pos)
         qty = _get_real_position_qty(sym, broker)
         source = str(pos.get("source") or "")
-        local_pos = ledger.position(ac, sym)
+        local_pos = ledger.position(ac, canon_sym)
+        if local_pos is None:
+            for (kac, ksym), lp in ledger.positions.items():
+                if kac == ac and crypto_symbols_equivalent(ksym, canon_sym):
+                    local_pos = lp
+                    break
         local_qty_val = float(local_pos.quantity) if local_pos is not None else float(pos.get("net_qty") or 0.0)
 
         if _is_exit_blocked(sym):
@@ -1552,20 +1560,39 @@ def _check_and_execute_exits(
             continue
 
         if source == "alpaca_rest" and local_pos is None:
-            broker_local_mismatch_count += 1
-            _persist_decision(
-                cycle_id=f"exit-{int(time.time())}",
-                asset_class=ac,
-                symbol=sym,
-                side="sell",
-                decision="rejected",
-                reason_code="BROKER_POSITION_UNTRACKED",
-                score=None,
-                notional=0.0,
-                quantity=float(pos.get("net_qty") or 0.0),
-                price=mid,
-                meta={"source": source},
-            )
+            from execution.block_registry import enrich_block_event, should_log_block
+
+            if should_log_block("BROKER_POSITION_UNTRACKED", symbol=canon_sym, subsystem="reconciliation"):
+                broker_local_mismatch_count += 1
+                _persist_decision(
+                    cycle_id=f"exit-{int(time.time())}",
+                    asset_class=ac,
+                    symbol=canon_sym,
+                    side="sell",
+                    decision="rejected",
+                    reason_code="BROKER_POSITION_UNTRACKED",
+                    score=None,
+                    notional=0.0,
+                    quantity=float(pos.get("net_qty") or 0.0),
+                    price=mid,
+                    meta={
+                        "source": source,
+                        "broker_symbol": sym,
+                        "canonical_symbol": canon_sym,
+                    },
+                )
+                try:
+                    from core.momo_graph_memory import record_block_observation
+
+                    with get_connection(config.DB_PATH, timeout_sec=2.0) as _mgc:
+                        record_block_observation(
+                            _mgc,
+                            reason_code="BROKER_POSITION_UNTRACKED",
+                            symbol=canon_sym,
+                            subsystem="reconciliation",
+                        )
+                except Exception:
+                    pass
         if qty <= 0:
             logger.info("[exits] skip {} {} — broker reports zero qty", ac, sym)
             if source == "sqlite_trades" or local_pos is not None:
@@ -1592,25 +1619,53 @@ def _check_and_execute_exits(
                         meta={"source": source, "ghost_cooldown_sec": 300},
                     )
             continue
-        if abs(float(local_qty_val) - float(qty)) > 1e-5:
-            broker_local_mismatch_count += 1
-            _persist_decision(
-                cycle_id=f"exit-{int(time.time())}",
-                asset_class=ac,
-                symbol=sym,
-                side="sell",
-                decision="hold",
-                reason_code=reason_codes.BROKER_LOCAL_MISMATCH,
-                score=None,
-                notional=float(qty) * float(mid),
-                quantity=float(qty),
-                price=mid,
-                meta={
-                    "broker_qty": float(qty),
-                    "local_qty": float(local_qty_val),
-                    "scope": "exit_path",
-                },
-            )
+        eps_q = 1e-8 if ac == "crypto" else 1e-5
+        delta_q = float(local_qty_val) - float(qty)
+        if abs(delta_q) > eps_q:
+            from execution.block_registry import should_log_block
+
+            if should_log_block(
+                reason_codes.BROKER_LOCAL_MISMATCH,
+                symbol=canon_sym,
+                subsystem="reconciliation",
+            ):
+                broker_local_mismatch_count += 1
+                delta_pct = (abs(delta_q) / max(abs(float(qty)), 1e-12)) * 100.0
+                _persist_decision(
+                    cycle_id=f"exit-{int(time.time())}",
+                    asset_class=ac,
+                    symbol=canon_sym,
+                    side="sell",
+                    decision="hold",
+                    reason_code=reason_codes.BROKER_LOCAL_MISMATCH,
+                    score=None,
+                    notional=float(qty) * float(mid),
+                    quantity=float(qty),
+                    price=mid,
+                    meta={
+                        "broker_qty": float(qty),
+                        "local_qty": float(local_qty_val),
+                        "delta_qty": round(delta_q, 8),
+                        "delta_pct": round(delta_pct, 4),
+                        "broker_symbol": sym,
+                        "canonical_symbol": canon_sym,
+                        "source_table": "trades",
+                        "scope": "exit_path",
+                    },
+                )
+                try:
+                    from core.momo_graph_memory import record_block_observation, record_symbol_normalization
+
+                    with get_connection(config.DB_PATH, timeout_sec=2.0) as _mgc:
+                        record_symbol_normalization(_mgc, raw=sym, canonical=canon_sym)
+                        record_block_observation(
+                            _mgc,
+                            reason_code=reason_codes.BROKER_LOCAL_MISMATCH,
+                            symbol=canon_sym,
+                            subsystem="reconciliation",
+                        )
+                except Exception:
+                    pass
         entry_dt = _position_entry_datetime_from_trades(sym, ac, qty, db_p)
         _held_h, held_sfx = _held_hours_and_suffix(entry_dt)
         max_hold_h = _max_hold_hours_for_symbol(sym, ac)
@@ -4073,11 +4128,69 @@ def run_trading_cycle_once(
 
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
+    _mkt_open = bool(portfolio_limiter.us_stock_market_open())
+    _cash_snap = float(rt.get("_cycle_buying_power") or 0.0)
+    try:
+        from execution.cycle_scan_gates import evaluate_crypto_scan_gate, evaluate_stock_scan_gate
+
+        _cn_reserve = float(rt.get("_crypto_night_reserve_target") or 0.0)
+        _reserve_pct = float(rt.get("hard_min_cash_reserve_pct", 15.0) or 15.0)
+        _hard_res = max(float(rt.get("hard_min_cash_reserve_usd", 5.0) or 5.0), equity * _reserve_pct / 100.0)
+        _n_crypto_open = sum(
+            1
+            for r in (exit_health.get("position_exit_rows") or [])
+            if str(r.get("asset_class") or "").lower() == "crypto"
+            and float(r.get("broker_qty") or r.get("local_qty") or 0) > 1e-9
+        )
+        _max_st = int(rt.get("max_stock_positions", 5) or 5)
+        _max_cr = int(rt.get("max_crypto_positions", 5) or 5)
+        _crypto_on = bool(
+            (_crypto_flags or {}).get("crypto_push_enabled_effective")
+            or (_crypto_flags or {}).get("crypto_enabled_effective")
+        )
+        rt["_stock_scan_gate"] = evaluate_stock_scan_gate(
+            rt,
+            market_open=_mkt_open,
+            buying_power=float(rt.get("_usable_buying_power_for_scanners") or _cash_snap),
+            equity=equity,
+            open_stock_positions=n_stock,
+            max_stock_positions=_max_st,
+            recovery_block=_recovery_block,
+            reconcile_clean=_effective_recon_clean,
+            crypto_reserve_target=_cn_reserve,
+            cash=_cash_snap,
+            extended_hours_enabled=bool(int(rt.get("stock_extended_hours_enabled", 0) or 0) == 1),
+        )
+        rt["_crypto_scan_gate"] = evaluate_crypto_scan_gate(
+            rt,
+            crypto_enabled=_crypto_on,
+            worker_fresh=True,
+            reconcile_clean=_effective_recon_clean,
+            cash_for_crypto=max(0.0, _cash_snap - _hard_res),
+            equity=equity,
+            open_crypto_positions=_n_crypto_open,
+            max_crypto_positions=_max_cr,
+            recovery_block=_recovery_block,
+        )
+        if stocks_override is None and rt["_stock_scan_gate"].get("heavy_scan_skipped"):
+            stock_symbols = []
+            logger.info(
+                "[cpu_gate] stock scanner skipped: {}",
+                rt["_stock_scan_gate"].get("saved_cpu_reason"),
+            )
+        if crypto_override is None and rt["_crypto_scan_gate"].get("heavy_scan_skipped"):
+            crypto_symbols = []
+            logger.info(
+                "[cpu_gate] crypto scanner skipped: {}",
+                rt["_crypto_scan_gate"].get("saved_cpu_reason"),
+            )
+    except Exception:
+        logger.debug("[cpu_gate] scan gate evaluation skipped", exc_info=True)
     logger.info(
         f"[risk] equity={equity:.2f} take_profit={rt['take_profit_pct']} stop_loss={rt['stop_loss_pct']}"
     )
     logger.info(
-        f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "
+        f"Cycle starting | stocks_open={_mkt_open} | "
         f"stock_symbols={len(stock_symbols)} | crypto_symbols={len(crypto_symbols)}"
     )
     _trace.stage("crypto_readiness_done")

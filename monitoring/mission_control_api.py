@@ -356,6 +356,8 @@ def build_mission_control_summary_minimal(
                 "buying_power": acct.get("buying_power"),
                 "equity": acct.get("equity"),
                 "worker_gate": base.get("worker_gate"),
+                "crypto_positions": _positions,
+                "exit_rows": [],
             }
         )
     except Exception as exc:
@@ -490,7 +492,14 @@ def build_mission_control_summary_minimal(
             "blocked_reason": crypto_dec.get("reason_code"),
             "latest_crypto_attempts": crypto_events,
             "latest_push_pull_events": crypto_events,
+            **(
+                (crypto_dec.get("crypto_session") or {})
+                if isinstance(crypto_dec.get("crypto_session"), dict)
+                else {}
+            ),
         },
+        "crypto_push": (crypto_dec.get("crypto_session") or {}).get("crypto_push") or {},
+        "crypto_pull": (crypto_dec.get("crypto_session") or {}).get("crypto_pull") or {},
         "crypto_eligibility": {
             "can_trade_crypto": crypto_dec.get("can_trade_crypto", False),
             "reason_code": crypto_dec.get("reason_code", "MC_DEGRADED"),

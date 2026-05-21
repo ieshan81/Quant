@@ -2653,11 +2653,15 @@
     if (elBp) elBp.textContent = safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power);
     if (elMode) elMode.textContent = safeText(t.mode || ac.mode, "paper");
     if (elMis) elMis.textContent = safeText(t.mission_mode || (d.mission || {}).mission_mode, "—");
-    if (elCr) {
-      var elig = d.crypto_eligibility || {};
-      if (elig.can_trade_crypto === true) elCr.textContent = "Ready";
-      else if (elig.can_trade_crypto === false) elCr.textContent = "Blocked";
-      else elCr.textContent = safeText(t.crypto_push_status, "—");
+    var elCrPull = document.getElementById("mcTopCryptoPull");
+    var elWorker = document.getElementById("mcTopWorker");
+    var pushSt = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
+    var pullSt = d.crypto_pull || (d.crypto_night || {}).crypto_pull || {};
+    if (elCr) elCr.textContent = safeText(pushSt.label || pushSt.status, "—");
+    if (elCrPull) elCrPull.textContent = safeText(pullSt.label || pullSt.status, "—");
+    if (elWorker) {
+      var w = d.worker || d.ops_health || {};
+      elWorker.textContent = w.worker_health === "ok" ? "OK" : safeText(w.worker_health || w.status_message, "—");
     }
   }
 
@@ -2689,17 +2693,6 @@
     _mcCache = d;
     var ts = new Date().toLocaleString();
     _mcTopline(d);
-    var dev = document.getElementById("mcDevJson");
-    if (dev) {
-      try {
-        dev.textContent = JSON.stringify({
-          broker_account_transition_status: d.broker_account_transition_status,
-          topline: d.topline
-        }, null, 2);
-      } catch (eJ) {
-        dev.textContent = "{}";
-      }
-    }
     var cards = [
       {
         id: "mcAccount",
@@ -2793,44 +2786,26 @@
         id: "mcCrypto",
         tone: "",
         render: function () {
-          if (d.primary_message) {
-            return String(d.primary_message);
-          }
-          var cr = d.crypto_night || {};
-          var pol = cr.crypto_execution_policy || {};
-          var push = cr.push_possible === true ? "may run" : (cr.push_possible === false ? "is blocked" : "status unknown");
-          var parts = [];
-          if (cr.crypto_block_headline) {
-            parts.push(String(cr.crypto_block_headline));
-          } else {
+          var push = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
+          var parts = [safeText(push.headline || push.human_reason, "Crypto push status unknown.")];
+          if (push.reason_code) parts.push("Code: " + esc(String(push.reason_code)));
+          return parts.join("\n");
+        }
+      },
+      {
+        id: "mcCryptoPull",
+        tone: "",
+        render: function () {
+          var pull = d.crypto_pull || (d.crypto_night || {}).crypto_pull || {};
+          var parts = [safeText(pull.headline || pull.human_reason, "No crypto position to pull.")];
+          var pos = pull.positions || [];
+          pos.slice(0, 3).forEach(function (p) {
             parts.push(
-              "Crypto night push " + push + ". " +
-              safeText(cr.blocked_reason || pol.blocked_reason, "No block reason listed.")
+              "  " + esc(p.display_symbol || p.symbol || "?") + " · " +
+              esc(p.exit_status || p.status || "?") +
+              (p.can_sell ? " · can sell" : "")
             );
-          }
-          parts.push("Execution uses deterministic math only (Momo not in the loop).");
-          var elig = d.crypto_eligibility || {};
-          if (elig.latest_human_reason) {
-            parts.push("Eligibility: " + (elig.can_trade_crypto ? "YES — " : "NO — ") + elig.latest_human_reason);
-            if (elig.usable_crypto_buying_power != null) {
-              parts.push("Usable crypto BP: " + safeFmtMoney(elig.usable_crypto_buying_power) + " (source: " + safeText(elig.usable_source, "?") + ").");
-            }
-          }
-          var evts = Array.isArray(cr.latest_crypto_attempts) ? cr.latest_crypto_attempts
-            : (Array.isArray(cr.latest_push_pull_events) ? cr.latest_push_pull_events : []);
-          if (evts.length) {
-            parts.push("Recent crypto attempts:");
-            evts.slice(0, 5).forEach(function (e) {
-              var hr = e.human_reason || e.reason_code || "?";
-              parts.push(
-                "  " + esc(e.symbol || "?") + " · " + esc(e.action || e.side || "") +
-                " · " + esc(e.decision || "?") + " · " + esc(hr) +
-                (e.created_at ? " · " + esc(String(e.created_at).slice(0, 19)) : "")
-              );
-            });
-          } else {
-            parts.push("No recent crypto execution decisions recorded.");
-          }
+          });
           return parts.join("\n");
         }
       },
@@ -2961,7 +2936,7 @@
         if (force) _mcProgressDone(safeText(e && e.message, String(e)), false);
         else if (st) st.textContent = safeText(e && e.message, String(e));
         if (!_mcCache) {
-          ["mcAccount", "mcMission", "mcCapital", "mcBroker", "mcPositions", "mcCrypto", "mcMomo", "mcOps"].forEach(function (id) {
+          ["mcAccount", "mcMission", "mcCapital", "mcBroker", "mcPositions", "mcCrypto", "mcCryptoPull", "mcMomo", "mcOps"].forEach(function (id) {
             setMcCard(id, "—");
           });
         }

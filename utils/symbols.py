@@ -266,6 +266,18 @@ def all_symbol_forms(symbol: str | None) -> dict[str, str]:
     }
 
 
+def crypto_symbols_equivalent(a: str | None, b: str | None) -> bool:
+    """True when two crypto symbol shapes refer to the same pair (ETHUSD == ETH/USD)."""
+    ca = normalize_crypto_pair(a)
+    cb = normalize_crypto_pair(b)
+    return bool(ca) and ca == cb
+
+
+def position_key_symbol(asset_class: str | None, symbol: str | None) -> str:
+    """Canonical symbol for position maps, reconciliation, and UI (DB form)."""
+    return normalize_symbol_for_db(asset_class, symbol)
+
+
 def dedupe_symbol_set(symbols: Iterable[str], asset_class: str | None = None) -> list[str]:
     """De-duplicate a list while preserving the *db* canonical form.
 

@@ -846,6 +846,33 @@ CREATE TABLE IF NOT EXISTS telegram_notification_state (
     suppressed_count INTEGER NOT NULL DEFAULT 0,
     meta_json TEXT
 );
+
+-- Momo knowledge graph v1 (SQLite, not Neo4j).
+CREATE TABLE IF NOT EXISTS momo_graph_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_key TEXT NOT NULL UNIQUE,
+    node_type TEXT NOT NULL,
+    label TEXT NOT NULL,
+    meta_json TEXT,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS momo_graph_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_key TEXT NOT NULL,
+    to_key TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 1.0,
+    meta_json TEXT,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(from_key, to_key, relation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_momo_nodes_type ON momo_graph_nodes(node_type);
+CREATE INDEX IF NOT EXISTS idx_momo_edges_from ON momo_graph_edges(from_key);
 """
 
 

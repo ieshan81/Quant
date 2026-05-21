@@ -93,11 +93,14 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
 
     activity, ms, err = _timed_section(
         "activity_export",
-        lambda: _build_activity_light(),
-        timeout_sec=4.0,
-        default={"error": "activity_export_skipped"},
+        lambda: _build_activity_summary_light(),
+        timeout_sec=2.5,
+        default={"summary": True, "error": "activity_export_skipped", "activity_export_included": "skipped"},
     )
     timings["activity_export"] = {"ms": ms, "error": err}
+    activity_included = "summary" if isinstance(activity, dict) and activity.get("summary") else (
+        "skipped" if err else "partial"
+    )
 
     broker_diag, ms, err = _timed_section(
         "broker_diagnostic",
@@ -179,9 +182,28 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
                 e2["human_reason"] = human_reason_code(str(e2.get("reason_code") or ""))
                 crypto_push_pull_events.append(e2)
 
+    try:
+        from execution.crypto_push_pull_status import build_crypto_session_status
+
+        _open_pos = (mission_summary or {}).get("positions", {}).get("open") if isinstance(mission_summary, dict) else []
+        crypto_session = build_crypto_session_status(
+            crypto_dec if isinstance(crypto_dec, dict) else {},
+            positions=_open_pos,
+            exit_rows=(mission_summary or {}).get("execution_health", {}).get("position_exit_rows")
+            if isinstance(mission_summary, dict)
+            else None,
+        )
+    except Exception:
+        crypto_session = {}
+
     bundle = {
         "generated_at": generated,
         "section_timings_ms": timings,
+        "timeout_sections": [k for k, v in timings.items() if (v or {}).get("error")],
+        "activity_export_included": activity_included,
+        "ai_notes_included": bool((activity or {}).get("ai_momo_notes")) if isinstance(activity, dict) else False,
+        "ai_memory_included": bool((activity or {}).get("graph_memory_nodes")) if isinstance(activity, dict) else False,
+        "crypto_push_pull_session": crypto_session,
         "db_path_status": db_path_status,
         "simple_status": simple,
         "config_summary": {"note": "use /api/config/schema for full config"},
@@ -245,12 +267,16 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     return scrubbed
 
 
-def _build_activity_light() -> dict[str, Any]:
+def _build_activity_summary_light() -> dict[str, Any]:
     from data.data_store import get_connection
-    from monitoring.cycle_activity_export import build_activity_export_payload
+    from monitoring.gpt_activity_summary import build_gpt_activity_summary
 
-    with get_connection(timeout_sec=3.0) as conn:
-        return build_activity_export_payload(conn, limit=40)
+    with get_connection(timeout_sec=2.0) as conn:
+        return build_gpt_activity_summary(conn, limit=50)
+
+
+def _build_activity_light() -> dict[str, Any]:
+    return _build_activity_summary_light()
 
 
 def _build_broker_diag_light() -> dict[str, Any]:

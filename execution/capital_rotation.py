@@ -152,17 +152,22 @@ def sqlite_net_positions_to_broker_shape(
     prices_by_symbol: dict[str, float],
 ) -> list[dict[str, Any]]:
     """Map SQLite net position rows to broker-shaped dicts for :func:`build_rotation_plan`."""
+    from utils.symbols import position_key_symbol
+
     out: list[dict[str, Any]] = []
     for r in rows or []:
         sym = str(r.get("symbol") or "").strip()
         if not sym:
             continue
         ac = str(r.get("asset_class") or _infer_asset_class(sym)).strip().lower()
+        canon = position_key_symbol(ac, sym)
         qty = _f(r.get("net_qty"))
-        px = _f(prices_by_symbol.get(sym))
+        px = _f(prices_by_symbol.get(sym)) or _f(prices_by_symbol.get(canon))
         out.append(
             {
-                "symbol": sym,
+                "symbol": canon,
+                "canonical_symbol": canon,
+                "broker_symbol": sym,
                 "asset_class": ac,
                 "net_qty": qty,
                 "avg_entry_price": px if px > 0 else None,

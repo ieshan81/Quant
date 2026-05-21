@@ -74,6 +74,13 @@ def answer_momo_question(
     momo_st = build_momo_status()
     auth = build_momo_authority_status()
 
+    try:
+        from core.momo_graph_memory import query_nodes_for_question
+
+        ctx["momo_graph_facts"] = query_nodes_for_question(q, limit=10)
+    except Exception as exc:
+        missing.append(f"momo_graph: {exc}")
+
     # Deterministic path first (no hallucinated balances)
     answer = _deterministic_answer(q, ctx, missing)
     provider = "momo_rules"
@@ -163,6 +170,21 @@ def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]
         pos = mc.get("positions") or {}
         n = pos.get("count", len(pos.get("open") or []))
         parts.append(f"Open positions (runtime): {n}.")
+
+    if "crypto" in ql:
+        push = mc.get("crypto_push") or (mc.get("crypto_night") or {}).get("crypto_push") or {}
+        pull = mc.get("crypto_pull") or (mc.get("crypto_night") or {}).get("crypto_pull") or {}
+        parts.append(
+            f"Crypto push: {push.get('label') or push.get('status') or '?'}"
+            f" — {push.get('human_reason') or push.get('headline') or 'n/a'}."
+        )
+        parts.append(
+            f"Crypto pull: {pull.get('label') or pull.get('status') or '?'}"
+            f" — {pull.get('human_reason') or pull.get('headline') or 'n/a'}."
+        )
+    graph = ctx.get("momo_graph_facts") or []
+    if graph and ("crypto" in ql or "why" in ql or "block" in ql or "eth" in ql):
+        parts.append("Graph memory: " + ", ".join(f"{g.get('node_type')}:{g.get('label')}" for g in graph[:5]))
 
     if "crypto" in ql and "tonight" in ql:
         cr = mc.get("crypto_night") or {}

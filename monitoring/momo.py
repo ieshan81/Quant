@@ -37,13 +37,31 @@ def build_momo_status() -> dict[str, Any]:
     }
 
 
+PAPER_AUTO_TUNE_ALLOWLIST: frozenset[str] = frozenset({
+    "crypto_min_signal_score",
+    "crypto_night_min_score",
+    "crypto_max_spread_pct",
+    "stock_entry_max_spread_pct",
+    "hard_min_cash_reserve_pct",
+    "overnight_crypto_cash_reserve_pct",
+})
+
+
 def build_momo_authority_status() -> dict[str, Any]:
+    import config
+
     st = build_momo_status()
     st["allowed_roles"] = [
         "observe", "summarize", "backtest", "recommend_config_for_approval",
-        "telegram_chat", "explain_logs",
+        "telegram_chat", "explain_logs", "propose_config_patch",
     ]
     st["forbidden_roles"] = [
         "submit_orders", "bypass_preflight", "crypto_execution_loop", "live_trading",
+        "silent_config_change",
     ]
+    st["paper_auto_tune_allowed"] = config.MODE == "paper"
+    st["paper_auto_tune_keys"] = sorted(PAPER_AUTO_TUNE_ALLOWLIST)
+    st["requires_backtest_evidence"] = True
+    st["requires_rollback_record"] = True
+    st["live_requires_operator_approval"] = True
     return st

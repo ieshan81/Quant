@@ -850,42 +850,32 @@ _PAGE = """<!DOCTYPE html>
         <div class="metric"><div class="lab">Buying Power</div><div class="val mono" id="mcTopBp">—</div></div>
         <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mcTopMode">—</div></div>
         <div class="metric"><div class="lab">Mission</div><div class="val mono" id="mcTopMission">—</div></div>
-        <div class="metric"><div class="lab">Crypto push</div><div class="val mono" id="mcTopCrypto">—</div></div>
+        <div class="metric"><div class="lab">Crypto Push</div><div class="val mono" id="mcTopCrypto">—</div></div>
+        <div class="metric"><div class="lab">Crypto Pull</div><div class="val mono" id="mcTopCryptoPull">—</div></div>
+        <div class="metric"><div class="lab">Worker</div><div class="val mono" id="mcTopWorker">—</div></div>
       </div>
       <div class="mc-action-center">
         <details class="mc-action-group" open>
-          <summary>Analyze</summary>
+          <summary>Analyze Logs</summary>
           <div class="mc-action-btns">
             <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">GPT Analyze Logs</button>
             <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy GPT Bundle</button>
             <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT JSON</button>
             <button type="button" id="btnDownloadGPTAnalyzeBundleTxt" class="btn secondary">Download GPT TXT</button>
+            <button type="button" id="btnCopyAiMemory" class="btn secondary">AI Memory Copy</button>
           </div>
         </details>
         <details class="mc-action-group">
-          <summary>Logs</summary>
+          <summary>More logs</summary>
           <div class="mc-action-btns">
             <button type="button" id="btnCopyLogsBundle" class="btn secondary">Copy Logs</button>
             <button type="button" id="btnDownloadLogsJson" class="btn secondary">Download JSON</button>
             <button type="button" id="btnDownloadLogsTxt" class="btn secondary">Download TXT</button>
-            <button type="button" id="btnDownloadLogsCsv" class="btn secondary">Download CSV</button>
           </div>
         </details>
-        <details class="mc-action-group">
-          <summary>Telegram</summary>
-          <div class="mc-action-btns">
-            <button type="button" id="btnTelegramTestSend" class="btn secondary">Test Telegram</button>
-            <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Bundle</button>
-          </div>
-        </details>
-        <details class="mc-action-group">
-          <summary>System</summary>
-          <div class="mc-action-btns">
-            <button type="button" id="btnExportRailwayEnv" class="btn secondary">Railway Env Template</button>
-            <button type="button" id="btnMcRefresh" class="btn secondary">Refresh Now</button>
-            <button type="button" id="btnMcDeepRefresh" class="btn secondary">Deep Refresh</button>
-          </div>
-        </details>
+        <div class="mc-action-btns" style="margin-top:6px;">
+          <button type="button" id="btnMcRefresh" class="btn secondary">Refresh</button>
+        </div>
       </div>
       <div id="mcProgress" class="mc-progress"><div id="mcProgressBar" class="mc-progress-bar"></div></div>
       <p id="mcPerfStatus" class="empty-hint" style="margin:0.25rem 0;font-size:11px;"></p>
@@ -898,13 +888,14 @@ _PAGE = """<!DOCTYPE html>
         <div class="mc-card" id="mcCapital"><h3>Capital Protection</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcBroker"><h3>Broker / Runtime</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcPositions"><h3>Positions</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
-        <div class="mc-card" id="mcCrypto"><h3>Crypto Night</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcCrypto"><h3>Crypto Push</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcCryptoPull"><h3>Crypto Pull</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcMomo"><h3>Momo Summary</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcOps"><h3>Ops Health</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
       </div>
       <div class="mc-momo-box">
-        <h3 style="margin:0 0 8px;font-size:0.95rem;">Ask Momo</h3>
-        <textarea id="mcMomoInput" rows="2" placeholder="Ask about buying power, positions, crypto tonight, runtime reset…" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px;font-size:13px;"></textarea>
+        <h3 style="margin:0 0 6px;font-size:0.9rem;">Ask Momo</h3>
+        <input type="text" id="mcMomoInput" placeholder="Why no crypto? Why blocked? …" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 8px;font-size:13px;" />
         <div class="mc-quick-btns">
           <button type="button" class="btn secondary mc-quick" data-q="Why no trade?">Why no trade?</button>
           <button type="button" class="btn secondary mc-quick" data-q="Why no sell?">Why no sell?</button>
@@ -917,12 +908,9 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" class="btn secondary mc-quick" data-q="Summarize risk">Summarize risk</button>
         </div>
         <button type="button" id="btnMcAskMomo" class="btn primary">Ask Momo</button>
-        <div id="mcMomoAnswer" class="mc-body" style="margin-top:10px;min-height:2rem;">—</div>
+        <div id="mcMomoAnswer" class="mc-body" style="margin-top:6px;min-height:1.5rem;max-height:120px;overflow:auto;font-size:12px;">—</div>
       </div>
-      <details class="card" style="margin-top:8px;">
-        <summary style="cursor:pointer;font-size:12px;color:var(--muted);">Developer diagnostics (JSON)</summary>
-        <pre id="mcDevJson" class="mono sec" style="max-height:200px;">{}</pre>
-      </details>
+      <pre id="mcDevJson" class="mono sec" style="display:none;">{}</pre>
       <div class="danger-zone">
         <h3>Danger zone — runtime reset</h3>
         <p class="empty-hint" style="margin:0 0 8px;">Preserves Momo memory. Clears stale runtime cache. Type RESET RUNTIME to confirm.</p>
