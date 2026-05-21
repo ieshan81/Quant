@@ -355,6 +355,7 @@ def build_mission_control_summary_minimal(
                 "cash_available": acct.get("cash"),
                 "buying_power": acct.get("buying_power"),
                 "equity": acct.get("equity"),
+                "worker_gate": base.get("worker_gate"),
             }
         )
     except Exception as exc:
@@ -368,7 +369,9 @@ def build_mission_control_summary_minimal(
 
     crypto_events = _fetch_crypto_push_pull_brief(5)
     block_headline = (
-        crypto_dec.get("human_reason")
+        base.get("primary_message")
+        or crypto_dec.get("human_reason")
+        or trading.get("primary_reason")
         or trading.get("last_no_trade_reason")
         or (reason if reason else "Paper mode — worker heartbeat status.")
     )
@@ -498,12 +501,19 @@ def build_mission_control_summary_minimal(
             **crypto_dec,
             "source": "crypto_trade_decision",
         },
+        "git_commit": base.get("git_commit"),
+        "deploy": base.get("deploy"),
+        "primary_message": base.get("primary_message"),
         "momo_summary": {
             "saw": ["Mission Control loaded from worker heartbeat (fast path)."],
             "did": [],
             "refused": [],
             "learned": [],
-            "attention": [reason] if reason else [],
+            "attention": (
+                [base["primary_message"]]
+                if base.get("primary_message")
+                else ([reason] if reason else [])
+            ),
         },
         "momo_status": build_momo_status(),
         "performance": {"lightweight": True, "simple_fallback": True},

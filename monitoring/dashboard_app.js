@@ -2793,6 +2793,9 @@
         id: "mcCrypto",
         tone: "",
         render: function () {
+          if (d.primary_message) {
+            return String(d.primary_message);
+          }
           var cr = d.crypto_night || {};
           var pol = cr.crypto_execution_policy || {};
           var push = cr.push_possible === true ? "may run" : (cr.push_possible === false ? "is blocked" : "status unknown");
@@ -2857,12 +2860,17 @@
             ", memory " + (oh.system_memory_pct != null ? safeFmtPct(oh.system_memory_pct) : "—") +
             ", disk " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—") + "."
           ];
-          if (oh.worker_status_message || oh.worker_health) {
+          if (d.primary_message) {
+            parts.unshift(String(d.primary_message));
+          } else if (oh.worker_status_message || oh.worker_health) {
             var wh = oh.worker_health || "";
-            if (wh === "trading_loop_stale") {
+            if (wh === "stopped") {
+              parts.push("Trading is stopped because the worker is not running.");
+            } else if (wh === "trading_loop_stale") {
               parts.push("Worker alive but trading loop stale — check main_worker logs.");
             }
             parts.push(esc(oh.worker_status_message || ("Worker: " + wh)));
+            if (oh.worker_pid != null) parts.push("Worker PID: " + String(oh.worker_pid));
             if (oh.last_cycle_id) parts.push("Last cycle: " + esc(oh.last_cycle_id));
             if (oh.last_cycle_age_seconds != null) parts.push("Cycle age: " + esc(String(oh.last_cycle_age_seconds)) + "s");
           }

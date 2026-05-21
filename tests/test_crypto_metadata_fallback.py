@@ -18,6 +18,8 @@ def test_static_metadata_fallback_when_alpaca_missing() -> None:
         {
             "cash_available": 200,
             "buying_power": 200,
+            "worker_gate": {"blocked": False},
+            "worker_scan_fresh": True,
             "crypto_scores": {"BTC/USD": 0.5},
             "quote_snapshot": {
                 "BTC/USD": {

@@ -44,6 +44,16 @@ def build_crypto_trade_decision(
     except Exception:
         pass
 
+    gate = ctx.get("worker_gate")
+    if not isinstance(gate, dict) or "blocked" not in gate:
+        from execution.worker_trading_gate import resolve_worker_trading_gate
+
+        gate = resolve_worker_trading_gate()
+    if gate.get("blocked"):
+        from execution.worker_trading_gate import worker_blocked_crypto_decision
+
+        return worker_blocked_crypto_decision(gate)
+
     recon = bool(ctx.get("reconciliation_clean", reconciliation_clean))
     recovery = bool(ctx.get("recovery_block", recovery_block))
     cash = float(ctx.get("cash_available", cash_available) or buying_power or 0)
@@ -51,6 +61,20 @@ def build_crypto_trade_decision(
     reserved = float(ctx.get("crypto_reserved_usd", crypto_reserved_usd) or 0)
     positions = list(ctx.get("crypto_positions") or crypto_positions or [])
     scores = dict(ctx.get("crypto_scores") or crypto_scores or {})
+    scan_fresh = bool(ctx.get("worker_scan_fresh"))
+    if not scan_fresh and not scores:
+        from execution.trading_cycle_trace import fetch_cycle_status_from_db
+
+        hb = fetch_cycle_status_from_db()
+        cycle_age = None
+        try:
+            from monitoring.worker_status import parse_heartbeat_age_sec
+
+            cycle_age = parse_heartbeat_age_sec(str(hb.get("last_successful_cycle_at") or ""))
+        except Exception:
+            pass
+        scan_fresh = cycle_age is not None and cycle_age <= 600.0
+
     sym = str(ctx.get("candidate_symbol") or best_symbol or "")
     if not sym and scores:
         sym = max(scores, key=scores.get)
@@ -72,10 +96,23 @@ def build_crypto_trade_decision(
         buying_power=bp,
         crypto_reserved_usd=reserved,
         crypto_positions=positions,
-        crypto_scores=scores if scores else ({sym: 0.0} if sym else None),
+        crypto_scores=scores if scores else (None if not scan_fresh else ({sym: 0.0} if sym else None)),
         reconciliation_clean=recon,
         recovery_block=recovery,
     )
+    blocker = ready.get("push_blocked_reason") or (
+        (ready.get("blockers") or [None])[0] if ready.get("blockers") else None
+    )
+    if (
+        not scan_fresh
+        and str(blocker or "").upper() in ("NO_CRYPTO_CANDIDATES", "CRYPTO_PUSH_BLOCKED_SCORE", "SCORE_TOO_LOW")
+    ):
+        blocker = "WORKER_STALE"
+        ready["push_blocked_reason"] = blocker
+        ready["blockers"] = [blocker]
+        ready["latest_human_reason"] = (
+            "Crypto scan unavailable — worker has not completed a fresh cycle."
+        )
 
     q_snap = quote_snapshot or ctx.get("quote_snapshot") or {}
     q_diag = quote_diagnostics or ctx.get("quote_diagnostics") or {}
@@ -136,9 +173,6 @@ def build_crypto_trade_decision(
     push_allowed = bool(ready.get("push_allowed")) and quote_ok and spread_ok and meta_ok and min_notional_ok
     can_trade = push_allowed and risk_ok
 
-    blocker = ready.get("push_blocked_reason") or (
-        (ready.get("blockers") or [None])[0] if ready.get("blockers") else None
-    )
     human = ready.get("latest_human_reason") or str(blocker or "unknown")
     if not quote_ok and sym:
         human = f"Crypto quote missing for {sym}"

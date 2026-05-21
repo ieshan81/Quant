@@ -8,6 +8,11 @@ from typing import Any
 import config
 
 
+def parse_heartbeat_age_sec(ts: str | None) -> float | None:
+    """Seconds since UTC timestamp string in heartbeat columns."""
+    return _parse_ts_age_sec(ts)
+
+
 def _parse_ts_age_sec(ts: str | None) -> float | None:
     if not ts:
         return None
@@ -51,9 +56,20 @@ def resolve_worker_ops_status(
     last_cycle = str(hb.get("last_cycle_id") or "")
     hb_age = _parse_ts_age_sec(last_hb)
     cycle_age = _parse_ts_age_sec(str(hb.get("last_successful_cycle_at") or ""))
+    still_alive_flag = int(hb.get("worker_still_alive") or 0) == 1
+    worker_pid = hb.get("worker_pid")
+    try:
+        worker_pid = int(worker_pid) if worker_pid is not None else None
+    except (TypeError, ValueError):
+        worker_pid = None
 
-    process_alive = hb_age is not None and hb_age <= heartbeat_stale_sec
+    heartbeat_fresh = hb_age is not None and hb_age <= heartbeat_stale_sec
+    process_alive = still_alive_flag and heartbeat_fresh
     cycle_fresh = cycle_age is not None and cycle_age <= cycle_stale_sec
+    trading_loop_running = process_alive and str(hb.get("current_cycle_stage") or "") not in (
+        "",
+        "cycle_failed",
+    )
 
     if process_alive and cycle_fresh:
         health = "ok"
@@ -85,6 +101,10 @@ def resolve_worker_ops_status(
 
     return {
         "worker_running": running,
+        "worker_pid": worker_pid,
+        "worker_still_alive_flag": still_alive_flag,
+        "heartbeat_fresh": heartbeat_fresh,
+        "trading_loop_running": trading_loop_running,
         "worker_health": health,
         "process_alive": process_alive,
         "trading_loop_fresh": cycle_fresh,

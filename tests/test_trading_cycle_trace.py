@@ -75,8 +75,8 @@ def test_trading_loop_stale_with_failed_stage(tmp_path: Path) -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO bot_runtime_heartbeat
                 (id, last_worker_heartbeat_at, last_cycle_started_at, last_successful_cycle_at,
-                 failed_cycle_stage, failed_cycle_safe_error, failed_cycle_id, updated_at)
-                VALUES (1, ?, ?, ?, 'scanner_start', 'unit test error', 'fail01', ?)""",
+                 failed_cycle_stage, failed_cycle_safe_error, failed_cycle_id, worker_still_alive, updated_at)
+                VALUES (1, ?, ?, ?, 'scanner_start', 'unit test error', 'fail01', 1, ?)""",
                 (now, now, old, now),
             )
             conn.commit()

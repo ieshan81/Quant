@@ -1206,6 +1206,7 @@ def test_simple_status_endpoint_fast_and_safe(dash_app) -> None:
     data = json.loads(r.data)
     # Required top-level keys
     assert data.get("ok") is True
+    assert data.get("git_commit")
     assert "account" in data
     assert "worker" in data
     assert "trading" in data
@@ -1296,6 +1297,8 @@ def test_crypto_paper_auto_enable_not_blocked_by_ghost_positions() -> None:
         "equity": 200.0,
         "reconciliation_clean": _effective_recon_clean,
         "recovery_block": False,
+        "worker_gate": {"blocked": False},
+        "worker_scan_fresh": True,
     })
     # Executor is enabled; block reason is NOT reconciliation-related
     assert dec.get("executor_enabled") is True

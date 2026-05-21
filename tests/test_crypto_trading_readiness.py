@@ -76,8 +76,9 @@ def test_trading_loop_stale_when_heartbeat_fresh_cycle_old(tmp_path: Path) -> No
         with get_connection(db) as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO bot_runtime_heartbeat
-                (id, last_worker_heartbeat_at, last_successful_cycle_at, last_cycle_id, updated_at)
-                VALUES (1, ?, ?, 'stale123', ?)""",
+                (id, last_worker_heartbeat_at, last_successful_cycle_at, last_cycle_id,
+                 worker_still_alive, updated_at)
+                VALUES (1, ?, ?, 'stale123', 1, ?)""",
                 (now, old, now),
             )
             conn.commit()

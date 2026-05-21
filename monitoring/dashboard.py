@@ -1792,6 +1792,7 @@ def create_app() -> Flask:
         """Railway liveness: no DB, Alpaca, or worker dependency."""
         return jsonify({"ok": True, "service": "quantbot-dashboard"}), 200
 
+    @app.get("/api/debug-status")
     @app.get("/api/simple-status")
     def api_simple_status() -> Response:
         """
@@ -1830,10 +1831,14 @@ def create_app() -> Flask:
         except Exception as exc:
             crypto_brief = {"error": str(exc)[:120]}
 
+        from core.deploy_info import resolve_deploy_info
+
         payload: dict[str, Any] = {
             **base,
             "crypto_status": crypto_brief,
             "mode": config.MODE,
+            "git_commit": base.get("git_commit") or resolve_deploy_info().get("git_commit"),
+            "deploy": base.get("deploy") or resolve_deploy_info(),
         }
         return Response(json.dumps(payload, default=str), mimetype="application/json")
 

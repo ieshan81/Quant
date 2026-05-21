@@ -39,6 +39,7 @@ def ensure_heartbeat_cycle_columns(conn: Any) -> None:
         ("selected_engine", "TEXT"),
         ("candidate_symbol", "TEXT"),
         ("order_submitted", "INTEGER"),
+        ("worker_pid", "INTEGER"),
     )
     for name, typ in cols:
         try:
@@ -73,6 +74,12 @@ class TradingCycleTrace:
     def record_start(self) -> None:
         now = _now()
         try:
+            import os
+
+            pid = int(os.getpid())
+        except Exception:
+            pid = None
+        try:
             from data.data_store import get_connection
 
             with get_connection(timeout_sec=2.0) as conn:
@@ -81,16 +88,17 @@ class TradingCycleTrace:
                     """
                     INSERT INTO bot_runtime_heartbeat (
                         id, last_worker_heartbeat_at, last_cycle_started_at,
-                        current_cycle_stage, worker_still_alive, updated_at
-                    ) VALUES (1, ?, ?, ?, 1, ?)
+                        current_cycle_stage, worker_still_alive, worker_pid, updated_at
+                    ) VALUES (1, ?, ?, ?, 1, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         last_worker_heartbeat_at = excluded.last_worker_heartbeat_at,
                         last_cycle_started_at = excluded.last_cycle_started_at,
                         current_cycle_stage = excluded.current_cycle_stage,
                         worker_still_alive = 1,
+                        worker_pid = excluded.worker_pid,
                         updated_at = excluded.updated_at
                     """,
-                    (now, now, self.stage_name, now),
+                    (now, now, self.stage_name, pid, now),
                 )
                 conn.commit()
         except Exception as exc:
