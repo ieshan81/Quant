@@ -411,6 +411,46 @@ def build_mission_control_summary_minimal(
     except Exception:
         pass
 
+    # Quick position query — same logic as fetch_open_positions_from_trades, fast SQLite only.
+    _positions: list[dict[str, Any]] = []
+    try:
+        import sqlite3 as _sql
+        _pc = _sql.connect(str(config.DB_PATH), timeout=1.0)
+        _pc.row_factory = _sql.Row
+        _prows = _pc.execute(
+            """SELECT asset_class, symbol,
+               SUM(CASE WHEN side='buy' THEN quantity ELSE -quantity END) AS net_qty
+               FROM trades WHERE status='filled'
+               GROUP BY asset_class, symbol HAVING ABS(net_qty)>1e-8"""
+        ).fetchall()
+        _pc.close()
+        _positions = [
+            {
+                "symbol": r["symbol"],
+                "asset_class": r["asset_class"],
+                "net_qty": float(r["net_qty"]),
+            }
+            for r in _prows
+        ]
+    except Exception:
+        pass
+
+    # Build a minimal capital_protection so the MC Capital card is not blank.
+    _eq = float(acct.get("equity") or 0)
+    _bp = float(acct.get("buying_power") or 0)
+    _cash = float(acct.get("cash") or 0)
+    _cap_human = (
+        f"Equity ${_eq:,.2f} · Cash ${_cash:,.2f} · Buying power ${_bp:,.2f}"
+        " (fast path — click Refresh for full capital analysis)."
+    )
+    _capital_protection: dict[str, Any] = {
+        "allocator": {},
+        "dynamic_profile": {},
+        "why_buying_power_low": None,
+        "human_summary": _cap_human,
+        "buying_power_diagnostic": {},
+    }
+
     return {
         "ok": True,
         "simple_fallback": True,
@@ -438,8 +478,8 @@ def build_mission_control_summary_minimal(
             "next_allowed_action": {},
         },
         "recovery_gate": recovery_gate,
-        "capital_protection": {},
-        "positions": {"open": [], "count": 0},
+        "capital_protection": _capital_protection,
+        "positions": {"open": _positions[:20], "count": len(_positions)},
         "crypto_night": {
             "crypto_block_headline": block_headline,
             "push_possible": crypto_dec.get("push_allowed"),

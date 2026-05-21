@@ -3549,7 +3549,7 @@
     prefetchSimpleStatus();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
-    loadAiStatus();
+    // loadAiStatus() is deferred — called lazily by loadAiTab() when the AI tab is opened.
     loadConfigEditor();
     document.querySelectorAll("nav .tab-btn").forEach(function (b) {
       b.addEventListener("click", function () {
