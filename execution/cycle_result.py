@@ -87,8 +87,9 @@ def derive_cycle_outcome(summary: dict[str, Any]) -> dict[str, Any]:
     eh = summary.get("execution_health") or {}
     crypto_r = summary.get("crypto_executor_readiness") or {}
     selected_engine = str(summary.get("selected_engine") or "none")
-    candidate_symbol = str(summary.get("best_candidate_symbol") or "")
+    last_evaluated_symbol = str(summary.get("best_candidate_symbol") or "")
     candidate_action = str(summary.get("best_candidate_action") or "")
+    candidate_score = summary.get("best_candidate_score")
 
     order_submitted = buys > 0 or sells > 0
     order_id_short = str(summary.get("last_order_id_short") or "")
@@ -122,6 +123,20 @@ def derive_cycle_outcome(summary: dict[str, Any]) -> dict[str, Any]:
     else:
         reason = "HOLD"
 
+    # candidate_symbol should represent an actionable candidate only.
+    actionable_candidate = (
+        bool(order_submitted)
+        or bool((summary.get("crypto_executor_readiness") or {}).get("push_allowed"))
+        or (
+            last_evaluated_symbol
+            and candidate_action.upper() == "BUY"
+            and str(reason).upper() not in ("NO_SIGNAL", "NO_CRYPTO_CANDIDATES", "HOLD", "SCORE_BELOW_THRESHOLD")
+        )
+    )
+    candidate_symbol = last_evaluated_symbol if actionable_candidate and last_evaluated_symbol else None
+
+    cycle_diag = summary.get("worker_cycle_diagnostics") if isinstance(summary.get("worker_cycle_diagnostics"), dict) else {}
+
     return {
         "cycle_id": str(summary.get("cycle_id") or ""),
         "cycle_status": "success",
@@ -130,9 +145,18 @@ def derive_cycle_outcome(summary: dict[str, Any]) -> dict[str, Any]:
         "last_no_trade_reason": reason,
         "selected_engine": selected_engine,
         "candidate_symbol": candidate_symbol,
+        "best_candidate_symbol": last_evaluated_symbol or None,
+        "last_evaluated_symbol": last_evaluated_symbol or None,
+        "best_candidate_score": float(candidate_score) if isinstance(candidate_score, (int, float)) else None,
         "candidate_action": candidate_action,
         "order_submitted": order_submitted,
         "order_id_short": order_id_short or None,
+        "last_cycle_duration_ms": cycle_diag.get("last_cycle_duration_ms"),
+        "last_slow_cycle_stage": cycle_diag.get("last_slow_cycle_stage"),
+        "last_slow_cycle_duration_ms": cycle_diag.get("last_slow_cycle_duration_ms"),
+        "db_lock_wait_count_recent": cycle_diag.get("db_lock_wait_count_recent"),
+        "external_api_wait_ms": cycle_diag.get("external_api_wait_ms"),
+        "blocking_section": cycle_diag.get("blocking_section"),
         "account_equity": float(
             bg.get("equity") or eh.get("equity") or summary.get("equity") or summary.get("account_equity") or 0
         ),

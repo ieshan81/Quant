@@ -897,31 +897,15 @@ _PAGE = """<!DOCTYPE html>
         <h3 style="margin:0 0 6px;font-size:0.9rem;">Ask Momo</h3>
         <input type="text" id="mcMomoInput" placeholder="Why no crypto? Why blocked? …" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 8px;font-size:13px;" />
         <div class="mc-quick-btns">
-          <button type="button" class="btn secondary mc-quick" data-q="Why no trade?">Why no trade?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Why no sell?">Why no sell?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Why is buying power low?">Why is buying power low?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Explain my positions">Explain my positions</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Can crypto run tonight?">Can crypto run tonight?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Should I reset runtime?">Should I reset runtime?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="What happened today?">What happened today?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="What should I check before enabling crypto?">Before enabling crypto?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Why no crypto?">Why no crypto?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Why no stock sell?">Why no stock sell?</button>
           <button type="button" class="btn secondary mc-quick" data-q="Summarize risk">Summarize risk</button>
+          <button type="button" class="btn secondary mc-quick" data-q="What changed?">What changed?</button>
         </div>
         <button type="button" id="btnMcAskMomo" class="btn primary">Ask Momo</button>
         <div id="mcMomoAnswer" class="mc-body" style="margin-top:6px;min-height:1.5rem;max-height:120px;overflow:auto;font-size:12px;">—</div>
       </div>
       <pre id="mcDevJson" class="mono sec" style="display:none;">{}</pre>
-      <div class="danger-zone">
-        <h3>Danger zone — runtime reset</h3>
-        <p class="empty-hint" style="margin:0 0 8px;">Preserves Momo memory. Clears stale runtime cache. Type RESET RUNTIME to confirm.</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;">
-          <button type="button" id="btnMcBackup" class="btn secondary">Backup DBs Now</button>
-          <button type="button" id="btnMcResetRuntime" class="btn warning">Reset Runtime State Only</button>
-          <button type="button" id="btnMcResetRuntimeLogs" class="btn warning">Reset Runtime + Cycle Logs</button>
-          <button type="button" id="btnMcResetMomoMemory" class="btn danger">Reset Momo Memory (destructive)</button>
-        </div>
-        <p id="mcResetStatus" class="mono" style="font-size:11px;margin-top:8px;color:var(--muted);"></p>
-      </div>
     </section>
     <section id="panel-overview" class="tab-panel">
       <p id="overviewDataHint" class="muted" style="display:none;margin:0 0 12px;font-size:13px;"></p>
@@ -1145,13 +1129,13 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" id="btCopyReportBtn" disabled>Copy Report</button>
           <button type="button" id="btDownloadReportBtn" disabled>Download Report</button>
         </div>
-        <p id="btStatus" class="bt-status-line" aria-live="polite">Open this tab to load defaults, then configure and run.</p>
+        <p id="btStatus" class="bt-status-line" aria-live="polite">Momo autonomous backtesting is not enabled yet. Manual backtest remains available.</p>
         <div id="btRunError" class="bt-run-error" role="alert" style="display:none;"></div>
       </div>
 
       <section id="btResultSummarySection" class="card bt-results-card" aria-labelledby="btResultSummaryHeading">
         <h2 id="btResultSummaryHeading">Backtest Result Summary</h2>
-        <p id="btNoRunHint" class="empty-hint">No backtest run yet. Configure inputs and click Run Backtest.</p>
+        <p id="btNoRunHint" class="empty-hint">No manual backtest run yet. Configure inputs and click Run Backtest.</p>
         <div id="btSummaryMetricsWrap" class="grid-metrics" style="display:none;">
           <div class="metric"><div class="lab">Starting Cash</div><div class="val mono" id="btMetricStartingCash">—</div></div>
           <div class="metric"><div class="lab">Final Equity</div><div class="val mono" id="btMetricFinalEquity">—</div></div>

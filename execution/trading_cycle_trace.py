@@ -38,7 +38,17 @@ def ensure_heartbeat_cycle_columns(conn: Any) -> None:
         ("last_no_trade_reason", "TEXT"),
         ("selected_engine", "TEXT"),
         ("candidate_symbol", "TEXT"),
+        ("best_candidate_symbol", "TEXT"),
+        ("last_evaluated_symbol", "TEXT"),
+        ("best_candidate_score", "REAL"),
         ("order_submitted", "INTEGER"),
+        ("last_cycle_duration_ms", "REAL"),
+        ("max_cycle_duration_ms_recent", "REAL"),
+        ("last_slow_cycle_stage", "TEXT"),
+        ("last_slow_cycle_duration_ms", "REAL"),
+        ("db_lock_wait_count_recent", "INTEGER"),
+        ("external_api_wait_ms", "REAL"),
+        ("blocking_section", "TEXT"),
         ("worker_pid", "INTEGER"),
     )
     for name, typ in cols:
@@ -138,7 +148,20 @@ class TradingCycleTrace:
                         last_no_trade_reason = ?,
                         selected_engine = ?,
                         candidate_symbol = ?,
+                        best_candidate_symbol = ?,
+                        last_evaluated_symbol = ?,
+                        best_candidate_score = COALESCE(?, best_candidate_score),
                         order_submitted = ?,
+                        last_cycle_duration_ms = COALESCE(?, last_cycle_duration_ms),
+                        max_cycle_duration_ms_recent = CASE
+                            WHEN COALESCE(?, 0) > COALESCE(max_cycle_duration_ms_recent, 0) THEN ?
+                            ELSE COALESCE(max_cycle_duration_ms_recent, ?)
+                        END,
+                        last_slow_cycle_stage = COALESCE(?, last_slow_cycle_stage),
+                        last_slow_cycle_duration_ms = COALESCE(?, last_slow_cycle_duration_ms),
+                        db_lock_wait_count_recent = COALESCE(?, db_lock_wait_count_recent),
+                        external_api_wait_ms = COALESCE(?, external_api_wait_ms),
+                        blocking_section = COALESCE(?, blocking_section),
                         updated_at = ?
                     WHERE id = 1
                     """,
@@ -152,7 +175,19 @@ class TradingCycleTrace:
                         outcome.get("last_no_trade_reason"),
                         outcome.get("selected_engine"),
                         outcome.get("candidate_symbol"),
+                        outcome.get("best_candidate_symbol"),
+                        outcome.get("last_evaluated_symbol"),
+                        outcome.get("best_candidate_score"),
                         1 if outcome.get("order_submitted") else 0,
+                        outcome.get("last_cycle_duration_ms"),
+                        outcome.get("last_cycle_duration_ms"),
+                        outcome.get("last_cycle_duration_ms"),
+                        outcome.get("last_cycle_duration_ms"),
+                        outcome.get("last_slow_cycle_stage"),
+                        outcome.get("last_slow_cycle_duration_ms"),
+                        outcome.get("db_lock_wait_count_recent"),
+                        outcome.get("external_api_wait_ms"),
+                        outcome.get("blocking_section"),
                         now,
                     ),
                 )

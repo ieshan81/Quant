@@ -263,10 +263,32 @@ def fetch_ops_logs(
                     d[k.replace("_json", "")] = json.loads(str(d[k]))
                 except json.JSONDecodeError:
                     pass
-        out.append(d)
+        if not _is_non_failure_cycle_complete_error(d):
+            out.append(d)
     if out:
         return out
-    return _fetch_ops_logs_fallback(limit=limit)
+    return [r for r in _fetch_ops_logs_fallback(limit=limit) if not _is_non_failure_cycle_complete_error(r)]
+
+
+def _is_non_failure_cycle_complete_error(row: dict[str, Any]) -> bool:
+    """Hide legacy cycle_complete error rows that contain no failure evidence."""
+    level = str(row.get("level") or "").lower()
+    if level != "error":
+        return False
+    event_type = str(row.get("event_type") or "").lower()
+    message = str(row.get("message") or "").lower()
+    if event_type != "cycle_complete" and "cycle_complete" not in message:
+        return False
+    reason_code = str(row.get("reason_code") or "").strip()
+    if reason_code and reason_code not in ("ORDER_SUBMITTED", "NO_SIGNAL", "HOLD"):
+        return False
+    ev = row.get("evidence") if isinstance(row.get("evidence"), dict) else {}
+    if any(
+        ev.get(k)
+        for k in ("failed_stage", "failed_cycle_stage", "failed_safe_error", "exception", "traceback")
+    ):
+        return False
+    return True
 
 
 def _fetch_ops_logs_fallback(*, limit: int) -> list[dict[str, Any]]:

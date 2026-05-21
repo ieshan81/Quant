@@ -82,7 +82,7 @@ def build_crypto_pull_status(
     reconcile_issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Sell/monitor existing crypto — independent of push/no-candidate."""
-    dust_rows = _crypto_dust_rows(positions)
+    dust_rows = _crypto_dust_rows(positions, exit_rows)
     dust_syms = {str(d.get("symbol") or "") for d in dust_rows}
     crypto_pos = [p for p in _open_crypto_positions(positions) if str(p.get("symbol") or "") not in dust_syms]
     if not crypto_pos:
@@ -95,7 +95,7 @@ def build_crypto_pull_status(
             return {
                 "status": "no_actionable_position",
                 "label": "Dust Only",
-                "reason_code": "CRYPTO_DUST_POSITION",
+                "reason_code": primary.get("reason_code") or "CRYPTO_DUST_POSITION",
                 "human_reason": msg,
                 "can_sell": False,
                 "headline": msg,
@@ -197,21 +197,51 @@ def _symbol_reconcile_issue(symbol: str, issues: list[dict[str, Any]]) -> dict[s
     return {}
 
 
-def _crypto_dust_rows(positions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def _crypto_dust_rows(
+    positions: list[dict[str, Any]] | None,
+    exit_rows: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
     min_notional = max(1.0, float(getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0))
-    out: list[dict[str, Any]] = []
+    merged: dict[str, dict[str, Any]] = {}
     for p in positions or []:
         ac = str(p.get("asset_class") or "").lower()
         if ac != "crypto":
             continue
         sym = position_key_symbol("crypto", str(p.get("symbol") or ""))
+        rec = dict(merged.get(sym) or {})
+        rec.update(p)
+        rec["symbol"] = sym
+        rec["from_positions"] = True
+        merged[sym] = rec
+    for row in exit_rows or []:
+        ac = str(row.get("asset_class") or row.get("symbol_type") or "").lower()
+        if ac and ac != "crypto":
+            continue
+        sym_raw = str(row.get("symbol") or "")
+        if not sym_raw:
+            continue
+        sym = position_key_symbol("crypto", sym_raw)
+        rec = dict(merged.get(sym) or {})
+        rec["symbol"] = sym
+        rec["broker_qty"] = row.get("broker_qty", rec.get("broker_qty"))
+        rec["qty"] = row.get("broker_qty", rec.get("qty"))
+        rec["current_price"] = row.get("current_price", rec.get("current_price"))
+        rec["market_value"] = row.get("market_value", rec.get("market_value"))
+        rec["exit_source"] = row.get("source") or row.get("evidence_source")
+        rec["from_exit_rows"] = True
+        merged[sym] = rec
+
+    out: list[dict[str, Any]] = []
+    for sym, p in merged.items():
         qty = float(p.get("net_qty") or p.get("broker_qty") or p.get("quantity") or p.get("qty") or 0)
         if qty <= 1e-9:
             continue
         px = float(p.get("current_price") or p.get("mark_price") or p.get("price") or p.get("avg_entry_price") or 0)
-        notional = abs(qty) * px if px > 0 else 0.0
+        notional = abs(qty) * px if px > 0 else float(abs(float(p.get("market_value") or 0)))
         if notional <= 0 or notional >= min_notional:
             continue
+        local_only = _is_local_only_dust_source(p)
+        reason_code = "STALE_CRYPTO_DUST_LOCAL" if local_only else "CRYPTO_DUST_POSITION"
         out.append(
             {
                 "symbol": sym,
@@ -219,7 +249,17 @@ def _crypto_dust_rows(positions: list[dict[str, Any]] | None) -> list[dict[str, 
                 "qty": qty,
                 "notional_usd": round(notional, 4),
                 "min_notional_usd": round(min_notional, 2),
-                "reason_code": "CRYPTO_DUST_POSITION",
+                "reason_code": reason_code,
+                "classification": "local_stale_dust" if local_only else "broker_dust",
             }
         )
     return out
+
+
+def _is_local_only_dust_source(row: dict[str, Any]) -> bool:
+    src = str(row.get("exit_source") or "").lower()
+    if src and "broker" in src:
+        return False
+    if src and ("local" in src or "sqlite" in src or "stale" in src):
+        return True
+    return not bool(row.get("from_positions")) and bool(row.get("from_exit_rows"))

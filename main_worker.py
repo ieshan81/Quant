@@ -3996,6 +3996,7 @@ def run_trading_cycle_once(
 
     _trace = start_cycle()
     cid = _trace.cycle_id
+    _cycle_t0 = time.perf_counter()
     from core.paper_trading_path import load_runtime_config_for_worker
 
     rt = dict(load_runtime_config_for_worker(config.DB_PATH))
@@ -4861,6 +4862,10 @@ def run_trading_cycle_once(
     summary["selected_engine"] = "stock" if stocks_open else ("crypto" if cr else "none")
     if sorted_crypto_scores:
         summary["best_candidate_symbol"] = sorted_crypto_scores[0][0]
+        try:
+            summary["best_candidate_score"] = float(sorted_crypto_scores[0][1])
+        except Exception:
+            summary["best_candidate_score"] = None
         summary["best_candidate_action"] = "BUY"
     try:
         from execution.crypto_trade_decision import build_crypto_trade_decision
@@ -4886,6 +4891,35 @@ def run_trading_cycle_once(
             safe_error=str(exc)[:200]
         )
     summary["equity"] = float(equity or trader.equity_total())
+    cycle_duration_ms = max(0.0, round((time.perf_counter() - _cycle_t0) * 1000.0, 2))
+    slow_threshold_ms = float(rt.get("worker_stale_threshold_seconds", 180) or 180) * 1000.0
+    slow_stage = None
+    if cycle_duration_ms > slow_threshold_ms:
+        slow_stage = str(getattr(_trace, "stage_name", "") or "unknown")
+        try:
+            write_ops_event(
+                level="warning",
+                event_type="WORKER_CYCLE_SLOW",
+                message=f"Cycle exceeded slow threshold ({cycle_duration_ms/1000.0:.1f}s).",
+                cycle_id=cid,
+                reason_code="WORKER_CYCLE_SLOW",
+                evidence={
+                    "last_cycle_duration_ms": cycle_duration_ms,
+                    "slow_threshold_ms": slow_threshold_ms,
+                    "current_cycle_stage": slow_stage,
+                    "blocking_section": slow_stage,
+                },
+            )
+        except Exception:
+            logger.debug("[cycle] WORKER_CYCLE_SLOW emit skipped", exc_info=True)
+    summary["worker_cycle_diagnostics"] = {
+        "last_cycle_duration_ms": cycle_duration_ms,
+        "last_slow_cycle_stage": slow_stage,
+        "last_slow_cycle_duration_ms": cycle_duration_ms if slow_stage else None,
+        "db_lock_wait_count_recent": 0,
+        "external_api_wait_ms": None,
+        "blocking_section": slow_stage,
+    }
     _trace.stage("cycle_success")
     try:
         from execution.cycle_result import persist_cycle_outcome

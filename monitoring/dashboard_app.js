@@ -189,6 +189,25 @@
     return "";
   }
 
+  function buildNoTradeHint(trading) {
+    var t = trading && typeof trading === "object" ? trading : {};
+    var reason = String(t.last_no_trade_reason || "").toUpperCase();
+    var best = t.best_candidate_symbol || t.last_evaluated_symbol || "";
+    var score = t.best_candidate_score != null ? Number(t.best_candidate_score) : null;
+    var th = t.score_threshold != null ? Number(t.score_threshold) : null;
+    if (!reason) return "";
+    if (reason === "NO_SIGNAL" || reason === "SCORE_BELOW_THRESHOLD") {
+      if (best && score != null && isFiniteNum(score)) {
+        if (th != null && isFiniteNum(th)) {
+          return "No trade: best symbol " + best + " scored " + score.toFixed(3) + " below threshold " + th.toFixed(3) + ".";
+        }
+        return "No trade: best symbol " + best + " scored " + score.toFixed(3) + ".";
+      }
+      return "No crypto candidate passed scanner.";
+    }
+    return "Last cycle: " + reason + ".";
+  }
+
   // ---------------------------------------------------------------------------
   // Payload mapping
   // ---------------------------------------------------------------------------
@@ -1013,7 +1032,7 @@
   // ---------------------------------------------------------------------------
 
   function renderOverview(vm) {
-    var hint = vm.overviewHint || (vm.simpleStatus && vm.simpleStatus.trading && vm.simpleStatus.trading.last_no_trade_reason);
+    var hint = vm.overviewHint || buildNoTradeHint(vm.simpleStatus && vm.simpleStatus.trading);
     var hintEl = document.getElementById("overviewDataHint");
     if (hintEl) {
       if (hint) {
@@ -1389,9 +1408,9 @@
       // Hint text.
       var hintEl = document.getElementById("overviewDataHint");
       if (hintEl && hintEl.style.display !== "none") {
-        var hint = noTradeReason || cryptoReason;
+        var hint = buildNoTradeHint(trading) || noTradeReason || cryptoReason;
         if (hint) {
-          hintEl.textContent = "Last cycle: " + String(hint);
+          hintEl.textContent = String(hint);
           hintEl.style.display = "block";
         } else if (eq != null) {
           hintEl.style.display = "none";
@@ -2765,6 +2784,7 @@
             ", runtime: " + safeText(tr.runtime_positions_count, "—") +
             ", mismatches: " + safeText(tr.broker_local_mismatch_count, "0") + "."
           );
+          if (tr.confidence_reason) lines.push(safeText(tr.confidence_reason, ""));
           if (tr.runtime_reset_recommended) {
             lines.push("Runtime reset is recommended if issues persist after reviewing positions.");
           }
@@ -2788,7 +2808,11 @@
         render: function () {
           var push = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
           var parts = [safeText(push.headline || push.human_reason, "Crypto push status unknown.")];
-          if (push.reason_code) parts.push("Code: " + esc(String(push.reason_code)));
+          var t = d.trading || {};
+          if (!push.push_allowed && (t.last_no_trade_reason === "NO_SIGNAL" || t.last_no_trade_reason === "SCORE_BELOW_THRESHOLD")) {
+            var best = t.best_candidate_symbol || t.last_evaluated_symbol;
+            if (best) parts.push("Last evaluated: " + esc(String(best)) + " (not actionable).");
+          }
           return parts.join("\n");
         }
       },
@@ -2848,6 +2872,15 @@
             if (oh.worker_pid != null) parts.push("Worker PID: " + String(oh.worker_pid));
             if (oh.last_cycle_id) parts.push("Last cycle: " + esc(oh.last_cycle_id));
             if (oh.last_cycle_age_seconds != null) parts.push("Cycle age: " + esc(String(oh.last_cycle_age_seconds)) + "s");
+            if (oh.last_slow_cycle_duration_ms != null) {
+              parts.push(
+                "Last cycle slow: " +
+                (Number(oh.last_slow_cycle_duration_ms) / 1000).toFixed(1) +
+                "s at stage " + esc(String(oh.last_slow_cycle_stage || "unknown")) + "."
+              );
+            } else if (oh.last_cycle_duration_ms != null) {
+              parts.push("Last cycle duration: " + (Number(oh.last_cycle_duration_ms) / 1000).toFixed(1) + "s.");
+            }
           }
           if (Object.keys(tg).length) {
             var tgLine = tg.status_message || (

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import config
@@ -38,6 +39,19 @@ def _confidence_rank(level: str) -> int:
 
 def _max_confidence(a: str, b: str) -> str:
     return a if _confidence_rank(a) >= _confidence_rank(b) else b
+
+
+def _is_fresh_timestamp(ts: str | None, *, max_age_seconds: int = 240) -> bool:
+    if not ts:
+        return False
+    raw = str(ts).strip().replace(" UTC", "+00:00").replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - dt).total_seconds() <= float(max_age_seconds)
 
 
 def build_broker_account_transition_status(
@@ -113,6 +127,14 @@ def build_broker_account_transition_status(
         and stale_runtime_rows_count == 0
         and not runtime_reset_recommended
     )
+    fresh_sync = _is_fresh_timestamp(last_broker_sync_at) and _is_fresh_timestamp(last_runtime_reset_at)
+
+    if aligned and fresh_sync:
+        confidence = "high"
+    elif aligned:
+        confidence = _max_confidence(confidence, "medium")
+    elif broker_local_mismatch_count == 0 and stale_runtime_rows_count == 0:
+        confidence = _max_confidence(confidence, "medium")
 
     if aligned:
         headline = "No runtime reset required. Runtime appears aligned with broker."
@@ -154,6 +176,15 @@ def build_broker_account_transition_status(
         "last_broker_sync_at": last_broker_sync_at,
         "last_runtime_reset_at": last_runtime_reset_at,
         "detection_reasons": detection_reasons,
+        "confidence_reason": (
+            "Broker/runtime aligned with fresh sync timestamps."
+            if confidence == "high"
+            else (
+                "Broker/runtime counts align; sync timestamps are not fresh."
+                if confidence == "medium" and aligned
+                else ("; ".join(detection_reasons) if detection_reasons else "Insufficient broker/runtime evidence.")
+            )
+        ),
         "momo_memory_preserved": True,
         # Legacy keys (deprecated wording — do not use in UI)
         "detected": not aligned,
