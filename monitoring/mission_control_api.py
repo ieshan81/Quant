@@ -431,6 +431,7 @@ def build_mission_control_summary_minimal(
                 "net_qty": float(r["net_qty"]),
             }
             for r in _prows
+            if float(r["net_qty"]) > 0  # exclude negative-qty ghost artifacts
         ]
     except Exception:
         pass
