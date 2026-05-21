@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Callable
 
 _LOCK = threading.Lock()
@@ -16,6 +17,13 @@ _CACHE: dict[str, Any] = {
     "error": None,
 }
 DEFAULT_TTL_SEC = 8.0
+DEFAULT_BUILD_TIMEOUT_SEC = 12.0
+
+
+def _minimal_fallback(err: str | None) -> dict[str, Any]:
+    from monitoring.mission_control_api import build_mission_control_summary_minimal
+
+    return build_mission_control_summary_minimal(degraded_reason=err)
 
 
 def get_mission_control_cached(
@@ -23,6 +31,7 @@ def get_mission_control_cached(
     *,
     force_refresh: bool = False,
     ttl_sec: float = DEFAULT_TTL_SEC,
+    build_timeout_sec: float = DEFAULT_BUILD_TIMEOUT_SEC,
 ) -> dict[str, Any]:
     now = time.time()
     with _LOCK:
@@ -41,10 +50,14 @@ def get_mission_control_cached(
 
     t0 = time.perf_counter()
     err: str | None = None
+    fresh: dict[str, Any] | None = None
     try:
-        fresh = builder()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(builder)
+            fresh = fut.result(timeout=max(1.0, float(build_timeout_sec)))
+    except FuturesTimeoutError:
+        err = f"Mission Control build timed out after {build_timeout_sec:.0f}s"
     except Exception as exc:
-        fresh = None
         err = str(exc)[:200]
     duration_ms = round((time.perf_counter() - t0) * 1000, 1)
 
@@ -72,10 +85,4 @@ def get_mission_control_cached(
             out["stale_warning"] = "Showing last known Mission Control data; refresh failed."
             return out
 
-    return {
-        "ok": False,
-        "error": err or "Mission Control unavailable",
-        "stale": True,
-        "cache_age_seconds": None,
-        "backend_duration_ms": duration_ms,
-    }
+    return _minimal_fallback(err or "Mission Control unavailable")

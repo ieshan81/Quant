@@ -3785,7 +3785,9 @@ def run_trading_cycle_once(
 
     _trace = start_cycle()
     cid = _trace.cycle_id
-    rt = dict(load_runtime_config_dict())
+    from core.paper_trading_path import load_runtime_config_for_worker
+
+    rt = dict(load_runtime_config_for_worker(config.DB_PATH))
     _recon_clean = bool(
         (_startup_recovery_state.get("reconciliation_health") or {}).get("clean", True)
     )
@@ -4680,9 +4682,17 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     from market_hours import nyse_regular_session_open
 
     logger.info(f"[startup] DB_PATH={config.DB_PATH}")
-    logger.info(
-        f"[startup] buy_threshold={get_config('buy_threshold')} crypto_buy_threshold={get_config('crypto_buy_threshold')}"
-    )
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        _log_rt = load_runtime_config_for_worker(config.DB_PATH)
+        logger.info(
+            "[startup] buy_threshold={} crypto_buy_threshold={}",
+            _log_rt.get("buy_threshold"),
+            _log_rt.get("crypto_buy_threshold"),
+        )
+    except Exception:
+        logger.info("[startup] runtime config log skipped (using defaults at cycle time)")
     logger.info(f"[startup] market_open_right_now={nyse_regular_session_open()}")
     logger.info("QuantBot worker | mode={} | db={}", config.MODE, config.DB_PATH)
 
@@ -4699,7 +4709,9 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
 
     from monitoring.notification_gate import send_startup_notification
     try:
-        rt = load_runtime_config_dict(config.DB_PATH)
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
     except Exception:
         rt = None
     send_startup_notification(rt, db_path=config.DB_PATH)
@@ -4759,7 +4771,9 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
         _cfg_float as _ngate_cfg_float,
     )
     try:
-        _startup_rt = load_runtime_config_dict(config.DB_PATH)
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        _startup_rt = load_runtime_config_for_worker(config.DB_PATH)
     except Exception:
         _startup_rt = None
     _hard_fail = _ngate_cfg_float(_startup_rt, "broker_startup_hard_fail") >= 0.5
@@ -4933,9 +4947,16 @@ def run_worker_forever() -> None:
                     run_trading_cycle_once(trader, universe, market_ctx)
                 except Exception as _cycle_exc:
                     from execution.trading_cycle_trace import capture_cycle_exception
+                    from core.paper_trading_path import should_continue_worker_after_cycle_failure
 
                     capture_cycle_exception(_cycle_exc)
-                    raise
+                    if should_continue_worker_after_cycle_failure():
+                        logger.error(
+                            "[cycle] failed (paper continues): {}",
+                            str(_cycle_exc)[:200],
+                        )
+                    else:
+                        raise
                 if not _stop.is_set():
                     time.sleep(_trade_interval_sec())
         except Exception as e:
@@ -4944,7 +4965,9 @@ def run_worker_forever() -> None:
             logger.error("[worker] Restarting in 10 seconds (positions preserved)...")
             from monitoring.notification_gate import send_error_alert, WORKER_CRASHED
             try:
-                _rt = load_runtime_config_dict(config.DB_PATH)
+                from core.paper_trading_path import load_runtime_config_for_worker
+
+                _rt = load_runtime_config_for_worker(config.DB_PATH)
             except Exception:
                 _rt = None
             send_error_alert(

@@ -1054,7 +1054,7 @@ def reset_bot_config_to_defaults(db_path: Path | str | None = None) -> None:
 
 def load_runtime_config_dict(db_path: Path | str | None = None) -> dict[str, float]:
     """Numeric ``bot_config`` rows as ``key -> float`` (skips JSON snapshots and string keys)."""
-    from core.safe_numeric import is_bot_config_numeric_value
+    from core.safe_numeric import is_bot_config_numeric_value, parse_float
 
     with get_connection(db_path) as conn:
         rows = conn.execute("SELECT key, value FROM bot_config").fetchall()
@@ -1063,8 +1063,26 @@ def load_runtime_config_dict(db_path: Path | str | None = None) -> dict[str, flo
         k = str(key)
         if not is_bot_config_numeric_value(k, val, non_numeric_keys=BOT_CONFIG_NON_NUMERIC_KEYS):
             continue
-        out[k] = float(val)
+        try:
+            out[k] = parse_float(val, field_name=k)
+        except (TypeError, ValueError):
+            continue
     return out
+
+
+def load_runtime_config_dict_safe(db_path: Path | str | None = None) -> dict[str, float]:
+    """Like load_runtime_config_dict but never raises; returns code defaults on failure."""
+    from core.paper_trading_path import default_runtime_config
+
+    try:
+        loaded = load_runtime_config_dict(db_path)
+        if not loaded:
+            return default_runtime_config()
+        base = default_runtime_config()
+        base.update(loaded)
+        return base
+    except Exception:
+        return default_runtime_config()
 
 
 def _parse_backtest_config_value(value: str, value_type: str) -> Any:

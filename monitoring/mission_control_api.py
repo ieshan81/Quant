@@ -335,6 +335,73 @@ def _assemble_summary(
     }
 
 
+def build_mission_control_summary_minimal(
+    *,
+    degraded_reason: str | None = None,
+) -> dict[str, Any]:
+    """Heartbeat-only summary when full Mission Control build fails or times out."""
+    from datetime import datetime, timezone
+
+    from monitoring.canonical_account import resolve_canonical_account_metrics
+    from monitoring.worker_status import resolve_worker_ops_status
+
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    worker = resolve_worker_ops_status()
+    acct = resolve_canonical_account_metrics(live_broker=False)
+    eq = float(acct.get("equity") or worker.get("last_equity") or 0)
+    cash = float(acct.get("cash") or 0)
+    bp = float(acct.get("buying_power") or worker.get("last_buying_power") or 0)
+    reason = (degraded_reason or "advanced_mission_control_unavailable")[:200]
+    return {
+        "ok": True,
+        "simple_fallback": True,
+        "generated_at": generated,
+        "degraded": True,
+        "degraded_reason": reason,
+        "topline": {
+            "equity": eq,
+            "cash": cash,
+            "buying_power": bp,
+            "mode": config.MODE,
+            "mission_mode": "STARTUP",
+            "account_source": acct.get("primary_source") or "worker_heartbeat",
+        },
+        "account": {
+            "equity": eq,
+            "cash": cash,
+            "buying_power": bp,
+            "mode": config.MODE,
+            "live_enabled": config.trading_is_live(),
+            "account_source": acct.get("primary_source") or "worker_heartbeat",
+        },
+        "ops_health": worker,
+        "mission": {"mission_mode": "STARTUP", "next_allowed_action": {}},
+        "capital_protection": {},
+        "positions": {"open": [], "count": 0},
+        "crypto_night": {"crypto_block_headline": "Mission Control degraded — worker heartbeat only."},
+        "crypto_eligibility": {
+            "can_trade_crypto": False,
+            "reason_code": "MC_DEGRADED",
+            "human_reason": reason,
+        },
+        "crypto_executor_readiness": {
+            "push_allowed": False,
+            "can_trade_crypto": False,
+            "reason_code": "MC_DEGRADED",
+            "human_reason": reason,
+        },
+        "momo_summary": {
+            "saw": ["Mission Control using simple worker heartbeat fallback."],
+            "did": [],
+            "refused": [],
+            "learned": [],
+            "attention": [reason] if reason else [],
+        },
+        "momo_status": build_momo_status(),
+        "performance": {"lightweight": True, "simple_fallback": True},
+    }
+
+
 def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str, Any]:
     """Lightweight summary — canonical account metrics + DB execution health."""
     deferred_n = 0
@@ -395,7 +462,7 @@ def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str
             include_notes=False,
         )
     except Exception as exc:
-        return {"ok": False, "error": str(exc)[:200], "momo_status": build_momo_status()}
+        return build_mission_control_summary_minimal(degraded_reason=str(exc)[:200])
 
 
 def build_mission_control_summary() -> dict[str, Any]:

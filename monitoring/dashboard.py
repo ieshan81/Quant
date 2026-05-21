@@ -2196,6 +2196,14 @@ def create_app() -> Flask:
             )
         ms = timer.finish(cache_hit=payload.get("cache_hit"))
         payload["backend_duration_ms"] = payload.get("backend_duration_ms") or ms
+        if not payload or payload.get("ok") is False:
+            from monitoring.mission_control_api import build_mission_control_summary_minimal
+
+            payload = build_mission_control_summary_minimal(
+                degraded_reason=str(payload.get("error") or "mission_control_unavailable")[:200],
+            )
+            payload["backend_duration_ms"] = ms
+            payload["cache_hit"] = False
         body = json.dumps(payload, default=str)
         return Response(body, mimetype="application/json")
 

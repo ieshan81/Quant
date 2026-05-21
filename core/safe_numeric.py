@@ -126,7 +126,7 @@ def is_bot_config_numeric_value(
     if isinstance(value, str) and looks_like_json_object_string(value):
         return False
     try:
-        float(value)
+        parse_float(value, field_name=key)
         return True
     except (TypeError, ValueError):
         return False

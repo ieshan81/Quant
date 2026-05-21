@@ -13,6 +13,7 @@ from core.safe_numeric import (
     parse_account_snapshot_json,
     parse_float,
 )
+from core.paper_trading_path import load_runtime_config_for_worker
 from data.data_store import (
     BOT_CONFIG_NON_NUMERIC_KEYS,
     get_connection,
