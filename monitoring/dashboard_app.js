@@ -884,8 +884,11 @@
     }
   }
 
+  var _eqFetchGen = 0;
+
   function _loadEquityRange(range) {
     _eqCurrentRange = range;
+    var gen = ++_eqFetchGen;
     document.querySelectorAll(".eq-range-btn").forEach(function (b) {
       b.classList.toggle("eq-range-active", b.getAttribute("data-range") === range);
     });
@@ -898,40 +901,47 @@
       eqHint.style.display = "block";
       eqHint.textContent = "Loading " + range + "…";
     }
-    fetch("/api/equity/history?range=" + encodeURIComponent(range), { headers: _authHeaders(), cache: "no-store" })
+    var t0 = Date.now();
+    fetch("/api/account/history?range=" + encodeURIComponent(range), { headers: _authHeaders(), cache: "no-store" })
       .then(function (r) {
         if (!r.ok) throw new Error("/api/equity/history HTTP " + r.status);
         return r.json();
       })
       .then(function (d) {
-        var series = d.series || [];
+        if (gen !== _eqFetchGen) return;
+        var raw = d.points || d.series || d.legacy_equity_series || [];
+        var series = raw.map(function (p) {
+          return {
+            snapshot_at: p.timestamp || p.snapshot_at || p.ts,
+            equity_total: p.equity != null ? p.equity : p.equity_total,
+            cash_total: p.cash,
+            buying_power: p.buying_power
+          };
+        });
         var meta = document.getElementById("eqRangeChange");
+        var ms = Date.now() - t0;
         if (meta) {
-          var start = series.length ? _fmtEqLabel(series[0].snapshot_at || series[0].ts || series[0].date) : "—";
-          var end = series.length ? _fmtEqLabel(series[series.length - 1].snapshot_at || series[series.length - 1].ts || series[series.length - 1].date) : "—";
-          meta.textContent = range + " · " + (d.count || series.length) + " pts · " + start + " → " + end;
+          var start = series.length ? _fmtEqLabel(series[0].snapshot_at) : "—";
+          var end = series.length ? _fmtEqLabel(series[series.length - 1].snapshot_at) : "—";
+          meta.textContent = range + " · " + (d.count || series.length) + " pts · " + start + " → " + end + " · " + ms + "ms";
         }
-        if (d.warning && eqHint) {
-          eqHint.style.display = "block";
-          eqHint.textContent = d.warning.indexOf("Not enough") >= 0 ? d.warning : "Not enough history for this range yet.";
-        } else if (!series.length && eqHint) {
-          eqHint.style.display = "block";
-          eqHint.textContent = "Not enough history for " + range + " yet.";
+        if (d.insufficient_history || !series.length) {
+          if (eqHint) {
+            eqHint.style.display = "block";
+            eqHint.textContent = d.message || "Not enough history for this range yet.";
+          }
         } else if (eqHint) {
           eqHint.style.display = "none";
         }
         renderEquityChart({ equitySeries: series });
         var noteEl = document.getElementById("eqHistoryNote");
+        var sa = d.series_available || {};
         if (noteEl) {
-          var hasCash = series.some(function (p) { return p.cash != null || p.cash_total != null; });
-          var hasBp = series.some(function (p) { return p.buying_power != null; });
-          var hasExp = series.some(function (p) { return p.stock_exposure != null || p.crypto_exposure != null; });
-          if (!hasCash && !hasBp && !hasExp) {
+          if (!sa.cash && !sa.buying_power && !sa.stock_exposure) {
             noteEl.style.display = "block";
-            noteEl.textContent = "Only equity history is available. Cash/BP/exposure history will appear after snapshots accumulate.";
+            noteEl.textContent = "Only equity history is available. Cash/BP/exposure history will appear after worker snapshots accumulate.";
           } else {
             noteEl.style.display = "none";
-            noteEl.textContent = "";
           }
         }
       })
@@ -1319,7 +1329,7 @@
   function tabNameFromHash() {
     var raw = (typeof location !== "undefined" && location.hash) ? String(location.hash) : "";
     var h = raw.replace(/^#/, "").trim().toLowerCase();
-    var valid = ["mission", "overview", "positions", "activity", "backtest", "ai", "ops", "files"];
+    var valid = ["mission", "overview", "positions", "activity", "backtest", "ai", "ops", "files", "config"];
     if (valid.indexOf(h) >= 0) return h;
     return "mission";
   }
@@ -1351,7 +1361,11 @@
         panels[i].classList.toggle("active", panels[i].id === "panel-" + name);
       }
       syncHashToTab(name);
-      if (name === "mission") loadMissionTab();
+      if (name === "mission") {
+        loadMissionTab(false);
+        scheduleMissionGraphLoad();
+      }
+      if (name === "config") loadConfigEditor();
       if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
       if (name === "ops") loadOpsTab();
       if (name === "files") loadFilesTab();
@@ -2682,13 +2696,28 @@
     });
   }
 
-  function loadMissionTab() {
+  function _updateMcPerf(d, refreshing) {
+    var perf = document.getElementById("mcPerfStatus");
+    if (!perf) return;
+    var parts = [];
+    if (refreshing) parts.push("Refreshing…");
+    if (d && d.stale_warning) parts.push(d.stale_warning);
+    if (d && d.cache_age_seconds != null) parts.push("Cache " + d.cache_age_seconds + "s");
+    if (d && d.backend_duration_ms != null) parts.push("API " + d.backend_duration_ms + "ms");
+    parts.push("GPT bundle: not loaded");
+    parts.push("Momo: on demand");
+    perf.textContent = parts.join(" · ");
+  }
+
+  function loadMissionTab(force) {
     var st = document.getElementById("mcStatus");
     if (_mcCache) {
       try { renderMissionControl(_mcCache); } catch (e0) {}
+      _updateMcPerf(_mcCache, true);
     }
-    if (st && !_mcCache) st.textContent = "Loading /api/mission-control/summary…";
-    fetch("/api/mission-control/summary", { cache: "no-store" })
+    if (st) st.textContent = force ? "Refreshing…" : (_mcCache ? "Refreshing quietly…" : "Loading Mission Control…");
+    var url = "/api/mission-control/summary" + (force ? "?force=1" : "");
+    fetch(url, { cache: "no-store" })
       .then(function (r) {
         if (!r.ok) {
           return r.text().then(function (txt) {
@@ -2710,7 +2739,10 @@
           if (d) renderMissionControl(d);
           return;
         }
-        if (st) st.textContent = "Updated " + new Date().toLocaleString();
+        if (st) {
+          st.textContent = (d.stale_warning ? d.stale_warning + " · " : "") + "Updated " + new Date().toLocaleString();
+        }
+        _updateMcPerf(d, false);
         try {
           renderMissionControl(d);
         } catch (renderErr) {
@@ -2719,10 +2751,34 @@
       })
       .catch(function (e) {
         if (st) st.textContent = safeText(e && e.message, String(e));
-        ["mcAccount", "mcMission", "mcCapital", "mcBroker", "mcPositions", "mcCrypto", "mcMomo", "mcOps"].forEach(function (id) {
-          setMcCard(id, "—");
-        });
+        if (!_mcCache) {
+          ["mcAccount", "mcMission", "mcCapital", "mcBroker", "mcPositions", "mcCrypto", "mcMomo", "mcOps"].forEach(function (id) {
+            setMcCard(id, "—");
+          });
+        }
       });
+  }
+
+  function scheduleMissionGraphLoad() {
+    setTimeout(function () {
+      if (document.getElementById("panel-overview") && document.getElementById("panel-overview").classList.contains("active")) {
+        _loadEquityRange(_eqCurrentRange || "1D");
+      }
+    }, 50);
+  }
+
+  function deepRefreshMission() {
+    var st = document.getElementById("mcStatus");
+    if (st) st.textContent = "Deep refresh: loading diagnostics…";
+    Promise.allSettled([
+      fetch("/api/mission-control/summary?force=1", { cache: "no-store" }).then(function (r) { return r.json(); }),
+      fetch("/api/ops/logs?limit=30", { cache: "no-store" }).then(function (r) { return r.json(); })
+    ]).then(function (results) {
+      if (results[0].status === "fulfilled" && results[0].value) {
+        try { renderMissionControl(results[0].value); } catch (e1) {}
+      }
+      if (st) st.textContent = "Deep refresh complete.";
+    });
   }
 
   function setMcCard(id, text, ts, tone) {
@@ -2849,7 +2905,9 @@
     var prev = document.getElementById("mcGptPreview");
     var rail = document.getElementById("btnExportRailwayEnv");
     var refresh = document.getElementById("btnMcRefresh");
-    if (refresh) refresh.addEventListener("click", loadMissionTab);
+    if (refresh) refresh.addEventListener("click", function () { loadMissionTab(true); });
+    var deep = document.getElementById("btnMcDeepRefresh");
+    if (deep) deep.addEventListener("click", deepRefreshMission);
     if (rail) rail.addEventListener("click", function () {
       fetch("/api/config/railway-env-template", { cache: "no-store" })
         .then(function (r) { return r.text(); })
@@ -2915,7 +2973,10 @@
             if (st) st.textContent = d.errors.join("; ");
             return;
           }
-          if (st) st.textContent = d.note || "Telegram bundle sent (summary + chunks).";
+          if (st) {
+          if (d.sent) st.textContent = "Sent to Telegram (" + (d.chunks_sent || 0) + " chunks" + (d.truncated ? ", truncated" : "") + ").";
+          else st.textContent = d.reason || (d.errors && d.errors.join("; ")) || "Telegram send failed.";
+        }
         })
         .catch(function (e) {
           if (st) st.textContent = safeText(e && e.message, String(e));
@@ -3057,17 +3118,140 @@
     loadAiSkills();
   }
 
+  function loadConfigEditor() {
+    var root = document.getElementById("configEditorRoot");
+    var status = document.getElementById("configEditorStatus");
+    if (!root) return;
+    root.innerHTML = "<p class='empty-hint'>Loading config schema…</p>";
+    fetch("/api/config/schema", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (schema) {
+        return fetch("/api/config/summary", { cache: "no-store" }).then(function (r2) { return r2.json(); })
+          .then(function (summary) { return { schema: schema, summary: summary }; });
+      })
+      .then(function (data) {
+        var items = data.schema.items || [];
+        var vals = data.summary.values || {};
+        var sources = data.summary.sources || {};
+        var byCat = {};
+        items.forEach(function (it) {
+          var c = it.category || "Other";
+          if (!byCat[c]) byCat[c] = [];
+          byCat[c].push(it);
+        });
+        root.innerHTML = "";
+        Object.keys(byCat).sort().forEach(function (cat) {
+          var h = document.createElement("div");
+          h.className = "config-cat";
+          h.textContent = cat;
+          root.appendChild(h);
+          byCat[cat].forEach(function (it) {
+            var row = document.createElement("div");
+            row.className = "config-row" + (it.dangerous ? " danger" : "");
+            var cur = vals[it.key] !== undefined ? vals[it.key] : it.default;
+            var src = sources[it.key] || "default";
+            var input;
+            if (it.type === "bool") {
+              input = document.createElement("input");
+              input.type = "checkbox";
+              input.checked = !!cur;
+            } else {
+              input = document.createElement("input");
+              input.type = it.type === "float" || it.type === "int" ? "number" : "text";
+              input.value = cur != null ? String(cur) : "";
+              if (it.allowed_values) input.setAttribute("list", "dl-" + it.key);
+            }
+            input.disabled = !it.editable;
+            input.setAttribute("data-config-key", it.key);
+            input.setAttribute("data-config-type", it.type);
+            var lbl = document.createElement("label");
+            lbl.innerHTML = "<strong>" + esc(it.key) + "</strong><div class='config-meta'>" + esc(it.description) + "</div>" +
+              (it.dangerous ? "<div class='config-warn'>Dangerous</div>" : "") +
+              (it.requires_restart ? "<div class='config-warn'>Restart required</div>" : "") +
+              "<div class='config-meta'>default: " + esc(String(it.default)) + " · source: " + esc(src) + "</div>";
+            var resetBtn = document.createElement("button");
+            resetBtn.type = "button";
+            resetBtn.className = "btn secondary";
+            resetBtn.style.fontSize = "10px";
+            resetBtn.textContent = "Reset";
+            resetBtn.disabled = !it.editable;
+            resetBtn.setAttribute("data-reset-key", it.key);
+            row.appendChild(lbl);
+            row.appendChild(input);
+            row.appendChild(resetBtn);
+            root.appendChild(row);
+          });
+        });
+        if (status) status.textContent = "Config loaded. Edit values and Save. Secrets are not shown here.";
+      })
+      .catch(function (e) {
+        if (root) root.textContent = safeText(e && e.message, String(e));
+      });
+  }
+
+  function wireConfigEditor() {
+    var save = document.getElementById("btnConfigSave");
+    var exp = document.getElementById("btnConfigExportSummary");
+    var rail = document.getElementById("btnConfigRailwayTpl");
+    var status = document.getElementById("configEditorStatus");
+    if (save) save.addEventListener("click", function () {
+      var updates = [];
+      document.querySelectorAll("#configEditorRoot [data-config-key]").forEach(function (el) {
+        var key = el.getAttribute("data-config-key");
+        var typ = el.getAttribute("data-config-type");
+        var val = typ === "bool" ? el.checked : (typ === "int" ? parseInt(el.value, 10) : typ === "float" ? parseFloat(el.value) : el.value);
+        updates.push({ key: key, value: val });
+      });
+      fetch("/api/config/update", {
+        method: "POST",
+        headers: volHeaders(true),
+        body: JSON.stringify({ updates: updates })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (status) status.textContent = d.ok ? "Saved: " + (d.applied || []).join(", ") : "Errors: " + (d.errors || []).join("; ");
+      }).catch(function (e) {
+        if (status) status.textContent = safeText(e && e.message, String(e));
+      });
+    });
+    if (exp) exp.addEventListener("click", function () {
+      fetch("/api/config/summary", { cache: "no-store" }).then(function (r) { return r.json(); })
+        .then(function (d) { _downloadJson(d, "config_summary_" + _timestamp() + ".json"); });
+    });
+    if (rail) rail.addEventListener("click", function () {
+      fetch("/api/config/railway-env-template").then(function (r) { return r.text(); })
+        .then(function (t) { return navigator.clipboard.writeText(t); })
+        .then(function () { if (status) status.textContent = "Railway template copied."; });
+    });
+    var cfgRoot = document.getElementById("configEditorRoot");
+    if (cfgRoot) {
+      cfgRoot.addEventListener("click", function (ev) {
+        var t = ev.target;
+        if (!t || !t.getAttribute || !t.getAttribute("data-reset-key")) return;
+        var key = t.getAttribute("data-reset-key");
+        fetch("/api/config/reset-key", {
+          method: "POST",
+          headers: volHeaders(true),
+          body: JSON.stringify({ key: key })
+        }).then(function () { loadConfigEditor(); });
+      });
+    }
+  }
+
   function startDashboard() {
     bindTabs();
     wireMissionActions();
     wireGptAnalyze();
     wireMcMomoAsk();
+    wireConfigEditor();
+    function mcPollTick() {
+      if (document.visibilityState === "hidden") return;
+      var panel = document.getElementById("panel-mission");
+      if (panel && panel.classList.contains("active")) loadMissionTab(false);
+    }
     if (!_mcPollTimer) {
-      _mcPollTimer = setInterval(function () {
-        if (document.getElementById("panel-mission") && document.getElementById("panel-mission").classList.contains("active")) {
-          loadMissionTab();
-        }
-      }, 45000);
+      _mcPollTimer = setInterval(mcPollTick, 35000);
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "visible") mcPollTick();
+      });
     }
     wireBacktest();
     wireActivityExport();
@@ -3086,6 +3270,7 @@
         if (b.getAttribute("data-tab") === "ai") loadAiTab();
         if (b.getAttribute("data-tab") === "ops") loadOpsTab();
         if (b.getAttribute("data-tab") === "files") loadFilesTab();
+        if (b.getAttribute("data-tab") === "config") loadConfigEditor();
       });
     });
   }

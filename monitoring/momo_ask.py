@@ -22,8 +22,8 @@ def answer_momo_question(
 
     if include.get("mission_control", True):
         try:
-            from monitoring.mission_control_api import build_mission_control_summary
-            ctx["mission_control"] = build_mission_control_summary()
+            from monitoring.mission_control_api import build_mission_control_summary_fast
+            ctx["mission_control"] = build_mission_control_summary_fast()
         except Exception as exc:
             missing.append(f"mission_control: {exc}")
 
@@ -132,9 +132,35 @@ def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]
         )
 
     if "reset" in ql and "runtime" in ql:
-        parts.append(trans.get("headline") or "Transition status unavailable.")
-        if trans.get("detection_reasons"):
-            parts.append("Reasons: " + ", ".join(trans["detection_reasons"]))
+        if trans.get("aligned_with_broker") and not trans.get("runtime_reset_recommended"):
+            parts.append(
+                "No runtime reset required. Runtime appears aligned with broker. "
+                "A reset is only needed if you see mismatches or stale positions."
+            )
+        else:
+            parts.append(trans.get("headline") or "Transition status unavailable.")
+            if trans.get("detection_reasons"):
+                parts.append("Reasons: " + ", ".join(trans["detection_reasons"]))
+            if trans.get("runtime_reset_recommended"):
+                parts.append(
+                    "If issues persist after reviewing positions, consider Reset Runtime "
+                    "(operator must type RESET RUNTIME)."
+                )
+
+    if "risk" in ql or ("crypto" in ql and "enabl" in ql):
+        cr = mc.get("crypto_night") or {}
+        parts.append(
+            f"Crypto: push_possible={cr.get('push_possible')}. "
+            f"Blocked: {cr.get('blocked_reason') or 'none'}. "
+            "Check buying power, reserves, and market hours before enabling crypto."
+        )
+
+    if "summarize" in ql and "risk" in ql:
+        tr = trans
+        parts.append(
+            f"Account equity ${ac.get('equity', '?')}, BP ${ac.get('buying_power', '?')}. "
+            f"Broker alignment: {tr.get('headline', '?')}."
+        )
 
     if "today" in ql or "happened" in ql:
         ms = mc.get("momo_summary") or {}

@@ -743,6 +743,12 @@ _PAGE = """<!DOCTYPE html>
     .mc-card.mc-bad { border-color: rgba(248,113,113,0.45); }
     .mc-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
     .mc-momo-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+    .config-cat { margin: 14px 0 8px; font-size: 13px; font-weight: 600; color: var(--accent); }
+    .config-row { display: grid; grid-template-columns: 1fr 140px 90px; gap: 8px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .config-row.danger { background: rgba(248,113,113,0.06); border-radius: 6px; padding: 8px; }
+    .config-row label { color: var(--text); }
+    .config-meta { font-size: 10px; color: var(--muted); margin-top: 2px; }
+    .config-warn { color: #fbbf24; font-size: 10px; }
     .mc-quick-btns { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
     .danger-zone { border: 1px solid rgba(248,113,113,0.45); border-radius: 8px; padding: 0.75rem; margin-top: 0.75rem; }
     .danger-zone h3 { color: #fecaca; margin: 0 0 0.5rem; font-size: 0.85rem; }
@@ -828,6 +834,7 @@ _PAGE = """<!DOCTYPE html>
     <button type="button" class="tab-btn" data-tab="ai">AI Console</button>
     <button type="button" class="tab-btn" data-tab="ops">Ops Center</button>
     <button type="button" class="tab-btn" data-tab="files">Files</button>
+    <button type="button" class="tab-btn" data-tab="config">Config</button>
   </nav>
 
   <main>
@@ -846,8 +853,10 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT Bundle</button>
         <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Bundle to Telegram</button>
         <button type="button" id="btnExportRailwayEnv" class="btn secondary">Export Railway Env Template</button>
-        <button type="button" id="btnMcRefresh" class="btn secondary">Refresh</button>
+        <button type="button" id="btnMcRefresh" class="btn secondary">Refresh Now</button>
+        <button type="button" id="btnMcDeepRefresh" class="btn secondary">Deep Refresh</button>
       </div>
+      <p id="mcPerfStatus" class="empty-hint" style="margin:0.25rem 0;font-size:11px;"></p>
       <p id="mcStatus" class="empty-hint" style="margin:0.35rem 0;"></p>
       <pre id="mcGptPreview" class="mono sec" style="display:none;max-height:120px;"></pre>
       <div class="mc-grid" id="mcGrid">
@@ -871,6 +880,8 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" class="btn secondary mc-quick" data-q="Can crypto run tonight?">Can crypto run tonight?</button>
           <button type="button" class="btn secondary mc-quick" data-q="Should I reset runtime?">Should I reset runtime?</button>
           <button type="button" class="btn secondary mc-quick" data-q="What happened today?">What happened today?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="What should I check before enabling crypto?">Before enabling crypto?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Summarize risk">Summarize risk</button>
         </div>
         <button type="button" id="btnMcAskMomo" class="btn primary">Ask Momo</button>
         <div id="mcMomoAnswer" class="mc-body" style="margin-top:10px;min-height:2rem;">—</div>
@@ -1321,6 +1332,23 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" id="btnFilesBackup" class="tab-btn" style="font-size:12px;">Backup DBs</button>
           <button type="button" id="btnFilesResetRuntime" class="tab-btn" style="font-size:12px;">Reset Runtime</button>
         </div>
+      </div>
+    </section>
+
+    <section id="panel-config" class="tab-panel">
+      <div class="card">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">App configuration</h2>
+        <p class="empty-hint" style="margin:0 0 10px;">
+          Non-secret settings live in <span class="mono">bot_config</span>. Secrets stay in Railway env only.
+          Momo can recommend changes but cannot apply them — operator approval required.
+        </p>
+        <div class="mc-actions" style="margin-bottom:10px;">
+          <button type="button" id="btnConfigSave" class="btn primary">Save changes</button>
+          <button type="button" id="btnConfigExportSummary" class="btn secondary">Export config summary</button>
+          <button type="button" id="btnConfigRailwayTpl" class="btn secondary">Export Railway env template</button>
+        </div>
+        <p id="configEditorStatus" class="empty-hint"></p>
+        <div id="configEditorRoot"></div>
       </div>
     </section>
 
@@ -1775,7 +1803,7 @@ def create_app() -> Flask:
             logger.debug("[ops_log] dashboard startup event skipped", exc_info=True)
         try:
             from monitoring.telegram_momo import start_telegram_momo_polling
-            start_telegram_momo_polling()
+            start_telegram_momo_polling(owner="dashboard")
         except Exception as exc:
             logger.warning("[momo_telegram] start failed: {}", exc)
 
@@ -1882,25 +1910,21 @@ def create_app() -> Flask:
 
     @app.get("/api/equity/history")
     def api_equity_history() -> Response:
-        from monitoring.dashboard_data import get_alpaca_background_snapshot
+        from monitoring.account_history_store import fetch_account_history
         range_param = str(request.args.get("range", "1D") or "1D").upper().strip()
-        period_map = {"1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M"}
-        period = period_map.get(range_param, "1D")
-        snap = get_alpaca_background_snapshot()
-        curves = snap.get("equity_curves") or {}
-        series = curves.get(period) if isinstance(curves, dict) else []
-        if not isinstance(series, list):
-            series = []
-        warning = None
-        if len(series) < 3:
-            warning = f"Only {len(series)} equity points available for range {range_param}."
-        return Response(json.dumps({
-            "range": range_param,
-            "period_used": period,
-            "series": series,
-            "count": len(series),
-            "warning": warning,
-        }, default=str), mimetype="application/json")
+        data = fetch_account_history(range_param)
+        if data.get("count", 0) < 3:
+            from monitoring.dashboard_data import get_alpaca_background_snapshot
+            period_map = {"1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M"}
+            period = period_map.get(range_param, "1D")
+            snap = get_alpaca_background_snapshot()
+            curves = snap.get("equity_curves") or {}
+            legacy = curves.get(period) if isinstance(curves, dict) else []
+            if isinstance(legacy, list) and legacy:
+                data["legacy_equity_series"] = legacy
+                data["series"] = legacy
+                data["warning"] = data.get("message") or f"Legacy equity only ({len(legacy)} pts)."
+        return Response(json.dumps(data, default=str), mimetype="application/json")
 
     @app.get("/api/ops/status")
     def api_ops_status() -> Response:
@@ -2118,8 +2142,33 @@ def create_app() -> Flask:
 
     @app.get("/api/mission-control/summary")
     def api_mission_control_summary() -> Response:
+        from monitoring.endpoint_timing import EndpointTimer
         from monitoring.mission_control_api import build_mission_control_summary
-        return Response(json.dumps(build_mission_control_summary(), default=str), mimetype="application/json")
+        from monitoring.mission_control_cache import get_mission_control_cached
+        from monitoring.mission_control_api import build_mission_control_summary_fast
+
+        force = str(request.args.get("force", "") or "").strip().lower() in ("1", "true", "yes")
+        timer = EndpointTimer("/api/mission-control/summary")
+        if force:
+            payload = build_mission_control_summary_fast()
+            payload["cache_hit"] = False
+            payload["stale"] = False
+        else:
+            payload = get_mission_control_cached(build_mission_control_summary_fast, force_refresh=False)
+        ms = timer.finish(cache_hit=payload.get("cache_hit"))
+        payload["backend_duration_ms"] = payload.get("backend_duration_ms") or ms
+        body = json.dumps(payload, default=str)
+        return Response(body, mimetype="application/json")
+
+    @app.get("/api/account/history")
+    def api_account_history() -> Response:
+        from monitoring.account_history_store import fetch_account_history
+        from monitoring.endpoint_timing import EndpointTimer
+        rk = str(request.args.get("range", "1D") or "1D")
+        timer = EndpointTimer("/api/account/history")
+        data = fetch_account_history(rk)
+        timer.finish()
+        return Response(json.dumps(data, default=str), mimetype="application/json")
 
     @app.get("/api/config/schema")
     def api_config_schema() -> Response:
@@ -2139,6 +2188,14 @@ def create_app() -> Flask:
         updates = body.get("updates") or ([body] if body.get("key") else [])
         from core.app_config_registry import apply_config_updates
         return jsonify(apply_config_updates(updates))
+
+    @app.post("/api/config/reset-key")
+    def api_config_reset_key() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        from core.app_config_registry import reset_config_key
+        return jsonify(reset_config_key(str(body.get("key", "")).strip()))
 
     @app.get("/api/config/railway-env-template")
     def api_config_railway_template() -> Response:

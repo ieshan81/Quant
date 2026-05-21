@@ -9,47 +9,31 @@ from typing import Any
 import config
 from data import data_store
 
-# Railway: secrets, paths, safety locks, service IDs, log level only.
 RAILWAY_ESSENTIAL_ENV_VARS: tuple[str, ...] = (
-    "MODE",
-    "QUANTBOT_MODE",
-    "ALPACA_API_KEY",
-    "ALPACA_SECRET_KEY",
-    "ALPACA_BASE_URL",
-    "LIVE_TRADING_ARMED",
-    "PROMOTION_GATES_PASSED",
-    "LIVE_MAX_NOTIONAL_PER_TRADE",
-    "QUANTBOT_PERSIST_DIR",
-    "DATA_DIR",
-    "DB_PATH",
-    "AI_MEMORY_DB_PATH",
-    "OPS_DB_PATH",
-    "OPS_LOG_DIR",
-    "OPS_EXPORT_DIR",
-    "EXPORT_DIR",
-    "GEMINI_API_KEY",
-    "GEMINI_API_BASE",
-    "GEMINI_MODEL",
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_CHAT_ID",
-    "TELEGRAM_MOMO_ALLOWED_CHAT_ID",
-    "RAILWAY_PROJECT_ID",
-    "RAILWAY_SERVICE_ID",
-    "RAILWAY_ENVIRONMENT_ID",
-    "RAILWAY_PROJECT_TOKEN",
-    "RAILWAY_API_ENABLED",
-    "LOG_LEVEL",
-    "DASHBOARD_SECRET",
+    "MODE", "QUANTBOT_MODE",
+    "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_BASE_URL",
+    "LIVE_TRADING_ARMED", "PROMOTION_GATES_PASSED", "LIVE_MAX_NOTIONAL_PER_TRADE",
+    "QUANTBOT_PERSIST_DIR", "DATA_DIR", "DB_PATH", "AI_MEMORY_DB_PATH",
+    "OPS_DB_PATH", "OPS_LOG_DIR", "OPS_EXPORT_DIR", "EXPORT_DIR",
+    "GEMINI_API_KEY", "GEMINI_API_BASE", "GEMINI_MODEL",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_MOMO_ALLOWED_CHAT_ID",
+    "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_PROJECT_TOKEN", "RAILWAY_API_ENABLED",
+    "LOG_LEVEL", "DASHBOARD_SECRET",
 )
 
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PASSPHRASE")
+_CCXT_ALLOWED = frozenset({
+    "binance", "binanceus", "kraken", "coinbase", "coinbasepro", "kucoin", "bybit",
+})
+_MOMO_AUTHORITY_ALLOWED = frozenset({"backtester", "observer"})
 
 
 @dataclass(frozen=True)
 class ConfigEntry:
     key: str
     default: Any
-    value_type: str  # bool | float | int | string
+    value_type: str
     category: str
     description: str
     editable: bool = True
@@ -57,6 +41,7 @@ class ConfigEntry:
     dangerous: bool = False
     bot_config_key: str | None = None
     env_var: str | None = None
+    allowed_values: tuple[str, ...] | None = None
 
 
 def _entries() -> list[ConfigEntry]:
@@ -77,6 +62,9 @@ def _entries() -> list[ConfigEntry]:
         ConfigEntry("ai_observer_write_to_db", True, "bool", "AI/Momo",
                     "Persist observer notes", bot_config_key="ai_observer_write_to_db",
                     env_var="AI_OBSERVER_WRITE_TO_DB"),
+        ConfigEntry("momo_authority_level", "backtester", "enum", "AI/Momo",
+                    "Momo authority level", bot_config_key="momo_authority_level",
+                    allowed_values=("backtester", "observer")),
         ConfigEntry("telegram_momo_chat_enabled", False, "bool", "Telegram",
                     "Enable Momo Telegram command polling", bot_config_key="telegram_momo_chat_enabled",
                     env_var="TELEGRAM_MOMO_CHAT_ENABLED", requires_restart=True),
@@ -89,10 +77,17 @@ def _entries() -> list[ConfigEntry]:
         ConfigEntry("telegram_critical_only_mode", False, "bool", "Telegram",
                     "Only critical alerts to Telegram", bot_config_key="telegram_critical_only_mode",
                     env_var="TELEGRAM_CRITICAL_ONLY_MODE"),
+        ConfigEntry("telegram_gpt_bundle_max_chunks", 5, "int", "Telegram",
+                    "Max Telegram messages for GPT bundle chunks",
+                    bot_config_key="telegram_gpt_bundle_max_chunks"),
         ConfigEntry("crypto_night_mode_enabled", True, "bool", "Crypto",
                     "Crypto-only mode when US stocks closed", bot_config_key="crypto_night_mode_enabled"),
         ConfigEntry("crypto_reentry_cooldown_seconds", 1800.0, "float", "Crypto",
                     "Cooldown before same-crypto re-entry", bot_config_key="crypto_reentry_cooldown_seconds"),
+        ConfigEntry("crypto_ccxt_exchange", "binance", "string", "Crypto",
+                    "CCXT exchange id for quotes", bot_config_key="crypto_ccxt_exchange",
+                    env_var="CRYPTO_CCXT_EXCHANGE", requires_restart=True,
+                    allowed_values=tuple(sorted(_CCXT_ALLOWED))),
         ConfigEntry("hard_min_cash_reserve_pct", 15.0, "float", "Capital sizing",
                     "Minimum cash reserve % of equity", bot_config_key="hard_min_cash_reserve_pct"),
         ConfigEntry("micro_equity_threshold", 300.0, "float", "Capital sizing",
@@ -109,11 +104,11 @@ def _entries() -> list[ConfigEntry]:
                     "Downtime recovery on startup", bot_config_key="startup_recovery_enabled"),
         ConfigEntry("broker_startup_hard_fail", False, "bool", "Safety",
                     "Crash worker if broker fails at startup", bot_config_key="broker_startup_hard_fail"),
-        ConfigEntry("crypto_ccxt_exchange", "binance", "string", "Crypto",
-                    "CCXT exchange id for quotes", env_var="CRYPTO_CCXT_EXCHANGE",
-                    editable=True, requires_restart=True),
+        ConfigEntry("slow_endpoint_warn_ms", 1000.0, "float", "Railway/Ops",
+                    "Log SLOW_ENDPOINT when dashboard API exceeds this ms",
+                    bot_config_key="slow_endpoint_warn_ms"),
         ConfigEntry("scalp_mode", "paper_crypto", "string", "Runtime/reset",
-                    "Scalp mode label", env_var="SCALP_MODE", editable=False),
+                    "Scalp mode label (read-only display)", env_var="SCALP_MODE", editable=False),
     ]
 
 
@@ -133,31 +128,79 @@ def _read_bot_float(key: str) -> float | None:
         return None
 
 
-def get_value(entry_key: str) -> Any:
+def _validate_value(ent: ConfigEntry, value: Any) -> str | None:
+    if ent.value_type == "enum" or ent.allowed_values:
+        v = str(value).strip().lower()
+        allowed = {a.lower() for a in (ent.allowed_values or ())}
+        if allowed and v not in allowed:
+            return f"invalid value {value!r}; allowed: {', '.join(sorted(allowed))}"
+    if ent.key == "crypto_ccxt_exchange":
+        v = str(value).strip().lower()
+        if v not in _CCXT_ALLOWED:
+            return f"invalid exchange {value!r}"
+    return None
+
+
+def resolve_config_item(entry_key: str) -> dict[str, Any]:
     ent = _REGISTRY.get(entry_key)
     if not ent:
         raise KeyError(entry_key)
+    source = "default"
+    value: Any = ent.default
     if ent.bot_config_key:
-        raw = _read_bot_float(ent.bot_config_key)
-        if raw is not None:
+        if ent.value_type in ("string", "enum"):
+            try:
+                raw = data_store.get_config_str(ent.bot_config_key, str(ent.default))
+                if raw:
+                    value = raw
+                    source = "bot_config"
+            except (KeyError, OSError):
+                pass
+        else:
+            raw = _read_bot_float(ent.bot_config_key)
+            if raw is not None:
+                source = "bot_config"
+                if ent.value_type == "bool":
+                    value = raw >= 0.5
+                elif ent.value_type == "int":
+                    value = int(raw)
+                else:
+                    value = float(raw)
+    if source == "default" and ent.env_var:
+        ev = os.getenv(ent.env_var, "").strip()
+        if ev:
+            source = "env"
             if ent.value_type == "bool":
-                return raw >= 0.5
-            if ent.value_type == "int":
-                return int(raw)
-            if ent.value_type == "float":
-                return float(raw)
-    if ent.env_var:
-        ev = os.getenv(ent.env_var, "")
-        if ev.strip():
-            if ent.value_type == "bool":
-                return _env_bool(ent.env_var, bool(ent.default))
-            if ent.value_type in ("float", "int"):
+                value = _env_bool(ent.env_var, bool(ent.default))
+            elif ent.value_type == "int":
                 try:
-                    return float(ev) if ent.value_type == "float" else int(float(ev))
+                    value = int(float(ev))
                 except ValueError:
                     pass
-            return str(ev).strip()
-    return ent.default
+            elif ent.value_type == "float":
+                try:
+                    value = float(ev)
+                except ValueError:
+                    pass
+            else:
+                value = ev
+    return {
+        "key": ent.key,
+        "value": value,
+        "source": source,
+        "default": ent.default,
+        "type": ent.value_type,
+        "category": ent.category,
+        "description": ent.description,
+        "editable": ent.editable,
+        "requires_restart": ent.requires_restart,
+        "dangerous": ent.dangerous,
+        "allowed_values": list(ent.allowed_values) if ent.allowed_values else None,
+    }
+
+
+def get_value(entry_key: str) -> Any:
+    return resolve_config_item(entry_key)["value"]
 
 
 def get_bool(entry_key: str) -> bool:
@@ -165,41 +208,32 @@ def get_bool(entry_key: str) -> bool:
 
 
 def build_config_schema() -> dict[str, Any]:
-    items = []
-    for ent in _entries():
-        items.append({
-            "key": ent.key,
-            "default": ent.default,
-            "type": ent.value_type,
-            "category": ent.category,
-            "description": ent.description,
-            "editable": ent.editable,
-            "requires_restart": ent.requires_restart,
-            "dangerous": ent.dangerous,
-            "bot_config_key": ent.bot_config_key,
-            "env_var": ent.env_var,
-        })
+    items = [resolve_config_item(e.key) for e in _entries()]
     return {
         "categories": sorted({e.category for e in _entries()}),
         "railway_essential_env_vars": list(RAILWAY_ESSENTIAL_ENV_VARS),
         "items": items,
+        "momo_can_apply_config": False,
+        "config_changes_require_operator_approval": True,
     }
 
 
 def build_config_summary() -> dict[str, Any]:
-    summary: dict[str, Any] = {"mode": config.MODE, "values": {}, "secrets": {}}
-    for ent in _entries():
-        try:
-            summary["values"][ent.key] = get_value(ent.key)
-        except Exception:
-            summary["values"][ent.key] = ent.default
+    items = [resolve_config_item(e.key) for e in _entries()]
+    summary: dict[str, Any] = {
+        "mode": config.MODE,
+        "items": items,
+        "values": {i["key"]: i["value"] for i in items},
+        "sources": {i["key"]: i["source"] for i in items},
+        "secrets": {},
+        "momo_can_apply_config": False,
+        "config_changes_require_operator_approval": True,
+    }
     for name in RAILWAY_ESSENTIAL_ENV_VARS:
         if any(m in name for m in _SECRET_ENV_MARKERS):
             summary["secrets"][name] = "***" if os.getenv(name, "").strip() else "(not set)"
         else:
             summary["secrets"][name] = os.getenv(name, "") or "(not set)"
-    summary["momo_can_apply_config"] = False
-    summary["config_changes_require_operator_approval"] = True
     return summary
 
 
@@ -216,14 +250,11 @@ def export_railway_env_template() -> str:
         "DASHBOARD_SECRET": "<optional>",
     }
     defaults = {
-        "MODE": "paper",
-        "QUANTBOT_MODE": "paper",
+        "MODE": "paper", "QUANTBOT_MODE": "paper",
         "ALPACA_BASE_URL": "https://paper-api.alpaca.markets",
-        "LIVE_TRADING_ARMED": "",
-        "PROMOTION_GATES_PASSED": "0",
+        "LIVE_TRADING_ARMED": "", "PROMOTION_GATES_PASSED": "0",
         "LIVE_MAX_NOTIONAL_PER_TRADE": "0",
-        "QUANTBOT_PERSIST_DIR": "/app/persist",
-        "LOG_LEVEL": "INFO",
+        "QUANTBOT_PERSIST_DIR": "/app/persist", "LOG_LEVEL": "INFO",
     }
     for name in RAILWAY_ESSENTIAL_ENV_VARS:
         if name in placeholders:
@@ -233,7 +264,7 @@ def export_railway_env_template() -> str:
         else:
             lines.append(f"# {name}=")
     lines.append("")
-    lines.append("# All other toggles: dashboard Config or bot_config (see GET /api/config/schema)")
+    lines.append("# Other toggles: dashboard Config tab or POST /api/config/update")
     return "\n".join(lines)
 
 
@@ -246,25 +277,35 @@ def apply_config_updates(updates: list[dict[str, Any]]) -> dict[str, Any]:
         if not ent or not ent.editable:
             errors.append(f"{key}: not editable")
             continue
-        if ent.value_type == "bool":
-            if not ent.bot_config_key:
-                errors.append(f"{key}: bool requires bot_config")
-                continue
-            val = 1.0 if bool(item.get("value")) else 0.0
-            try:
-                data_store.set_config(ent.bot_config_key, val)
-                applied.append(key)
-            except Exception as exc:
-                errors.append(f"{key}: {exc}")
-        elif ent.value_type in ("float", "int") and ent.bot_config_key:
-            try:
+        err = _validate_value(ent, item.get("value"))
+        if err:
+            errors.append(f"{key}: {err}")
+            continue
+        try:
+            if ent.value_type == "bool" and ent.bot_config_key:
+                data_store.set_config(ent.bot_config_key, 1.0 if bool(item.get("value")) else 0.0)
+            elif ent.value_type in ("float", "int") and ent.bot_config_key:
                 data_store.set_config(ent.bot_config_key, float(item.get("value")))
-                applied.append(key)
-            except Exception as exc:
-                errors.append(f"{key}: {exc}")
-        elif ent.value_type == "string" and ent.bot_config_key:
-            # store string flags as 0/1 hash key not ideal — skip or use text in bot_config value
-            errors.append(f"{key}: string app config uses env {ent.env_var}")
-        else:
-            errors.append(f"{key}: unsupported update path")
+            elif ent.value_type in ("string", "enum") and ent.bot_config_key:
+                data_store.set_config_str(ent.bot_config_key, str(item.get("value")))
+            else:
+                errors.append(f"{key}: no storage path")
+                continue
+            applied.append(key)
+        except Exception as exc:
+            errors.append(f"{key}: {exc}")
     return {"ok": len(errors) == 0, "applied": applied, "errors": errors}
+
+
+def reset_config_key(entry_key: str) -> dict[str, Any]:
+    ent = _REGISTRY.get(entry_key)
+    if not ent or not ent.bot_config_key:
+        return {"ok": False, "error": "not resettable"}
+    try:
+        if ent.value_type in ("string", "enum"):
+            data_store.set_config_str(ent.bot_config_key, str(ent.default))
+        else:
+            data_store.set_config(ent.bot_config_key, float(ent.default) if ent.value_type != "bool" else (1.0 if ent.default else 0.0))
+        return {"ok": True, "key": entry_key}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}

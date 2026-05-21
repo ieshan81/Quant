@@ -16,6 +16,24 @@ from monitoring.momo import build_momo_status
 from monitoring.ops_log_store import fetch_ops_logs, scrub_evidence
 
 
+def _money_graph_payload(equity_series: list[Any]) -> dict[str, Any]:
+    try:
+        from monitoring.account_history_store import fetch_account_history
+        hist = fetch_account_history("1M")
+        if hist.get("count", 0) >= 3:
+            return hist
+    except Exception:
+        pass
+    return {
+        "range": "1M",
+        "points": equity_series,
+        "series_available": {"equity": bool(equity_series)},
+        "insufficient_history": len(equity_series) < 3,
+        "message": "Using legacy equity series only" if equity_series else "No graph history",
+        "count": len(equity_series),
+    }
+
+
 def build_gpt_analyze_bundle() -> dict[str, Any]:
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     account: dict[str, Any] = {}
@@ -152,7 +170,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "memory_state_summary": build_memory_state_summary(),
         "dynamic_account_profile": dynamic_profile,
         "broker_account_transition_status": transition,
-        "money_graph_data": {"equity_history": equity_series},
+        "money_graph_data": _money_graph_payload(equity_series),
         "operator_questions_for_gpt": [
             "Why did the bot not trade?",
             "Why is buying power low?",

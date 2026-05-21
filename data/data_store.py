@@ -182,6 +182,8 @@ _EXTRA_BOT_DEFAULTS: dict[str, tuple[float, str]] = {
     "micro_equity_threshold": (300.0, "Equity below = MICRO profile"),
     "small_equity_threshold": (1000.0, "Equity below = SMALL profile"),
     "medium_equity_threshold": (5000.0, "Equity below = MEDIUM profile"),
+    "telegram_gpt_bundle_max_chunks": (5.0, "Max Telegram messages for GPT bundle chunks"),
+    "slow_endpoint_warn_ms": (1000.0, "Log SLOW_ENDPOINT when API exceeds this ms"),
     "cycle_journal_retention_days": (14.0, "Days to retain cycle_journal rows"),
     "preclose_execution_enabled": (0.0, "1=allow pre-close automated exits (dangerous if misconfigured)"),
 }
@@ -962,6 +964,42 @@ def get_config(key: str, db_path: Path | str | None = None) -> float:
         return float(row[0])
 
 
+APP_CONFIG_STRING_KEYS: dict[str, tuple[str, str]] = {
+    "crypto_ccxt_exchange": ("binance", "CCXT exchange id for crypto quotes"),
+    "momo_authority_level": ("backtester", "Momo authority: backtester or observer"),
+}
+
+
+def get_config_str(key: str, default: str = "", db_path: Path | str | None = None) -> str:
+    if key not in APP_CONFIG_STRING_KEYS:
+        raise KeyError(f"not a string config key: {key!r}")
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT value FROM bot_config WHERE key = ?", (key,)).fetchone()
+        if row is None or row[0] is None:
+            return default
+        return str(row[0]).strip()
+
+
+def set_config_str(key: str, value: str, db_path: Path | str | None = None) -> None:
+    if key not in APP_CONFIG_STRING_KEYS:
+        raise KeyError(f"not a string config key: {key!r}")
+    val = str(value).strip()
+    desc = APP_CONFIG_STRING_KEYS[key][1]
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE bot_config SET value = ?, updated_at = datetime('now') WHERE key = ?",
+            (val, key),
+        )
+        if cur.rowcount == 0:
+            conn.execute(
+                """
+                INSERT INTO bot_config (key, value, description, updated_at)
+                VALUES (?, ?, ?, datetime('now'))
+                """,
+                (key, val, desc),
+            )
+
+
 def set_config(key: str, value: float, db_path: Path | str | None = None) -> None:
     """Update one bot parameter; raises if key is unknown."""
     if key not in BOT_CONFIG_DEFAULTS:
@@ -1554,8 +1592,22 @@ def reconcile_positions_on_startup(
     eff_mode = (mode or config.MODE or "paper").strip().lower()
     if eff_mode not in ("paper", "live"):
         eff_mode = "paper"
-    do_reset = bool(config.RESET_PAPER_ON_STARTUP if reset_paper is None else reset_paper)
-    do_wipe = bool(config.WIPE_GHOST_POSITIONS if wipe_ghosts is None else wipe_ghosts)
+    if reset_paper is None:
+        try:
+            from core.app_config_registry import get_bool
+            do_reset = get_bool("reset_paper_on_startup")
+        except Exception:
+            do_reset = bool(config.RESET_PAPER_ON_STARTUP)
+    else:
+        do_reset = bool(reset_paper)
+    if wipe_ghosts is None:
+        try:
+            from core.app_config_registry import get_bool
+            do_wipe = get_bool("wipe_ghost_positions")
+        except Exception:
+            do_wipe = bool(config.WIPE_GHOST_POSITIONS)
+    else:
+        do_wipe = bool(wipe_ghosts)
 
     summary: dict[str, Any] = {
         "mode": eff_mode,
@@ -1567,7 +1619,20 @@ def reconcile_positions_on_startup(
         "errors": [],
     }
 
+    if do_reset and eff_mode == "live":
+        summary["errors"].append("reset_paper_on_startup blocked in live mode")
+        do_reset = False
     if do_reset and eff_mode == "paper":
+        try:
+            from monitoring.ops_log_store import write_ops_event
+            write_ops_event(
+                level="critical",
+                source="startup",
+                event_type="RESET_PAPER_ON_STARTUP",
+                message="reset_paper_on_startup=1 triggered paper history wipe",
+            )
+        except Exception:
+            pass
         try:
             reset_paper_trading_state(db_path)
             summary["reset_paper"] = True
@@ -1620,7 +1685,20 @@ def reconcile_positions_on_startup(
     except Exception as exc:
         summary["errors"].append(f"open_positions_count: {exc}")
 
+    if do_wipe and eff_mode == "live":
+        summary["errors"].append("wipe_ghost_positions blocked in live mode")
+        do_wipe = False
     if do_wipe:
+        try:
+            from monitoring.ops_log_store import write_ops_event
+            write_ops_event(
+                level="warning",
+                source="startup",
+                event_type="WIPE_GHOST_POSITIONS",
+                message="wipe_ghost_positions=1 removing SQLite ghosts not at broker",
+            )
+        except Exception:
+            pass
         try:
             wiped = wipe_ghost_positions(db_path, real_db_syms)
             summary["ghost_positions_removed"] = len(wiped.get("removed", []))

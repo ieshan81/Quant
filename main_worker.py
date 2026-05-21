@@ -4507,6 +4507,26 @@ def run_trading_cycle_once(
         )
     except Exception:
         logger.debug("[cycle_brief] skipped", exc_info=True)
+    try:
+        from monitoring.account_history_store import record_account_snapshot
+        bg = summary.get("buy_gate") or {}
+        eh = summary.get("execution_health") or {}
+        cap = eh.get("capital_policy_status") if isinstance(eh.get("capital_policy_status"), dict) else {}
+        record_account_snapshot({
+            "equity": float(trader.equity_total()),
+            "cash": float(bg.get("cash") or 0),
+            "buying_power": float(bg.get("buying_power") or 0),
+            "stock_market_value": cap.get("stock_market_value"),
+            "crypto_market_value": cap.get("crypto_market_value"),
+            "stock_exposure_pct": cap.get("stock_pct"),
+            "crypto_exposure_pct": cap.get("crypto_pct"),
+            "reserve_cash": cap.get("reserve_cash"),
+            "available_for_stock": cap.get("available_for_stock"),
+            "available_for_crypto": cap.get("available_for_crypto"),
+            "meta": {"cycle_id": summary.get("cycle_id")},
+        })
+    except Exception:
+        logger.debug("[account_history] snapshot skipped", exc_info=True)
     return summary
 
 
@@ -4820,6 +4840,22 @@ def _worker_startup() -> tuple[PaperTrader, UniverseState, Any, threading.Thread
     signal.signal(signal.SIGTERM, _on_signal)
     if hasattr(signal, "SIGINT"):
         signal.signal(signal.SIGINT, _on_signal)
+
+    try:
+        from data import data_store
+        data_store.ensure_bot_config_keys_migrated(config.DB_PATH)
+        for sk, (default_val, _) in data_store.APP_CONFIG_STRING_KEYS.items():
+            try:
+                data_store.get_config_str(sk)
+            except KeyError:
+                data_store.set_config_str(sk, default_val)
+    except Exception:
+        logger.debug("[startup] app string config seed skipped", exc_info=True)
+    try:
+        from monitoring.telegram_momo import start_telegram_momo_polling
+        start_telegram_momo_polling(owner="worker")
+    except Exception as exc:
+        logger.warning("[momo_telegram] worker start failed: {}", exc)
 
     return trader, universe, market_ctx, scan_thread
 
