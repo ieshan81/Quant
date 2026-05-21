@@ -824,7 +824,7 @@ def build_capital_allocator_summary(plan: dict[str, Any] | None) -> dict[str, An
             "crypto_available_cash": None,
             "crypto_push_possible": False,
             "stock_to_crypto_rotation_possible": False,
-            "main_blocker": rc.CAPITAL_ALLOCATOR_DATA_MISSING,
+            "main_blocker": rc.CRYPTO_QUOTES_MISSING,
         }
     b = plan.get("capital_buckets") or {}
     w = plan.get("dynamic_weights") or {}

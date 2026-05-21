@@ -273,9 +273,9 @@ def _fetch_ops_logs_fallback(*, limit: int) -> list[dict[str, Any]]:
     """When ops_log_events is empty, surface JSONL tails and cycle journal rows."""
     lim = max(1, min(500, int(limit)))
     merged: list[dict[str, Any]] = []
-    merged.extend(_tail_jsonl_ops_logs(lim))
+    merged.extend(_cycle_journal_as_ops_logs(lim))
     if len(merged) < lim:
-        merged.extend(_cycle_journal_as_ops_logs(lim - len(merged)))
+        merged.extend(_tail_jsonl_ops_logs(lim - len(merged)))
     merged.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
     return merged[:lim]
 

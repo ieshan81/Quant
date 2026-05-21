@@ -1213,9 +1213,26 @@ def _can_open_short_stock(
 
 
 def _get_real_position_qty(symbol: str, broker: Any) -> float:
-    """Get exact held qty from Alpaca position objects."""
+    """Held qty from broker adapter, then Alpaca REST positions."""
     sym = str(symbol or "").strip().upper()
     flat = sym.replace("/", "")
+    if broker is not None:
+        try:
+            if hasattr(broker, "get_open_positions"):
+                for pos in broker.get_open_positions() or []:
+                    if not isinstance(pos, dict):
+                        continue
+                    ps = str(pos.get("symbol") or "").strip().upper()
+                    if ps == sym or ps.replace("/", "") == flat:
+                        return float(pos.get("net_qty") or pos.get("qty") or 0)
+            ledger = getattr(broker, "ledger", None)
+            if ledger is not None and hasattr(ledger, "position"):
+                for ac in ("stock", "crypto"):
+                    lp = ledger.position(ac, sym)
+                    if lp is not None and float(lp.quantity or 0) > 0:
+                        return float(lp.quantity)
+        except Exception:
+            logger.debug("[exits] broker qty lookup failed for {}", sym, exc_info=True)
     try:
         client = stock_broker.get_rest_client()
         if client is None:
@@ -1875,7 +1892,11 @@ def _check_and_execute_exits(
                     _tp_spread_blocked = False
                     if ac == "stock":
                         try:
-                            _tp_spread = stock_broker.fetch_equity_spread_pct(sym)
+                            _src = str(pos.get("source") or "")
+                            if _src in ("paper_ledger", "sqlite_trades"):
+                                _tp_spread = None
+                            else:
+                                _tp_spread = stock_broker.fetch_equity_spread_pct(sym)
                             _max_sp = float(rt.get("stock_exit_max_spread_pct", 15.0) or 15.0)
                             if _tp_spread is not None and _tp_spread > _max_sp:
                                 _tp_spread_blocked = True
@@ -4406,6 +4427,7 @@ def run_trading_cycle_once(
         summary["dynamic_capital_plan"] = dplan
         summary["_quote_snapshot"] = q_snap
         summary["_quote_diagnostics"] = _quote_diag
+        summary["_metadata_snapshot"] = ameta
         summary["_meta_diagnostics"] = _meta_diag
         summary["capital_allocator_summary"] = build_capital_allocator_summary(dplan)
         bg = dict(summary.get("buy_gate") or {})

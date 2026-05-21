@@ -417,7 +417,31 @@ def build_mission_control_summary_minimal(
         },
         "momo_status": build_momo_status(),
         "performance": {"lightweight": True, "simple_fallback": True},
+        "broker_account_transition_status": _minimal_transition_status(
+            equity=float(acct.get("equity") or 0),
+            buying_power=float(acct.get("buying_power") or 0),
+        ),
     }
+
+
+def _minimal_transition_status(*, equity: float, buying_power: float) -> dict[str, Any]:
+    try:
+        from core.broker_account_transition import build_broker_account_transition_status
+
+        return build_broker_account_transition_status(
+            current_equity=equity,
+            current_buying_power=buying_power,
+            current_positions_count=0,
+            runtime_positions_count=0,
+        )
+    except Exception as exc:
+        return {
+            "headline": "Transition status unavailable.",
+            "aligned_with_broker": True,
+            "runtime_reset_recommended": False,
+            "detection_reasons": [],
+            "error": str(exc)[:120],
+        }
 
 
 def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str, Any]:

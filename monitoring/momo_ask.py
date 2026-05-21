@@ -28,9 +28,11 @@ def answer_momo_question(
         )
     )
 
+    _reset_q = "reset" in q.lower() and "runtime" in q.lower()
+
     if include.get("mission_control", True):
         try:
-            if _ops_q:
+            if _ops_q and not _reset_q:
                 from monitoring.simple_status import build_simple_worker_status
 
                 ctx["mission_control"] = build_simple_worker_status()

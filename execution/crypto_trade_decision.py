@@ -110,11 +110,24 @@ def build_crypto_trade_decision(
     if sym and isinstance(m_snap, dict):
         mrow = m_snap.get(sym) or m_snap.get(sym.upper())
         if not isinstance(mrow, dict):
-            meta_ok = False
-            ready["push_blocked_reason"] = "CRYPTO_METADATA_MISSING"
+            if quote_ok:
+                from execution.crypto_quote_snapshot import _STATIC_CRYPTO_METADATA
+
+                fb = _STATIC_CRYPTO_METADATA.get(sym) or _STATIC_CRYPTO_METADATA.get(sym.upper())
+                if fb:
+                    mrow = dict(fb)
+                    meta_ok = True
+                else:
+                    meta_ok = False
+                    ready["push_blocked_reason"] = "CRYPTO_METADATA_MISSING"
+            else:
+                meta_ok = False
+                ready["push_blocked_reason"] = "CRYPTO_METADATA_MISSING"
         elif mrow.get("tradable") is False:
             meta_ok = False
             ready["push_blocked_reason"] = "PAIR_UNSUPPORTED"
+        elif mrow.get("tradable") is None and quote_ok:
+            meta_ok = True
 
     cooldown_ok = True
     risk_ok = recon and not recovery

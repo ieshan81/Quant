@@ -43,11 +43,30 @@ def test_build_crypto_trade_decision_never_empty() -> None:
 
 
 def test_mission_control_summary_fast_under_one_second() -> None:
+    from unittest.mock import patch
+
     from monitoring.mission_control_api import build_mission_control_summary_fast
 
-    t0 = time.perf_counter()
-    body = build_mission_control_summary_fast(live_broker=False)
-    elapsed = time.perf_counter() - t0
+    acct = {"equity": 200.0, "cash": 200.0, "buying_power": 200.0, "primary_source": "test"}
+    with patch(
+        "monitoring.canonical_account.resolve_canonical_account_metrics",
+        return_value=acct,
+    ), patch(
+        "monitoring.dashboard_data.fetch_latest_execution_health",
+        return_value={"reconciliation_health": {"clean": True}},
+    ), patch(
+        "monitoring.dashboard_data.fetch_open_positions_from_trades",
+        return_value=[],
+    ), patch(
+        "monitoring.dashboard_data.fetch_latest_dynamic_capital_plan",
+        return_value=None,
+    ), patch(
+        "monitoring.dashboard_data.get_alpaca_background_snapshot",
+        return_value={},
+    ):
+        t0 = time.perf_counter()
+        body = build_mission_control_summary_fast(live_broker=False)
+        elapsed = time.perf_counter() - t0
     assert elapsed < 1.0, f"MC fast build took {elapsed:.2f}s"
     assert body.get("ok") is not False
 
@@ -91,6 +110,23 @@ def dash_app(tmp_path: Path):
 def test_required_routes(dash_app, path: str) -> None:
     r = dash_app.test_client().get(path)
     assert r.status_code == 200, path
+
+
+def test_broker_account_snapshot_json_no_float_crash(tmp_path: Path) -> None:
+    db = tmp_path / "snap.sqlite3"
+    snap = '{"equity":200.0,"buying_power":200.0,"positions_count":0}'
+    with patch.object(config, "DB_PATH", db):
+        from data.data_store import get_connection, init_schema, load_runtime_config_dict
+
+        init_schema(db)
+        with get_connection(db) as conn:
+            conn.execute(
+                "INSERT INTO bot_config (key, value, description, updated_at) VALUES (?, ?, '', datetime('now'))",
+                ("broker_account_snapshot", snap),
+            )
+            conn.commit()
+        rt = load_runtime_config_dict(db)
+    assert "broker_account_snapshot" not in rt
 
 
 def test_cycle_outcome_derived() -> None:

@@ -95,7 +95,10 @@ def get_rest_client() -> Any | None:
     global _alpaca_config_logged_once
     with _rest_client_lock:
         if _rest_client_cached is not None:
-            return _rest_client_cached
+            if tradeapi is None or not alpaca_credentials_configured():
+                _rest_client_cached = None
+            else:
+                return _rest_client_cached
     if tradeapi is None:
         logger.error(
             "[alpaca] AUTHENTICATION FAILED — stock trading DISABLED. "

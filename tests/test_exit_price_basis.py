@@ -244,8 +244,17 @@ def test_ops_tab_renders_resource_fields(dash_app) -> None:
 
 
 def test_ops_api_railway_disconnected_safe_error(dash_app) -> None:
-    client = dash_app.test_client()
-    r = client.get("/api/ops/status")
+    from unittest.mock import patch
+
+    disconnected = {
+        "enabled": True,
+        "railway_api_connected": False,
+        "safe_error": "Railway API unavailable in test",
+        "reason": "test_mock",
+    }
+    with patch("monitoring.railway_status.get_railway_status", return_value=disconnected):
+        client = dash_app.test_client()
+        r = client.get("/api/ops/status")
     assert r.status_code == 200
     data = json.loads(r.data)
     railway = data.get("railway") or {}

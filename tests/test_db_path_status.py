@@ -12,7 +12,11 @@ def test_canonical_prefers_sqlite3(tmp_path: Path) -> None:
     persist.mkdir()
     db3 = persist / "quantbot.sqlite3"
     db3.write_text("", encoding="utf-8")
-    with patch.dict("os.environ", {"QUANTBOT_PERSIST_DIR": str(persist), "DB_PATH": ""}, clear=False):
+    with patch.dict(
+        "os.environ",
+        {"QUANTBOT_PERSIST_DIR": str(persist), "DB_PATH": "", "QUANTBOT_DB_PATH": ""},
+        clear=False,
+    ):
         p = resolve_canonical_db_path()
         assert p.name == "quantbot.sqlite3"
         assert p == db3.resolve()

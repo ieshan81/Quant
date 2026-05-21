@@ -31,7 +31,10 @@ def check_kill_switch(current_balance: float, db_path: str | None = None) -> boo
         finally:
             conn.close()
         if first is not None and first[0] is not None:
-            baseline = float(first[0])
+            snap = float(first[0])
+            cfg = float(config.STARTING_BALANCE)
+            if snap > 0 and (cfg <= 0 or snap >= cfg * 0.5):
+                baseline = max(cfg, snap) if cfg > 0 else snap
     except Exception:
         logger.debug("Kill-switch baseline read failed; using current equity", exc_info=True)
     threshold = baseline * (1.0 - _drawdown_fraction())

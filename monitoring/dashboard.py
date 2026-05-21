@@ -2218,6 +2218,12 @@ def create_app() -> Flask:
                 force_refresh=False,
                 ttl_sec=8.0,
             )
+        if payload.get("simple_fallback") and "momo_status" not in payload:
+            from monitoring.mission_control_api import build_mission_control_summary_minimal
+
+            payload = build_mission_control_summary_minimal(
+                degraded_reason=str(payload.get("degraded_reason") or "cache_incomplete")[:200],
+            )
         ms = timer.finish(cache_hit=payload.get("cache_hit"))
         payload["backend_duration_ms"] = payload.get("backend_duration_ms") or ms
         if not payload or payload.get("ok") is False:

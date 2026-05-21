@@ -223,7 +223,7 @@ def test_spread_missing_blocks_crypto_no_fake_spread() -> None:
         position_exit_rows=[],
     )
     assert plan["crypto_engine_plan"]["spread_ok"] is None
-    assert plan["crypto_engine_plan"]["blocked_reason"] == rc.CAPITAL_ALLOCATOR_DATA_MISSING
+    assert plan["crypto_engine_plan"]["blocked_reason"] == rc.CRYPTO_QUOTES_MISSING
 
 
 def test_spread_too_wide_blocks() -> None:

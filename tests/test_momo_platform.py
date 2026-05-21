@@ -167,6 +167,9 @@ def test_mission_control_has_transition_headline(dash_app) -> None:
 
 @pytest.fixture()
 def dash_app(tmp_path: Path):
+    from monitoring.mission_control_cache import clear_mission_control_cache
+
+    clear_mission_control_cache()
     persist = tmp_path / "persist"
     persist.mkdir()
     db = persist / "t.sqlite3"
@@ -177,3 +180,4 @@ def dash_app(tmp_path: Path):
         app = create_app()
         app.config["TESTING"] = True
         yield app
+    clear_mission_control_cache()

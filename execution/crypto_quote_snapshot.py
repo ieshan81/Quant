@@ -122,40 +122,82 @@ def build_crypto_market_snapshot(
     return snap, diag
 
 
+# Major Alpaca crypto pairs — static fallback when REST metadata fails but quotes exist.
+_STATIC_CRYPTO_METADATA: dict[str, dict[str, Any]] = {
+    "BTC/USD": {"tradable": True, "fractionable": True, "source": "static_fallback"},
+    "ETH/USD": {"tradable": True, "fractionable": True, "source": "static_fallback"},
+    "SOL/USD": {"tradable": True, "fractionable": True, "source": "static_fallback"},
+    "LINK/USD": {"tradable": True, "fractionable": True, "source": "static_fallback"},
+    "BCH/USD": {"tradable": True, "fractionable": True, "source": "static_fallback"},
+    "LTC/USD": {"tradable": True, "fractionable": True, "source": "static_fallback"},
+    "DOGE/USD": {"tradable": True, "fractionable": True, "source": "static_fallback"},
+}
+
+
+def _metadata_from_alpaca_row(sym: str, raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return {
+            "tradable": raw.get("tradable") if raw.get("tradable") is not None else True,
+            "fractionable": bool(raw.get("fractionable", True)),
+            "overnight_tradable": raw.get("overnight_tradable"),
+            "source": "alpaca",
+        }
+    return {
+        "tradable": bool(getattr(raw, "tradable", True)),
+        "fractionable": bool(getattr(raw, "fractionable", True)),
+        "overnight_tradable": getattr(raw, "overnight_tradable", None),
+        "source": "alpaca",
+    }
+
+
 def build_crypto_asset_metadata(
     symbols: list[str],
     *,
     rest_client: Any | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Alpaca asset metadata for crypto symbols; diagnostics on failures."""
+    """Alpaca asset metadata for crypto symbols; static fallback for major pairs."""
     meta: dict[str, Any] = {}
-    diag: dict[str, Any] = {"errors": [], "supported": [], "unavailable": []}
-    if rest_client is None:
-        diag["errors"].append("rest_client_missing")
-        return meta, diag
-
-    def _attr(o: Any, n: str, d: Any = None) -> Any:
-        return getattr(o, n, d) if o is not None else d
+    diag: dict[str, Any] = {"errors": [], "supported": [], "unavailable": [], "static_fallback": []}
 
     for raw in symbols:
         sym = str(raw or "").strip().upper()
-        if not sym:
+        if not sym or "/" not in sym:
             continue
-        asset_sym = sym.replace("/", "")
+        entry: dict[str, Any] | None = None
         try:
-            a = rest_client.get_asset(asset_sym)
-            entry = {
-                "tradable": bool(_attr(a, "tradable", False)),
-                "fractionable": bool(_attr(a, "fractionable", False)),
-                "overnight_tradable": _attr(a, "overnight_tradable", None),
-                "source": "alpaca",
-            }
+            from execution import stock_broker
+
+            row = stock_broker.get_asset_metadata(sym)
+            if isinstance(row, dict) and row:
+                entry = _metadata_from_alpaca_row(sym, row)
+        except Exception as exc:
+            diag["errors"].append(f"{sym}:stock_broker:{str(exc)[:80]}")
+
+        if entry is None and rest_client is not None:
+            try:
+                a = rest_client.get_asset(sym.replace("/", ""))
+                entry = _metadata_from_alpaca_row(sym, a)
+            except Exception as exc:
+                diag["errors"].append(f"{sym}:rest:{str(exc)[:80]}")
+
+        if not entry and sym in _STATIC_CRYPTO_METADATA:
+            entry = dict(_STATIC_CRYPTO_METADATA[sym])
+            diag["static_fallback"].append(sym)
+
+        if entry:
             meta[sym] = entry
-            if entry.get("tradable"):
+            if entry.get("tradable") is not False:
                 diag["supported"].append(sym)
             else:
                 diag["unavailable"].append(sym)
-        except Exception as exc:
-            diag["errors"].append(f"{sym}:{str(exc)[:120]}")
-            meta[sym] = {"tradable": None, "source": "alpaca", "error": str(exc)[:120]}
+        else:
+            diag["unavailable"].append(sym)
+            meta[sym] = {"tradable": None, "source": "missing", "error": "metadata_unavailable"}
+
+    if not symbols:
+        diag["errors"].append("no_symbols_requested")
+    elif rest_client is None and not meta:
+        diag["errors"].append("rest_client_missing")
     return meta, diag
