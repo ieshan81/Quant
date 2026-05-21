@@ -952,6 +952,12 @@ def init_schema(db_path: Path | str | None = None) -> None:
         conn.executescript(SCHEMA_SQL)
         _seed_bot_config_if_empty(conn)
         _seed_backtest_config_if_empty(conn)
+        try:
+            from execution.trading_cycle_trace import ensure_heartbeat_cycle_columns
+
+            ensure_heartbeat_cycle_columns(conn)
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()

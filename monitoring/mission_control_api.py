@@ -201,8 +201,15 @@ def _assemble_summary(
         "mission_mode_derived": mission_mode,
     }
 
+    from monitoring.crypto_readiness_payload import (
+        crypto_block_headline_from_readiness,
+        fallback_crypto_eligibility,
+        fallback_crypto_executor_readiness,
+    )
+
     crypto_elig: dict[str, Any] = {}
     crypto_executor: dict[str, Any] = {}
+    _crypto_build_err = ""
     try:
         from data.data_store import load_runtime_config_dict
         from execution.crypto_execution_readiness import build_crypto_executor_readiness
@@ -237,16 +244,17 @@ def _assemble_summary(
             "blockers": crypto_executor.get("blockers") or [],
             "theoretical_session_allowed": bool(mc.get("crypto_entries_allowed")),
         }
-    except Exception:
-        pass
+    except Exception as exc:
+        _crypto_build_err = str(exc)[:240]
+        crypto_executor = fallback_crypto_executor_readiness(safe_error=_crypto_build_err)
+        crypto_elig = fallback_crypto_eligibility(safe_error=_crypto_build_err, executor=crypto_executor)
 
-    crypto_block_headline = None
-    if not crypto_elig.get("can_trade_crypto"):
-        crypto_block_headline = "Crypto blocked: " + str(
-            crypto_elig.get("latest_human_reason") or crypto_elig.get("latest_blocker") or "see eligibility"
-        )
-    elif crypto_elig.get("can_trade_crypto"):
-        crypto_block_headline = "Crypto ready: " + str(crypto_elig.get("latest_human_reason", "gates passed"))
+    if not crypto_executor:
+        crypto_executor = fallback_crypto_executor_readiness(safe_error="empty_executor_payload")
+    if not crypto_elig:
+        crypto_elig = fallback_crypto_eligibility(safe_error=_crypto_build_err or "empty_eligibility_payload")
+
+    crypto_block_headline = crypto_block_headline_from_readiness(crypto_elig, crypto_executor)
 
     resource: dict[str, Any] = {}
     try:

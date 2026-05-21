@@ -241,6 +241,106 @@ def _performance_loss_streak(
     return 0, wr
 
 
+def _crypto_data_missing_detail(
+    *,
+    best_crypto_sym: str | None,
+    market_data_snapshot: dict[str, Any] | None,
+    asset_metadata: dict[str, Any] | None,
+    spread_best: float | None,
+    quote_diagnostics: dict[str, Any] | None = None,
+    metadata_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Expand CAPITAL_ALLOCATOR_DATA_MISSING into exact missing fields."""
+    detail: dict[str, Any] = {
+        "best_crypto_candidate": best_crypto_sym,
+        "quotes_missing": False,
+        "spread_missing": False,
+        "bid_ask_invalid": False,
+        "liquidity_missing": False,
+        "asset_metadata_missing": False,
+        "supported_pair_missing": False,
+        "ccxt_errors": [],
+        "alpaca_metadata_errors": [],
+        "stale_worker_cycle": False,
+        "primary_reason_code": rc.CAPITAL_ALLOCATOR_DATA_MISSING,
+    }
+    qd = quote_diagnostics or {}
+    md = metadata_diagnostics or {}
+    if qd.get("errors"):
+        detail["ccxt_errors"] = list(qd.get("errors") or [])[:8]
+    if md.get("errors"):
+        detail["alpaca_metadata_errors"] = list(md.get("errors") or [])[:8]
+
+    if not best_crypto_sym:
+        detail["supported_pair_missing"] = True
+        detail["primary_reason_code"] = rc.CRYPTO_QUOTES_MISSING
+        return detail
+
+    sym = str(best_crypto_sym).strip().upper()
+    row = (market_data_snapshot or {}).get(sym) if isinstance(market_data_snapshot, dict) else None
+    if not isinstance(market_data_snapshot, dict) or not market_data_snapshot:
+        detail["quotes_missing"] = True
+        detail["primary_reason_code"] = rc.CRYPTO_QUOTES_MISSING
+    elif not isinstance(row, dict):
+        detail["quotes_missing"] = True
+        detail["primary_reason_code"] = rc.CRYPTO_QUOTES_MISSING
+    else:
+        if row.get("spread_pct") is None:
+            detail["spread_missing"] = True
+        bid, ask = row.get("bid"), row.get("ask")
+        if bid is not None and ask is not None:
+            try:
+                if float(ask) < float(bid):
+                    detail["bid_ask_invalid"] = True
+            except (TypeError, ValueError):
+                detail["bid_ask_invalid"] = True
+        if row.get("last_trade_price") is None:
+            detail["liquidity_missing"] = True
+
+    if spread_best is None and best_crypto_sym:
+        if detail["quotes_missing"] or detail["spread_missing"]:
+            detail["primary_reason_code"] = rc.CRYPTO_QUOTES_MISSING
+        else:
+            detail["spread_missing"] = True
+            detail["primary_reason_code"] = rc.CRYPTO_QUOTES_MISSING
+
+    if not isinstance(asset_metadata, dict) or not asset_metadata:
+        detail["asset_metadata_missing"] = True
+        if detail["primary_reason_code"] == rc.CAPITAL_ALLOCATOR_DATA_MISSING:
+            detail["primary_reason_code"] = rc.CRYPTO_METADATA_MISSING
+    else:
+        mrow = asset_metadata.get(sym)
+        if not isinstance(mrow, dict):
+            detail["asset_metadata_missing"] = True
+            detail["primary_reason_code"] = rc.CRYPTO_METADATA_MISSING
+        elif mrow.get("tradable") is False:
+            detail["supported_pair_missing"] = True
+            detail["primary_reason_code"] = rc.CRYPTO_METADATA_MISSING
+
+    try:
+        from execution.trading_cycle_trace import fetch_cycle_status_from_db
+
+        hb = fetch_cycle_status_from_db()
+        if hb.get("failed_cycle_stage") or (
+            hb.get("last_successful_cycle_at") is None and hb.get("last_cycle_started_at")
+        ):
+            detail["stale_worker_cycle"] = True
+    except Exception:
+        pass
+
+    fields = [
+        "quotes_missing",
+        "spread_missing",
+        "bid_ask_invalid",
+        "liquidity_missing",
+        "asset_metadata_missing",
+        "supported_pair_missing",
+        "stale_worker_cycle",
+    ]
+    detail["missing_fields"] = [f for f in fields if detail.get(f)]
+    return detail
+
+
 def _spread_for_symbol(market_data_snapshot: dict[str, Any] | None, sym: str) -> float | None:
     if not isinstance(market_data_snapshot, dict):
         return None
@@ -285,6 +385,8 @@ def build_dynamic_capital_plan(
     runtime_config: dict[str, float] | None,
     now: datetime | None,
     position_exit_rows: list[dict[str, Any]] | None = None,
+    quote_diagnostics: dict[str, Any] | None = None,
+    metadata_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble JSON-serializable plan from broker + bot inputs (no order placement)."""
     warnings: list[str] = []
@@ -563,8 +665,17 @@ def build_dynamic_capital_plan(
         if spread_best is not None:
             crypto_plan["spread_ok"] = spread_best <= max_spread_frac
     elif spread_best is None and best_crypto_sym:
+        _miss = _crypto_data_missing_detail(
+            best_crypto_sym=best_crypto_sym,
+            market_data_snapshot=market_data_snapshot,
+            asset_metadata=asset_metadata,
+            spread_best=spread_best,
+            quote_diagnostics=quote_diagnostics,
+            metadata_diagnostics=metadata_diagnostics,
+        )
         crypto_plan["recommended_action"] = "BLOCKED"
-        crypto_plan["blocked_reason"] = rc.CAPITAL_ALLOCATOR_DATA_MISSING
+        crypto_plan["blocked_reason"] = str(_miss.get("primary_reason_code") or rc.CAPITAL_ALLOCATOR_DATA_MISSING)
+        crypto_plan["data_missing_detail"] = _miss
         crypto_plan["spread_ok"] = None
     elif spread_best is not None and spread_best > max_spread_frac:
         crypto_plan["spread_ok"] = False
@@ -790,6 +901,8 @@ def gather_inputs_and_build_plan(
     market_data_snapshot: dict[str, Any] | None,
     asset_metadata: dict[str, Any] | None,
     now: datetime | None = None,
+    quote_diagnostics: dict[str, Any] | None = None,
+    metadata_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fetch Alpaca slices when client exists; otherwise mark data gaps and continue."""
     account = None
@@ -843,6 +956,8 @@ def gather_inputs_and_build_plan(
         runtime_config=runtime_config,
         now=now if now is not None else datetime.now(timezone.utc),
         position_exit_rows=position_exit_rows,
+        quote_diagnostics=quote_diagnostics,
+        metadata_diagnostics=metadata_diagnostics,
     )
 
 

@@ -3781,6 +3781,10 @@ def run_trading_cycle_once(
     stocks_override: list[str] | None = None,
     crypto_override: list[str] | None = None,
 ) -> dict[str, Any]:
+    from execution.trading_cycle_trace import start_cycle
+
+    _trace = start_cycle()
+    cid = _trace.cycle_id
     rt = dict(load_runtime_config_dict())
     _recon_clean = bool(
         (_startup_recovery_state.get("reconciliation_health") or {}).get("clean", True)
@@ -3852,11 +3856,14 @@ def run_trading_cycle_once(
             if _cli is not None:
                 from data import broker_reconciliation as _broker_recon
 
+                _trace.stage("broker_reconcile_start")
                 _rs = _broker_recon.reconcile_sqlite_with_broker(config.DB_PATH, _cli, mode=config.MODE)
                 logger.info("[broker_reconcile] pre-exit summary={}", _rs)
+                _trace.stage("broker_reconcile_done")
                 try:
                     from execution.position_reconciliation import run_cycle_stale_local_cleanup
 
+                    _trace.stage("stale_cleanup_start")
                     _ghost = run_cycle_stale_local_cleanup(config.DB_PATH, _cli, mode=config.MODE)
                     if not _ghost.get("skipped"):
                         logger.info("[reconcile] cycle stale cleanup={}", _ghost)
@@ -3864,13 +3871,12 @@ def run_trading_cycle_once(
                         if _rh:
                             _startup_recovery_state["reconciliation_health"] = _rh
                             _recon_clean = bool(_rh.get("clean", True))
+                    _trace.stage("stale_cleanup_done")
                 except Exception:
                     logger.warning("[reconcile] cycle stale cleanup failed", exc_info=True)
         except Exception:
             logger.warning("[broker_reconcile] pre-exit run failed", exc_info=True)
-    import uuid as _uuid_cycle
-
-    cid = _uuid_cycle.uuid4().hex[:10]
+    _trace.stage("account_snapshot_start")
     lines, _, _, exit_health = _check_and_execute_exits(
         stock_trader, crypto_trader, rt, config.DB_PATH, cycle_id=cid
     )
@@ -3948,6 +3954,8 @@ def run_trading_cycle_once(
     except Exception:
         rt["_cycle_buying_power"] = float(rt.get("_cycle_buying_power", 0.0) or 0.0)
         rt["_usable_buying_power_for_scanners"] = float(rt.get("_usable_buying_power_for_scanners", 0.0) or 0.0)
+    _trace.stage("account_snapshot_done")
+    _trace.stage("crypto_readiness_start")
 
     try:
         from execution.stock_session import classify_us_session as _class_sess
@@ -4044,6 +4052,8 @@ def run_trading_cycle_once(
         f"Cycle starting | stocks_open={portfolio_limiter.us_stock_market_open()} | "
         f"stock_symbols={len(stock_symbols)} | crypto_symbols={len(crypto_symbols)}"
     )
+    _trace.stage("crypto_readiness_done")
+    _trace.stage("scanner_start")
 
     st = stock_symbols
     cr = crypto_symbols
@@ -4121,6 +4131,7 @@ def run_trading_cycle_once(
                 results.append(fut.result())
             except Exception as exc:
                 logger.error("Analyze failed {}: {}", futs[fut], exc, exc_info=True)
+    _trace.stage("scanner_done")
 
     prices_dict: dict[str, float] = {}
     for r in results:
@@ -4158,7 +4169,10 @@ def run_trading_cycle_once(
         logger.debug("[buy_gate] unresolved profit exit check skipped", exc_info=True)
     rt["_unresolved_profit_exit_symbols"] = ",".join(sorted(_unresolved_profit_exit_syms))
 
+    _trace.stage("order_candidate_start")
     summary = execute_cycle_results(trader, results, rt, cycle_id=cid)
+    summary["cycle_id"] = cid
+    _trace.stage("order_candidate_done")
     try:
         eh = dict(summary.get("execution_health") or {})
         eh["blocked_exits_count"] = int(exit_health.get("blocked_exits_count") or 0)
@@ -4330,26 +4344,31 @@ def run_trading_cycle_once(
         from monitoring import dashboard_data as _dd_dca
 
         rt_d = load_runtime_config_dict(config.DB_PATH)
-        q_snap: dict[str, Any] = {}
-        for _k, _v in (prices_dict or {}).items():
-            if _v is None:
-                continue
-            try:
-                q_snap[str(_k).strip().upper()] = {
-                    "last_trade_price": float(_v),
-                    "bid": None,
-                    "ask": None,
-                    "spread_pct": None,
-                    "timestamp": None,
-                }
-            except (TypeError, ValueError):
-                pass
-        ameta: dict[str, Any] = {}
-
-        def _alpaca_attr(o: Any, n: str, d: Any = None) -> Any:
-            return getattr(o, n, d) if o is not None else d
-
+        _trace.stage("crypto_allocator_start")
         cli3 = stock_broker.get_rest_client()
+        _crypto_syms = [str(s).strip().upper() for s in (cr or []) if "/" in str(s)]
+        if not _crypto_syms:
+            _crypto_syms = [str(s).strip().upper() for s in (crypto_symbols or []) if "/" in str(s)]
+        from data.crypto_quote_snapshot import build_crypto_asset_metadata, build_crypto_market_snapshot
+
+        q_snap, _quote_diag = build_crypto_market_snapshot(_crypto_syms, rest_client=cli3)
+        for _k, _v in (prices_dict or {}).items():
+            if _v is None or "/" not in str(_k):
+                continue
+            _ku = str(_k).strip().upper()
+            if _ku not in q_snap:
+                try:
+                    q_snap[_ku] = {
+                        "last_trade_price": float(_v),
+                        "bid": None,
+                        "ask": None,
+                        "spread_pct": 0.002,
+                        "timestamp": None,
+                        "quote_provider": "scanner_mid_fallback",
+                    }
+                except (TypeError, ValueError):
+                    pass
+        ameta, _meta_diag = build_crypto_asset_metadata(_crypto_syms, rest_client=cli3)
         if cli3 is not None:
             open_pos_dca = _dd_dca.get_real_positions(cli3)
         else:
@@ -4358,21 +4377,6 @@ def run_trading_cycle_once(
             open_pos_dca = _cr_dca.sqlite_net_positions_to_broker_shape(raw_p, prices_dict or {})
         with get_connection(config.DB_PATH) as conn:
             recent_sigs_dca = _dd_dca.fetch_recent_signals(conn, limit=80)
-        if cli3 is not None:
-            for _p in open_pos_dca or []:
-                _sym = str(_p.get("symbol") or "").strip().upper()
-                if not _sym:
-                    continue
-                _asset_sym = _sym.replace("/", "")
-                try:
-                    _a = cli3.get_asset(_asset_sym)
-                    ameta[_sym] = {
-                        "tradable": bool(_alpaca_attr(_a, "tradable", False)),
-                        "fractionable": bool(_alpaca_attr(_a, "fractionable", False)),
-                        "overnight_tradable": _alpaca_attr(_a, "overnight_tradable", None),
-                    }
-                except Exception:
-                    ameta[_sym] = {"tradable": None, "overnight_tradable": None}
 
         perf_snap = summary.get("performance") if isinstance(summary.get("performance"), dict) else {}
         dec_exit = list((summary.get("position_exit_decisions") or []))
@@ -4390,7 +4394,10 @@ def run_trading_cycle_once(
             rest_client=cli3,
             market_data_snapshot=q_snap,
             asset_metadata=ameta,
+            quote_diagnostics=_quote_diag,
+            metadata_diagnostics=_meta_diag,
         )
+        _trace.stage("crypto_allocator_done")
         persist_dynamic_capital_plan(config.DB_PATH, dplan)
         summary["dynamic_capital_plan"] = dplan
         summary["capital_allocator_summary"] = build_capital_allocator_summary(dplan)
@@ -4554,22 +4561,16 @@ def run_trading_cycle_once(
         })
     except Exception:
         logger.debug("[account_history] snapshot skipped", exc_info=True)
-    try:
-        from execution.startup_recovery import upsert_heartbeat
+    _trace.stage("cycle_success")
+    _trace.record_success(
+        summary,
+        equity=float(trader.equity_total()),
+        cash=float((summary.get("buy_gate") or {}).get("cash") or 0),
+        buying_power=float((summary.get("buy_gate") or {}).get("buying_power") or 0),
+    )
+    from execution.trading_cycle_trace import clear_active_trace
 
-        _bg_hb = summary.get("buy_gate") or {}
-        with get_connection(config.DB_PATH) as conn:
-            upsert_heartbeat(
-                conn,
-                equity=float(trader.equity_total()),
-                cash=float(_bg_hb.get("cash") or 0),
-                buying_power=float(_bg_hb.get("buying_power") or 0),
-                cycle_id=str(summary.get("cycle_id") or cid),
-                successful_cycle=True,
-            )
-            conn.commit()
-    except Exception:
-        logger.debug("[heartbeat] cycle upsert skipped", exc_info=True)
+    clear_active_trace()
     return summary
 
 
@@ -4928,7 +4929,13 @@ def run_worker_forever() -> None:
                     _handle_kill_switch(trader, market_ctx)
                     _halted.set()
                     raise RuntimeError("kill switch triggered; worker restarting")
-                run_trading_cycle_once(trader, universe, market_ctx)
+                try:
+                    run_trading_cycle_once(trader, universe, market_ctx)
+                except Exception as _cycle_exc:
+                    from execution.trading_cycle_trace import capture_cycle_exception
+
+                    capture_cycle_exception(_cycle_exc)
+                    raise
                 if not _stop.is_set():
                     time.sleep(_trade_interval_sec())
         except Exception as e:

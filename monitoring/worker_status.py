@@ -27,12 +27,16 @@ def resolve_worker_ops_status(
     """Return worker running/stopped from bot_runtime_heartbeat + latest worker cycle row."""
     hb: dict[str, Any] = {}
     try:
+        from execution.trading_cycle_trace import ensure_heartbeat_cycle_columns, fetch_cycle_status_from_db
         from data.data_store import get_connection
 
-        with get_connection(timeout_sec=2.0) as conn:
-            row = conn.execute("SELECT * FROM bot_runtime_heartbeat WHERE id = 1").fetchone()
-            if row:
-                hb = dict(row) if hasattr(row, "keys") else {}
+        hb = fetch_cycle_status_from_db()
+        if not hb:
+            with get_connection(timeout_sec=2.0) as conn:
+                ensure_heartbeat_cycle_columns(conn)
+                row = conn.execute("SELECT * FROM bot_runtime_heartbeat WHERE id = 1").fetchone()
+                if row:
+                    hb = dict(row) if hasattr(row, "keys") else {}
     except Exception as exc:
         return {
             "worker_running": False,
@@ -86,10 +90,17 @@ def resolve_worker_ops_status(
         "trading_loop_fresh": cycle_fresh,
         "status_message": msg,
         "last_worker_heartbeat_at": last_hb or None,
+        "last_cycle_started_at": hb.get("last_cycle_started_at"),
         "last_heartbeat_age_seconds": round(hb_age, 1) if hb_age is not None else None,
         "last_successful_cycle_at": hb.get("last_successful_cycle_at"),
         "last_cycle_age_seconds": round(cycle_age, 1) if cycle_age is not None else None,
         "last_cycle_id": last_cycle or None,
+        "last_failed_cycle_at": hb.get("last_failed_cycle_at"),
+        "failed_cycle_id": hb.get("failed_cycle_id"),
+        "failed_cycle_stage": hb.get("failed_cycle_stage"),
+        "failed_cycle_safe_error": hb.get("failed_cycle_safe_error"),
+        "failed_traceback_short": hb.get("failed_traceback_short"),
+        "current_cycle_stage": hb.get("current_cycle_stage"),
         "last_equity": hb.get("last_equity"),
         "last_buying_power": hb.get("last_buying_power"),
         "mode": config.MODE,
