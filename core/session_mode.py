@@ -37,10 +37,17 @@ def compute_mission_control(
     if operator_review_required:
         mission = "PAUSED_OPERATOR_REVIEW"
     elif exit_only or block_buys:
-        if bool(rs.get("startup_drawdown_status", {}).get("recovery_active")):
+        recon_clean = bool((rs.get("reconciliation_health") or {}).get("clean", True))
+        recovery_active = bool((rs.get("startup_recovery_status") or {}).get("recovery_active"))
+        drawdown_active = bool((rs.get("startup_drawdown_status") or {}).get("drawdown_active"))
+        if drawdown_active:
             mission = "DRAWDOWN_RECOVERY"
-        elif not (rs.get("reconciliation_health") or {}).get("clean", True):
+        elif recovery_active:
+            mission = "STARTUP_RECOVERY"
+        elif not recon_clean and block_buys:
             mission = "RECONCILIATION_RECOVERY"
+        elif exit_only:
+            mission = "EXIT_ONLY"
         elif block_buys:
             mission = "STARTUP_RECOVERY"
         else:

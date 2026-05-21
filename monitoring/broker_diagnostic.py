@@ -106,6 +106,7 @@ def _serialize_account_snapshot(acct: Any, retrieved_at: str) -> dict[str, Any]:
         "currency",
         "cash",
         "buying_power",
+        "non_marginable_buying_power",
         "daytrading_buying_power",
         "regt_buying_power",
         "equity",
@@ -128,6 +129,7 @@ def _serialize_account_snapshot(acct: Any, retrieved_at: str) -> dict[str, Any]:
         "currency": raw.get("currency"),
         "cash": _num(raw.get("cash")),
         "buying_power": _num(raw.get("buying_power")),
+        "non_marginable_buying_power": _num(raw.get("non_marginable_buying_power")),
         "daytrading_buying_power": _num(raw.get("daytrading_buying_power")),
         "regt_buying_power": _num(raw.get("regt_buying_power")),
         "equity": _num(raw.get("equity")),
@@ -482,3 +484,11 @@ def build_broker_diagnostic_payload(conn: Any) -> dict[str, Any]:
 def diagnostic_json_bytes(payload: dict[str, Any]) -> bytes:
     raw = json.dumps(payload, default=str, indent=2)
     return _final_secret_scan(raw).encode("utf-8")
+
+
+def build_broker_diagnostic() -> dict[str, Any]:
+    """Compatibility wrapper for GPT bundle / Momo ask (uses canonical DB)."""
+    from data.data_store import get_connection
+
+    with get_connection(timeout_sec=5.0) as conn:
+        return build_broker_diagnostic_payload(conn)

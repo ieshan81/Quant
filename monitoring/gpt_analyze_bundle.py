@@ -62,14 +62,25 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         account["error"] = str(exc)[:200]
 
     try:
-        from monitoring.broker_diagnostic import build_broker_diagnostic
-        broker_diag = build_broker_diagnostic()
+        from data.data_store import get_connection
+        from monitoring.broker_diagnostic import build_broker_diagnostic_payload
+
+        with get_connection(timeout_sec=8.0) as conn:
+            broker_diag = build_broker_diagnostic_payload(conn)
+        if not account.get("equity") and broker_diag.get("alpaca_account_snapshot"):
+            ac = broker_diag["alpaca_account_snapshot"]
+            account.setdefault("equity", ac.get("equity"))
+            account.setdefault("cash", ac.get("cash"))
+            account.setdefault("buying_power", ac.get("buying_power"))
     except Exception as exc:
         broker_diag = {"error": str(exc)[:200]}
 
     try:
+        from data.data_store import get_connection
         from monitoring.cycle_activity_export import build_activity_export_payload
-        activity = build_activity_export_payload(limit=80)
+
+        with get_connection(timeout_sec=8.0) as conn:
+            activity = build_activity_export_payload(conn, limit=80)
     except Exception as exc:
         activity = {"error": str(exc)[:200]}
 
@@ -112,16 +123,13 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     broker_pos = 0
     ce = account.get("equity")
     cbp = account.get("buying_power")
-    try:
-        from execution import stock_broker
-        cli = stock_broker.get_rest_client()
-        if cli:
-            acct = cli.get_account()
-            ce = float(getattr(acct, "equity", ce) or ce or 0)
-            cbp = float(getattr(acct, "buying_power", cbp) or cbp or 0)
-            broker_pos = len(cli.get_all_positions() or [])
-    except Exception:
-        pass
+    if isinstance(broker_diag, dict) and broker_diag.get("alpaca_account_snapshot"):
+        acs = broker_diag["alpaca_account_snapshot"]
+        ce = acs.get("equity", ce)
+        cbp = acs.get("buying_power", cbp)
+        account.setdefault("cash", acs.get("cash"))
+    if isinstance(broker_diag, dict) and broker_diag.get("alpaca_positions"):
+        broker_pos = len(broker_diag.get("alpaca_positions") or [])
 
     transition = build_broker_account_transition_status(
         current_equity=ce, current_buying_power=cbp,
@@ -179,10 +187,33 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
             else:
                 crypto_push_pull_events.append(ev)
 
+    db_path_status: dict[str, Any] = {}
+    crypto_eligibility: dict[str, Any] = {}
+    try:
+        from core.db_path_status import build_db_path_status
+        db_path_status = build_db_path_status()
+    except Exception as exc:
+        db_path_status = {"error": str(exc)[:120]}
+    try:
+        from monitoring.crypto_eligibility import build_crypto_eligibility
+        if isinstance(mission_summary, dict) and mission_summary.get("ok"):
+            crypto_eligibility = build_crypto_eligibility(
+                cash=float((mission_summary.get("account") or {}).get("cash") or 0),
+                buying_power=float((mission_summary.get("account") or {}).get("buying_power") or 0),
+                equity=float((mission_summary.get("account") or {}).get("equity") or 0),
+                crypto_night=mission_summary.get("crypto_night") or {},
+                bp_diagnostic=(mission_summary.get("capital_protection") or {}).get("buying_power_diagnostic") or bp_diag,
+                latest_crypto_attempts=(mission_summary.get("crypto_night") or {}).get("latest_crypto_attempts") or crypto_push_pull_events,
+            )
+    except Exception as exc:
+        crypto_eligibility = {"error": str(exc)[:120]}
+
     bundle = {
         "generated_at": generated,
+        "db_path_status": db_path_status,
         "config_summary": config_summary,
         "mission_control_summary": mission_summary,
+        "crypto_eligibility": crypto_eligibility,
         "service_info": {
             "git_commit": (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT", ""))[:12],
             "railway_service": os.environ.get("RAILWAY_SERVICE_ID", ""),

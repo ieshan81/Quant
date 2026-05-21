@@ -894,11 +894,13 @@ _SQLITE_LOCK_BASE_DELAY = 0.15  # seconds; doubled each retry
 _db_lock_counter: dict[str, int] = {"locks": 0}
 
 
-def _open_sqlite(path: Path) -> sqlite3.Connection:
+def _open_sqlite(path: Path, *, timeout_sec: float | None = None) -> sqlite3.Connection:
     """Open SQLite with WAL + synchronous=NORMAL pragmas and busy_timeout."""
-    conn = sqlite3.connect(str(path), timeout=_SQLITE_CONNECT_TIMEOUT_SEC)
+    tsec = float(timeout_sec if timeout_sec is not None else _SQLITE_CONNECT_TIMEOUT_SEC)
+    busy_ms = min(int(tsec * 1000), _SQLITE_BUSY_TIMEOUT_MS)
+    conn = sqlite3.connect(str(path), timeout=tsec)
     try:
-        conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
+        conn.execute(f"PRAGMA busy_timeout={busy_ms}")
         # WAL is set in SCHEMA_SQL; pragmas below tighten concurrency further.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -1125,10 +1127,14 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 @contextmanager
-def get_connection(db_path: Path | str | None = None) -> Generator[sqlite3.Connection, None, None]:
+def get_connection(
+    db_path: Path | str | None = None,
+    *,
+    timeout_sec: float | None = None,
+) -> Generator[sqlite3.Connection, None, None]:
     path = _resolved_db_path(db_path)
     ensure_db_path(path)
-    conn = _open_sqlite(path)
+    conn = _open_sqlite(path, timeout_sec=timeout_sec)
     conn.row_factory = sqlite3.Row
     try:
         yield conn

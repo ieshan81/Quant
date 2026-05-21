@@ -37,7 +37,25 @@ def build_buying_power_diagnostic(
         else buying_power
         or 0
     )
-    broker_crypto_bp = pf.get("crypto_buying_power") or pf.get("non_marginable_buying_power")
+    nmbp = pf.get("non_marginable_buying_power")
+    regt = pf.get("regt_buying_power")
+    daybp = pf.get("daytrading_buying_power")
+    broker_crypto_bp = pf.get("crypto_buying_power") or nmbp
+
+    usable_source = "none"
+    usable_for_crypto = 0.0
+    if nmbp is not None and float(nmbp) > 0.01:
+        usable_for_crypto = float(nmbp)
+        usable_source = "non_marginable_buying_power"
+    elif broker_bp > 0.01:
+        usable_for_crypto = broker_bp
+        usable_source = "buying_power"
+    elif regt is not None and float(regt) > 0.01:
+        usable_for_crypto = float(regt)
+        usable_source = "regt_buying_power"
+    elif broker_cash > 0.01:
+        usable_for_crypto = broker_cash
+        usable_source = "cash"
 
     reserve_pct = float(dynamic_profile.get("hard_cash_reserve_pct") or 0)
     reserve_usd = float(dynamic_profile.get("equity") or equity or 0) * (reserve_pct / 100.0)
@@ -56,7 +74,7 @@ def build_buying_power_diagnostic(
     )
 
     blocked_by_reserve = broker_bp > 0.01 and stock_avail < 1.0 and reserve_usd > 0
-    blocked_by_broker = broker_cash > 0.01 and broker_bp <= 0.01
+    blocked_by_broker = broker_cash > 0.01 and broker_bp <= 0.01 and usable_for_crypto < 1.0
     blocked_by_config = bool(execution_health.get("block_new_buys")) or bool(
         (execution_health.get("startup_recovery_status") or {}).get("block_new_buys")
     )
@@ -74,8 +92,13 @@ def build_buying_power_diagnostic(
         reason_code = "BROKER_BUYING_POWER_ZERO"
         human_parts.append(
             f"Alpaca reports buying_power=${broker_bp:.2f} while cash=${broker_cash:.2f}. "
-            "The broker is not granting margin/non-margin buying power on this account "
-            "(common on new paper accounts, restricted accounts, or when BP is unset)."
+            "No usable non-marginable/cash field for crypto was found."
+        )
+    elif broker_bp <= 0.01 and usable_for_crypto > 0.01:
+        reason_code = "BROKER_BP_ZERO_USE_ALT"
+        human_parts.append(
+            f"Alpaca buying_power=${broker_bp:.2f} but usable crypto capital "
+            f"${usable_for_crypto:.2f} from {usable_source.replace('_', ' ')}."
         )
     elif blocked_by_reserve and broker_cash > 0:
         reason_code = "INTERNAL_RESERVE"
@@ -122,7 +145,11 @@ def build_buying_power_diagnostic(
         "cash_reserve_required": round(reserve_usd, 2),
         "available_after_reserve": round(max(0.0, broker_bp - reserve_usd - crypto_reserve_usd), 2),
         "stock_buying_power_available": round(stock_avail, 2),
-        "crypto_buying_power_available": round(crypto_avail, 2),
+        "crypto_buying_power_available": round(max(crypto_avail, usable_for_crypto), 2),
+        "usable_buying_power_source": usable_source,
+        "non_marginable_buying_power": nmbp,
+        "regt_buying_power": regt,
+        "daytrading_buying_power": daybp,
         "blocked_by_reserve": blocked_by_reserve,
         "blocked_by_broker": blocked_by_broker,
         "blocked_by_config": blocked_by_config,

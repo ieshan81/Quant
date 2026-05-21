@@ -135,8 +135,18 @@ def evaluate_startup_recovery(
         rt.get("startup_recovery_skip_scanners_until_clean", 1.0)
     ) >= 0.5
     if require_clean and not reconciliation_clean:
-        skip_scanners = True
-        block_buys = True
+        if recovery_active or drawdown_active:
+            skip_scanners = True
+            block_buys = True
+        else:
+            # Stale reconcile flag without active recovery — do not block buys indefinitely.
+            skip_scanners = False
+            block_buys = False
+
+    if not recovery_active and not drawdown_active and reconciliation_clean:
+        block_buys = False
+        exit_only = False
+        skip_scanners = False
 
     return {
         "startup_recovery_status": {

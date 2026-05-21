@@ -157,10 +157,73 @@ def _assemble_summary(
                 f"Crypto blocked: {latest_crypto.get('human_reason') or latest_crypto.get('reason_code') or 'see recent attempts'}"
             )
 
+    recovery_gate = {
+        "recovery_active": bool((eh.get("startup_recovery_status") or {}).get("recovery_active")),
+        "recovery_reason": (eh.get("startup_recovery_status") or {}).get("reason"),
+        "block_new_buys": bool(eh.get("block_new_buys")),
+        "block_new_buys_reason": eh.get("block_new_buys_reason") or eh.get("why_no_trade"),
+        "skip_scanners": bool(eh.get("skip_scanners")),
+        "skip_scanners_reason": eh.get("skip_scanners_reason"),
+        "reconciliation_clean": bool((eh.get("reconciliation_health") or {}).get("clean", True)),
+    }
+    try:
+        from core.session_mode import compute_mission_control
+        from data.data_store import load_runtime_config_dict
+
+        rt = load_runtime_config_dict()
+        rs = {
+            "block_new_buys": recovery_gate["block_new_buys"],
+            "exit_only": bool(eh.get("exit_only")),
+            "skip_scanners": recovery_gate["skip_scanners"],
+            "reconciliation_health": eh.get("reconciliation_health") or {"clean": recovery_gate["reconciliation_clean"]},
+            "startup_recovery_status": eh.get("startup_recovery_status") or {},
+            "startup_drawdown_status": eh.get("startup_drawdown_status") or {},
+        }
+        if not recovery_gate["recovery_active"] and recovery_gate["reconciliation_clean"]:
+            rs["block_new_buys"] = False
+            rs["skip_scanners"] = False
+        fresh_mc = compute_mission_control(
+            rt=rt,
+            recovery_state=rs,
+            stock_market_open=True,
+            stock_session_label=str(eh.get("market_session") or "closed"),
+        )
+        mc = {**mc, **fresh_mc}
+        recovery_gate["mission_mode_derived"] = fresh_mc.get("mission_mode")
+    except Exception:
+        fresh_mc = {}
+
+    crypto_elig: dict[str, Any] = {}
+    try:
+        from monitoring.crypto_eligibility import build_crypto_eligibility
+        crypto_elig = build_crypto_eligibility(
+            cash=cash,
+            buying_power=bp,
+            equity=eq,
+            crypto_night=crypto,
+            execution_health=eh,
+            dynamic_profile=profile,
+            bp_diagnostic=bp_diag,
+            latest_crypto_attempts=crypto_events,
+            reconciliation_clean=recovery_gate["reconciliation_clean"],
+        )
+    except Exception:
+        pass
+
+    db_status: dict[str, Any] = {}
+    try:
+        from core.db_path_status import build_db_path_status
+        db_status = build_db_path_status()
+    except Exception:
+        pass
+
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "ok": True,
         "generated_at": generated,
+        "db_path_status": db_status,
+        "recovery_gate": recovery_gate,
+        "crypto_eligibility": crypto_elig,
         "performance": {
             "gpt_bundle_loaded": False,
             "momo_ask_called": False,
@@ -211,8 +274,8 @@ def _assemble_summary(
     }
 
 
-def build_mission_control_summary_fast() -> dict[str, Any]:
-    """Lightweight summary — no GPT bundle, no full dashboard payload, no world monitor."""
+def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str, Any]:
+    """Lightweight summary — DB + cached Alpaca snapshot only unless live_broker=True."""
     deferred_n = 0
     try:
         from data.data_store import get_connection
@@ -225,7 +288,7 @@ def build_mission_control_summary_fast() -> dict[str, Any]:
         from execution.dynamic_capital_allocator import build_capital_allocator_summary
         from monitoring.dashboard_data import fetch_latest_dynamic_capital_plan
 
-        with get_connection() as conn:
+        with get_connection(timeout_sec=2.5) as conn:
             port_row = fetch_latest_portfolio(conn) or {}
             eh = fetch_latest_execution_health(conn) or {}
             positions = fetch_open_positions_from_trades(conn) or []
@@ -254,28 +317,29 @@ def build_mission_control_summary_fast() -> dict[str, Any]:
                 cash = float(pf.get("cash") or cash)
             except (TypeError, ValueError):
                 pass
-        try:
-            import concurrent.futures as _cf
-            from execution import stock_broker
+        if live_broker:
+            try:
+                import concurrent.futures as _cf
+                from execution import stock_broker
 
-            def _broker_live_fetch() -> tuple[float, float, int]:
-                cli = stock_broker.get_rest_client()
-                if not cli:
-                    return eq, bp, 0
-                acct = cli.get_account()
-                _eq = float(getattr(acct, "equity", eq) or eq)
-                _bp = float(getattr(acct, "buying_power", bp) or bp)
-                _pos = len(cli.get_all_positions() or [])
-                return _eq, _bp, _pos
+                def _broker_live_fetch() -> tuple[float, float, int]:
+                    cli = stock_broker.get_rest_client()
+                    if not cli:
+                        return eq, bp, 0
+                    acct = cli.get_account()
+                    _eq = float(getattr(acct, "equity", eq) or eq)
+                    _bp = float(getattr(acct, "buying_power", bp) or bp)
+                    _pos = len(cli.get_all_positions() or [])
+                    return _eq, _bp, _pos
 
-            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
-                fut = _ex.submit(_broker_live_fetch)
-                try:
-                    eq, bp, broker_pos = fut.result(timeout=2.5)
-                except (_cf.TimeoutError, Exception):
-                    pass  # keep snapshot values; don't stall the fast path
-        except Exception:
-            pass
+                with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                    fut = _ex.submit(_broker_live_fetch)
+                    try:
+                        eq, bp, broker_pos = fut.result(timeout=2.5)
+                    except (_cf.TimeoutError, Exception):
+                        pass
+            except Exception:
+                pass
 
         broker_port = dict(port_row)
         if pf:

@@ -742,6 +742,11 @@ _PAGE = """<!DOCTYPE html>
     .mc-card.mc-warn { border-color: rgba(245,158,11,0.45); }
     .mc-card.mc-bad { border-color: rgba(248,113,113,0.45); }
     .mc-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    .mc-action-group { margin: 0.35rem 0; }
+    .mc-action-group summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); padding: 4px 0; }
+    .mc-action-group .mc-action-btns { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 6px; }
+    .mc-progress { height: 4px; background: rgba(148,163,184,0.15); border-radius: 4px; overflow: hidden; margin: 6px 0; display: none; }
+    .mc-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #34d399, #22d3ee); transition: width 0.2s; }
     .mc-momo-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
     .config-cat { margin: 14px 0 8px; font-size: 13px; font-weight: 600; color: var(--accent); }
     .config-row { display: grid; grid-template-columns: 1fr 140px 90px; gap: 8px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
@@ -847,21 +852,42 @@ _PAGE = """<!DOCTYPE html>
         <div class="metric"><div class="lab">Mission</div><div class="val mono" id="mcTopMission">—</div></div>
         <div class="metric"><div class="lab">Crypto push</div><div class="val mono" id="mcTopCrypto">—</div></div>
       </div>
-      <div class="mc-actions">
-        <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">GPT Analyze Logs</button>
-        <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy GPT Bundle</button>
-        <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT Bundle</button>
-        <button type="button" id="btnDownloadGPTAnalyzeBundleTxt" class="btn secondary">Download GPT TXT</button>
-        <button type="button" id="btnCopyLogsBundle" class="btn secondary">Copy Logs</button>
-        <button type="button" id="btnDownloadLogsJson" class="btn secondary">Download Logs JSON</button>
-        <button type="button" id="btnDownloadLogsTxt" class="btn secondary">Download Logs TXT</button>
-        <button type="button" id="btnDownloadLogsCsv" class="btn secondary">Download Logs CSV</button>
-        <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Bundle to Telegram</button>
-        <button type="button" id="btnTelegramTestSend" class="btn secondary">Test Telegram</button>
-        <button type="button" id="btnExportRailwayEnv" class="btn secondary">Export Railway Env Template</button>
-        <button type="button" id="btnMcRefresh" class="btn secondary">Refresh Now</button>
-        <button type="button" id="btnMcDeepRefresh" class="btn secondary">Deep Refresh</button>
+      <div class="mc-action-center">
+        <details class="mc-action-group" open>
+          <summary>Analyze</summary>
+          <div class="mc-action-btns">
+            <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">GPT Analyze Logs</button>
+            <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy GPT Bundle</button>
+            <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT JSON</button>
+            <button type="button" id="btnDownloadGPTAnalyzeBundleTxt" class="btn secondary">Download GPT TXT</button>
+          </div>
+        </details>
+        <details class="mc-action-group">
+          <summary>Logs</summary>
+          <div class="mc-action-btns">
+            <button type="button" id="btnCopyLogsBundle" class="btn secondary">Copy Logs</button>
+            <button type="button" id="btnDownloadLogsJson" class="btn secondary">Download JSON</button>
+            <button type="button" id="btnDownloadLogsTxt" class="btn secondary">Download TXT</button>
+            <button type="button" id="btnDownloadLogsCsv" class="btn secondary">Download CSV</button>
+          </div>
+        </details>
+        <details class="mc-action-group">
+          <summary>Telegram</summary>
+          <div class="mc-action-btns">
+            <button type="button" id="btnTelegramTestSend" class="btn secondary">Test Telegram</button>
+            <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Bundle</button>
+          </div>
+        </details>
+        <details class="mc-action-group">
+          <summary>System</summary>
+          <div class="mc-action-btns">
+            <button type="button" id="btnExportRailwayEnv" class="btn secondary">Railway Env Template</button>
+            <button type="button" id="btnMcRefresh" class="btn secondary">Refresh Now</button>
+            <button type="button" id="btnMcDeepRefresh" class="btn secondary">Deep Refresh</button>
+          </div>
+        </details>
       </div>
+      <div id="mcProgress" class="mc-progress"><div id="mcProgressBar" class="mc-progress-bar"></div></div>
       <p id="mcPerfStatus" class="empty-hint" style="margin:0.25rem 0;font-size:11px;"></p>
       <p id="mcStatus" class="empty-hint" style="margin:0.35rem 0;"></p>
       <textarea id="mcCopyFallback" class="mono sec" style="display:none;width:100%;max-height:160px;margin:6px 0;font-size:11px;" readonly placeholder="Copy fallback — select all and copy"></textarea>
@@ -2155,13 +2181,19 @@ def create_app() -> Flask:
         from monitoring.mission_control_api import build_mission_control_summary_fast
 
         force = str(request.args.get("force", "") or "").strip().lower() in ("1", "true", "yes")
+        live = str(request.args.get("live", "") or "").strip().lower() in ("1", "true", "yes")
         timer = EndpointTimer("/api/mission-control/summary")
         if force:
-            payload = build_mission_control_summary_fast()
+            payload = build_mission_control_summary_fast(live_broker=live)
             payload["cache_hit"] = False
             payload["stale"] = False
+            payload["live_broker_refresh"] = live
         else:
-            payload = get_mission_control_cached(build_mission_control_summary_fast, force_refresh=False)
+            payload = get_mission_control_cached(
+                lambda: build_mission_control_summary_fast(live_broker=False),
+                force_refresh=False,
+                ttl_sec=8.0,
+            )
         ms = timer.finish(cache_hit=payload.get("cache_hit"))
         payload["backend_duration_ms"] = payload.get("backend_duration_ms") or ms
         body = json.dumps(payload, default=str)

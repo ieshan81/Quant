@@ -2596,8 +2596,37 @@
     if (elBp) elBp.textContent = safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power);
     if (elMode) elMode.textContent = safeText(t.mode || ac.mode, "paper");
     if (elMis) elMis.textContent = safeText(t.mission_mode || (d.mission || {}).mission_mode, "—");
-    if (elCr) elCr.textContent = safeText(t.crypto_push_status, "—");
+    if (elCr) {
+      var elig = d.crypto_eligibility || {};
+      if (elig.can_trade_crypto === true) elCr.textContent = "Ready";
+      else if (elig.can_trade_crypto === false) elCr.textContent = "Blocked";
+      else elCr.textContent = safeText(t.crypto_push_status, "—");
+    }
   }
+
+  function _mcProgressStart(label) {
+    var wrap = document.getElementById("mcProgress");
+    var bar = document.getElementById("mcProgressBar");
+    var st = document.getElementById("mcStatus");
+    if (wrap) wrap.style.display = "block";
+    if (bar) bar.style.width = "15%";
+    if (st) st.textContent = label || "Working…";
+    _mcProgressT0 = Date.now();
+  }
+
+  function _mcProgressDone(msg, ok) {
+    var wrap = document.getElementById("mcProgress");
+    var bar = document.getElementById("mcProgressBar");
+    var st = document.getElementById("mcStatus");
+    if (bar) bar.style.width = ok === false ? "100%" : "100%";
+    if (st) st.textContent = msg || "Done.";
+    setTimeout(function () {
+      if (wrap) wrap.style.display = "none";
+      if (bar) bar.style.width = "0%";
+    }, ok === false ? 4000 : 1200);
+  }
+
+  var _mcProgressT0 = 0;
 
   function renderMissionControl(d) {
     _mcCache = d;
@@ -2631,14 +2660,21 @@
         tone: "",
         render: function () {
           var mi = d.mission || {};
+          var rg = d.recovery_gate || {};
           var mode = safeText(mi.mission_mode, "normal");
           var sess = safeText(mi.session_mode, "—");
-          var rec = mi.recovery_status;
-          var recLine = "Recovery is not active.";
-          if (rec && typeof rec === "object" && (rec.active || rec.block_new_buys)) {
-            recLine = "Recovery is active — new buys may be blocked.";
+          var lines = ["Mission mode is " + mode + ". Session: " + sess + "."];
+          if (rg.recovery_active) {
+            lines.push("Recovery is active: " + safeText(rg.recovery_reason, "see logs"));
+          } else {
+            lines.push("Recovery is not active — normal paper mode.");
           }
-          return "Mission mode is " + mode + ". Session: " + sess + ". " + recLine;
+          if (rg.block_new_buys) {
+            lines.push("New buys blocked: " + safeText(rg.block_new_buys_reason, "see capital card"));
+          } else {
+            lines.push("New buys are allowed (subject to capital rules).");
+          }
+          return lines.join("\n");
         }
       },
       {
@@ -2713,6 +2749,13 @@
             );
           }
           parts.push("Execution uses deterministic math only (Momo not in the loop).");
+          var elig = d.crypto_eligibility || {};
+          if (elig.latest_human_reason) {
+            parts.push("Eligibility: " + (elig.can_trade_crypto ? "YES — " : "NO — ") + elig.latest_human_reason);
+            if (elig.usable_crypto_buying_power != null) {
+              parts.push("Usable crypto BP: " + safeFmtMoney(elig.usable_crypto_buying_power) + " (source: " + safeText(elig.usable_source, "?") + ").");
+            }
+          }
           var evts = Array.isArray(cr.latest_crypto_attempts) ? cr.latest_crypto_attempts
             : (Array.isArray(cr.latest_push_pull_events) ? cr.latest_push_pull_events : []);
           if (evts.length) {
@@ -2801,9 +2844,10 @@
       try { renderMissionControl(_mcCache); } catch (e0) {}
       _updateMcPerf(_mcCache, true);
     }
-    if (st) st.textContent = force ? "Refreshing…" : (_mcCache ? "Refreshing quietly…" : "Loading Mission Control…");
+    if (force) _mcProgressStart("Refreshing Mission Control…");
+    if (st && !force) st.textContent = _mcCache ? "Refreshing quietly…" : "Loading Mission Control…";
     var url = "/api/mission-control/summary" + (force ? "?force=1" : "");
-    fetch(url, { cache: "no-store" })
+    fetch(url, { cache: "no-store", headers: _authHeaders() })
       .then(function (r) {
         if (!r.ok) {
           return r.text().then(function (txt) {
@@ -2825,7 +2869,9 @@
           if (d) renderMissionControl(d);
           return;
         }
-        if (st) {
+        if (force) {
+          _mcProgressDone((d.stale_warning ? d.stale_warning + " · " : "") + "Updated " + new Date().toLocaleString(), true);
+        } else if (st) {
           st.textContent = (d.stale_warning ? d.stale_warning + " · " : "") + "Updated " + new Date().toLocaleString();
         }
         _updateMcPerf(d, false);
@@ -2836,7 +2882,8 @@
         }
       })
       .catch(function (e) {
-        if (st) st.textContent = safeText(e && e.message, String(e));
+        if (force) _mcProgressDone(safeText(e && e.message, String(e)), false);
+        else if (st) st.textContent = safeText(e && e.message, String(e));
         if (!_mcCache) {
           ["mcAccount", "mcMission", "mcCapital", "mcBroker", "mcPositions", "mcCrypto", "mcMomo", "mcOps"].forEach(function (id) {
             setMcCard(id, "—");
@@ -2854,16 +2901,18 @@
   }
 
   function deepRefreshMission() {
-    var st = document.getElementById("mcStatus");
-    if (st) st.textContent = "Deep refresh: loading diagnostics…";
+    _mcProgressStart("Deep refresh (live broker, max ~3s)…");
     Promise.allSettled([
-      fetch("/api/mission-control/summary?force=1", { cache: "no-store" }).then(function (r) { return r.json(); }),
-      fetch("/api/ops/logs?limit=30", { cache: "no-store" }).then(function (r) { return r.json(); })
+      fetch("/api/mission-control/summary?force=1&live=1", { cache: "no-store", headers: _authHeaders() })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }),
+      fetch("/api/ops/logs?limit=30", { cache: "no-store", headers: _authHeaders() }).then(function (r) { return r.json(); })
     ]).then(function (results) {
       if (results[0].status === "fulfilled" && results[0].value) {
         try { renderMissionControl(results[0].value); } catch (e1) {}
+        _mcProgressDone("Deep refresh complete.", true);
+      } else {
+        _mcProgressDone("Deep refresh failed.", false);
       }
-      if (st) st.textContent = "Deep refresh complete.";
     });
   }
 
@@ -3014,8 +3063,7 @@
         });
     });
     if (main) main.addEventListener("click", function () {
-      var st = document.getElementById("mcStatus");
-      if (st) st.textContent = "Building GPT analyze bundle…";
+      _mcProgressStart("Building GPT analyze bundle…");
       fetchBundle().then(function (d) {
         if (prev) {
           prev.style.display = "block";
@@ -3026,28 +3074,25 @@
             mission_control_summary: !!(d.mission_control_summary)
           }, null, 2);
         }
-        if (st) st.textContent = "GPT bundle ready — use Copy or Download.";
+        _mcProgressDone("GPT bundle ready — use Copy or Download.", true);
       }).catch(function (e) {
-        if (st) st.textContent = safeText(e && e.message, String(e));
+        _mcProgressDone(safeText(e && e.message, String(e)), false);
       });
     });
     if (copy) copy.addEventListener("click", function () {
-      var st = document.getElementById("mcStatus");
-      if (st) st.textContent = "Loading GPT bundle for copy…";
+      _mcProgressStart("Loading GPT bundle for copy…");
       fetchBundle().then(function (d) {
-        return _copyWithFallback(JSON.stringify(d, null, 2), st, "Copied — GPT bundle JSON.");
-      }).catch(function (e) {
-        if (st) st.textContent = safeText(e && e.message, String(e));
-      });
+        return _copyWithFallback(JSON.stringify(d, null, 2), document.getElementById("mcStatus"), "Copied — GPT bundle JSON.");
+      }).then(function () { _mcProgressDone("Copied — GPT bundle JSON.", true); })
+        .catch(function (e) { _mcProgressDone(safeText(e && e.message, String(e)), false); });
     });
     if (dl) dl.addEventListener("click", function () {
-      var st = document.getElementById("mcStatus");
-      if (st) st.textContent = "Downloading GPT bundle JSON…";
+      _mcProgressStart("Downloading GPT bundle JSON…");
       fetchBundle().then(function (d) {
         _downloadJson(d, "gpt_analyze_" + _timestamp() + ".json");
-        if (st) st.textContent = "GPT bundle JSON downloaded.";
+        _mcProgressDone("GPT bundle JSON downloaded.", true);
       }).catch(function (e) {
-        if (st) st.textContent = safeText(e && e.message, String(e));
+        _mcProgressDone(safeText(e && e.message, String(e)), false);
       });
     });
     var dlTxt = document.getElementById("btnDownloadGPTAnalyzeBundleTxt");

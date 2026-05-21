@@ -36,8 +36,10 @@ def answer_momo_question(
 
     if include.get("activity_export", True):
         try:
+            from data.data_store import get_connection
             from monitoring.cycle_activity_export import build_activity_export_payload
-            ctx["activity_export"] = build_activity_export_payload(limit=40)
+            with get_connection(timeout_sec=5.0) as conn:
+                ctx["activity_export"] = build_activity_export_payload(conn, limit=40)
         except Exception as exc:
             missing.append(f"activity_export: {exc}")
 
@@ -115,6 +117,17 @@ def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]
         )
         if diag.get("reason_code"):
             parts.append(f"Diagnostic: {diag.get('reason_code')} — broker BP ${diag.get('broker_buying_power')}, cash ${diag.get('broker_cash')}.")
+
+    if "recovery" in ql or "reconciliation" in ql:
+        rg = mc.get("recovery_gate") or {}
+        mi = mc.get("mission") or {}
+        parts.append(
+            f"Mission mode: {mi.get('mission_mode', '?')}. "
+            f"recovery_active={rg.get('recovery_active', '?')}. "
+            f"block_new_buys={rg.get('block_new_buys', '?')} "
+            f"({rg.get('block_new_buys_reason') or 'no reason'}). "
+            f"reconciliation_clean={rg.get('reconciliation_clean', '?')}."
+        )
 
     if "why" in ql and "trade" in ql:
         act = ctx.get("activity_export") or {}

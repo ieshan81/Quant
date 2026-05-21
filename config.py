@@ -10,20 +10,29 @@ from dotenv import load_dotenv
 # Project root (directory containing this file)
 ROOT_DIR = Path(__file__).resolve().parent
 load_dotenv(ROOT_DIR / ".env")
+# Operator may maintain secrets under quantbot/.env (do not commit).
+_qb_env = ROOT_DIR / "quantbot" / ".env"
+if _qb_env.is_file():
+    load_dotenv(_qb_env, override=True)
 
 DATA_DIR = ROOT_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Persistent storage directory — Railway volume at /app/persist by default.
-PERSIST_DIR = Path(os.environ.get("QUANTBOT_PERSIST_DIR", "/app/persist"))
+_persist_raw = os.environ.get("QUANTBOT_PERSIST_DIR", "/app/persist").strip()
+_persist_path = Path(_persist_raw).expanduser()
+if _persist_path.is_absolute():
+    PERSIST_DIR = _persist_path
+else:
+    PERSIST_DIR = (ROOT_DIR / _persist_path).resolve()
+# Local dev: /data often missing on Windows/macOS — fall back to project persist/
+if not PERSIST_DIR.is_dir() and str(_persist_raw).startswith("/"):
+    PERSIST_DIR = (ROOT_DIR / "persist").resolve()
 PERSIST_DIR.mkdir(parents=True, exist_ok=True)
 
-_db_env = os.environ.get("QUANTBOT_DB_PATH", "").strip()
-if _db_env:
-    raw = Path(_db_env).expanduser()
-    DB_PATH = (ROOT_DIR / raw).resolve() if not raw.is_absolute() else raw.resolve()
-else:
-    DB_PATH = Path(os.path.join(os.environ.get("QUANTBOT_PERSIST_DIR", "/app/persist"), "quantbot.sqlite3"))
+from core.db_path_status import apply_canonical_db_path_to_config  # noqa: E402
+
+DB_PATH = apply_canonical_db_path_to_config()
 
 MODE = os.getenv("QUANTBOT_MODE", "paper").strip().lower()
 if MODE not in ("paper", "live"):
