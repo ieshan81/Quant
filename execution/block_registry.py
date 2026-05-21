@@ -58,6 +58,14 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         retryable=False,
         cpu_skip=True,
     ),
+    "STOCK_SCAN_SKIPPED_MAX_SINGLE_ASSET": _entry(
+        reason_code="STOCK_SCAN_SKIPPED_MAX_SINGLE_ASSET",
+        severity="info",
+        subsystem="stock_scanner",
+        human_reason="Stock buy scanner skipped — max single-asset cap blocks all new buys this cycle.",
+        retryable=True,
+        cpu_skip=True,
+    ),
     "BUY_BLOCKED_HARD_CASH_RESERVE": _entry(
         reason_code="BUY_BLOCKED_HARD_CASH_RESERVE",
         severity="info",

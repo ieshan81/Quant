@@ -255,15 +255,32 @@ def build_reconciliation_health(
             else:
                 stale_local_rows += 1
 
-    clean = len(mismatches) == 0
+    active_unresolved = [
+        m
+        for m in mismatches
+        if str(m.get("classification"))
+        in (CLASS_QTY_MISMATCH, CLASS_SYNTHETIC_DOUBLE, CLASS_BROKER_ONLY)
+        and float(m.get("broker_qty") or 0) > _eps(str(m.get("asset_class") or "stock"))
+    ]
+    stale_only = [
+        m
+        for m in mismatches
+        if str(m.get("classification"))
+        in (CLASS_LOCAL_ONLY, CLASS_STALE_CLOSED, CLASS_NEGATIVE_LOCAL)
+    ]
+    clean = len(active_unresolved) == 0
     return {
         "clean": clean,
         "broker_positions_count": len([k for k, v in broker_map.items() if abs(v.get("broker_qty", 0)) > _eps(k[0])]),
         "local_open_positions_count": len([k for k, v in local_map.items() if abs(v) > _eps(k[0])]),
         "visible_broker_positions": visible_broker,
         "stale_local_rows_count": stale_local_rows,
-        "broker_local_mismatch_count": len(mismatches),
+        "stale_only_mismatch_count": len(stale_only),
+        "broker_local_mismatch_count": len(active_unresolved),
+        "broker_local_mismatch_total": len(mismatches),
         "current_broker_position_mismatches": current_broker_mismatches,
+        "active_unresolved_mismatches": active_unresolved,
+        "stale_only_mismatches": stale_only,
         "stale_local_rows": stale_local_rows,
         "synthetic_rows_excluded": synthetic_excluded,
         "ghost_rows_cleaned": 0,

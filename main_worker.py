@@ -3075,6 +3075,38 @@ def execute_cycle_results(
         cid,
         [{"sym": s, "ac": ac, "score": round(sc, 4), "action": a} for s, ac, sc, a in top10],
     )
+    _stock_cap_blocks_all = False
+    if not stock_buys_disabled_cycle:
+        try:
+            _sleeve_eq = max(float(trader.equity_stocks()), 1e-9)
+            _cap_pct = _effective_max_position_pct_for_sizing(_sleeve_eq, float(rt.get("max_position_pct", 0.005)))
+            if _sleeve_eq * _cap_pct + 1e-9 < min_notional:
+                _stock_cap_blocks_all = True
+                from execution.block_registry import should_log_block
+
+                if should_log_block("STOCK_SCAN_SKIPPED_MAX_SINGLE_ASSET", subsystem="stock_scanner"):
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class="stock",
+                        symbol="-",
+                        side="buy",
+                        decision="rejected",
+                        reason_code="STOCK_SCAN_SKIPPED_MAX_SINGLE_ASSET",
+                        score=None,
+                        notional=0.0,
+                        quantity=0.0,
+                        price=None,
+                        meta={
+                            "min_order_notional": min_notional,
+                            "max_single_asset_notional": round(_sleeve_eq * _cap_pct, 2),
+                            "equity_stocks": round(_sleeve_eq, 2),
+                            "scope": "cycle",
+                        },
+                    )
+        except Exception:
+            logger.debug("[cpu_gate] stock cap precheck skipped", exc_info=True)
+    _stock_gate_skip = bool((rt.get("_stock_scan_gate") or {}).get("heavy_scan_skipped"))
+
     for cs in sorted(results, key=lambda x: (x.asset_class, x.symbol)):
         if cs.error:
             logger.error(
@@ -3166,7 +3198,11 @@ def execute_cycle_results(
             continue
         with _trader_lock:
             if eff_action == "BUY":
-                if cs.asset_class == "stock" and stock_buys_disabled_cycle:
+                if cs.asset_class == "stock" and (
+                    stock_buys_disabled_cycle or _stock_cap_blocks_all or _stock_gate_skip
+                ):
+                    if _stock_cap_blocks_all or _stock_gate_skip:
+                        buy_gate_skipped_count += 1
                     out["holds"] += 1
                     continue
                 if cs.asset_class == "crypto" and crypto_buys_disabled_cycle:
@@ -3532,6 +3568,14 @@ def execute_cycle_results(
                     if not cap_ok:
                         ok, reason = False, cap_rc or reason_codes.BUY_BLOCKED_CAPITAL_CONSTITUTION
                 if not ok or qty <= 0:
+                    if (
+                        cs.asset_class == "stock"
+                        and reason == "single_asset_cap"
+                        and _stock_cap_blocks_all
+                    ):
+                        buy_gate_skipped_count += 1
+                        out["holds"] += 1
+                        continue
                     n_st, n_cr = _open_counts(trader)
                     s_mv, c_mv = _deployed_notional(trader)
                     total_eq = trader.equity_total()

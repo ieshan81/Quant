@@ -78,6 +78,7 @@ def build_crypto_trade_decision(
     sym = str(ctx.get("candidate_symbol") or best_symbol or "")
     if not sym and scores:
         sym = max(scores, key=scores.get)
+    best_candidate = sym or None
 
     flags = resolve_crypto_config_flags(rt_in, reconciliation_clean=recon, recovery_block=recovery)
     rt_eff = flags["rt_effective"]
@@ -113,6 +114,9 @@ def build_crypto_trade_decision(
         ready["latest_human_reason"] = (
             "Crypto scan unavailable — worker has not completed a fresh cycle."
         )
+    elif scores and str(blocker or "").upper() == "NO_CRYPTO_CANDIDATES":
+        best_candidate = best_candidate or max(scores, key=scores.get)
+        sym = sym or best_candidate
 
     q_snap = quote_snapshot or ctx.get("quote_snapshot") or {}
     q_diag = quote_diagnostics or ctx.get("quote_diagnostics") or {}
@@ -181,11 +185,23 @@ def build_crypto_trade_decision(
     elif not meta_ok and sym:
         human = f"Crypto metadata missing for {sym}"
 
+    if (
+        str(blocker or "").upper() == "NO_CRYPTO_CANDIDATES"
+        and best_candidate
+        and (q_diag.get("errors") or (sym and not quote_ok))
+    ):
+        blocker = "CRYPTO_QUOTES_MISSING"
+        ready["push_blocked_reason"] = blocker
+        ready["blockers"] = [blocker]
+        human = f"Crypto quote missing for {best_candidate}"
+
     out = {
         "can_trade_crypto": can_trade,
         "push_allowed": push_allowed,
         "reason_code": str(blocker or ("OK" if can_trade else "CRYPTO_DISABLED")),
         "human_reason": human[:240],
+        "best_candidate_symbol": best_candidate,
+        "quote_error": (q_diag.get("errors") or [None])[0] if q_diag.get("errors") else None,
         "usable_buying_power": round(usable, 2),
         "cash_available": round(cash, 2),
         "reserve_required": round(reserve_required, 2),

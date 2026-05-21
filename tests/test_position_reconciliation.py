@@ -73,7 +73,8 @@ def test_stale_local_classified_separately(tmp_path: Path) -> None:
     with get_connection(db) as conn:
         _log(conn, symbol="HAO", side="buy", qty=1266.0, reason="SIGNAL_BUY")
         health = build_reconciliation_health(conn, _mock_broker([]))
-    assert health["clean"] is False
+    assert health["broker_local_mismatch_count"] == 0
+    assert health.get("stale_only_mismatch_count", 0) >= 1
     assert health["stale_local_rows_count"] >= 1
     mm = health["mismatches"]
     assert any(m["classification"] in (CLASS_LOCAL_ONLY, CLASS_STALE_CLOSED) for m in mm)

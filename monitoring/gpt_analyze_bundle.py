@@ -101,12 +101,20 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     activity_included = "summary" if isinstance(activity, dict) and activity.get("summary") else (
         "skipped" if err else "partial"
     )
+    ai_notes, ai_notes_err = _fetch_ai_notes_light()
+    if isinstance(activity, dict):
+        activity["ai_momo_notes"] = (activity.get("ai_momo_notes") or []) + ai_notes
+    graph_nodes = (activity or {}).get("graph_memory_nodes") if isinstance(activity, dict) else []
+    ai_notes_included = bool(ai_notes)
+    ai_memory_included = bool(graph_nodes)
+    ai_notes_unavailable_reason = ai_notes_err
+    ai_memory_unavailable_reason = None if graph_nodes else "no_graph_nodes_matched_active_blockers"
 
     broker_diag, ms, err = _timed_section(
         "broker_diagnostic",
         lambda: _build_broker_diag_light(),
-        timeout_sec=4.0,
-        default={"error": "broker_diagnostic_skipped"},
+        timeout_sec=2.0,
+        default={"summary": True, "error": "broker_diagnostic_skipped"},
     )
     timings["broker_diagnostic"] = {"ms": ms, "error": err}
 
@@ -201,8 +209,10 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "section_timings_ms": timings,
         "timeout_sections": [k for k, v in timings.items() if (v or {}).get("error")],
         "activity_export_included": activity_included,
-        "ai_notes_included": bool((activity or {}).get("ai_momo_notes")) if isinstance(activity, dict) else False,
-        "ai_memory_included": bool((activity or {}).get("graph_memory_nodes")) if isinstance(activity, dict) else False,
+        "ai_notes_included": ai_notes_included,
+        "ai_memory_included": ai_memory_included,
+        "ai_notes_unavailable_reason": ai_notes_unavailable_reason,
+        "ai_memory_unavailable_reason": ai_memory_unavailable_reason,
         "crypto_push_pull_session": crypto_session,
         "db_path_status": db_path_status,
         "simple_status": simple,
@@ -281,10 +291,56 @@ def _build_activity_light() -> dict[str, Any]:
 
 def _build_broker_diag_light() -> dict[str, Any]:
     from data.data_store import get_connection
-    from monitoring.broker_diagnostic import build_broker_diagnostic_payload
+    from monitoring.broker_diagnostic_light import build_broker_diagnostic_light
 
-    with get_connection(timeout_sec=3.0) as conn:
-        return build_broker_diagnostic_payload(conn)
+    with get_connection(timeout_sec=2.0) as conn:
+        return build_broker_diagnostic_light(conn)
+
+
+def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], str | None]:
+    notes: list[dict[str, Any]] = []
+    try:
+        from data.data_store import get_connection
+
+        with get_connection(timeout_sec=1.5) as conn:
+            rows = conn.execute(
+                """
+                SELECT created_at, summary, observed_issue
+                FROM ai_observer_notes ORDER BY id DESC LIMIT 25
+                """
+            ).fetchall()
+            notes = [
+                {"created_at": r[0], "summary": (r[1] or "")[:200], "issue": (r[2] or "")[:120]}
+                for r in rows
+            ]
+    except Exception as exc:
+        return [], f"ai_observer_notes_query_failed: {exc}"[:120]
+    if notes:
+        return notes, None
+    try:
+        import os
+        from pathlib import Path as _P
+
+        mem_path = _P(os.environ.get("AI_MEMORY_DB_PATH", "/data/ai_memory.sqlite"))
+        if mem_path.is_file():
+            import sqlite3
+
+            mc = sqlite3.connect(str(mem_path), timeout=1.5)
+            try:
+                mrows = mc.execute(
+                    "SELECT created_at, note_text FROM ai_memory_notes ORDER BY id DESC LIMIT 15"
+                ).fetchall()
+            except sqlite3.Error:
+                mrows = []
+            mc.close()
+            if mrows:
+                return [
+                    {"created_at": r[0], "summary": (r[1] or "")[:200], "source": "ai_memory.sqlite"}
+                    for r in mrows
+                ], None
+    except Exception as exc:
+        return [], f"ai_memory_db_unavailable: {exc}"[:120]
+    return [], "no_ai_observer_notes_in_primary_db"
 
 
 def bundle_as_text(bundle: dict[str, Any]) -> str:

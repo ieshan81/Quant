@@ -343,7 +343,27 @@ def build_mission_control_summary_minimal(
     acct = base.get("account") or {}
     worker = base.get("worker") or {}
     trading = base.get("trading") or {}
+
+    _positions: list[dict[str, Any]] = []
+    try:
+        from core.canonical_positions import fetch_open_positions_canonical
+
+        cli = None
+        try:
+            from execution import stock_broker
+
+            cli = stock_broker.get_rest_client()
+        except Exception:
+            pass
+        from data.data_store import get_connection
+
+        with get_connection(config.DB_PATH, timeout_sec=2.0) as conn:
+            _positions = fetch_open_positions_canonical(rest_client=cli, conn=conn, timeout_sec=2.0)
+    except Exception:
+        _positions = []
+
     crypto_dec: dict[str, Any] = {}
+    crypto_session: dict[str, Any] = {}
     try:
         from core.paper_trading_path import load_runtime_config_for_worker
         from execution.crypto_trade_decision import build_crypto_trade_decision
@@ -358,8 +378,14 @@ def build_mission_control_summary_minimal(
                 "worker_gate": base.get("worker_gate"),
                 "crypto_positions": _positions,
                 "exit_rows": [],
+                "worker_scan_fresh": bool(worker.get("trading_loop_fresh")),
             }
         )
+        crypto_session = crypto_dec.get("crypto_session") or {}
+        if not crypto_session:
+            from execution.crypto_push_pull_status import build_crypto_session_status
+
+            crypto_session = build_crypto_session_status(crypto_dec, positions=_positions)
     except Exception as exc:
         crypto_dec = {
             "can_trade_crypto": False,
@@ -367,6 +393,12 @@ def build_mission_control_summary_minimal(
             "reason_code": "MC_DEGRADED",
             "human_reason": f"{reason}; crypto_decision: {exc}"[:200],
             "blockers": ["MC_DEGRADED"],
+        }
+        from execution.crypto_push_pull_status import build_crypto_push_status, build_crypto_pull_status
+
+        crypto_session = {
+            "crypto_push": build_crypto_push_status(crypto_dec),
+            "crypto_pull": build_crypto_pull_status(positions=_positions),
         }
 
     crypto_events = _fetch_crypto_push_pull_brief(5)
@@ -413,31 +445,6 @@ def build_mission_control_summary_minimal(
             "block_new_buys_reason": _no_trade if _recovery_hint else "",
             "recovery_reason": _no_trade if _recovery_hint else "",
         }
-    except Exception:
-        pass
-
-    # Quick position query — same logic as fetch_open_positions_from_trades, fast SQLite only.
-    _positions: list[dict[str, Any]] = []
-    try:
-        import sqlite3 as _sql
-        _pc = _sql.connect(str(config.DB_PATH), timeout=1.0)
-        _pc.row_factory = _sql.Row
-        _prows = _pc.execute(
-            """SELECT asset_class, symbol,
-               SUM(CASE WHEN side='buy' THEN quantity ELSE -quantity END) AS net_qty
-               FROM trades WHERE status='filled'
-               GROUP BY asset_class, symbol HAVING ABS(net_qty)>1e-8"""
-        ).fetchall()
-        _pc.close()
-        _positions = [
-            {
-                "symbol": r["symbol"],
-                "asset_class": r["asset_class"],
-                "net_qty": float(r["net_qty"]),
-            }
-            for r in _prows
-            if float(r["net_qty"]) > 0  # exclude negative-qty ghost artifacts
-        ]
     except Exception:
         pass
 
@@ -498,8 +505,9 @@ def build_mission_control_summary_minimal(
                 else {}
             ),
         },
-        "crypto_push": (crypto_dec.get("crypto_session") or {}).get("crypto_push") or {},
-        "crypto_pull": (crypto_dec.get("crypto_session") or {}).get("crypto_pull") or {},
+        "crypto_push": crypto_session.get("crypto_push") or {},
+        "crypto_pull": crypto_session.get("crypto_pull") or {},
+        "crypto_push_pull_session": crypto_session,
         "crypto_eligibility": {
             "can_trade_crypto": crypto_dec.get("can_trade_crypto", False),
             "reason_code": crypto_dec.get("reason_code", "MC_DEGRADED"),
