@@ -376,6 +376,27 @@ def quarantine_ghost_local_rows(
     return summary
 
 
+def run_cycle_stale_local_cleanup(
+    db_path: Path | str,
+    rest_client: Any | None,
+    *,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    """Each trading cycle: quarantine ghost/stale local rows when broker qty is zero."""
+    path = Path(db_path) if db_path is not None else Path(config.DB_PATH)
+    with sqlite3.connect(str(path)) as conn:
+        conn.row_factory = sqlite3.Row
+        health = build_reconciliation_health(conn, rest_client)
+    stale_n = int(health.get("stale_local_rows_count") or 0)
+    ghost_n = len(health.get("ghost_positions") or [])
+    if stale_n < 1 and ghost_n < 1:
+        return {"skipped": True, "stale_local_rows_count": stale_n, "reconciliation_health": health}
+    out = quarantine_ghost_local_rows(path, rest_client, mode=mode)
+    out["skipped"] = False
+    out["trigger"] = "cycle_stale_local_cleanup"
+    return out
+
+
 def run_startup_reconciliation(
     db_path: Path | str,
     rest_client: Any | None,

@@ -642,6 +642,18 @@ def write_note(
     *,
     cycle_id: str | None = None,
 ) -> int | None:
+    finding = str(note.get("finding") or "").strip()
+    if finding:
+        try:
+            dup = conn.execute(
+                """SELECT id FROM ai_observer_notes
+                   WHERE finding = ? ORDER BY id DESC LIMIT 1""",
+                (finding,),
+            ).fetchone()
+            if dup:
+                return None
+        except sqlite3.Error:
+            pass
     evidence_json = json.dumps(note.get("evidence") or {}, separators=(",", ":"), default=str)
     try:
         cur = conn.execute(
@@ -995,10 +1007,22 @@ def fetch_latest_notes(
     try:
         conn = get_ai_memory_connection(db_path)
         rows = conn.execute(
-            "SELECT * FROM ai_observer_notes ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT * FROM ai_observer_notes ORDER BY id DESC LIMIT ?", (limit * 3,)
         ).fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for r in rows:
+            d = dict(r)
+            key = str(d.get("finding") or "").strip()[:200]
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            out.append(d)
+            if len(out) >= limit:
+                break
+        return out
     except sqlite3.Error:
         return []
 
@@ -1231,6 +1255,7 @@ def handle_chat(
     include_activity_export: bool = True,
     include_broker_diagnostic: bool = False,
     include_memory: bool = True,
+    gemini_timeout_sec: int = 30,
 ) -> dict[str, Any]:
     """Process a user question via Gemini or deterministic fallback.
 
@@ -1280,7 +1305,7 @@ def handle_chat(
     gemini_resp: dict[str, Any] | None = None
 
     if key_present:
-        gemini_resp = _call_gemini_chat(full_prompt)
+        gemini_resp = _call_gemini_chat(full_prompt, timeout=int(gemini_timeout_sec))
 
     if gemini_resp and isinstance(gemini_resp, dict):
         return {
@@ -1299,7 +1324,7 @@ def handle_chat(
     return _attach_momo_exports(out)
 
 
-def _call_gemini_chat(prompt: str) -> dict[str, Any] | None:
+def _call_gemini_chat(prompt: str, *, timeout: int = 45) -> dict[str, Any] | None:
     """Call Gemini with Momo system instruction."""
     key = _gemini_api_key()
     if not key:
@@ -1323,7 +1348,7 @@ def _call_gemini_chat(prompt: str) -> dict[str, Any] | None:
     req.add_header("x-goog-api-key", key)
 
     try:
-        with urlopen(req, timeout=45) as resp:
+        with urlopen(req, timeout=max(1, int(timeout))) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
         text = (
             raw.get("candidates", [{}])[0]

@@ -19,7 +19,11 @@ def _parse_ts_age_sec(ts: str | None) -> float | None:
         return None
 
 
-def resolve_worker_ops_status(*, stale_sec: float = 180.0) -> dict[str, Any]:
+def resolve_worker_ops_status(
+    *,
+    heartbeat_stale_sec: float = 180.0,
+    cycle_stale_sec: float = 600.0,
+) -> dict[str, Any]:
     """Return worker running/stopped from bot_runtime_heartbeat + latest worker cycle row."""
     hb: dict[str, Any] = {}
     try:
@@ -44,12 +48,24 @@ def resolve_worker_ops_status(*, stale_sec: float = 180.0) -> dict[str, Any]:
     hb_age = _parse_ts_age_sec(last_hb)
     cycle_age = _parse_ts_age_sec(str(hb.get("last_successful_cycle_at") or ""))
 
-    running = hb_age is not None and hb_age <= stale_sec
-    if running:
+    process_alive = hb_age is not None and hb_age <= heartbeat_stale_sec
+    cycle_fresh = cycle_age is not None and cycle_age <= cycle_stale_sec
+
+    if process_alive and cycle_fresh:
         health = "ok"
-        msg = f"Worker is running (heartbeat {int(hb_age)}s ago)."
+        msg = f"Worker running; last cycle {int(cycle_age)}s ago (id {last_cycle or 'n/a'})."
+        trading_will_run = True
+    elif process_alive and not cycle_fresh:
+        health = "trading_loop_stale"
+        msg = (
+            f"Worker alive but trading loop stale — heartbeat {int(hb_age)}s ago, "
+            f"last successful cycle {int(cycle_age) if cycle_age is not None else 'unknown'}s ago "
+            f"(>{int(cycle_stale_sec)}s). Check main_worker logs; trading may not be progressing."
+        )
+        trading_will_run = False
     else:
         health = "stopped"
+        trading_will_run = False
         if hb_age is None:
             msg = (
                 "Worker appears stopped — no heartbeat in bot_runtime_heartbeat. "
@@ -57,13 +73,17 @@ def resolve_worker_ops_status(*, stale_sec: float = 180.0) -> dict[str, Any]:
             )
         else:
             msg = (
-                f"Worker appears stopped — last heartbeat {int(hb_age)}s ago (> {int(stale_sec)}s). "
-                "Trading will not run until worker restarts."
+                f"Worker appears stopped — last heartbeat {int(hb_age)}s ago "
+                f"(>{int(heartbeat_stale_sec)}s). Trading will not run until worker restarts."
             )
+
+    running = process_alive
 
     return {
         "worker_running": running,
         "worker_health": health,
+        "process_alive": process_alive,
+        "trading_loop_fresh": cycle_fresh,
         "status_message": msg,
         "last_worker_heartbeat_at": last_hb or None,
         "last_heartbeat_age_seconds": round(hb_age, 1) if hb_age is not None else None,
@@ -73,6 +93,6 @@ def resolve_worker_ops_status(*, stale_sec: float = 180.0) -> dict[str, Any]:
         "last_equity": hb.get("last_equity"),
         "last_buying_power": hb.get("last_buying_power"),
         "mode": config.MODE,
-        "trading_will_run": running,
-        "dashboard_only_warning": not running,
+        "trading_will_run": trading_will_run,
+        "dashboard_only_warning": not process_alive,
     }

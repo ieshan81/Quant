@@ -1998,19 +1998,35 @@ def build_activity_export_payload(
             except Exception:
                 pass
     try:
-        from execution.crypto_engine import build_crypto_push_pull_status
+        from execution.crypto_execution_readiness import build_crypto_executor_readiness
+
         _crypto_positions = [p for p in pos_list if str(p.get("asset_class") or "").lower() == "crypto"]
         _crypto_cash = float(_bg.get("usable_buying_power", 0) or 0)
         _crypto_reserved = float(_bg.get("crypto_reserved_usd", 0) or 0)
-        _cpp_status = build_crypto_push_pull_status(
+        _recon_ok = bool((payload.get("reconciliation_health") or {}).get("clean", True))
+        _exec_ready = build_crypto_executor_readiness(
             rt=_rt,
             cash_available=_crypto_cash,
+            buying_power=float(buy_gate.get("buying_power", 0) if isinstance(buy_gate, dict) else 0),
             crypto_reserved_usd=_crypto_reserved,
             crypto_positions=_crypto_positions,
+            reconciliation_clean=_recon_ok,
+            recovery_block=bool(payload.get("block_new_buys")),
         )
-        _cpp_dict = _cpp_status.to_dict()
+        _cpp_dict = dict(_exec_ready.get("crypto_push_pull_status") or {})
         _cpp_dict["cash_available_for_crypto"] = _crypto_cash
+        _cpp_dict["executor_readiness"] = {
+            k: _exec_ready.get(k)
+            for k in (
+                "can_trade_crypto",
+                "push_allowed",
+                "push_blocked_reason",
+                "disabling_config_key",
+                "config_flags",
+            )
+        }
         payload["crypto_push_pull_status"] = _cpp_dict
+        payload["crypto_executor_readiness"] = _exec_ready
     except Exception:
         payload["crypto_push_pull_status"] = None
 

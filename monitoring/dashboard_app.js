@@ -2801,7 +2801,11 @@
             ", disk " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—") + "."
           ];
           if (oh.worker_status_message || oh.worker_health) {
-            parts.push(esc(oh.worker_status_message || ("Worker: " + oh.worker_health)));
+            var wh = oh.worker_health || "";
+            if (wh === "trading_loop_stale") {
+              parts.push("Worker alive but trading loop stale — check main_worker logs.");
+            }
+            parts.push(esc(oh.worker_status_message || ("Worker: " + wh)));
             if (oh.last_cycle_id) parts.push("Last cycle: " + esc(oh.last_cycle_id));
             if (oh.last_cycle_age_seconds != null) parts.push("Cycle age: " + esc(String(oh.last_cycle_age_seconds)) + "s");
           }

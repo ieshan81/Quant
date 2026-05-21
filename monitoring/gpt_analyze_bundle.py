@@ -196,6 +196,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         db_path_status = {"error": str(exc)[:120]}
     if isinstance(mission_summary, dict) and mission_summary.get("ok"):
         crypto_eligibility = mission_summary.get("crypto_eligibility") or {}
+        crypto_executor = mission_summary.get("crypto_executor_readiness") or {}
         if not account.get("buying_power") and mission_summary.get("account"):
             account.update(
                 {k: v for k, v in (mission_summary.get("account") or {}).items() if v is not None}
@@ -207,6 +208,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "config_summary": config_summary,
         "mission_control_summary": mission_summary,
         "crypto_eligibility": crypto_eligibility,
+        "crypto_executor_readiness": crypto_executor,
         "service_info": {
             "git_commit": (os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT", ""))[:12],
             "railway_service": os.environ.get("RAILWAY_SERVICE_ID", ""),

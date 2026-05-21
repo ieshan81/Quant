@@ -25,7 +25,13 @@ def compute_mission_control(
     exit_only = bool(rs.get("exit_only"))
     skip_scanners = bool(rs.get("skip_scanners"))
 
-    crypto_push = cfg_is_enabled(rt.get("crypto_push_enabled"), default=False)
+    try:
+        from execution.crypto_execution_readiness import resolve_crypto_config_flags
+
+        _cf = resolve_crypto_config_flags(rt)
+        crypto_push = bool(_cf.get("crypto_push_enabled_effective"))
+    except Exception:
+        crypto_push = cfg_is_enabled(rt.get("crypto_push_enabled"), default=False)
     crypto_fast = cfg_is_enabled(rt.get("crypto_fast_exit_enabled"), default=False)
     night_on = cfg_is_enabled(rt.get("crypto_night_mode_enabled"), default=True)
     mode = cns.classify_trading_session_mode(

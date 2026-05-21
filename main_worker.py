@@ -3191,6 +3191,7 @@ def execute_cycle_results(
                     cs.asset_class == "crypto"
                     and _crypto_push_pull_paper_safe()
                     and bool(int(rt.get("crypto_push_enabled", 0)) == 1)
+                    and bool(int(rt.get("crypto_enabled", 1)) == 1)
                 ):
                     rem_crypto = max(0.0, max_usable_for_new_buys_crypto - reserved_crypto_notional)
                     usable_cp = min(float(usable_buying_power), float(rem_crypto))
@@ -3781,6 +3782,20 @@ def run_trading_cycle_once(
     crypto_override: list[str] | None = None,
 ) -> dict[str, Any]:
     rt = dict(load_runtime_config_dict())
+    _recon_clean = bool(
+        (_startup_recovery_state.get("reconciliation_health") or {}).get("clean", True)
+    )
+    _recovery_block = bool(_startup_recovery_state.get("block_new_buys"))
+    try:
+        from execution.crypto_execution_readiness import apply_effective_crypto_rt
+
+        rt, _crypto_flags = apply_effective_crypto_rt(
+            rt,
+            reconciliation_clean=_recon_clean,
+            recovery_block=_recovery_block,
+        )
+    except Exception:
+        _crypto_flags = {}
     equity = _latest_portfolio_equity_for_cycle(trader)
     legacy_tp = float(rt.get("take_profit_pct", float(config.BOT_CONFIG_DEFAULTS["take_profit_pct"])))
     legacy_sl = float(rt.get("stop_loss_pct", float(config.BOT_CONFIG_DEFAULTS["stop_loss_pct"])))
@@ -3839,6 +3854,18 @@ def run_trading_cycle_once(
 
                 _rs = _broker_recon.reconcile_sqlite_with_broker(config.DB_PATH, _cli, mode=config.MODE)
                 logger.info("[broker_reconcile] pre-exit summary={}", _rs)
+                try:
+                    from execution.position_reconciliation import run_cycle_stale_local_cleanup
+
+                    _ghost = run_cycle_stale_local_cleanup(config.DB_PATH, _cli, mode=config.MODE)
+                    if not _ghost.get("skipped"):
+                        logger.info("[reconcile] cycle stale cleanup={}", _ghost)
+                        _rh = _ghost.get("reconciliation_health") or {}
+                        if _rh:
+                            _startup_recovery_state["reconciliation_health"] = _rh
+                            _recon_clean = bool(_rh.get("clean", True))
+                except Exception:
+                    logger.warning("[reconcile] cycle stale cleanup failed", exc_info=True)
         except Exception:
             logger.warning("[broker_reconcile] pre-exit run failed", exc_info=True)
     import uuid as _uuid_cycle
@@ -4527,6 +4554,22 @@ def run_trading_cycle_once(
         })
     except Exception:
         logger.debug("[account_history] snapshot skipped", exc_info=True)
+    try:
+        from execution.startup_recovery import upsert_heartbeat
+
+        _bg_hb = summary.get("buy_gate") or {}
+        with get_connection(config.DB_PATH) as conn:
+            upsert_heartbeat(
+                conn,
+                equity=float(trader.equity_total()),
+                cash=float(_bg_hb.get("cash") or 0),
+                buying_power=float(_bg_hb.get("buying_power") or 0),
+                cycle_id=str(summary.get("cycle_id") or cid),
+                successful_cycle=True,
+            )
+            conn.commit()
+    except Exception:
+        logger.debug("[heartbeat] cycle upsert skipped", exc_info=True)
     return summary
 
 

@@ -202,19 +202,41 @@ def _assemble_summary(
     }
 
     crypto_elig: dict[str, Any] = {}
+    crypto_executor: dict[str, Any] = {}
     try:
-        from monitoring.crypto_eligibility import build_crypto_eligibility
-        crypto_elig = build_crypto_eligibility(
-            cash=cash,
+        from data.data_store import load_runtime_config_dict
+        from execution.crypto_execution_readiness import build_crypto_executor_readiness
+
+        _rt_mc = load_runtime_config_dict()
+        recovery_block = bool(rs.get("block_new_buys"))
+        crypto_executor = build_crypto_executor_readiness(
+            rt=_rt_mc,
+            cash_available=cash,
             buying_power=bp,
-            equity=eq,
-            crypto_night=crypto,
-            mission_control=mc,
-            dynamic_profile=profile,
-            bp_diagnostic=bp_diag,
-            latest_crypto_attempts=crypto_events,
+            crypto_reserved_usd=float(alloc.get("crypto_reserved_usd") or 0),
             reconciliation_clean=recon_clean,
+            recovery_block=recovery_block,
         )
+        cpp = crypto_executor.get("crypto_push_pull_status") or {}
+        crypto_elig = {
+            "can_trade_crypto": bool(crypto_executor.get("can_trade_crypto")),
+            "executor_enabled": crypto_executor.get("executor_enabled"),
+            "push_allowed": crypto_executor.get("push_allowed"),
+            "push_blocked_reason": crypto_executor.get("push_blocked_reason"),
+            "disabling_config_key": crypto_executor.get("disabling_config_key"),
+            "config_flags": crypto_executor.get("config_flags"),
+            "crypto_push_pull_status": cpp,
+            "usable_crypto_buying_power": float(
+                bp_diag.get("crypto_buying_power_available")
+                or bp_diag.get("usable_crypto_buying_power")
+                or bp
+                or cash
+                or 0
+            ),
+            "latest_human_reason": crypto_executor.get("latest_human_reason"),
+            "blockers": crypto_executor.get("blockers") or [],
+            "theoretical_session_allowed": bool(mc.get("crypto_entries_allowed")),
+        }
     except Exception:
         pass
 
@@ -252,6 +274,7 @@ def _assemble_summary(
         "db_path_status": db_status,
         "recovery_gate": recovery_gate,
         "crypto_eligibility": crypto_elig,
+        "crypto_executor_readiness": crypto_executor,
         "performance": {
             "gpt_bundle_loaded": False,
             "momo_ask_called": False,

@@ -57,7 +57,14 @@ def answer_momo_question(
     answer = _deterministic_answer(q, ctx, missing)
     provider = "momo_rules"
 
-    if include.get("momo_memory", True):
+    _ops_q = any(
+        k in q.lower()
+        for k in (
+            "buying power", "bp", "crypto", "recovery", "reconciliation", "why no",
+            "worker", "trade", "position", "reset",
+        )
+    )
+    if include.get("momo_memory", True) and not _ops_q:
         try:
             from monitoring.ai_observer import handle_chat
             gemini = handle_chat(
@@ -65,6 +72,7 @@ def answer_momo_question(
                 include_activity_export=bool(include.get("activity_export")),
                 include_broker_diagnostic=bool(include.get("broker_diagnostic")),
                 include_memory=True,
+                gemini_timeout_sec=3,
             )
             extra = str(gemini.get("answer") or "").strip()
             generic = (
@@ -198,14 +206,27 @@ def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]
         act = ctx.get("activity_export") or {}
         evts = act.get("crypto_push_pull_events") or []
         cr = mc.get("crypto_night") or {}
-        push_ok = cr.get("push_possible")
-        blocked = cr.get("blocked_reason") or cr.get("push_blocked_reason")
+        ex = mc.get("crypto_executor_readiness") or mc.get("crypto_eligibility") or {}
+        cpp = ex.get("crypto_push_pull_status") or act.get("crypto_push_pull_status") or {}
+        push_ok = ex.get("push_allowed") if ex else cr.get("push_possible")
+        blocked = (
+            ex.get("push_blocked_reason")
+            or ex.get("disabling_config_key")
+            or cr.get("blocked_reason")
+            or cpp.get("push_blocked_reason")
+        )
+        cfg = (ex.get("config_flags") or {}) if ex else {}
+        if cfg.get("paper_auto_enabled"):
+            parts.append(
+                f"Paper auto-enabled crypto push (raw push={cfg.get('crypto_push_enabled_raw')}, "
+                f"effective={cfg.get('crypto_push_enabled_effective')})."
+            )
         if blocked:
-            parts.append(f"Crypto push is blocked: {blocked}.")
+            parts.append(f"Crypto executor blocked: {blocked}.")
         elif push_ok is False:
-            parts.append("Crypto push is not possible right now (see Mission Control crypto card).")
+            parts.append("Crypto push executor is off (see disabling_config_key in Mission Control).")
         elif push_ok is True:
-            parts.append("Crypto push reports possible, but no recent buy was recorded.")
+            parts.append("Crypto push executor reports ready; check recent events for fills.")
         if evts:
             from monitoring.reason_human import human_reason_code
             recent = evts[:5]
