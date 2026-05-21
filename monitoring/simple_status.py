@@ -12,6 +12,63 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_STALE_WORKER_REASONS = frozenset({"WORKER_STALE", "WORKER_STOPPED"})
+
+
+def _latest_cycle_reason_from_db() -> str | None:
+    """Most recent non-worker cycle reason (execution_decisions or heartbeat stage)."""
+    try:
+        from data.data_store import get_connection
+
+        with get_connection(timeout_sec=1.5) as conn:
+            row = conn.execute(
+                """
+                SELECT reason_code FROM execution_decisions
+                WHERE UPPER(COALESCE(reason_code,'')) NOT IN ('WORKER_STALE','WORKER_STOPPED')
+                  AND reason_code IS NOT NULL AND TRIM(reason_code) != ''
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0]).strip().upper()
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_last_no_trade_reason(
+    hb: dict[str, Any],
+    gate: dict[str, Any],
+    worker: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    if gate.get("blocked"):
+        code = str(gate.get("reason_code") or "")
+        human = gate.get("human_reason") or gate.get("trading_stopped_primary_message") or code
+        return code or None, str(human) if human else code
+
+    raw = str(hb.get("last_no_trade_reason") or hb.get("failed_cycle_safe_error") or "").strip()
+    stage = str(hb.get("current_cycle_stage") or "").strip().lower()
+    fresh = bool(worker.get("trading_loop_fresh"))
+    health_ok = str(worker.get("worker_health") or "").lower() == "ok"
+
+    if raw.upper() in _STALE_WORKER_REASONS and fresh and health_ok and stage in (
+        "cycle_success",
+        "success",
+        "",
+    ):
+        alt = _latest_cycle_reason_from_db()
+        if alt and alt.upper() not in _STALE_WORKER_REASONS:
+            raw = alt
+        elif hb.get("order_submitted"):
+            raw = "ORDER_SUBMITTED"
+        else:
+            raw = "NONE"
+
+    if not raw:
+        raw = "NONE"
+    return raw, raw.replace("_", " ").lower()
+
+
 def build_simple_worker_status() -> dict[str, Any]:
     """Sub-second status from heartbeat + canonical account only."""
     from core.deploy_info import resolve_deploy_info
@@ -34,12 +91,9 @@ def build_simple_worker_status() -> dict[str, Any]:
         cycle_status = "stopped" if gate.get("reason_code") == "WORKER_STOPPED" else "stale"
 
     primary_message = gate.get("trading_stopped_primary_message")
-    last_reason = hb.get("last_no_trade_reason") or hb.get("failed_cycle_safe_error")
+    last_reason, trading_reason = _resolve_last_no_trade_reason(hb, gate, worker)
     if gate.get("blocked"):
-        last_reason = gate.get("reason_code")
-        trading_reason = primary_message
-    else:
-        trading_reason = last_reason
+        primary_message = primary_message or trading_reason
 
     deploy = resolve_deploy_info()
 

@@ -345,8 +345,9 @@ def build_mission_control_summary_minimal(
     trading = base.get("trading") or {}
 
     _positions: list[dict[str, Any]] = []
+    _stale_rows: list[dict[str, Any]] = []
     try:
-        from core.canonical_positions import fetch_open_positions_canonical
+        from core.canonical_positions import fetch_positions_bundle
 
         cli = None
         try:
@@ -358,9 +359,12 @@ def build_mission_control_summary_minimal(
         from data.data_store import get_connection
 
         with get_connection(config.DB_PATH, timeout_sec=2.0) as conn:
-            _positions = fetch_open_positions_canonical(rest_client=cli, conn=conn, timeout_sec=2.0)
+            _bundle = fetch_positions_bundle(rest_client=cli, conn=conn, timeout_sec=2.0)
+            _positions = _bundle.get("open_positions") or []
+            _stale_rows = _bundle.get("local_stale_rows") or []
     except Exception:
         _positions = []
+        _stale_rows = []
 
     crypto_dec: dict[str, Any] = {}
     crypto_session: dict[str, Any] = {}
@@ -492,7 +496,12 @@ def build_mission_control_summary_minimal(
         },
         "recovery_gate": recovery_gate,
         "capital_protection": _capital_protection,
-        "positions": {"open": _positions[:20], "count": len(_positions)},
+        "positions": {
+            "open": _positions[:20],
+            "count": len(_positions),
+            "stale_local_rows": _stale_rows[:20],
+            "stale_local_count": len(_stale_rows),
+        },
         "crypto_night": {
             "crypto_block_headline": block_headline,
             "push_possible": crypto_dec.get("push_allowed"),
@@ -573,11 +582,12 @@ def build_mission_control_summary_full(*, live_broker: bool = False) -> dict[str
     try:
         from data.data_store import get_connection
         from monitoring.canonical_account import resolve_canonical_account_metrics
+        from core.canonical_positions import fetch_positions_bundle
         from monitoring.dashboard_data import (
             fetch_latest_execution_health,
-            fetch_open_positions_from_trades,
             get_alpaca_background_snapshot,
         )
+        from execution import stock_broker
         from execution.dynamic_capital_allocator import build_capital_allocator_summary
         from monitoring.dashboard_data import fetch_latest_dynamic_capital_plan
 
@@ -586,9 +596,11 @@ def build_mission_control_summary_full(*, live_broker: bool = False) -> dict[str
         cash = float(acct.get("cash") or 0)
         bp = float(acct.get("buying_power") or 0)
 
+        cli = stock_broker.get_rest_client()
         with get_connection(timeout_sec=3.0) as conn:
             eh = fetch_latest_execution_health(conn) or {}
-            positions = fetch_open_positions_from_trades(conn) or []
+            _pb = fetch_positions_bundle(rest_client=cli, conn=conn)
+            positions = _pb.get("open_positions") or []
             try:
                 row = conn.execute(
                     "SELECT COUNT(*) FROM deferred_exit_plans WHERE status='pending'"

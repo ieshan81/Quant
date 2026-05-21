@@ -108,6 +108,25 @@ def evaluate_stock_scan_gate(
             saved_cpu_reason=f"At max stock positions ({open_stock_positions}/{max_stock_positions}).",
             next_check_seconds=120.0,
         )
+    stock_frac = max(0.0, min(1.0, cfg_float(rt, "stock_weight_pct", 50.0) / 100.0))
+    sleeve = max(equity * stock_frac, 1e-9) if equity > 0 else 1e-9
+    max_pct = cfg_float(rt, "max_position_pct", 0.005)
+    cap_notional = sleeve * max_pct
+    if cap_notional + 1e-9 < min_order:
+        return _gate(
+            skipped=True,
+            reason_code="STOCK_SCAN_SKIPPED_MAX_SINGLE_ASSET",
+            saved_cpu_reason=(
+                f"Max single-asset cap ${cap_notional:.2f} below min order ${min_order:.2f} — "
+                "stock buy scanner skipped."
+            ),
+            next_check_seconds=_f(rt.get("regular_cycle_seconds"), 30.0),
+            details={
+                "max_single_asset_notional": round(cap_notional, 2),
+                "min_order_notional": min_order,
+                "equity_stocks_estimate": round(sleeve, 2),
+            },
+        )
     return _gate(skipped=False, reason_code=None, next_check_seconds=_f(rt.get("regular_cycle_seconds"), 30.0))
 
 

@@ -54,6 +54,10 @@ def _map_blocker_to_no_trade(code: str | None) -> str:
         "SCORE_TOO_LOW": "NO_SIGNAL",
         "CRYPTO_METADATA_MISSING": "METADATA_MISSING",
         "CRYPTO_PUSH_DISABLED": "CRYPTO_DISABLED_BY_CONFIG",
+        "STOCK_SCAN_SKIPPED_MAX_SINGLE_ASSET": "MAX_SINGLE_ASSET",
+        "MAX_SINGLE_ASSET": "MAX_SINGLE_ASSET",
+        "WORKER_STALE": "NO_SIGNAL",
+        "WORKER_STOPPED": "NO_SIGNAL",
     }
     if c in mapping:
         return mapping[c]
@@ -91,6 +95,8 @@ def derive_cycle_outcome(summary: dict[str, Any]) -> dict[str, Any]:
 
     if order_submitted:
         reason = "ORDER_SUBMITTED"
+    elif str(bg.get("stock_scan_skip_reason") or "").upper() == "STOCK_SCAN_SKIPPED_MAX_SINGLE_ASSET":
+        reason = "MAX_SINGLE_ASSET"
     elif crypto_r.get("reason_code") and not order_submitted:
         reason = _map_blocker_to_no_trade(str(crypto_r.get("reason_code")))
     elif crypto_r.get("push_blocked_reason"):

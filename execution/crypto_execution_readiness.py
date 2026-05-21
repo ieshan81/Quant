@@ -112,6 +112,10 @@ def build_crypto_executor_readiness(
     Executor gate used by worker, activity export, and Mission Control.
     ``can_trade_crypto`` reflects actual push executor readiness, not theoretical session only.
     """
+    from core.canonical_positions import filter_crypto_open_positions
+
+    crypto_positions = filter_crypto_open_positions(crypto_positions)
+
     flags = resolve_crypto_config_flags(
         rt,
         reconciliation_clean=reconciliation_clean,

@@ -101,14 +101,28 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     activity_included = "summary" if isinstance(activity, dict) and activity.get("summary") else (
         "skipped" if err else "partial"
     )
-    ai_notes, ai_notes_err = _fetch_ai_notes_light()
+    ai_notes, ai_notes_meta = _fetch_ai_notes_light()
     if isinstance(activity, dict):
         activity["ai_momo_notes"] = (activity.get("ai_momo_notes") or []) + ai_notes
     graph_nodes = (activity or {}).get("graph_memory_nodes") if isinstance(activity, dict) else []
     ai_notes_included = bool(ai_notes)
     ai_memory_included = bool(graph_nodes)
-    ai_notes_unavailable_reason = ai_notes_err
-    ai_memory_unavailable_reason = None if graph_nodes else "no_graph_nodes_matched_active_blockers"
+    ai_notes_unavailable_reason = ai_notes_meta.get("unavailable_reason")
+    ai_memory_unavailable_reason = (
+        None
+        if graph_nodes
+        else ai_notes_meta.get("graph_unavailable_reason") or "graph_nodes_count=0_no_active_blocker_nodes"
+    )
+    ai_diagnostic_bundle = {
+        "ai_notes_included": ai_notes_included,
+        "ai_notes_count": ai_notes_meta.get("notes_count", len(ai_notes)),
+        "ai_notes_sources_checked": ai_notes_meta.get("sources_checked") or [],
+        "ai_memory_included": ai_memory_included,
+        "graph_nodes_count": len(graph_nodes or []),
+        "graph_nodes": (graph_nodes or [])[:10],
+        "ai_notes_unavailable_reason": ai_notes_unavailable_reason,
+        "ai_memory_unavailable_reason": ai_memory_unavailable_reason,
+    }
 
     broker_diag, ms, err = _timed_section(
         "broker_diagnostic",
@@ -157,8 +171,11 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         ce = acs.get("equity", ce)
         cbp = acs.get("buying_power", cbp)
         account.setdefault("cash", acs.get("cash"))
-    if isinstance(broker_diag, dict) and broker_diag.get("alpaca_positions"):
-        broker_pos = len(broker_diag.get("alpaca_positions") or [])
+    if isinstance(broker_diag, dict):
+        broker_pos = int(
+            broker_diag.get("broker_position_count")
+            or len(broker_diag.get("broker_positions") or broker_diag.get("alpaca_positions") or [])
+        )
 
     transition = build_broker_account_transition_status(
         current_equity=ce,
@@ -211,6 +228,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "activity_export_included": activity_included,
         "ai_notes_included": ai_notes_included,
         "ai_memory_included": ai_memory_included,
+        "ai_diagnostic_bundle": ai_diagnostic_bundle,
         "ai_notes_unavailable_reason": ai_notes_unavailable_reason,
         "ai_memory_unavailable_reason": ai_memory_unavailable_reason,
         "crypto_push_pull_session": crypto_session,
@@ -297,8 +315,14 @@ def _build_broker_diag_light() -> dict[str, Any]:
         return build_broker_diagnostic_light(conn)
 
 
-def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], str | None]:
+def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     notes: list[dict[str, Any]] = []
+    meta: dict[str, Any] = {
+        "sources_checked": ["ai_observer_notes"],
+        "notes_count": 0,
+        "unavailable_reason": None,
+        "graph_unavailable_reason": "graph_nodes_from_gpt_activity_summary",
+    }
     try:
         from data.data_store import get_connection
 
@@ -313,15 +337,18 @@ def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], str | None]:
                 {"created_at": r[0], "summary": (r[1] or "")[:200], "issue": (r[2] or "")[:120]}
                 for r in rows
             ]
+            meta["notes_count"] = len(notes)
     except Exception as exc:
-        return [], f"ai_observer_notes_query_failed: {exc}"[:120]
+        meta["unavailable_reason"] = f"ai_observer_notes_query_failed: {exc}"[:120]
+        return [], meta
     if notes:
-        return notes, None
+        return notes, meta
     try:
         import os
         from pathlib import Path as _P
 
         mem_path = _P(os.environ.get("AI_MEMORY_DB_PATH", "/data/ai_memory.sqlite"))
+        meta["sources_checked"].append(str(mem_path))
         if mem_path.is_file():
             import sqlite3
 
@@ -334,13 +361,19 @@ def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], str | None]:
                 mrows = []
             mc.close()
             if mrows:
+                meta["notes_count"] = len(mrows)
+                meta["unavailable_reason"] = None
                 return [
                     {"created_at": r[0], "summary": (r[1] or "")[:200], "source": "ai_memory.sqlite"}
                     for r in mrows
-                ], None
+                ], meta
+        else:
+            meta["unavailable_reason"] = f"ai_memory_db_missing:{mem_path}"
     except Exception as exc:
-        return [], f"ai_memory_db_unavailable: {exc}"[:120]
-    return [], "no_ai_observer_notes_in_primary_db"
+        meta["unavailable_reason"] = f"ai_memory_db_unavailable: {exc}"[:120]
+        return [], meta
+    meta["unavailable_reason"] = "no_ai_observer_notes_in_primary_db"
+    return [], meta
 
 
 def bundle_as_text(bundle: dict[str, Any]) -> str:

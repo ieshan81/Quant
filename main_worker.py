@@ -3568,10 +3568,9 @@ def execute_cycle_results(
                     if not cap_ok:
                         ok, reason = False, cap_rc or reason_codes.BUY_BLOCKED_CAPITAL_CONSTITUTION
                 if not ok or qty <= 0:
-                    if (
-                        cs.asset_class == "stock"
-                        and reason == "single_asset_cap"
-                        and _stock_cap_blocks_all
+                    if cs.asset_class == "stock" and str(reason) in (
+                        "single_asset_cap",
+                        reason_codes.MAX_SINGLE_ASSET,
                     ):
                         buy_gate_skipped_count += 1
                         out["holds"] += 1
@@ -3837,6 +3836,7 @@ def execute_cycle_results(
                         cs.symbol,
                     )
                     out["holds"] += 1
+    _stock_gate = rt.get("_stock_scan_gate") or {}
     out["buy_gate"] = {
         "cash": float(alpaca_snapshot.get("cash", 0.0)),
         "buying_power": float(alpaca_snapshot.get("buying_power", 0.0)),
@@ -3847,6 +3847,7 @@ def execute_cycle_results(
         "stock_buy_attempts": stock_buy_attempts,
         "crypto_buy_attempts": crypto_buy_attempts,
         "skipped_count": buy_gate_skipped_count,
+        "stock_scan_skip_reason": _stock_gate.get("skip_reason_code"),
         "max_stock_attempts": max_stock_attempts,
         "max_crypto_attempts": max_crypto_attempts,
         "profit_cooldown_active": _profit_cooldown_active,
@@ -4180,12 +4181,21 @@ def run_trading_cycle_once(
         _cn_reserve = float(rt.get("_crypto_night_reserve_target") or 0.0)
         _reserve_pct = float(rt.get("hard_min_cash_reserve_pct", 15.0) or 15.0)
         _hard_res = max(float(rt.get("hard_min_cash_reserve_usd", 5.0) or 5.0), equity * _reserve_pct / 100.0)
-        _n_crypto_open = sum(
-            1
-            for r in (exit_health.get("position_exit_rows") or [])
-            if str(r.get("asset_class") or "").lower() == "crypto"
-            and float(r.get("broker_qty") or r.get("local_qty") or 0) > 1e-9
-        )
+        _n_crypto_open = 0
+        try:
+            from core.canonical_positions import count_crypto_positions, fetch_positions_bundle
+
+            _cli_gate = stock_broker.get_rest_client()
+            with get_connection(config.DB_PATH) as _conn_gate:
+                _pos_bundle = fetch_positions_bundle(rest_client=_cli_gate, conn=_conn_gate)
+            _n_crypto_open = count_crypto_positions(_pos_bundle.get("open_positions") or [])
+        except Exception:
+            _n_crypto_open = sum(
+                1
+                for r in (exit_health.get("position_exit_rows") or [])
+                if str(r.get("asset_class") or "").lower() == "crypto"
+                and float(r.get("broker_qty") or 0) > 1e-9
+            )
         _max_st = int(rt.get("max_stock_positions", 5) or 5)
         _max_cr = int(rt.get("max_crypto_positions", 5) or 5)
         _crypto_on = bool(

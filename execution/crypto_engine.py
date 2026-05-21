@@ -111,9 +111,11 @@ def build_crypto_push_pull_status(
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
-    for pos in crypto_positions:
-        sym = str(pos.get("symbol") or "")
-        qty = float(pos.get("qty") or pos.get("net_qty") or 0)
+    from core.canonical_positions import filter_crypto_open_positions
+
+    for pos in filter_crypto_open_positions(crypto_positions):
+        sym = str(pos.get("symbol") or pos.get("canonical_symbol") or "")
+        qty = float(pos.get("qty") or pos.get("broker_qty") or pos.get("net_qty") or 0)
         entry = float(pos.get("avg_entry_price") or pos.get("entry_price") or 0)
         cur = float(pos.get("current_price") or pos.get("mark_price") or 0)
 

@@ -59,7 +59,10 @@ def build_crypto_trade_decision(
     cash = float(ctx.get("cash_available", cash_available) or buying_power or 0)
     bp = float(ctx.get("buying_power", buying_power) or cash)
     reserved = float(ctx.get("crypto_reserved_usd", crypto_reserved_usd) or 0)
-    positions = list(ctx.get("crypto_positions") or crypto_positions or [])
+    raw_positions = list(ctx.get("crypto_positions") or crypto_positions or [])
+    from core.canonical_positions import filter_crypto_open_positions
+
+    positions = filter_crypto_open_positions(raw_positions)
     scores = dict(ctx.get("crypto_scores") or crypto_scores or {})
     scan_fresh = bool(ctx.get("worker_scan_fresh"))
     if not scan_fresh and not scores:
@@ -106,7 +109,9 @@ def build_crypto_trade_decision(
     )
     if (
         not scan_fresh
-        and str(blocker or "").upper() in ("NO_CRYPTO_CANDIDATES", "CRYPTO_PUSH_BLOCKED_SCORE", "SCORE_TOO_LOW")
+        and not gate.get("blocked")
+        and str(blocker or "").upper()
+        in ("NO_CRYPTO_CANDIDATES", "CRYPTO_PUSH_BLOCKED_SCORE", "SCORE_TOO_LOW")
     ):
         blocker = "WORKER_STALE"
         ready["push_blocked_reason"] = blocker
@@ -228,7 +233,7 @@ def build_crypto_trade_decision(
 
         out["crypto_session"] = build_crypto_session_status(
             out,
-            positions=list(ctx.get("crypto_positions") or crypto_positions or []),
+            positions=positions,
             exit_rows=ctx.get("exit_rows"),
             crypto_scan_gate=ctx.get("crypto_scan_gate") or ctx.get("_crypto_scan_gate"),
         )
