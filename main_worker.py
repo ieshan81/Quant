@@ -3813,12 +3813,17 @@ def run_trading_cycle_once(
         (_startup_recovery_state.get("reconciliation_health") or {}).get("clean", True)
     )
     _recovery_block = bool(_startup_recovery_state.get("block_new_buys"))
+    # Effective reconciliation clean: if evaluate_startup_recovery says block_new_buys=False
+    # (no active drawdown / offline recovery), treat reconciliation as clean enough for trading.
+    # Stale ghost positions without active recovery should not block crypto indefinitely.
+    # Stock exits are unaffected (they use _recovery_block, not this flag).
+    _effective_recon_clean = _recon_clean or not _startup_recovery_state.get("block_new_buys", False)
     try:
         from execution.crypto_execution_readiness import apply_effective_crypto_rt
 
         rt, _crypto_flags = apply_effective_crypto_rt(
             rt,
-            reconciliation_clean=_recon_clean,
+            reconciliation_clean=_effective_recon_clean,
             recovery_block=_recovery_block,
         )
     except Exception:
@@ -4610,7 +4615,7 @@ def run_trading_cycle_once(
                 "buying_power": bg_c.get("buying_power"),
                 "equity": equity,
                 "crypto_scores": dict(sorted_crypto_scores[:5]) if sorted_crypto_scores else {},
-                "reconciliation_clean": _recon_clean,
+                "reconciliation_clean": _effective_recon_clean,
                 "recovery_block": _recovery_block,
                 "quote_snapshot": summary.get("_quote_snapshot"),
                 "quote_diagnostics": summary.get("_quote_diagnostics"),

@@ -1359,6 +1359,48 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Fast bootstrap from /api/simple-status (populates Overview tab immediately)
+  // ---------------------------------------------------------------------------
+
+  async function prefetchSimpleStatus() {
+    try {
+      var r = await fetch("/api/simple-status", { cache: "no-store" });
+      if (!r.ok) return;
+      var s = await r.json();
+      // Don't overwrite if the full dashboard already populated the view.
+      if (window.__dashVm && window.__dashVm.equity != null) return;
+      var acct = (s.account && typeof s.account === "object") ? s.account : {};
+      var worker = (s.worker && typeof s.worker === "object") ? s.worker : {};
+      var trading = (s.trading && typeof s.trading === "object") ? s.trading : {};
+      var crypto = (s.crypto_status && typeof s.crypto_status === "object") ? s.crypto_status : {};
+      var eq = acct.equity != null ? Number(acct.equity) : null;
+      var cash = acct.cash != null ? Number(acct.cash) : null;
+      var bp = acct.buying_power != null ? Number(acct.buying_power) : null;
+      var mode = s.mode || acct.mode || "—";
+      var noTradeReason = trading.last_no_trade_reason || worker.failed_safe_error || "";
+      var cryptoReason = crypto.human_reason || crypto.reason_code || "";
+      // Populate the summary numbers in Overview tab.
+      var mMode = document.getElementById("mMode");
+      if (mMode && mMode.textContent === "—") mMode.textContent = String(mode).toUpperCase();
+      var mEq = document.getElementById("mEq");
+      if (mEq && mEq.textContent === "—" && eq != null && isFiniteNum(eq)) mEq.textContent = fmtMoney(eq);
+      var mCash = document.getElementById("mCash");
+      if (mCash && mCash.textContent === "—" && cash != null && isFiniteNum(cash)) mCash.textContent = fmtMoney(cash);
+      // Hint text.
+      var hintEl = document.getElementById("overviewDataHint");
+      if (hintEl && hintEl.style.display !== "none") {
+        var hint = noTradeReason || cryptoReason;
+        if (hint) {
+          hintEl.textContent = "Last cycle: " + String(hint);
+          hintEl.style.display = "block";
+        } else if (eq != null) {
+          hintEl.style.display = "none";
+        }
+      }
+    } catch (_e) { /* non-blocking — full dashboard fetch will follow */ }
+  }
+
+  // ---------------------------------------------------------------------------
   // Fetch loop
   // ---------------------------------------------------------------------------
 
@@ -3503,6 +3545,8 @@
     wireAiChat();
     wireAiMemoryButtons();
     wireEquityRangeButtons();
+    // Pre-fill Overview tab from fast heartbeat endpoint before full dashboard loads.
+    prefetchSimpleStatus();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
     loadAiStatus();

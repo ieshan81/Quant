@@ -374,6 +374,43 @@ def build_mission_control_summary_minimal(
     )
     degraded = bool(reason)
 
+    # Derive a real mission mode for the minimal path from compute_mission_control.
+    mission_mode = "STARTUP"
+    session_mode = ""
+    recovery_gate: dict[str, Any] = {}
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+        from core.session_mode import compute_mission_control
+        from market_hours import nyse_regular_session_open
+
+        rt_mc = load_runtime_config_for_worker(config.DB_PATH)
+        # Recovery state: use what the heartbeat tells us.
+        _no_trade = trading.get("last_no_trade_reason") or ""
+        _recovery_hint = _no_trade in ("RECONCILE_BLOCK", "RECOVERY_BLOCK_NEW_BUYS")
+        _recovery_state: dict[str, Any] = {
+            "block_new_buys": _recovery_hint,
+            "exit_only": False,
+            "skip_scanners": _recovery_hint,
+        }
+        _stock_open = bool(nyse_regular_session_open())
+        _sess_label = "regular_stock_session" if _stock_open else "closed"
+        mc_out = compute_mission_control(
+            rt=rt_mc,
+            recovery_state=_recovery_state,
+            stock_market_open=_stock_open,
+            stock_session_label=_sess_label,
+        )
+        mission_mode = str(mc_out.get("mission_mode") or "STARTUP")
+        session_mode = str(mc_out.get("session_mode") or "")
+        recovery_gate = {
+            "recovery_active": _recovery_hint,
+            "block_new_buys": _recovery_hint,
+            "block_new_buys_reason": _no_trade if _recovery_hint else "",
+            "recovery_reason": _no_trade if _recovery_hint else "",
+        }
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "simple_fallback": True,
@@ -383,7 +420,8 @@ def build_mission_control_summary_minimal(
         "degraded_reason": reason or None,
         "topline": {
             **(base.get("topline") or {}),
-            "mission_mode": "STARTUP",
+            "mission_mode": mission_mode,
+            "session_mode": session_mode,
             "account_source": acct.get("account_source") or "worker_heartbeat",
         },
         "account": {
@@ -394,7 +432,12 @@ def build_mission_control_summary_minimal(
         "ops_health": base.get("ops_health") or worker,
         "worker": worker,
         "trading": trading,
-        "mission": {"mission_mode": "STARTUP", "next_allowed_action": {}},
+        "mission": {
+            "mission_mode": mission_mode,
+            "session_mode": session_mode,
+            "next_allowed_action": {},
+        },
+        "recovery_gate": recovery_gate,
         "capital_protection": {},
         "positions": {"open": [], "count": 0},
         "crypto_night": {

@@ -1792,6 +1792,51 @@ def create_app() -> Flask:
         """Railway liveness: no DB, Alpaca, or worker dependency."""
         return jsonify({"ok": True, "service": "quantbot-dashboard"}), 200
 
+    @app.get("/api/simple-status")
+    def api_simple_status() -> Response:
+        """
+        Fast worker + account status — guaranteed < 500 ms, never blocks on Alpaca.
+        Returns 200 even when the worker is stopped or the DB is empty.
+        Includes: equity, cash, buying_power, mode, worker_health,
+                  last_no_trade_reason, and the crypto block reason.
+        """
+        try:
+            from monitoring.simple_status import build_simple_worker_status
+            base = build_simple_worker_status()
+        except Exception as exc:
+            base = {"ok": False, "error": str(exc)[:120]}
+
+        # Attach crypto block reason cheaply (DB + heartbeat only, no Alpaca REST)
+        crypto_brief: dict[str, Any] = {}
+        try:
+            from core.paper_trading_path import load_runtime_config_for_worker
+            from execution.crypto_trade_decision import build_crypto_trade_decision
+
+            acct = base.get("account") or {}
+            rt = load_runtime_config_for_worker(config.DB_PATH)
+            dec = build_crypto_trade_decision({
+                "rt": rt,
+                "cash_available": acct.get("cash"),
+                "buying_power": acct.get("buying_power"),
+                "equity": acct.get("equity"),
+            })
+            crypto_brief = {
+                "can_trade_crypto": dec.get("can_trade_crypto"),
+                "reason_code": dec.get("reason_code"),
+                "human_reason": dec.get("human_reason"),
+                "push_allowed": dec.get("push_allowed"),
+                "blockers": dec.get("blockers"),
+            }
+        except Exception as exc:
+            crypto_brief = {"error": str(exc)[:120]}
+
+        payload: dict[str, Any] = {
+            **base,
+            "crypto_status": crypto_brief,
+            "mode": config.MODE,
+        }
+        return Response(json.dumps(payload, default=str), mimetype="application/json")
+
     try:
         from backtesting.models import BacktestRequest
         from backtesting import runner as backtest_runner

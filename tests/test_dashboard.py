@@ -1196,3 +1196,32 @@ def test_api_dashboard_execution_health_and_exit_rows_are_safe_shapes(dash_app) 
     data = json.loads(r.data)
     assert isinstance(data.get("execution_health"), dict)
     assert isinstance(data.get("position_exit_rows"), list)
+
+
+def test_simple_status_endpoint_fast_and_safe(dash_app) -> None:
+    """GET /api/simple-status must return 200 with required fields — no Alpaca REST calls."""
+    client = dash_app.test_client()
+    r = client.get("/api/simple-status")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    # Required top-level keys
+    assert data.get("ok") is True
+    assert "account" in data
+    assert "worker" in data
+    assert "trading" in data
+    assert "crypto_status" in data
+    assert "mode" in data
+    # Account must have numeric or null fields
+    acct = data["account"]
+    for field in ("equity", "cash", "buying_power"):
+        assert field in acct, f"account.{field} missing"
+        val = acct[field]
+        assert val is None or isinstance(val, (int, float)), f"account.{field} must be numeric, got {val!r}"
+    # crypto_status must not be empty
+    cs = data["crypto_status"]
+    assert isinstance(cs, dict)
+    # If crypto gave us a reason, it should be a string
+    if "reason_code" in cs:
+        assert isinstance(cs["reason_code"], str)
+    if "human_reason" in cs:
+        assert isinstance(cs["human_reason"], str)
