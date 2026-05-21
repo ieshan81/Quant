@@ -1,10 +1,11 @@
 #!/bin/bash
-cd "$(dirname "$0")"
+# Railway / local: dashboard in background, worker in foreground (worker must stay up to trade).
 set -e
+cd "$(dirname "$0")"
 
 PORT="${PORT:-5000}"
+export PORT
 
-# Dashboard must bind /health before the worker imports heavy trading stacks.
 python monitoring/dashboard.py &
 DASH_PID=$!
 echo "Dashboard starting (pid ${DASH_PID}) on port ${PORT}"
@@ -17,9 +18,10 @@ for _ in $(seq 1 120); do
   fi
   sleep 1
 done
+if [ "${_ready}" != "1" ]; then
+  echo "WARNING: dashboard /health not ready after 120s — worker will still start"
+fi
 echo "Dashboard health ready=${_ready}"
 
-python main_worker.py || echo "worker exited (non-fatal for dashboard)" &
-echo "Worker started in background"
-
-wait "${DASH_PID}"
+echo "Starting trading worker (foreground — container stays up while worker runs)"
+exec python main_worker.py

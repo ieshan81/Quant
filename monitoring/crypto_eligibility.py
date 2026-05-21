@@ -13,6 +13,7 @@ def build_crypto_eligibility(
     buying_power: float = 0.0,
     equity: float = 0.0,
     crypto_night: dict[str, Any] | None = None,
+    mission_control: dict[str, Any] | None = None,
     execution_health: dict[str, Any] | None = None,
     dynamic_profile: dict[str, Any] | None = None,
     bp_diagnostic: dict[str, Any] | None = None,
@@ -20,12 +21,20 @@ def build_crypto_eligibility(
     reconciliation_clean: bool = True,
 ) -> dict[str, Any]:
     crypto_night = crypto_night or {}
+    mission_control = mission_control or {}
     execution_health = execution_health or {}
     dynamic_profile = dynamic_profile or {}
     bp_diagnostic = bp_diagnostic or {}
     attempts = latest_crypto_attempts or []
 
-    usable = float(bp_diagnostic.get("crypto_buying_power_available") or dynamic_profile.get("available_for_crypto") or 0)
+    usable = float(
+        bp_diagnostic.get("crypto_buying_power_available")
+        or bp_diagnostic.get("usable_crypto_buying_power")
+        or dynamic_profile.get("available_for_crypto")
+        or buying_power
+        or cash
+        or 0
+    )
     usable_source = str(bp_diagnostic.get("usable_buying_power_source") or "allocator")
     reserve = float(bp_diagnostic.get("cash_reserve_required") or 0)
     min_order = 5.0
@@ -44,10 +53,9 @@ def build_crypto_eligibility(
     except Exception:
         config_enabled = bool(crypto_night.get("enabled", True))
 
-    session_allowed = True
-    mc = execution_health.get("mission_control") if isinstance(execution_health.get("mission_control"), dict) else {}
-    if mc and mc.get("crypto_entries_allowed") is False:
-        session_allowed = False
+    session_allowed = mission_control.get("crypto_entries_allowed", True) is not False
+    if not mission_control and isinstance(execution_health.get("mission_control"), dict):
+        session_allowed = execution_health["mission_control"].get("crypto_entries_allowed", True) is not False
 
     account_tradable = not bool(
         bp_diagnostic.get("blocked_by_broker") and usable <= 0 and cash <= 0
@@ -70,11 +78,12 @@ def build_crypto_eligibility(
         blockers.append("broker_buying_power_zero")
 
     latest_blocker = blockers[0] if blockers else None
-    human = human_reason_code(latest_blocker) if latest_blocker and latest_blocker.isupper() else (
-        "Crypto trading is allowed in paper mode." if not blockers else latest_blocker.replace("_", " ")
-    )
-    if attempts and attempts[0].get("human_reason"):
-        human = str(attempts[0]["human_reason"])
+    if not blockers:
+        human = "Crypto trading is allowed in paper mode (all gates passed)."
+    elif latest_blocker and latest_blocker.isupper():
+        human = human_reason_code(latest_blocker)
+    else:
+        human = latest_blocker.replace("_", " ")
 
     can_trade = len(blockers) == 0 and usable >= min_order and push_possible is not False
 

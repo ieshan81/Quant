@@ -194,19 +194,12 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         db_path_status = build_db_path_status()
     except Exception as exc:
         db_path_status = {"error": str(exc)[:120]}
-    try:
-        from monitoring.crypto_eligibility import build_crypto_eligibility
-        if isinstance(mission_summary, dict) and mission_summary.get("ok"):
-            crypto_eligibility = build_crypto_eligibility(
-                cash=float((mission_summary.get("account") or {}).get("cash") or 0),
-                buying_power=float((mission_summary.get("account") or {}).get("buying_power") or 0),
-                equity=float((mission_summary.get("account") or {}).get("equity") or 0),
-                crypto_night=mission_summary.get("crypto_night") or {},
-                bp_diagnostic=(mission_summary.get("capital_protection") or {}).get("buying_power_diagnostic") or bp_diag,
-                latest_crypto_attempts=(mission_summary.get("crypto_night") or {}).get("latest_crypto_attempts") or crypto_push_pull_events,
+    if isinstance(mission_summary, dict) and mission_summary.get("ok"):
+        crypto_eligibility = mission_summary.get("crypto_eligibility") or {}
+        if not account.get("buying_power") and mission_summary.get("account"):
+            account.update(
+                {k: v for k, v in (mission_summary.get("account") or {}).items() if v is not None}
             )
-    except Exception as exc:
-        crypto_eligibility = {"error": str(exc)[:120]}
 
     bundle = {
         "generated_at": generated,

@@ -115,12 +115,6 @@ def _assemble_summary(
     profile = build_dynamic_account_profile(equity=eq, cash=cash, buying_power=bp)
     crypto_policy = build_crypto_execution_policy(cash_available=cash, blocked_reason=crypto.get("blocked_reason"))
 
-    try:
-        from monitoring.resource_monitor import resolve_resource_snapshot_for_api
-        resource = resolve_resource_snapshot_for_api()
-    except Exception:
-        resource = {}
-
     if include_notes:
         try:
             from monitoring.ai_observer import fetch_latest_notes
@@ -148,50 +142,64 @@ def _assemble_summary(
         )
 
     crypto_events = _fetch_crypto_push_pull_brief()
-    latest_crypto = crypto_events[0] if crypto_events else {}
-    crypto_block_headline = None
-    if latest_crypto.get("decision") == "rejected" or str(latest_crypto.get("reason_code", "")):
-        rc = str(latest_crypto.get("reason_code") or "")
-        if rc or latest_crypto.get("decision") == "rejected":
-            crypto_block_headline = (
-                f"Crypto blocked: {latest_crypto.get('human_reason') or latest_crypto.get('reason_code') or 'see recent attempts'}"
-            )
 
-    recovery_gate = {
-        "recovery_active": bool((eh.get("startup_recovery_status") or {}).get("recovery_active")),
-        "recovery_reason": (eh.get("startup_recovery_status") or {}).get("reason"),
-        "block_new_buys": bool(eh.get("block_new_buys")),
-        "block_new_buys_reason": eh.get("block_new_buys_reason") or eh.get("why_no_trade"),
-        "skip_scanners": bool(eh.get("skip_scanners")),
-        "skip_scanners_reason": eh.get("skip_scanners_reason"),
-        "reconciliation_clean": bool((eh.get("reconciliation_health") or {}).get("clean", True)),
+    recon_clean = bool((eh.get("reconciliation_health") or {}).get("clean", True))
+    recovery_active = bool((eh.get("startup_recovery_status") or {}).get("recovery_active"))
+    drawdown_active = bool((eh.get("startup_drawdown_status") or {}).get("drawdown_active"))
+
+    rs = {
+        "block_new_buys": bool(eh.get("block_new_buys")) and (recovery_active or drawdown_active or not recon_clean),
+        "exit_only": bool(eh.get("exit_only")),
+        "skip_scanners": bool(eh.get("skip_scanners")) and (recovery_active or drawdown_active),
+        "reconciliation_health": eh.get("reconciliation_health") or {"clean": recon_clean},
+        "startup_recovery_status": eh.get("startup_recovery_status") or {},
+        "startup_drawdown_status": eh.get("startup_drawdown_status") or {},
     }
+    if not recovery_active and not drawdown_active and recon_clean:
+        rs["block_new_buys"] = False
+        rs["skip_scanners"] = False
+        rs["exit_only"] = False
+
+    fresh_mc: dict[str, Any] = {}
     try:
         from core.session_mode import compute_mission_control
         from data.data_store import load_runtime_config_dict
 
         rt = load_runtime_config_dict()
-        rs = {
-            "block_new_buys": recovery_gate["block_new_buys"],
-            "exit_only": bool(eh.get("exit_only")),
-            "skip_scanners": recovery_gate["skip_scanners"],
-            "reconciliation_health": eh.get("reconciliation_health") or {"clean": recovery_gate["reconciliation_clean"]},
-            "startup_recovery_status": eh.get("startup_recovery_status") or {},
-            "startup_drawdown_status": eh.get("startup_drawdown_status") or {},
-        }
-        if not recovery_gate["recovery_active"] and recovery_gate["reconciliation_clean"]:
-            rs["block_new_buys"] = False
-            rs["skip_scanners"] = False
         fresh_mc = compute_mission_control(
             rt=rt,
             recovery_state=rs,
             stock_market_open=True,
             stock_session_label=str(eh.get("market_session") or "closed"),
         )
-        mc = {**mc, **fresh_mc}
-        recovery_gate["mission_mode_derived"] = fresh_mc.get("mission_mode")
+        mc = dict(fresh_mc)
     except Exception:
-        fresh_mc = {}
+        mc = {}
+
+    mission_mode = str(mc.get("mission_mode") or "STARTUP")
+    if (
+        not recovery_active
+        and not drawdown_active
+        and recon_clean
+        and mission_mode in ("RECONCILIATION_RECOVERY", "STARTUP_RECOVERY", "DRAWDOWN_RECOVERY")
+    ):
+        sm = str(mc.get("session_mode") or "")
+        mission_mode = sm if sm and sm not in (
+            "RECONCILIATION_RECOVERY",
+            "STARTUP_RECOVERY",
+            "DRAWDOWN_RECOVERY",
+        ) else "REGULAR_STOCK_SESSION"
+
+    recovery_gate = {
+        "recovery_active": recovery_active,
+        "recovery_reason": (eh.get("startup_recovery_status") or {}).get("reason"),
+        "block_new_buys": bool(rs.get("block_new_buys")),
+        "block_new_buys_reason": eh.get("block_new_buys_reason") or eh.get("why_no_trade"),
+        "skip_scanners": bool(rs.get("skip_scanners")),
+        "skip_scanners_reason": eh.get("skip_scanners_reason"),
+        "reconciliation_clean": recon_clean,
+        "mission_mode_derived": mission_mode,
+    }
 
     crypto_elig: dict[str, Any] = {}
     try:
@@ -201,12 +209,32 @@ def _assemble_summary(
             buying_power=bp,
             equity=eq,
             crypto_night=crypto,
-            execution_health=eh,
+            mission_control=mc,
             dynamic_profile=profile,
             bp_diagnostic=bp_diag,
             latest_crypto_attempts=crypto_events,
-            reconciliation_clean=recovery_gate["reconciliation_clean"],
+            reconciliation_clean=recon_clean,
         )
+    except Exception:
+        pass
+
+    crypto_block_headline = None
+    if not crypto_elig.get("can_trade_crypto"):
+        crypto_block_headline = "Crypto blocked: " + str(
+            crypto_elig.get("latest_human_reason") or crypto_elig.get("latest_blocker") or "see eligibility"
+        )
+    elif crypto_elig.get("can_trade_crypto"):
+        crypto_block_headline = "Crypto ready: " + str(crypto_elig.get("latest_human_reason", "gates passed"))
+
+    resource: dict[str, Any] = {}
+    try:
+        from monitoring.resource_monitor import resolve_resource_snapshot_for_api
+        resource = resolve_resource_snapshot_for_api()
+    except Exception:
+        pass
+    try:
+        from monitoring.worker_status import resolve_worker_ops_status
+        resource = {**resource, **resolve_worker_ops_status()}
     except Exception:
         pass
 
@@ -234,16 +262,18 @@ def _assemble_summary(
             "cash": cash,
             "buying_power": bp,
             "mode": config.MODE,
-            "mission_mode": mc.get("mission_mode") or eh.get("mission_mode"),
-            "crypto_push_status": crypto.get("push_possible"),
+            "mission_mode": mission_mode,
+            "crypto_push_status": crypto_elig.get("can_trade_crypto") if crypto_elig else crypto.get("push_possible"),
+            "account_source": port.get("primary_source"),
         },
         "account": {
             "equity": eq, "cash": cash, "buying_power": bp,
             "day_pnl": port.get("day_pnl"), "mode": config.MODE,
             "live_enabled": config.trading_is_live(),
+            "account_source": port.get("primary_source"),
         },
         "mission": {
-            "mission_mode": mc.get("mission_mode") or eh.get("mission_mode"),
+            "mission_mode": mission_mode,
             "session_mode": mc.get("session_mode"),
             "recovery_status": eh.get("startup_recovery_status"),
             "next_allowed_action": allowed,
@@ -275,21 +305,25 @@ def _assemble_summary(
 
 
 def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str, Any]:
-    """Lightweight summary — DB + cached Alpaca snapshot only unless live_broker=True."""
+    """Lightweight summary — canonical account metrics + DB execution health."""
     deferred_n = 0
     try:
         from data.data_store import get_connection
+        from monitoring.canonical_account import resolve_canonical_account_metrics
         from monitoring.dashboard_data import (
             fetch_latest_execution_health,
-            fetch_latest_portfolio,
             fetch_open_positions_from_trades,
             get_alpaca_background_snapshot,
         )
         from execution.dynamic_capital_allocator import build_capital_allocator_summary
         from monitoring.dashboard_data import fetch_latest_dynamic_capital_plan
 
+        acct = resolve_canonical_account_metrics(live_broker=live_broker)
+        eq = float(acct.get("equity") or 0)
+        cash = float(acct.get("cash") or 0)
+        bp = float(acct.get("buying_power") or 0)
+
         with get_connection(timeout_sec=2.5) as conn:
-            port_row = fetch_latest_portfolio(conn) or {}
             eh = fetch_latest_execution_health(conn) or {}
             positions = fetch_open_positions_from_trades(conn) or []
             try:
@@ -303,58 +337,22 @@ def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str
         alloc = build_capital_allocator_summary(dca)
         snap = get_alpaca_background_snapshot()
         crypto = snap.get("crypto_night_status") or {}
-        mc = (eh.get("mission_control") or {}) if isinstance(eh.get("mission_control"), dict) else {}
 
-        eq = float(port_row.get("equity_total") or port_row.get("equity") or 0)
-        cash = float(port_row.get("cash_stocks") or port_row.get("cash") or 0)
-        bp = float(port_row.get("buying_power") or 0)
+        broker_port = {
+            "equity": eq,
+            "cash": cash,
+            "buying_power": bp,
+            "non_marginable_buying_power": acct.get("non_marginable_buying_power"),
+            "regt_buying_power": acct.get("regt_buying_power"),
+            "day_pnl": acct.get("day_pnl"),
+            "primary_source": acct.get("primary_source"),
+        }
         broker_pos = 0
-        pf = snap.get("portfolio") or {}
-        if pf:
-            try:
-                eq = float(pf.get("equity") or eq)
-                bp = float(pf.get("buying_power") or bp)
-                cash = float(pf.get("cash") or cash)
-            except (TypeError, ValueError):
-                pass
-        if live_broker:
-            try:
-                import concurrent.futures as _cf
-                from execution import stock_broker
-
-                def _broker_live_fetch() -> tuple[float, float, int]:
-                    cli = stock_broker.get_rest_client()
-                    if not cli:
-                        return eq, bp, 0
-                    acct = cli.get_account()
-                    _eq = float(getattr(acct, "equity", eq) or eq)
-                    _bp = float(getattr(acct, "buying_power", bp) or bp)
-                    _pos = len(cli.get_all_positions() or [])
-                    return _eq, _bp, _pos
-
-                with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
-                    fut = _ex.submit(_broker_live_fetch)
-                    try:
-                        eq, bp, broker_pos = fut.result(timeout=2.5)
-                    except (_cf.TimeoutError, Exception):
-                        pass
-            except Exception:
-                pass
-
-        broker_port = dict(port_row)
-        if pf:
-            broker_port.update(
-                {
-                    "cash": pf.get("cash", cash),
-                    "buying_power": pf.get("buying_power", bp),
-                    "equity": pf.get("equity", eq),
-                }
-            )
 
         return _assemble_summary(
             port=broker_port,
             eh=eh,
-            mc=mc,
+            mc={},
             alloc=alloc,
             crypto=crypto if isinstance(crypto, dict) else {},
             positions=positions if isinstance(positions, list) else [],

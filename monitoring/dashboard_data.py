@@ -571,9 +571,16 @@ def get_real_portfolio(rest_client: Any) -> dict[str, Any]:
         deployed += abs(_safe_float(mv, 0.0))
     deployed_pct = (deployed / equity * 100.0) if equity > 0 else 0.0
 
+    buying_power = _safe_float(getattr(account, "buying_power", 0))
+    nmbp = getattr(account, "non_marginable_buying_power", None)
     return {
         "equity_total": round(equity, 2),
+        "equity": round(equity, 2),
         "cash": round(cash, 2),
+        "buying_power": round(buying_power, 2),
+        "non_marginable_buying_power": _safe_float(nmbp, buying_power) if nmbp is not None else buying_power,
+        "regt_buying_power": _safe_float(getattr(account, "regt_buying_power", 0)),
+        "daytrading_buying_power": _safe_float(getattr(account, "daytrading_buying_power", 0)),
         "pnl_dollars": round(pnl_dollars, 2),
         "pnl_pct": round(pnl_pct, 2),
         "deployed_pct": round(deployed_pct, 1),

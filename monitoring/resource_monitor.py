@@ -206,14 +206,32 @@ def _snapshot_age_seconds(snap: dict[str, Any]) -> float | None:
 
 
 def resolve_resource_snapshot_for_api(*, max_age_sec: float = 120.0) -> dict[str, Any]:
-    """Return latest persisted snapshot if fresh; otherwise collect and persist."""
+    """Return latest persisted snapshot if fresh; merge worker heartbeat status."""
     latest = fetch_latest_resource_snapshot()
     if latest:
         age = _snapshot_age_seconds(latest)
         if age is None or age <= max_age_sec:
-            return latest
-    snap = collect_resource_snapshot()
-    persist_resource_snapshot(snap)
+            snap = dict(latest)
+        else:
+            snap = collect_resource_snapshot(worker_health="dashboard_only")
+    else:
+        snap = collect_resource_snapshot(worker_health="dashboard_only")
+        persist_resource_snapshot(snap)
+
+    try:
+        from monitoring.worker_status import resolve_worker_ops_status
+
+        ws = resolve_worker_ops_status()
+        snap["worker_health"] = ws.get("worker_health", snap.get("worker_health"))
+        snap["worker_running"] = ws.get("worker_running")
+        snap["worker_status_message"] = ws.get("status_message")
+        snap["last_cycle_id"] = ws.get("last_cycle_id") or snap.get("last_cycle_id")
+        snap["last_cycle_age_seconds"] = ws.get("last_cycle_age_seconds") or snap.get("last_cycle_age_seconds")
+        snap["last_heartbeat_age_seconds"] = ws.get("last_heartbeat_age_seconds")
+        snap["dashboard_only_warning"] = ws.get("dashboard_only_warning")
+        snap["trading_will_run"] = ws.get("trading_will_run")
+    except Exception:
+        pass
     return snap
 
 

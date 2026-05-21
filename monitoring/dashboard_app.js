@@ -2800,6 +2800,11 @@
             ", memory " + (oh.system_memory_pct != null ? safeFmtPct(oh.system_memory_pct) : "—") +
             ", disk " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—") + "."
           ];
+          if (oh.worker_status_message || oh.worker_health) {
+            parts.push(esc(oh.worker_status_message || ("Worker: " + oh.worker_health)));
+            if (oh.last_cycle_id) parts.push("Last cycle: " + esc(oh.last_cycle_id));
+            if (oh.last_cycle_age_seconds != null) parts.push("Cycle age: " + esc(String(oh.last_cycle_age_seconds)) + "s");
+          }
           if (Object.keys(tg).length) {
             var tgLine = tg.status_message || (
               (tg.enabled ? "Telegram enabled" : "Telegram disabled") +
