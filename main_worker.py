@@ -1213,18 +1213,45 @@ def _can_open_short_stock(
 
 
 def _get_real_position_qty(symbol: str, broker: Any) -> float:
-    """Held qty from broker adapter, then Alpaca REST positions."""
+    """Held qty from Alpaca broker first, then adapter fallbacks."""
     sym = str(symbol or "").strip().upper()
     flat = sym.replace("/", "")
+    # Broker truth first: Alpaca REST list_positions.
+    try:
+        client = stock_broker.get_rest_client()
+        if client is not None:
+            positions = client.list_positions() or []
+            for pos in positions:
+                pos_symbol = str(
+                    getattr(pos, "symbol", None)
+                    or (pos.get("symbol", "") if isinstance(pos, dict) else "")
+                ).strip().upper()
+                if pos_symbol == sym or pos_symbol.replace("/", "") == flat:
+                    qty = getattr(pos, "qty", None)
+                    if qty is None and isinstance(pos, dict):
+                        qty = pos.get("qty")
+                    return float(qty or 0)
+    except Exception:
+        logger.debug("[exits] alpaca real qty lookup failed for {}", sym, exc_info=True)
+
     if broker is not None:
         try:
             if hasattr(broker, "get_open_positions"):
+                qty_from_alpaca_row = None
                 for pos in broker.get_open_positions() or []:
                     if not isinstance(pos, dict):
                         continue
                     ps = str(pos.get("symbol") or "").strip().upper()
                     if ps == sym or ps.replace("/", "") == flat:
-                        return float(pos.get("net_qty") or pos.get("qty") or 0)
+                        src = str(pos.get("source") or "").lower()
+                        qv = float(pos.get("broker_qty") or pos.get("net_qty") or pos.get("qty") or 0.0)
+                        if src == "alpaca_rest":
+                            qty_from_alpaca_row = qv
+                            break
+                        if qty_from_alpaca_row is None:
+                            qty_from_alpaca_row = qv
+                if qty_from_alpaca_row is not None:
+                    return float(qty_from_alpaca_row)
             ledger = getattr(broker, "ledger", None)
             if ledger is not None and hasattr(ledger, "position"):
                 for ac in ("stock", "crypto"):
@@ -1233,23 +1260,6 @@ def _get_real_position_qty(symbol: str, broker: Any) -> float:
                         return float(lp.quantity)
         except Exception:
             logger.debug("[exits] broker qty lookup failed for {}", sym, exc_info=True)
-    try:
-        client = stock_broker.get_rest_client()
-        if client is None:
-            return 0.0
-        positions = client.list_positions() or []
-        for pos in positions:
-            pos_symbol = str(
-                getattr(pos, "symbol", None)
-                or (pos.get("symbol", "") if isinstance(pos, dict) else "")
-            ).strip().upper()
-            if pos_symbol == sym or pos_symbol.replace("/", "") == flat:
-                qty = getattr(pos, "qty", None)
-                if qty is None and isinstance(pos, dict):
-                    qty = pos.get("qty")
-                return float(qty or 0)
-    except Exception:
-        logger.debug("[exits] alpaca real qty lookup failed for {}", sym, exc_info=True)
     return 0.0
 
 
@@ -1463,6 +1473,31 @@ def _check_and_execute_exits(
     broker_local_mismatch_count = 0
     exit_eligible_positions_count = 0
     position_exit_rows: list[dict[str, Any]] = []
+    stock_exit_eval_skipped_market_closed = (
+        bool(stock_positions)
+        and not _us_stock_market_open_for_routed_sell()
+        and float(rt.get("stock_extended_execution_enabled", 0.0) or 0.0) < 0.5
+    )
+    if stock_exit_eval_skipped_market_closed:
+        try:
+            from execution.block_registry import should_log_block
+
+            if should_log_block("STOCK_EXIT_SKIPPED_MARKET_CLOSED", subsystem="stock_exit_engine"):
+                _persist_decision(
+                    cycle_id=cid_exit,
+                    asset_class="stock",
+                    symbol="-",
+                    side="sell",
+                    decision="hold",
+                    reason_code=reason_codes.STOCK_EXIT_SKIPPED_MARKET_CLOSED,
+                    score=None,
+                    notional=0.0,
+                    quantity=0.0,
+                    price=None,
+                    meta={"scope": "cycle", "reason_detail": "market_closed_no_extended_execution"},
+                )
+        except Exception:
+            logger.debug("[exits] stock market-closed skip event failed", exc_info=True)
 
     def _snapshot_exit_row(
         *,
@@ -1684,6 +1719,41 @@ def _check_and_execute_exits(
 
         if qty > 1e-12:
             sell_qty = qty
+            if float(sell_qty) > float(qty) + (1e-8 if ac == "crypto" else 1e-6):
+                blocked_exits_count += 1
+                _persist_decision(
+                    cycle_id=cid_exit,
+                    asset_class=ac,
+                    symbol=sym,
+                    side="sell",
+                    decision="rejected",
+                    reason_code=reason_codes.OVERSIZED_EXIT_BLOCKED,
+                    score=None,
+                    notional=float(sell_qty) * float(mid),
+                    quantity=float(sell_qty),
+                    price=mid,
+                    meta={"broker_qty": float(qty), "sell_qty": float(sell_qty), "safety_guard": True},
+                )
+                logger.critical(
+                    "[exit_safety] blocked oversized exit {} {} sell_qty={} broker_qty={}",
+                    ac,
+                    sym,
+                    sell_qty,
+                    qty,
+                )
+                _snapshot_exit_row(
+                    symbol=sym,
+                    asset_class=ac,
+                    local_qty=local_qty_val,
+                    broker_qty=qty,
+                    entry_p=entry,
+                    mid_p=mid,
+                    block_reason=reason_codes.OVERSIZED_EXIT_BLOCKED,
+                    pdt_status="—",
+                    recommended_action="HOLD",
+                    rotation_eval={"rule_triggered": False, "exit_allowed": False, "blocked_reason_code": reason_codes.OVERSIZED_EXIT_BLOCKED},
+                )
+                continue
 
             def _exit_rc_long(base: str) -> str:
                 if ac == "crypto" and _crypto_pull_prefixed_exit_reasons(rt):
@@ -1697,6 +1767,26 @@ def _check_and_execute_exits(
                 and peak_px > 0
                 and ((peak_px - float(mid)) / peak_px) >= trail_frac
             )
+
+            if ac == "stock" and stock_exit_eval_skipped_market_closed:
+                _snapshot_exit_row(
+                    symbol=sym,
+                    asset_class=ac,
+                    local_qty=local_qty_val,
+                    broker_qty=qty,
+                    entry_p=entry,
+                    mid_p=mid,
+                    block_reason=reason_codes.STOCK_EXIT_SKIPPED_MARKET_CLOSED,
+                    pdt_status="—",
+                    recommended_action="PENDING_EXIT_MARKET_OPEN",
+                    rotation_eval={
+                        "rule_triggered": True,
+                        "automated_rule": "MARKET_SESSION_PRE_GATE",
+                        "exit_allowed": False,
+                        "blocked_reason_code": reason_codes.STOCK_EXIT_SKIPPED_MARKET_CLOSED,
+                    },
+                )
+                continue
 
             def _reject_market_closed(reason_detail: str) -> None:
                 _persist_decision(
@@ -4717,8 +4807,9 @@ def run_trading_cycle_once(
         from monitoring.ops_log_store import write_ops_event
 
         _errs = summary.get("errors") or []
+        _is_cycle_failure = bool(summary.get("failed_stage") or summary.get("cycle_failed"))
         write_ops_event(
-            level="error" if _errs else "info",
+            level="error" if _is_cycle_failure else "info",
             source="worker",
             event_type="cycle_complete",
             cycle_id=str(summary.get("cycle_id") or cid),

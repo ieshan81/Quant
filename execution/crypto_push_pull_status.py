@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import config
 from utils.symbols import crypto_symbols_equivalent, normalize_crypto_pair, position_key_symbol
 
 
@@ -81,8 +82,26 @@ def build_crypto_pull_status(
     reconcile_issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Sell/monitor existing crypto — independent of push/no-candidate."""
-    crypto_pos = _open_crypto_positions(positions)
+    dust_rows = _crypto_dust_rows(positions)
+    dust_syms = {str(d.get("symbol") or "") for d in dust_rows}
+    crypto_pos = [p for p in _open_crypto_positions(positions) if str(p.get("symbol") or "") not in dust_syms]
     if not crypto_pos:
+        if dust_rows:
+            primary = dust_rows[0]
+            msg = (
+                "No actionable crypto position; "
+                f"{primary.get('display_symbol')} dust ~${primary.get('notional_usd'):.2f} below sell minimum."
+            )
+            return {
+                "status": "no_actionable_position",
+                "label": "Dust Only",
+                "reason_code": "CRYPTO_DUST_POSITION",
+                "human_reason": msg,
+                "can_sell": False,
+                "headline": msg,
+                "positions": [],
+                "dust_positions": dust_rows,
+            }
         return {
             "status": "no_position",
             "label": "No Crypto Position",
@@ -135,6 +154,7 @@ def build_crypto_pull_status(
         "can_sell": any_sell,
         "headline": headline,
         "positions": monitored,
+        "dust_positions": dust_rows,
     }
 
 
@@ -175,3 +195,31 @@ def _symbol_reconcile_issue(symbol: str, issues: list[dict[str, Any]]) -> dict[s
         if crypto_symbols_equivalent(str(iss.get("symbol") or ""), symbol):
             return iss
     return {}
+
+
+def _crypto_dust_rows(positions: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    min_notional = max(1.0, float(getattr(config, "MIN_ORDER_NOTIONAL_USD", 1.0) or 1.0))
+    out: list[dict[str, Any]] = []
+    for p in positions or []:
+        ac = str(p.get("asset_class") or "").lower()
+        if ac != "crypto":
+            continue
+        sym = position_key_symbol("crypto", str(p.get("symbol") or ""))
+        qty = float(p.get("net_qty") or p.get("broker_qty") or p.get("quantity") or p.get("qty") or 0)
+        if qty <= 1e-9:
+            continue
+        px = float(p.get("current_price") or p.get("mark_price") or p.get("price") or p.get("avg_entry_price") or 0)
+        notional = abs(qty) * px if px > 0 else 0.0
+        if notional <= 0 or notional >= min_notional:
+            continue
+        out.append(
+            {
+                "symbol": sym,
+                "display_symbol": sym.replace("/", ""),
+                "qty": qty,
+                "notional_usd": round(notional, 4),
+                "min_notional_usd": round(min_notional, 2),
+                "reason_code": "CRYPTO_DUST_POSITION",
+            }
+        )
+    return out

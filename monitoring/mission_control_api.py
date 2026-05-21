@@ -13,6 +13,29 @@ from execution.crypto_execution_policy import build_crypto_execution_policy
 from monitoring.momo import build_momo_authority_status, build_momo_status
 
 
+def _mission_mode_human(mode: str) -> str:
+    mapping = {
+        "AFTER_HOURS_CRYPTO_ONLY": "After Hours: Crypto Only",
+        "REGULAR_STOCK_SESSION": "Market Open: Stock Session",
+        "MARKET_CLOSED_NO_TRADING": "Market Closed: No Stock Trading",
+        "STARTUP": "Starting / Waiting for first cycle",
+        "WAITING_FOR_FIRST_CYCLE": "Starting / Waiting for first cycle",
+    }
+    m = str(mode or "").strip().upper()
+    if not m:
+        return mapping["STARTUP"]
+    return mapping.get(m, m.replace("_", " ").title())
+
+
+def _latest_mission_mode_fallback(default: str = "STARTUP") -> str:
+    try:
+        from monitoring.cycle_brief import fetch_latest_mission_mode
+
+        return str(fetch_latest_mission_mode(default=default) or default)
+    except Exception:
+        return default
+
+
 def _telegram_status_brief() -> dict[str, Any]:
     """Non-blocking Telegram config check — no API calls."""
     try:
@@ -51,6 +74,23 @@ def _fetch_crypto_push_pull_brief(limit: int = 5) -> list[dict[str, Any]]:
         return out
     except Exception:
         return []
+
+
+def _top_ai_attention_note() -> dict[str, Any] | None:
+    try:
+        from monitoring.ai_observer import fetch_latest_notes
+
+        notes = fetch_latest_notes(limit=30)
+    except Exception:
+        return None
+    ranked = sorted(
+        (n for n in notes if isinstance(n, dict)),
+        key=lambda n: (
+            {"critical": 0, "warning": 1, "info": 2}.get(str(n.get("severity") or "").lower(), 3),
+            str(n.get("created_at") or ""),
+        ),
+    )
+    return ranked[0] if ranked else None
 
 
 def _transition_evidence(eh: dict[str, Any], mem: dict[str, Any]) -> dict[str, Any]:
@@ -115,13 +155,15 @@ def _assemble_summary(
     profile = build_dynamic_account_profile(equity=eq, cash=cash, buying_power=bp)
     crypto_policy = build_crypto_execution_policy(cash_available=cash, blocked_reason=crypto.get("blocked_reason"))
 
-    if include_notes:
-        try:
-            from monitoring.ai_observer import fetch_latest_notes
-            for n in fetch_latest_notes(limit=2):
-                momo_summary["learned"].append(str(n.get("message", n.get("finding", "")))[:120])
-        except Exception:
-            pass
+    top_ai_note = _top_ai_attention_note() if include_notes else None
+    if top_ai_note:
+        sev = str(top_ai_note.get("severity") or "info").upper()
+        finding = str(top_ai_note.get("finding") or "")[:160]
+        ts = str(top_ai_note.get("created_at") or "")
+        conf = top_ai_note.get("confidence")
+        momo_summary["attention"].append(
+            f"{sev}: {finding} ({ts}){f' conf={conf}' if conf is not None else ''}"
+        )
 
     from monitoring.buying_power_diagnostic import build_buying_power_diagnostic
 
@@ -190,6 +232,11 @@ def _assemble_summary(
             "DRAWDOWN_RECOVERY",
         ) else "REGULAR_STOCK_SESSION"
 
+    if mission_mode in ("STARTUP", "WAITING_FOR_FIRST_CYCLE") and positions:
+        mission_mode = _latest_mission_mode_fallback(default=mission_mode)
+    if mission_mode in ("STARTUP", "WAITING_FOR_FIRST_CYCLE") and bool(eh.get("last_successful_cycle_at")):
+        mission_mode = _latest_mission_mode_fallback(default="AFTER_HOURS_CRYPTO_ONLY")
+
     recovery_gate = {
         "recovery_active": recovery_active,
         "recovery_reason": (eh.get("startup_recovery_status") or {}).get("reason"),
@@ -199,6 +246,7 @@ def _assemble_summary(
         "skip_scanners_reason": eh.get("skip_scanners_reason"),
         "reconciliation_clean": recon_clean,
         "mission_mode_derived": mission_mode,
+        "mission_mode_human": _mission_mode_human(mission_mode),
     }
 
     from monitoring.crypto_readiness_payload import (
@@ -272,6 +320,13 @@ def _assemble_summary(
         pass
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    top_ai_note = _top_ai_attention_note()
+    momo_attention = (
+        [f"{str(top_ai_note.get('severity') or 'info').upper()}: {str(top_ai_note.get('finding') or '')[:160]}"]
+        if top_ai_note
+        else (["No AI notes yet."] if not reason else [])
+    )
+
     return {
         "ok": True,
         "generated_at": generated,
@@ -290,6 +345,7 @@ def _assemble_summary(
             "buying_power": bp,
             "mode": config.MODE,
             "mission_mode": mission_mode,
+            "mission_mode_human": _mission_mode_human(mission_mode),
             "crypto_push_status": crypto_elig.get("can_trade_crypto") if crypto_elig else crypto.get("push_possible"),
             "account_source": port.get("primary_source"),
         },
@@ -302,6 +358,7 @@ def _assemble_summary(
         "mission": {
             "mission_mode": mission_mode,
             "session_mode": mc.get("session_mode"),
+            "mission_mode_human": _mission_mode_human(mission_mode),
             "recovery_status": eh.get("startup_recovery_status"),
             "next_allowed_action": allowed,
         },
@@ -415,8 +472,8 @@ def build_mission_control_summary_minimal(
     )
     degraded = bool(reason)
 
-    # Derive a real mission mode for the minimal path from compute_mission_control.
-    mission_mode = "STARTUP"
+    # Derive a real mission mode for the minimal path from latest cycle evidence first.
+    mission_mode = _latest_mission_mode_fallback(default="STARTUP")
     session_mode = ""
     recovery_gate: dict[str, Any] = {}
     try:
@@ -441,7 +498,10 @@ def build_mission_control_summary_minimal(
             stock_market_open=_stock_open,
             stock_session_label=_sess_label,
         )
-        mission_mode = str(mc_out.get("mission_mode") or "STARTUP")
+        mission_mode = str(mc_out.get("mission_mode") or _latest_mission_mode_fallback(default="STARTUP"))
+        if bool(worker.get("trading_loop_fresh")) and str(worker.get("cycle_status") or "").lower() in ("success", "cycle_success"):
+            if mission_mode in ("STARTUP", "WAITING_FOR_FIRST_CYCLE"):
+                mission_mode = _latest_mission_mode_fallback(default="AFTER_HOURS_CRYPTO_ONLY")
         session_mode = str(mc_out.get("session_mode") or "")
         recovery_gate = {
             "recovery_active": _recovery_hint,
@@ -467,6 +527,12 @@ def build_mission_control_summary_minimal(
         "human_summary": _cap_human,
         "buying_power_diagnostic": {},
     }
+    top_ai_note = _top_ai_attention_note()
+    momo_attention = (
+        [f"{str(top_ai_note.get('severity') or 'info').upper()}: {str(top_ai_note.get('finding') or '')[:160]}"]
+        if top_ai_note
+        else []
+    )
 
     return {
         "ok": True,
@@ -478,6 +544,7 @@ def build_mission_control_summary_minimal(
         "topline": {
             **(base.get("topline") or {}),
             "mission_mode": mission_mode,
+            "mission_mode_human": _mission_mode_human(mission_mode),
             "session_mode": session_mode,
             "account_source": acct.get("account_source") or "worker_heartbeat",
         },
@@ -492,6 +559,7 @@ def build_mission_control_summary_minimal(
         "mission": {
             "mission_mode": mission_mode,
             "session_mode": session_mode,
+            "mission_mode_human": _mission_mode_human(mission_mode),
             "next_allowed_action": {},
         },
         "recovery_gate": recovery_gate,
@@ -535,30 +603,34 @@ def build_mission_control_summary_minimal(
             "did": [],
             "refused": [],
             "learned": [],
-            "attention": (
-                [base["primary_message"]]
-                if base.get("primary_message")
-                else ([reason] if reason else [])
-            ),
+            "attention": momo_attention or ([base["primary_message"]] if base.get("primary_message") else []),
         },
         "momo_status": build_momo_status(),
         "performance": {"lightweight": True, "simple_fallback": True},
         "broker_account_transition_status": _minimal_transition_status(
             equity=float(acct.get("equity") or 0),
             buying_power=float(acct.get("buying_power") or 0),
+            current_positions_count=len(_positions),
+            runtime_positions_count=len(_positions),
         ),
     }
 
 
-def _minimal_transition_status(*, equity: float, buying_power: float) -> dict[str, Any]:
+def _minimal_transition_status(
+    *,
+    equity: float,
+    buying_power: float,
+    current_positions_count: int = 0,
+    runtime_positions_count: int = 0,
+) -> dict[str, Any]:
     try:
         from core.broker_account_transition import build_broker_account_transition_status
 
         return build_broker_account_transition_status(
             current_equity=equity,
             current_buying_power=buying_power,
-            current_positions_count=0,
-            runtime_positions_count=0,
+            current_positions_count=int(current_positions_count),
+            runtime_positions_count=int(runtime_positions_count),
         )
     except Exception as exc:
         return {
@@ -622,7 +694,7 @@ def build_mission_control_summary_full(*, live_broker: bool = False) -> dict[str
             "day_pnl": acct.get("day_pnl"),
             "primary_source": acct.get("primary_source"),
         }
-        broker_pos = 0
+        broker_pos = len((_pb.get("broker_positions") or []))
 
         return _assemble_summary(
             port=broker_port,

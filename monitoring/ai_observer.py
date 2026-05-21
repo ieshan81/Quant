@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 import traceback
@@ -79,6 +80,9 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
     patterns_count = 0
     skills_count = 0
     last_run_at = None
+    compaction_status: dict[str, Any] = {}
+    graph_nodes = 0
+    graph_edges = 0
     try:
         conn = get_ai_memory_connection(db_path)
         schema_ok = True
@@ -88,7 +92,21 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
         row = conn.execute("SELECT created_at FROM ai_observer_notes ORDER BY id DESC LIMIT 1").fetchone()
         if row:
             last_run_at = row[0]
+        compaction_status = {
+            "last_compacted_note_count": int(_meta_get(conn, "last_compacted_note_count") or 0),
+            "last_compacted_note_id": int(_meta_get(conn, "last_compacted_note_id") or 0),
+            "last_compaction_at": _meta_get(conn, "last_compaction_at"),
+            "compaction_threshold_notes": 100,
+        }
         conn.close()
+    except Exception:
+        pass
+    try:
+        from data.data_store import get_connection
+
+        with get_connection(config.DB_PATH, timeout_sec=2.0) as gconn:
+            graph_nodes = int(gconn.execute("SELECT COUNT(*) FROM momo_graph_nodes").fetchone()[0] or 0)
+            graph_edges = int(gconn.execute("SELECT COUNT(*) FROM momo_graph_edges").fetchone()[0] or 0)
     except Exception:
         pass
     return _attach_momo_exports({
@@ -101,6 +119,9 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
         "patterns_count": patterns_count,
         "skills_count": skills_count,
         "last_run_at": last_run_at,
+        "memory_compaction_status": compaction_status,
+        "graph_nodes_count": graph_nodes,
+        "graph_edges_count": graph_edges,
         "allowed_to_execute": False,
         "can_submit_orders": False,
         "can_update_config": False,
@@ -881,6 +902,172 @@ def compact_notes(conn: sqlite3.Connection, *, max_notes: int = 5000) -> int:
         return 0
 
 
+def _meta_get(conn: sqlite3.Connection, key: str) -> str | None:
+    try:
+        row = conn.execute("SELECT value FROM ai_memory_meta WHERE key=? LIMIT 1", (key,)).fetchone()
+        if row and row[0] is not None:
+            return str(row[0])
+    except sqlite3.Error:
+        return None
+    return None
+
+
+def _meta_set(conn: sqlite3.Connection, key: str, value: Any) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO ai_memory_meta (key, value) VALUES (?, ?)",
+        (str(key), str(value)),
+    )
+
+
+def _extract_reason_codes_from_text(text: str) -> list[str]:
+    t = str(text or "").upper()
+    candidates = set(re.findall(r"\b[A-Z][A-Z0-9_]{3,}\b", t))
+    ignore = {
+        "HTTP",
+        "JSON",
+        "INFO",
+        "WARNING",
+        "CRITICAL",
+        "ERROR",
+        "UTC",
+        "MOMO",
+        "AI",
+    }
+    return sorted(c for c in candidates if c not in ignore and "_" in c)
+
+
+def run_memory_compaction_checkpoint(
+    conn: sqlite3.Connection,
+    *,
+    threshold_notes: int = 100,
+) -> dict[str, Any]:
+    """
+    Compact/graphify once per 100-note checkpoint.
+    Uses ai_memory_meta.last_compacted_note_count/last_compacted_note_id for dedupe.
+    """
+    status: dict[str, Any] = {
+        "threshold_notes": int(threshold_notes),
+        "ran": False,
+        "notes_count": 0,
+        "last_compacted_note_count": 0,
+        "last_compacted_note_id": 0,
+        "new_checkpoint_reached": False,
+        "patterns_upserted": 0,
+        "graph_nodes_count": 0,
+        "graph_edges_count": 0,
+    }
+    try:
+        notes_count = int(conn.execute("SELECT COUNT(*) FROM ai_observer_notes").fetchone()[0] or 0)
+        max_id = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM ai_observer_notes").fetchone()[0] or 0)
+    except sqlite3.Error:
+        return status
+
+    last_count = int(_meta_get(conn, "last_compacted_note_count") or 0)
+    last_id = int(_meta_get(conn, "last_compacted_note_id") or 0)
+    status["notes_count"] = notes_count
+    status["last_compacted_note_count"] = last_count
+    status["last_compacted_note_id"] = last_id
+
+    if threshold_notes <= 0:
+        threshold_notes = 100
+    if (notes_count // threshold_notes) <= (last_count // threshold_notes):
+        return status
+
+    status["new_checkpoint_reached"] = True
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, created_at, severity, category, symbol, finding, suggested_action, evidence_json
+            FROM ai_observer_notes
+            WHERE id > ?
+            ORDER BY id ASC
+            LIMIT 1500
+            """,
+            (last_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+
+    # Build compacted patterns + graph observations from fresh notes only.
+    from collections import defaultdict
+
+    buckets: dict[tuple[str, str, str], list[sqlite3.Row]] = defaultdict(list)
+    for r in rows:
+        sev = str(r["severity"] or "info").lower()
+        cat = str(r["category"] or "memory").lower()
+        sym = str(r["symbol"] or "-").strip().upper() or "-"
+        buckets[(sev, cat, sym)].append(r)
+
+    for (sev, cat, sym), brs in buckets.items():
+        pattern = {
+            "pattern_key": f"auto_compact:{sev}:{cat}:{sym}",
+            "pattern_name": f"{sev.upper()} {cat} {sym}",
+            "symbol": None if sym == "-" else sym,
+            "risk_summary": f"{len(brs)} notes in checkpoint for severity={sev}, category={cat}, symbol={sym}",
+            "opportunity_summary": "Compacted from ai_observer_notes checkpoint",
+            "confidence": min(0.95, 0.5 + len(brs) * 0.03),
+        }
+        upsert_pattern(conn, pattern)
+        status["patterns_upserted"] += 1
+
+    try:
+        from core.momo_graph_memory import record_block_observation, upsert_node
+        from data.data_store import get_connection
+
+        with get_connection(config.DB_PATH, timeout_sec=2.0) as gconn:
+            for r in rows:
+                text = f"{r['finding'] or ''} {r['suggested_action'] or ''}"
+                reasons = _extract_reason_codes_from_text(text)
+                sym = str(r["symbol"] or "").strip().upper()
+                subsystem = str(r["category"] or "").strip().lower() or None
+                for rc in reasons[:4]:
+                    record_block_observation(gconn, reason_code=rc, symbol=sym or None, subsystem=subsystem)
+                if subsystem:
+                    upsert_node(gconn, node_type="SYSTEM", label=subsystem)
+            gconn.commit()
+            status["graph_nodes_count"] = int(
+                gconn.execute("SELECT COUNT(*) FROM momo_graph_nodes").fetchone()[0] or 0
+            )
+            status["graph_edges_count"] = int(
+                gconn.execute("SELECT COUNT(*) FROM momo_graph_edges").fetchone()[0] or 0
+            )
+    except Exception:
+        pass
+
+    _meta_set(conn, "last_compacted_note_count", notes_count)
+    _meta_set(conn, "last_compacted_note_id", max_id)
+    _meta_set(conn, "last_compaction_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    conn.commit()
+    status["ran"] = True
+    status["last_compacted_note_count"] = notes_count
+    status["last_compacted_note_id"] = max_id
+    return status
+
+
+def fetch_memory_compaction_status(db_path: Path | str | None = None) -> dict[str, Any]:
+    init_ai_memory_schema(db_path)
+    conn = get_ai_memory_connection(db_path)
+    try:
+        notes_count = int(conn.execute("SELECT COUNT(*) FROM ai_observer_notes").fetchone()[0] or 0)
+        patterns_count = int(conn.execute("SELECT COUNT(*) FROM ai_experience_patterns").fetchone()[0] or 0)
+        skills_count = int(conn.execute("SELECT COUNT(*) FROM ai_candidate_skills").fetchone()[0] or 0)
+        out = {
+            "notes_count": notes_count,
+            "patterns_count": patterns_count,
+            "skills_count": skills_count,
+            "last_compacted_note_count": int(_meta_get(conn, "last_compacted_note_count") or 0),
+            "last_compacted_note_id": int(_meta_get(conn, "last_compacted_note_id") or 0),
+            "last_compaction_at": _meta_get(conn, "last_compaction_at"),
+            "compaction_threshold_notes": 100,
+        }
+        out["next_compaction_checkpoint"] = (
+            ((notes_count // 100) + 1) * 100 if notes_count > 0 else 100
+        )
+        return out
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Main orchestrator
 # ═══════════════════════════════════════════════════════════════════════════
@@ -945,8 +1132,14 @@ def run_observer(
             upsert_pattern(conn, dp)
         det_skills = propose_skills_from_patterns(conn, det_patterns)
 
+        compaction_status = {
+            "ran": False,
+            "notes_count": int(conn.execute("SELECT COUNT(*) FROM ai_observer_notes").fetchone()[0] or 0),
+            "last_compacted_note_count": int(_meta_get(conn, "last_compacted_note_count") or 0),
+        }
         if cfg_is_enabled(_rt.get("ai_memory_compaction_enabled"), default=True):
             compact_notes(conn, max_notes=int(cfg_float(_rt, "ai_memory_max_notes", 5000)))
+            compaction_status = run_memory_compaction_checkpoint(conn, threshold_notes=100)
 
         conn.commit()
 
@@ -972,6 +1165,7 @@ def run_observer(
                 n.get("suggested_action") for n in all_notes
                 if n.get("requires_operator_review") and n.get("suggested_action")
             ][:5],
+            "memory_compaction_status": compaction_status,
         }
 
     except Exception as exc:
@@ -1148,12 +1342,26 @@ def build_ai_memories_export(db_path: Path | str | None = None) -> dict[str, Any
     patterns = fetch_patterns(db_path, limit=100)
     skills = fetch_skills(db_path, limit=100)
     skill_mem = fetch_skill_memory(db_path, limit=50)
+    compaction = fetch_memory_compaction_status(db_path)
+    graph_nodes = 0
+    graph_edges = 0
+    try:
+        from data.data_store import get_connection
+
+        with get_connection(config.DB_PATH, timeout_sec=2.0) as gconn:
+            graph_nodes = int(gconn.execute("SELECT COUNT(*) FROM momo_graph_nodes").fetchone()[0] or 0)
+            graph_edges = int(gconn.execute("SELECT COUNT(*) FROM momo_graph_edges").fetchone()[0] or 0)
+    except Exception:
+        pass
     return _deep_scrub_export({
         "ai_status": status,
         "latest_notes": notes,
         "patterns": patterns,
         "candidate_skills": skills,
         "skill_memory": skill_mem,
+        "memory_compaction_status": compaction,
+        "graph_nodes_count": graph_nodes,
+        "graph_edges_count": graph_edges,
         "last_run_at": status.get("last_run_at"),
         "memory_counts": {
             "notes": status.get("notes_count", 0),

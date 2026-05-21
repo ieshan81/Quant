@@ -96,6 +96,13 @@ def build_simple_worker_status() -> dict[str, Any]:
         primary_message = primary_message or trading_reason
 
     deploy = resolve_deploy_info()
+    mission_mode = "STARTUP"
+    try:
+        from monitoring.cycle_brief import fetch_latest_mission_mode
+
+        mission_mode = str(fetch_latest_mission_mode(default="STARTUP") or "STARTUP")
+    except Exception:
+        pass
 
     return {
         "ok": True,
@@ -149,6 +156,7 @@ def build_simple_worker_status() -> dict[str, Any]:
             "cash": cash,
             "buying_power": bp,
             "mode": config.MODE,
+            "mission_mode": mission_mode,
         },
         "ops_health": worker,
         "worker_gate": {

@@ -106,7 +106,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         activity["ai_momo_notes"] = (activity.get("ai_momo_notes") or []) + ai_notes
     graph_nodes = (activity or {}).get("graph_memory_nodes") if isinstance(activity, dict) else []
     ai_notes_included = bool(ai_notes)
-    ai_memory_included = bool(graph_nodes)
+    ai_memory_included = bool(graph_nodes) or bool(ai_notes_meta.get("notes_count") or 0)
     ai_notes_unavailable_reason = ai_notes_meta.get("unavailable_reason")
     ai_memory_unavailable_reason = (
         None
@@ -116,12 +116,18 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     ai_diagnostic_bundle = {
         "ai_notes_included": ai_notes_included,
         "ai_notes_count": ai_notes_meta.get("notes_count", len(ai_notes)),
+        "ai_notes_high_severity_count": ai_notes_meta.get("high_severity_count", 0),
         "ai_notes_sources_checked": ai_notes_meta.get("sources_checked") or [],
+        "ai_memory_db_path": ai_notes_meta.get("ai_memory_db_path"),
+        "patterns_count": ai_notes_meta.get("patterns_count", 0),
+        "skills_count": ai_notes_meta.get("skills_count", 0),
+        "last_run_at": ai_notes_meta.get("last_run_at"),
         "ai_memory_included": ai_memory_included,
         "graph_nodes_count": len(graph_nodes or []),
         "graph_nodes": (graph_nodes or [])[:10],
         "ai_notes_unavailable_reason": ai_notes_unavailable_reason,
         "ai_memory_unavailable_reason": ai_memory_unavailable_reason,
+        "memory_compaction_status": ai_notes_meta.get("memory_compaction_status") or {},
     }
 
     broker_diag, ms, err = _timed_section(
@@ -229,6 +235,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "ai_notes_included": ai_notes_included,
         "ai_memory_included": ai_memory_included,
         "ai_diagnostic_bundle": ai_diagnostic_bundle,
+        "memory_compaction_status": ai_diagnostic_bundle.get("memory_compaction_status") or {},
         "ai_notes_unavailable_reason": ai_notes_unavailable_reason,
         "ai_memory_unavailable_reason": ai_memory_unavailable_reason,
         "crypto_push_pull_session": crypto_session,
@@ -318,61 +325,65 @@ def _build_broker_diag_light() -> dict[str, Any]:
 def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     notes: list[dict[str, Any]] = []
     meta: dict[str, Any] = {
-        "sources_checked": ["ai_observer_notes"],
+        "sources_checked": ["monitoring.ai_observer:get_ai_memory_connection"],
         "notes_count": 0,
+        "high_severity_count": 0,
+        "patterns_count": 0,
+        "skills_count": 0,
+        "last_run_at": None,
+        "ai_memory_db_path": None,
+        "memory_compaction_status": {},
         "unavailable_reason": None,
         "graph_unavailable_reason": "graph_nodes_from_gpt_activity_summary",
     }
     try:
-        from data.data_store import get_connection
+        from monitoring.ai_observer import (
+            fetch_memory_compaction_status,
+            get_ai_memory_connection,
+            get_ai_status,
+            run_memory_compaction_checkpoint,
+        )
 
-        with get_connection(timeout_sec=1.5) as conn:
+        st = get_ai_status()
+        meta["ai_memory_db_path"] = st.get("ai_memory_db_path")
+        meta["notes_count"] = int(st.get("notes_count") or 0)
+        meta["patterns_count"] = int(st.get("patterns_count") or 0)
+        meta["skills_count"] = int(st.get("skills_count") or 0)
+        meta["last_run_at"] = st.get("last_run_at")
+
+        with get_ai_memory_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT created_at, summary, observed_issue
-                FROM ai_observer_notes ORDER BY id DESC LIMIT 25
+                SELECT created_at, severity, symbol, finding, suggested_action, confidence
+                FROM ai_observer_notes ORDER BY id DESC LIMIT 50
                 """
             ).fetchall()
             notes = [
-                {"created_at": r[0], "summary": (r[1] or "")[:200], "issue": (r[2] or "")[:120]}
+                {
+                    "created_at": r[0],
+                    "severity": str(r[1] or "info").lower(),
+                    "symbol": r[2],
+                    "summary": (r[3] or "")[:220],
+                    "suggested_action": (r[4] or "")[:160],
+                    "confidence": r[5],
+                }
                 for r in rows
             ]
-            meta["notes_count"] = len(notes)
+            meta["high_severity_count"] = sum(
+                1 for n in notes if str(n.get("severity") or "").lower() in ("critical", "warning")
+            )
+            meta["notes_count"] = max(meta["notes_count"], len(notes))
+            # Opportunistic checkpoint compaction/graph update; runs only once per 100-note milestone.
+            run_memory_compaction_checkpoint(conn, threshold_notes=100)
+            meta["memory_compaction_status"] = fetch_memory_compaction_status()
     except Exception as exc:
         meta["unavailable_reason"] = f"ai_observer_notes_query_failed: {exc}"[:120]
         return [], meta
     if notes:
         return notes, meta
-    try:
-        import os
-        from pathlib import Path as _P
-
-        mem_path = _P(os.environ.get("AI_MEMORY_DB_PATH", "/data/ai_memory.sqlite"))
-        meta["sources_checked"].append(str(mem_path))
-        if mem_path.is_file():
-            import sqlite3
-
-            mc = sqlite3.connect(str(mem_path), timeout=1.5)
-            try:
-                mrows = mc.execute(
-                    "SELECT created_at, note_text FROM ai_memory_notes ORDER BY id DESC LIMIT 15"
-                ).fetchall()
-            except sqlite3.Error:
-                mrows = []
-            mc.close()
-            if mrows:
-                meta["notes_count"] = len(mrows)
-                meta["unavailable_reason"] = None
-                return [
-                    {"created_at": r[0], "summary": (r[1] or "")[:200], "source": "ai_memory.sqlite"}
-                    for r in mrows
-                ], meta
-        else:
-            meta["unavailable_reason"] = f"ai_memory_db_missing:{mem_path}"
-    except Exception as exc:
-        meta["unavailable_reason"] = f"ai_memory_db_unavailable: {exc}"[:120]
-        return [], meta
-    meta["unavailable_reason"] = "no_ai_observer_notes_in_primary_db"
+    meta["unavailable_reason"] = (
+        f"no_ai_observer_notes_in_memory_db:{meta.get('ai_memory_db_path') or 'unknown'}"
+    )
     return [], meta
 
 
