@@ -35,7 +35,18 @@ def send_gpt_bundle_to_telegram() -> dict[str, Any]:
             "truncated": False,
         }
 
-    from monitoring.telegram_momo import _send_reply, allowed_chat_id
+    from monitoring.telegram_momo import _send_reply, allowed_chat_id, telegram_can_send_without_polling
+    if not telegram_can_send_without_polling():
+        missing = telegram_send_config_errors()
+        return {
+            "ok": False,
+            "sent": False,
+            "errors": missing or ["Telegram send not configured"],
+            "missing_config": missing,
+            "reason": "; ".join(missing) if missing else "Telegram token or chat ID missing",
+            "chunks_sent": 0,
+            "truncated": False,
+        }
     from core.app_config_registry import get_value
 
     try:

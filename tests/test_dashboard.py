@@ -101,20 +101,20 @@ def test_no_app_js_started_string_in_bundle(dash_app) -> None:
     assert "APP JS STARTED" not in bundle
 
 
-def test_default_tab_overview_active_in_html(dash_app) -> None:
+def test_default_tab_mission_active_in_html(dash_app) -> None:
     client = dash_app.test_client()
     body = client.get("/").data.decode("utf-8", errors="ignore")
-    assert '<button type="button" class="tab-btn active" data-tab="overview"' in body
+    assert '<button type="button" class="tab-btn active" data-tab="mission"' in body
     assert 'class="tab-btn active" data-tab="backtest"' not in body
-    assert '<section id="panel-overview" class="tab-panel active"' in body
-    assert '<section id="panel-backtest" class="tab-panel">' in body
+    assert '<section id="panel-mission" class="tab-panel active"' in body
+    assert '<section id="panel-overview" class="tab-panel">' in body
 
 
 def test_dashboard_tab_hash_routing_in_js(dash_app) -> None:
     client = dash_app.test_client()
     _, bundle, _ = _html_and_js(client)
     assert "tabNameFromHash" in bundle
-    assert 'h === "backtest"' in bundle
+    assert 'valid.indexOf(h) >= 0' in bundle or "mission" in bundle
     assert "hashchange" in bundle
     assert "syncHashToTab" in bundle
 

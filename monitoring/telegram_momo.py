@@ -101,14 +101,40 @@ def allowed_chat_id() -> str:
     )
 
 
+def _telegram_app_config_enabled() -> bool:
+    try:
+        from core.app_config_registry import get_bool
+        return get_bool("telegram_momo_chat_enabled")
+    except Exception:
+        return os.environ.get("TELEGRAM_MOMO_CHAT_ENABLED", "0").strip() == "1"
+
+
 def build_telegram_momo_status() -> dict[str, Any]:
     """Lightweight cached status — no Telegram API calls."""
     token = bool(os.environ.get("TELEGRAM_BOT_TOKEN", config.TELEGRAM_BOT_TOKEN or "").strip())
     chat = bool(os.environ.get("TELEGRAM_CHAT_ID", str(config.TELEGRAM_CHAT_ID or "")).strip())
     allowed = bool(allowed_chat_id())
+    app_toggle = _telegram_app_config_enabled()
+    missing: list[str] = []
+    if not token:
+        missing.append("TELEGRAM_BOT_TOKEN")
+    if not chat and not allowed:
+        missing.append("TELEGRAM_CHAT_ID or TELEGRAM_MOMO_ALLOWED_CHAT_ID")
+    if not app_toggle:
+        missing.append("telegram_momo_chat_enabled (app config / TELEGRAM_MOMO_CHAT_ENABLED)")
     lock = _read_lock()
+    status_msg: str | None = None
+    if not app_toggle:
+        status_msg = "Telegram is disabled in app config (telegram_momo_chat_enabled is off)."
+    elif missing:
+        status_msg = "Telegram not ready — missing: " + ", ".join(missing)
+    elif not (_POLL_THREAD and _POLL_THREAD.is_alive()):
+        status_msg = "Token and chat configured; polling not active on this process (worker may own polling)."
+    else:
+        status_msg = "Telegram enabled and polling on this process."
     return {
         "enabled": momo_chat_enabled(),
+        "app_config_enabled": app_toggle,
         "token_configured": token,
         "chat_id_configured": chat,
         "allowed_chat_id_configured": allowed,
@@ -119,8 +145,16 @@ def build_telegram_momo_status() -> dict[str, Any]:
         "last_message_at": _LAST_MESSAGE_AT,
         "last_response_at": _LAST_RESPONSE_AT,
         "last_error": _LAST_ERROR,
+        "missing_config": missing,
+        "status_message": status_msg,
         "lock_file": str(_lock_file()),
     }
+
+
+def telegram_can_send_without_polling() -> bool:
+    """Send API messages when token + chat are set (polling not required)."""
+    token = bool(os.environ.get("TELEGRAM_BOT_TOKEN", config.TELEGRAM_BOT_TOKEN or "").strip())
+    return token and bool(allowed_chat_id())
 
 
 def _send_reply(chat_id: str, text: str) -> bool:
@@ -191,7 +225,22 @@ def handle_command(cmd: str) -> str:
     if c == "/momo":
         from monitoring.momo import build_momo_status
         return json.dumps(build_momo_status(), indent=2)[:3500]
-    if c in ("/mission", "/account", "/positions", "/crypto", "/capital", "/logs", "/errors", "/reset_status"):
+    if c == "/crypto":
+        from monitoring.mission_control_api import build_mission_control_summary_fast
+        from monitoring.reason_human import human_reason_code
+        s = build_mission_control_summary_fast()
+        cr = s.get("crypto_night") or {}
+        lines = [
+            f"Crypto push: {cr.get('push_possible')}",
+            f"Blocked: {cr.get('blocked_reason') or cr.get('crypto_block_headline') or '—'}",
+        ]
+        for e in (cr.get("latest_crypto_attempts") or [])[:3]:
+            lines.append(
+                f"{e.get('symbol')}: {e.get('decision')} — "
+                f"{e.get('human_reason') or human_reason_code(str(e.get('reason_code')))}"
+            )
+        return "\n".join(lines)[:3500]
+    if c in ("/mission", "/account", "/positions", "/capital", "/logs", "/errors", "/reset_status"):
         from monitoring.mission_control_api import build_mission_control_summary_fast
         s = build_mission_control_summary_fast()
         key = c.lstrip("/").replace("reset_status", "broker_account_transition_status")

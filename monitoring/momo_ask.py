@@ -106,11 +106,15 @@ def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]
 
     if "buying power" in ql or "bp" in ql:
         bp = ac.get("buying_power")
-        why = (mc.get("capital_protection") or {}).get("why_buying_power_low") or alloc.get("why_buying_power_low")
+        cp = mc.get("capital_protection") or {}
+        diag = cp.get("buying_power_diagnostic") or {}
+        why = cp.get("why_buying_power_low") or diag.get("headline") or alloc.get("why_buying_power_low")
         parts.append(
             f"Buying power is ${bp if bp is not None else 'unknown'}. "
-            f"{why or 'No allocator explanation in payload.'}"
+            f"{why or diag.get('human_reason') or 'No allocator explanation in payload.'}"
         )
+        if diag.get("reason_code"):
+            parts.append(f"Diagnostic: {diag.get('reason_code')} — broker BP ${diag.get('broker_buying_power')}, cash ${diag.get('broker_cash')}.")
 
     if "why" in ql and "trade" in ql:
         act = ctx.get("activity_export") or {}
@@ -190,16 +194,26 @@ def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]
         elif push_ok is True:
             parts.append("Crypto push reports possible, but no recent buy was recorded.")
         if evts:
+            from monitoring.reason_human import human_reason_code
             recent = evts[:5]
             lines = []
             for e in recent:
                 sym = e.get("symbol", "?")
                 rc_val = e.get("reason_code", e.get("decision", "?"))
+                human = e.get("human_reason") or human_reason_code(str(rc_val))
                 meta = e.get("meta") or {}
                 sub = meta.get("push_allowed_subreason") or e.get("sub_reason", "")
                 ts = e.get("created_at") or e.get("decided_at") or ""
-                lines.append(f"  {sym}: {rc_val}{(' — ' + str(sub)) if sub else ''} {ts[:16]}")
+                lines.append(f"  {sym}: {human}{(' (' + str(sub) + ')') if sub else ''} [{rc_val}] {ts[:16]}")
             parts.append("Recent crypto push/pull events:\n" + "\n".join(lines))
+        mc_ev = (mc.get("crypto_night") or {}).get("latest_crypto_attempts") or []
+        if mc_ev and not evts:
+            from monitoring.reason_human import human_reason_code
+            e0 = mc_ev[0]
+            parts.append(
+                f"Latest crypto attempt: {e0.get('symbol')} {e0.get('decision')} — "
+                f"{e0.get('human_reason') or human_reason_code(str(e0.get('reason_code')))}"
+            )
         elif not blocked:
             parts.append(
                 "No recent crypto push/pull events found. "

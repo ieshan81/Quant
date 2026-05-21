@@ -132,7 +132,7 @@ def test_dashboard_js_mission_control_helpers(dash_app) -> None:
     assert "/api/ops/gpt-analyze-bundle" in js
     assert "/api/momo/ask" in js
     assert "gpt-analyze-bundle/send-telegram" in js
-    assert "config changes require operator approval" in js
+    assert "can_change_config" in js
     assert "Only equity history is available" in js
 
 

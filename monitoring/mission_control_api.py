@@ -24,6 +24,8 @@ def _telegram_status_brief() -> dict[str, Any]:
 
 def _fetch_crypto_push_pull_brief(limit: int = 5) -> list[dict[str, Any]]:
     """Quick DB query for recent crypto push/pull execution decisions (cached path safe)."""
+    from monitoring.reason_human import human_reason_code
+
     try:
         import config as _cfg
         import sqlite3 as _sql
@@ -39,7 +41,14 @@ def _fetch_crypto_push_pull_brief(limit: int = 5) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
         conn.close()
-        return [dict(r) for r in rows]
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            rc = str(d.get("reason_code") or "")
+            d["human_reason"] = human_reason_code(rc)
+            d["action"] = str(d.get("side") or d.get("decision") or "")
+            out.append(d)
+        return out
     except Exception:
         return []
 
@@ -120,12 +129,33 @@ def _assemble_summary(
         except Exception:
             pass
 
-    why_bp = alloc.get("why_buying_power_low") or eh.get("why_no_trade")
+    from monitoring.buying_power_diagnostic import build_buying_power_diagnostic
+
+    bp_diag = build_buying_power_diagnostic(
+        equity=eq,
+        cash=cash,
+        buying_power=bp,
+        positions_count=len(positions),
+        broker_snapshot={"portfolio": port},
+        allocator=alloc,
+        execution_health=eh,
+        dynamic_profile=profile,
+    )
+    why_bp = bp_diag.get("headline") or alloc.get("why_buying_power_low") or eh.get("why_no_trade")
     if bp is not None and float(bp) <= 0.01 and not why_bp:
-        why_bp = (
-            "Buying power is $0.00. New buys are blocked because no free cash is available "
-            "after reserves and open positions."
+        why_bp = bp_diag.get("human_reason") or (
+            "Buying power is $0.00 — see buying_power_diagnostic."
         )
+
+    crypto_events = _fetch_crypto_push_pull_brief()
+    latest_crypto = crypto_events[0] if crypto_events else {}
+    crypto_block_headline = None
+    if latest_crypto.get("decision") == "rejected" or str(latest_crypto.get("reason_code", "")):
+        rc = str(latest_crypto.get("reason_code") or "")
+        if rc or latest_crypto.get("decision") == "rejected":
+            crypto_block_headline = (
+                f"Crypto blocked: {latest_crypto.get('human_reason') or latest_crypto.get('reason_code') or 'see recent attempts'}"
+            )
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
@@ -160,13 +190,16 @@ def _assemble_summary(
             "dynamic_profile": profile,
             "why_buying_power_low": why_bp,
             "human_summary": why_bp,
+            "buying_power_diagnostic": bp_diag,
         },
         "positions": {"open": positions[:20], "count": len(positions)},
         "crypto_night": {
             **crypto,
             "momo_in_execution_loop": False,
             "crypto_execution_policy": crypto_policy,
-            "latest_push_pull_events": _fetch_crypto_push_pull_brief(),
+            "latest_push_pull_events": crypto_events,
+            "latest_crypto_attempts": crypto_events,
+            "crypto_block_headline": crypto_block_headline,
         },
         "momo_summary": momo_summary,
         "ops_health": resource,
@@ -244,8 +277,18 @@ def build_mission_control_summary_fast() -> dict[str, Any]:
         except Exception:
             pass
 
+        broker_port = dict(port_row)
+        if pf:
+            broker_port.update(
+                {
+                    "cash": pf.get("cash", cash),
+                    "buying_power": pf.get("buying_power", bp),
+                    "equity": pf.get("equity", eq),
+                }
+            )
+
         return _assemble_summary(
-            port=port_row,
+            port=broker_port,
             eh=eh,
             mc=mc,
             alloc=alloc,

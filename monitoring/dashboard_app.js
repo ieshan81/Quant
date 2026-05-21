@@ -3,6 +3,47 @@
 
   var _dh = document.getElementById("dash-secret-holder");
   var DASHBOARD_SECRET = _dh ? _dh.value : "";
+
+  function _authHeaders() {
+    var h = {};
+    if (DASHBOARD_SECRET) h["X-Dashboard-Secret"] = DASHBOARD_SECRET;
+    return h;
+  }
+
+  function _copyWithFallback(text, statusEl, okMsg) {
+    var fb = document.getElementById("mcCopyFallback");
+    function showFb() {
+      if (fb) {
+        fb.style.display = "block";
+        fb.value = text;
+        fb.select();
+      }
+      if (statusEl) statusEl.textContent = "Clipboard blocked — text in box below (select all, copy).";
+    }
+    if (!navigator.clipboard || !navigator.clipboard.writeText) {
+      showFb();
+      return Promise.resolve(false);
+    }
+    return navigator.clipboard.writeText(text).then(function () {
+      if (fb) fb.style.display = "none";
+      if (statusEl) statusEl.textContent = okMsg || "Copied.";
+      return true;
+    }).catch(function () {
+      showFb();
+      return false;
+    });
+  }
+
+  function _downloadBlob(blob, filename) {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  }
+
   var equityChart = null;
   var POLL_MS = 30000;
   var MIN_ORDER_NOTIONAL = 1.0;
@@ -928,7 +969,11 @@
         if (d.insufficient_history || !series.length) {
           if (eqHint) {
             eqHint.style.display = "block";
-            eqHint.textContent = d.message || "Not enough history for this range yet.";
+            var msg = d.message || "Not enough history for this range yet.";
+            if ((d.count || series.length) <= 1) {
+              msg = "Only one day of history is available, so 5D/1W/1M may look the same. " + msg;
+            }
+            eqHint.textContent = msg;
           }
         } else if (eqHint) {
           eqHint.style.display = "none";
@@ -2417,7 +2462,8 @@
   function loadAiStatus() {
     var el = function (id) { return document.getElementById(id); };
     var foot = document.getElementById("aiStatusFootnote");
-    fetch("/api/ai/status", { cache: "no-store" })
+    if (foot) foot.textContent = "Loading Momo status from /api/ai/status…";
+    fetch("/api/ai/status", { cache: "no-store", headers: _authHeaders() })
       .then(function (r) {
         if (!r.ok) {
           throw new Error("/api/ai/status HTTP " + r.status);
@@ -2441,7 +2487,7 @@
         }
         if (el("aiEnabled")) {
           el("aiEnabled").textContent = d.schema_initialized
-            ? (d.enabled ? "active" : "disabled")
+            ? (d.enabled ? "observer on" : "observer off")
             : "schema pending";
         }
         if (el("aiNotesCount")) {
@@ -2453,11 +2499,11 @@
         if (el("aiSkillsCount")) el("aiSkillsCount").textContent = d.skills_count != null ? String(d.skills_count) : "—";
         if (el("aiLastRun")) el("aiLastRun").textContent = safeText(d.last_run_at || mem.last_memory_note_at, "—");
         if (foot) {
-          var canCfg = momo.can_change_config === true || d.can_update_config === true;
           foot.innerHTML =
-            "Assistant: <strong>" + esc(assistant) + "</strong> · authority: " + esc(safeText(momo.authority_level || auth.authority_level, "backtester")) +
+            "Assistant: <strong>" + esc(assistant) + "</strong> · authority: " +
+            esc(safeText(momo.authority_level || auth.authority_level, "backtester")) +
             "<br>can_submit_orders: <strong style=\"color:var(--bad);\">false</strong> · " +
-            "can_update_config: <strong style=\"color:var(--bad);\">false</strong> (config changes require operator approval) · " +
+            "can_change_config: <strong style=\"color:var(--bad);\">false</strong> · " +
             "allowed_to_execute: <strong style=\"color:var(--bad);\">false</strong>";
           if (momo.can_touch_crypto_execution_loop === false) {
             foot.innerHTML += "<br>Crypto execution: deterministic math only (Momo not in execution loop).";
@@ -2466,7 +2512,12 @@
       })
       .catch(function (e) {
         if (el("aiProvider")) el("aiProvider").textContent = "Momo — status unavailable";
-        if (foot) foot.textContent = "Could not load /api/ai/status: " + safeText(e && e.message, String(e));
+        if (el("aiModel")) el("aiModel").textContent = "—";
+        if (el("aiEnabled")) el("aiEnabled").textContent = "error";
+        if (foot) {
+          foot.textContent = "Could not load /api/ai/status: " + safeText(e && e.message, String(e)) +
+            " — check dashboard logs and AI_MEMORY_DB_PATH.";
+        }
       });
   }
 
@@ -2600,7 +2651,8 @@
         },
         render: function () {
           var cp = d.capital_protection || {};
-          var human = cp.human_summary || cp.why_buying_power_low;
+          var diag = cp.buying_power_diagnostic || {};
+          var human = diag.headline || cp.human_summary || cp.why_buying_power_low;
           if (human) return String(human);
           var pr = cp.dynamic_profile || {};
           return (
@@ -2651,16 +2703,27 @@
           var cr = d.crypto_night || {};
           var pol = cr.crypto_execution_policy || {};
           var push = cr.push_possible === true ? "may run" : (cr.push_possible === false ? "is blocked" : "status unknown");
-          var parts = [
-            "Crypto night push " + push + ". " +
-            safeText(cr.blocked_reason || pol.blocked_reason, "No block reason listed.") +
-            " Execution uses deterministic math only (Momo not in the loop)."
-          ];
-          var evts = Array.isArray(cr.latest_push_pull_events) ? cr.latest_push_pull_events : [];
+          var parts = [];
+          if (cr.crypto_block_headline) {
+            parts.push(String(cr.crypto_block_headline));
+          } else {
+            parts.push(
+              "Crypto night push " + push + ". " +
+              safeText(cr.blocked_reason || pol.blocked_reason, "No block reason listed.")
+            );
+          }
+          parts.push("Execution uses deterministic math only (Momo not in the loop).");
+          var evts = Array.isArray(cr.latest_crypto_attempts) ? cr.latest_crypto_attempts
+            : (Array.isArray(cr.latest_push_pull_events) ? cr.latest_push_pull_events : []);
           if (evts.length) {
-            parts.push("Recent crypto decisions:");
-            evts.slice(0, 4).forEach(function (e) {
-              parts.push("  " + esc(e.symbol || "?") + " " + esc(e.decision || "?") + " — " + esc(e.reason_code || "?") + (e.created_at ? " " + esc(String(e.created_at).slice(0, 16)) : ""));
+            parts.push("Recent crypto attempts:");
+            evts.slice(0, 5).forEach(function (e) {
+              var hr = e.human_reason || e.reason_code || "?";
+              parts.push(
+                "  " + esc(e.symbol || "?") + " · " + esc(e.action || e.side || "") +
+                " · " + esc(e.decision || "?") + " · " + esc(hr) +
+                (e.created_at ? " · " + esc(String(e.created_at).slice(0, 19)) : "")
+              );
             });
           } else {
             parts.push("No recent crypto execution decisions recorded.");
@@ -2695,11 +2758,15 @@
             ", disk " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—") + "."
           ];
           if (Object.keys(tg).length) {
-            var tgEnabled = tg.enabled ? "enabled" : "disabled";
-            var tgPoll = tg.polling_active ? "polling ✓" : "not polling";
-            var tgErr = tg.last_error ? " Last error: " + esc(String(tg.last_error).slice(0, 80)) : "";
-            var tgCfg = (!tg.token_configured ? " (no token)" : (!tg.allowed_chat_id_configured ? " (no allowed_chat_id)" : ""));
-            parts.push("Telegram: " + tgEnabled + ", " + tgPoll + tgCfg + "." + tgErr);
+            var tgLine = tg.status_message || (
+              (tg.enabled ? "Telegram enabled" : "Telegram disabled") +
+              (tg.polling_active ? ", polling active" : ", not polling")
+            );
+            if (tg.missing_config && tg.missing_config.length) {
+              tgLine += " Missing: " + tg.missing_config.join(", ");
+            }
+            if (tg.last_error) tgLine += " Last error: " + esc(String(tg.last_error).slice(0, 100));
+            parts.push(tgLine);
           }
           return parts.join("\n");
         }
@@ -2910,11 +2977,17 @@
 
   function wireGptAnalyze() {
     function fetchBundle() {
-      return fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store" }).then(function (r) {
+      return fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store", headers: _authHeaders() }).then(function (r) {
         if (!r.ok) {
           throw new Error("/api/ops/gpt-analyze-bundle HTTP " + r.status);
         }
         return r.json();
+      });
+    }
+    function fetchBundleText() {
+      return fetch("/api/ops/gpt-analyze-bundle.txt", { cache: "no-store", headers: _authHeaders() }).then(function (r) {
+        if (!r.ok) throw new Error("/api/ops/gpt-analyze-bundle.txt HTTP " + r.status);
+        return r.text();
       });
     }
     var copy = document.getElementById("btnCopyGPTAnalyzeBundle");
@@ -2959,26 +3032,65 @@
       });
     });
     if (copy) copy.addEventListener("click", function () {
+      var st = document.getElementById("mcStatus");
+      if (st) st.textContent = "Loading GPT bundle for copy…";
       fetchBundle().then(function (d) {
-        return navigator.clipboard.writeText(JSON.stringify(d, null, 2));
-      }).then(function () {
-        var st = document.getElementById("mcStatus");
-        if (st) st.textContent = "Copied — GPT bundle from /api/ops/gpt-analyze-bundle.";
+        return _copyWithFallback(JSON.stringify(d, null, 2), st, "Copied — GPT bundle JSON.");
       }).catch(function (e) {
-        var st = document.getElementById("mcStatus");
         if (st) st.textContent = safeText(e && e.message, String(e));
       });
     });
     if (dl) dl.addEventListener("click", function () {
+      var st = document.getElementById("mcStatus");
+      if (st) st.textContent = "Downloading GPT bundle JSON…";
       fetchBundle().then(function (d) {
         _downloadJson(d, "gpt_analyze_" + _timestamp() + ".json");
-        var st = document.getElementById("mcStatus");
-        if (st) st.textContent = "GPT bundle downloaded.";
+        if (st) st.textContent = "GPT bundle JSON downloaded.";
       }).catch(function (e) {
-        var st = document.getElementById("mcStatus");
         if (st) st.textContent = safeText(e && e.message, String(e));
       });
     });
+    var dlTxt = document.getElementById("btnDownloadGPTAnalyzeBundleTxt");
+    if (dlTxt) dlTxt.addEventListener("click", function () {
+      var st = document.getElementById("mcStatus");
+      if (st) st.textContent = "Downloading GPT bundle TXT…";
+      fetchBundleText().then(function (t) {
+        _downloadBlob(new Blob([t], { type: "text/plain" }), "gpt_analyze_" + _timestamp() + ".txt");
+        if (st) st.textContent = "GPT bundle TXT downloaded.";
+      }).catch(function (e) {
+        if (st) st.textContent = safeText(e && e.message, String(e));
+      });
+    });
+    var btnCopyLogs = document.getElementById("btnCopyLogsBundle");
+    var btnDlJson = document.getElementById("btnDownloadLogsJson");
+    var btnDlTxt = document.getElementById("btnDownloadLogsTxt");
+    var btnDlCsv = document.getElementById("btnDownloadLogsCsv");
+    if (btnCopyLogs) btnCopyLogs.addEventListener("click", function () {
+      var st = document.getElementById("mcStatus");
+      if (st) st.textContent = "Loading ops logs…";
+      fetch("/api/ops/logs/export.json?limit=500", { headers: _authHeaders(), cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("logs export.json HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (d) {
+          return _copyWithFallback(JSON.stringify(d, null, 2), st, "Ops logs JSON copied.");
+        })
+        .catch(function (e) {
+          if (st) st.textContent = safeText(e && e.message, String(e));
+        });
+    });
+    function _dlLogsUrl(path, label) {
+      return function () {
+        var st = document.getElementById("mcStatus");
+        if (st) st.textContent = "Starting " + label + "…";
+        window.location.href = path + "?limit=500";
+        setTimeout(function () { if (st) st.textContent = label + " download started."; }, 400);
+      };
+    }
+    if (btnDlJson) btnDlJson.addEventListener("click", _dlLogsUrl("/api/ops/logs/export.json", "Logs JSON"));
+    if (btnDlTxt) btnDlTxt.addEventListener("click", _dlLogsUrl("/api/ops/logs/export.txt", "Logs TXT"));
+    if (btnDlCsv) btnDlCsv.addEventListener("click", _dlLogsUrl("/api/ops/logs/export.csv", "Logs CSV"));
     if (tg) tg.addEventListener("click", function () {
       var st = document.getElementById("mcStatus");
       if (st) st.textContent = "Sending bundle to Telegram…";
@@ -3154,12 +3266,13 @@
   }
 
   function loadAiTab() {
-    if (_aiLoaded) return;
-    _aiLoaded = true;
     loadAiStatus();
-    loadAiNotes();
-    loadAiPatterns();
-    loadAiSkills();
+    if (!_aiLoaded) {
+      _aiLoaded = true;
+      loadAiNotes();
+      loadAiPatterns();
+      loadAiSkills();
+    }
   }
 
   function loadConfigEditor() {
@@ -3167,10 +3280,18 @@
     var status = document.getElementById("configEditorStatus");
     if (!root) return;
     root.innerHTML = "<p class='empty-hint'>Loading config schema…</p>";
-    fetch("/api/config/schema", { cache: "no-store" })
-      .then(function (r) { return r.json(); })
+    if (status) status.textContent = "Fetching /api/config/schema and /api/config/summary…";
+    fetch("/api/config/schema", { cache: "no-store", headers: _authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("/api/config/schema HTTP " + r.status);
+        return r.json();
+      })
       .then(function (schema) {
-        return fetch("/api/config/summary", { cache: "no-store" }).then(function (r2) { return r2.json(); })
+        return fetch("/api/config/summary", { cache: "no-store", headers: _authHeaders() })
+          .then(function (r2) {
+            if (!r2.ok) throw new Error("/api/config/summary HTTP " + r2.status);
+            return r2.json();
+          })
           .then(function (summary) { return { schema: schema, summary: summary }; });
       })
       .then(function (data) {
@@ -3229,7 +3350,11 @@
         if (status) status.textContent = "Config loaded. Edit values and Save. Secrets are not shown here.";
       })
       .catch(function (e) {
-        if (root) root.textContent = safeText(e && e.message, String(e));
+        var msg = safeText(e && e.message, String(e));
+        if (root) {
+          root.innerHTML = "<p class='empty-hint' style='color:var(--bad);'>Config failed to load: " + esc(msg) + "</p>";
+        }
+        if (status) status.textContent = "Error: " + msg;
       });
   }
 
@@ -3309,6 +3434,8 @@
     wireEquityRangeButtons();
     fetchDashboard();
     setInterval(fetchDashboard, POLL_MS);
+    loadAiStatus();
+    loadConfigEditor();
     document.querySelectorAll("nav .tab-btn").forEach(function (b) {
       b.addEventListener("click", function () {
         if (b.getAttribute("data-tab") === "ai") loadAiTab();

@@ -851,6 +851,11 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">GPT Analyze Logs</button>
         <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy GPT Bundle</button>
         <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT Bundle</button>
+        <button type="button" id="btnDownloadGPTAnalyzeBundleTxt" class="btn secondary">Download GPT TXT</button>
+        <button type="button" id="btnCopyLogsBundle" class="btn secondary">Copy Logs</button>
+        <button type="button" id="btnDownloadLogsJson" class="btn secondary">Download Logs JSON</button>
+        <button type="button" id="btnDownloadLogsTxt" class="btn secondary">Download Logs TXT</button>
+        <button type="button" id="btnDownloadLogsCsv" class="btn secondary">Download Logs CSV</button>
         <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Bundle to Telegram</button>
         <button type="button" id="btnTelegramTestSend" class="btn secondary">Test Telegram</button>
         <button type="button" id="btnExportRailwayEnv" class="btn secondary">Export Railway Env Template</button>
@@ -859,6 +864,7 @@ _PAGE = """<!DOCTYPE html>
       </div>
       <p id="mcPerfStatus" class="empty-hint" style="margin:0.25rem 0;font-size:11px;"></p>
       <p id="mcStatus" class="empty-hint" style="margin:0.35rem 0;"></p>
+      <textarea id="mcCopyFallback" class="mono sec" style="display:none;width:100%;max-height:160px;margin:6px 0;font-size:11px;" readonly placeholder="Copy fallback — select all and copy"></textarea>
       <pre id="mcGptPreview" class="mono sec" style="display:none;max-height:120px;"></pre>
       <div class="mc-grid" id="mcGrid">
         <div class="mc-card" id="mcAccount"><h3>Account</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
@@ -2230,16 +2236,25 @@ def create_app() -> Flask:
         """Send a test message to the configured Telegram chat."""
         if not _check_auth():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
-        from monitoring.telegram_momo import build_telegram_momo_status, _send_reply, allowed_chat_id, momo_chat_enabled
+        from monitoring.telegram_momo import (
+            build_telegram_momo_status,
+            _send_reply,
+            allowed_chat_id,
+            telegram_can_send_without_polling,
+        )
         from monitoring.gpt_analyze_telegram import telegram_send_config_errors
+        st = build_telegram_momo_status()
         cfg_errors = telegram_send_config_errors()
         if cfg_errors:
-            return jsonify({"ok": False, "sent": False, "config_errors": cfg_errors, "reason": "; ".join(cfg_errors)})
-        if not momo_chat_enabled():
-            st = build_telegram_momo_status()
+            return jsonify({
+                "ok": False, "sent": False, "config_errors": cfg_errors,
+                "missing_config": cfg_errors, "reason": "; ".join(cfg_errors), "status": st,
+            })
+        if not telegram_can_send_without_polling():
             return jsonify({
                 "ok": False, "sent": False,
-                "reason": "Telegram polling not enabled (TELEGRAM_MOMO_CHAT_ENABLED != 1 or allowed_chat_id not set)",
+                "reason": st.get("status_message") or "Telegram cannot send — check token and chat ID.",
+                "missing_config": st.get("missing_config") or [],
                 "status": st,
             })
         cid = allowed_chat_id()
@@ -2247,7 +2262,11 @@ def create_app() -> Flask:
         msg = f"✅ QuantBot Telegram test from dashboard — mode={_cfg.MODE}. Momo is watching."
         sent = _send_reply(cid, msg)
         st = build_telegram_momo_status()
-        return jsonify({"ok": sent, "sent": sent, "chat_id_hint": cid[:4] + "...", "status": st})
+        return jsonify({
+            "ok": sent, "sent": sent, "chat_id_hint": cid[:4] + "...",
+            "status": st,
+            "reason": None if sent else (st.get("last_error") or "Telegram API send failed"),
+        })
 
     @app.get("/api/ops/gpt-analyze-bundle")
     def api_gpt_analyze_bundle() -> Response:
@@ -2343,19 +2362,24 @@ def create_app() -> Flask:
 
     @app.get("/api/ops/buying-power-diagnostic")
     def api_ops_buying_power_diagnostic() -> Response:
+        from monitoring.buying_power_diagnostic import build_buying_power_diagnostic
         from monitoring.dashboard_data import get_alpaca_background_snapshot
+        from monitoring.mission_control_api import build_mission_control_summary_fast
 
+        mc = build_mission_control_summary_fast()
+        ac = mc.get("account") or {}
+        cp = mc.get("capital_protection") or {}
         snap = get_alpaca_background_snapshot()
-        port = snap.get("portfolio") or {}
-        out = {
-            "cash": port.get("cash"),
-            "buying_power": port.get("buying_power"),
-            "usable_buying_power": port.get("buying_power"),
-            "equity": port.get("equity"),
-            "why_zero": [],
-            "capital_trap_detected": False,
-            "suggested_operator_actions": [],
-        }
+        out = build_buying_power_diagnostic(
+            equity=float(ac.get("equity") or 0),
+            cash=float(ac.get("cash") or 0),
+            buying_power=float(ac.get("buying_power") or 0),
+            positions_count=int((mc.get("positions") or {}).get("count") or 0),
+            broker_snapshot=snap,
+            allocator=cp.get("allocator") or {},
+            execution_health={},
+            dynamic_profile=cp.get("dynamic_profile") or {},
+        )
         return Response(json.dumps(out, default=str), mimetype="application/json")
 
     @app.get("/api/ops/why-no-trade")
@@ -2417,6 +2441,41 @@ def create_app() -> Flask:
         return Response(
             buf.getvalue(),
             mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.get("/api/ops/logs/export.json")
+    def api_ops_logs_export_json() -> Response:
+        from datetime import datetime, timezone
+        from monitoring.ops_log_store import fetch_ops_logs
+        from monitoring.usage_counters import increment_usage
+        increment_usage("export_downloads")
+        logs = fetch_ops_logs(limit=int(request.args.get("limit", 500)))
+        fname = f"ops_logs_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        return Response(
+            json.dumps({"logs": logs, "count": len(logs)}, default=str, indent=2),
+            mimetype="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
+    @app.get("/api/ops/logs/export.txt")
+    def api_ops_logs_export_txt() -> Response:
+        from datetime import datetime, timezone
+        from monitoring.ops_log_store import fetch_ops_logs
+        from monitoring.usage_counters import increment_usage
+        increment_usage("export_downloads")
+        logs = fetch_ops_logs(limit=int(request.args.get("limit", 500)))
+        lines = []
+        for lg in logs:
+            lines.append(
+                f"{lg.get('created_at', '')} [{lg.get('level', '')}] "
+                f"{lg.get('event_type', '')} {lg.get('message', '')}"
+            )
+        body = "\n".join(lines) if lines else "No ops logs."
+        fname = f"ops_logs_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
+        return Response(
+            body,
+            mimetype="text/plain",
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 

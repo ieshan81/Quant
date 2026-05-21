@@ -149,10 +149,35 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     except Exception as exc:
         mission_summary = {"ok": False, "error": str(exc)[:120]}
 
+    bp_diag: dict[str, Any] = {}
+    try:
+        if isinstance(mission_summary, dict) and mission_summary.get("ok"):
+            bp_diag = (mission_summary.get("capital_protection") or {}).get("buying_power_diagnostic") or {}
+        if not bp_diag and isinstance(activity, dict):
+            bp_diag = activity.get("buying_power_diagnostic") or {}
+        if not bp_diag:
+            from monitoring.buying_power_diagnostic import build_buying_power_diagnostic
+            bp_diag = build_buying_power_diagnostic(
+                equity=float(account.get("equity") or 0),
+                cash=float(account.get("cash") or 0),
+                buying_power=float(account.get("buying_power") or 0),
+                broker_snapshot={"portfolio": account},
+            )
+    except Exception as exc:
+        bp_diag = {"error": str(exc)[:120]}
+
     # Extract crypto push/pull events from activity export (shows why crypto buy failed)
+    from monitoring.reason_human import human_reason_code
+
     crypto_push_pull_events = []
     if isinstance(activity, dict):
-        crypto_push_pull_events = (activity.get("crypto_push_pull_events") or [])[:15]
+        for ev in (activity.get("crypto_push_pull_events") or [])[:15]:
+            if isinstance(ev, dict):
+                e2 = dict(ev)
+                e2["human_reason"] = human_reason_code(str(e2.get("reason_code") or ""))
+                crypto_push_pull_events.append(e2)
+            else:
+                crypto_push_pull_events.append(ev)
 
     bundle = {
         "generated_at": generated,
@@ -170,7 +195,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "activity_export_summary": activity,
         "capital_policy_status": capital_policy,
         "capital_allocator_summary": allocator,
-        "buying_power_diagnostic": activity.get("buying_power_diagnostic") if isinstance(activity, dict) else {},
+        "buying_power_diagnostic": bp_diag,
         "crypto_night_mode_status": crypto_night,
         "crypto_execution_policy": crypto_policy,
         "positions_summary": positions,
