@@ -852,6 +852,7 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy GPT Bundle</button>
         <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT Bundle</button>
         <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Bundle to Telegram</button>
+        <button type="button" id="btnTelegramTestSend" class="btn secondary">Test Telegram</button>
         <button type="button" id="btnExportRailwayEnv" class="btn secondary">Export Railway Env Template</button>
         <button type="button" id="btnMcRefresh" class="btn secondary">Refresh Now</button>
         <button type="button" id="btnMcDeepRefresh" class="btn secondary">Deep Refresh</button>
@@ -2218,6 +2219,36 @@ def create_app() -> Flask:
         from monitoring.gpt_analyze_telegram import send_gpt_bundle_to_telegram
         return jsonify(send_gpt_bundle_to_telegram())
 
+    @app.get("/api/telegram/status")
+    def api_telegram_status() -> Response:
+        """Return Telegram config status without making any Telegram API calls."""
+        from monitoring.telegram_momo import build_telegram_momo_status
+        return Response(json.dumps(build_telegram_momo_status(), default=str), mimetype="application/json")
+
+    @app.post("/api/telegram/test-send")
+    def api_telegram_test_send() -> Any:
+        """Send a test message to the configured Telegram chat."""
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring.telegram_momo import build_telegram_momo_status, _send_reply, allowed_chat_id, momo_chat_enabled
+        from monitoring.gpt_analyze_telegram import telegram_send_config_errors
+        cfg_errors = telegram_send_config_errors()
+        if cfg_errors:
+            return jsonify({"ok": False, "sent": False, "config_errors": cfg_errors, "reason": "; ".join(cfg_errors)})
+        if not momo_chat_enabled():
+            st = build_telegram_momo_status()
+            return jsonify({
+                "ok": False, "sent": False,
+                "reason": "Telegram polling not enabled (TELEGRAM_MOMO_CHAT_ENABLED != 1 or allowed_chat_id not set)",
+                "status": st,
+            })
+        cid = allowed_chat_id()
+        import config as _cfg
+        msg = f"✅ QuantBot Telegram test from dashboard — mode={_cfg.MODE}. Momo is watching."
+        sent = _send_reply(cid, msg)
+        st = build_telegram_momo_status()
+        return jsonify({"ok": sent, "sent": sent, "chat_id_hint": cid[:4] + "...", "status": st})
+
     @app.get("/api/ops/gpt-analyze-bundle")
     def api_gpt_analyze_bundle() -> Response:
         from monitoring.gpt_analyze_bundle import build_gpt_analyze_bundle
@@ -2374,6 +2405,7 @@ def create_app() -> Flask:
     def api_ops_logs_csv() -> Response:
         import csv
         import io
+        from datetime import datetime, timezone
         from monitoring.ops_log_store import fetch_ops_logs
         logs = fetch_ops_logs(limit=int(request.args.get("limit", 500)))
         buf = io.StringIO()
@@ -2381,7 +2413,12 @@ def create_app() -> Flask:
             w = csv.DictWriter(buf, fieldnames=list(logs[0].keys()), extrasaction="ignore")
             w.writeheader()
             w.writerows(logs)
-        return Response(buf.getvalue(), mimetype="text/csv")
+        fname = f"ops_logs_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+        return Response(
+            buf.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
 
     @app.get("/api/dashboard")
     def api_dashboard() -> Response:

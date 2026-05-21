@@ -13,6 +13,37 @@ from execution.crypto_execution_policy import build_crypto_execution_policy
 from monitoring.momo import build_momo_authority_status, build_momo_status
 
 
+def _telegram_status_brief() -> dict[str, Any]:
+    """Non-blocking Telegram config check — no API calls."""
+    try:
+        from monitoring.telegram_momo import build_telegram_momo_status
+        return build_telegram_momo_status()
+    except Exception:
+        return {}
+
+
+def _fetch_crypto_push_pull_brief(limit: int = 5) -> list[dict[str, Any]]:
+    """Quick DB query for recent crypto push/pull execution decisions (cached path safe)."""
+    try:
+        import config as _cfg
+        import sqlite3 as _sql
+        conn = _sql.connect(str(_cfg.DB_PATH), timeout=2.0)
+        conn.row_factory = _sql.Row
+        rows = conn.execute(
+            """
+            SELECT symbol, asset_class, side, decision, reason_code, created_at
+            FROM execution_decisions
+            WHERE asset_class='crypto'
+            ORDER BY id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
 def _transition_evidence(eh: dict[str, Any], mem: dict[str, Any]) -> dict[str, Any]:
     recon = eh.get("reconciliation_health") or {}
     recovery = eh.get("startup_recovery_status") or {}
@@ -131,13 +162,19 @@ def _assemble_summary(
             "human_summary": why_bp,
         },
         "positions": {"open": positions[:20], "count": len(positions)},
-        "crypto_night": {**crypto, "momo_in_execution_loop": False, "crypto_execution_policy": crypto_policy},
+        "crypto_night": {
+            **crypto,
+            "momo_in_execution_loop": False,
+            "crypto_execution_policy": crypto_policy,
+            "latest_push_pull_events": _fetch_crypto_push_pull_brief(),
+        },
         "momo_summary": momo_summary,
         "ops_health": resource,
         "momo_status": build_momo_status(),
         "momo_authority_status": build_momo_authority_status(),
         "memory_state_summary": mem,
         "broker_account_transition_status": transition,
+        "telegram_status": _telegram_status_brief(),
     }
 
 
@@ -185,13 +222,25 @@ def build_mission_control_summary_fast() -> dict[str, Any]:
             except (TypeError, ValueError):
                 pass
         try:
+            import concurrent.futures as _cf
             from execution import stock_broker
-            cli = stock_broker.get_rest_client()
-            if cli:
+
+            def _broker_live_fetch() -> tuple[float, float, int]:
+                cli = stock_broker.get_rest_client()
+                if not cli:
+                    return eq, bp, 0
                 acct = cli.get_account()
-                eq = float(getattr(acct, "equity", eq) or eq)
-                bp = float(getattr(acct, "buying_power", bp) or bp)
-                broker_pos = len(cli.get_all_positions() or [])
+                _eq = float(getattr(acct, "equity", eq) or eq)
+                _bp = float(getattr(acct, "buying_power", bp) or bp)
+                _pos = len(cli.get_all_positions() or [])
+                return _eq, _bp, _pos
+
+            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                fut = _ex.submit(_broker_live_fetch)
+                try:
+                    eq, bp, broker_pos = fut.result(timeout=2.5)
+                except (_cf.TimeoutError, Exception):
+                    pass  # keep snapshot values; don't stall the fast path
         except Exception:
             pass
 

@@ -2651,11 +2651,21 @@
           var cr = d.crypto_night || {};
           var pol = cr.crypto_execution_policy || {};
           var push = cr.push_possible === true ? "may run" : (cr.push_possible === false ? "is blocked" : "status unknown");
-          return (
+          var parts = [
             "Crypto night push " + push + ". " +
             safeText(cr.blocked_reason || pol.blocked_reason, "No block reason listed.") +
             " Execution uses deterministic math only (Momo not in the loop)."
-          );
+          ];
+          var evts = Array.isArray(cr.latest_push_pull_events) ? cr.latest_push_pull_events : [];
+          if (evts.length) {
+            parts.push("Recent crypto decisions:");
+            evts.slice(0, 4).forEach(function (e) {
+              parts.push("  " + esc(e.symbol || "?") + " " + esc(e.decision || "?") + " — " + esc(e.reason_code || "?") + (e.created_at ? " " + esc(String(e.created_at).slice(0, 16)) : ""));
+            });
+          } else {
+            parts.push("No recent crypto execution decisions recorded.");
+          }
+          return parts.join("\n");
         }
       },
       {
@@ -2678,11 +2688,20 @@
         tone: "",
         render: function () {
           var oh = d.ops_health || {};
-          return (
+          var tg = d.telegram_status || {};
+          var parts = [
             "CPU " + (oh.process_cpu_pct != null ? safeFmtPct(oh.process_cpu_pct) : "—") +
             ", memory " + (oh.system_memory_pct != null ? safeFmtPct(oh.system_memory_pct) : "—") +
             ", disk " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—") + "."
-          );
+          ];
+          if (Object.keys(tg).length) {
+            var tgEnabled = tg.enabled ? "enabled" : "disabled";
+            var tgPoll = tg.polling_active ? "polling ✓" : "not polling";
+            var tgErr = tg.last_error ? " Last error: " + esc(String(tg.last_error).slice(0, 80)) : "";
+            var tgCfg = (!tg.token_configured ? " (no token)" : (!tg.allowed_chat_id_configured ? " (no allowed_chat_id)" : ""));
+            parts.push("Telegram: " + tgEnabled + ", " + tgPoll + tgCfg + "." + tgErr);
+          }
+          return parts.join("\n");
         }
       }
     ];
@@ -2981,6 +3000,31 @@
         .catch(function (e) {
           if (st) st.textContent = safeText(e && e.message, String(e));
         });
+    });
+    var tgTest = document.getElementById("btnTelegramTestSend");
+    if (tgTest) tgTest.addEventListener("click", function () {
+      var st = document.getElementById("mcStatus");
+      if (st) st.textContent = "Sending Telegram test message…";
+      tgTest.disabled = true;
+      fetch("/api/telegram/test-send", {
+        method: "POST",
+        headers: volHeaders(true)
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (st) {
+            if (d.sent) {
+              st.textContent = "✅ Telegram test sent successfully.";
+            } else {
+              var reason = d.reason || (d.config_errors && d.config_errors.join("; ")) || "Send failed.";
+              st.textContent = "❌ Telegram test failed: " + reason;
+            }
+          }
+        })
+        .catch(function (e) {
+          if (st) st.textContent = "Telegram test error: " + safeText(e && e.message, String(e));
+        })
+        .finally(function () { tgTest.disabled = false; });
     });
   }
 

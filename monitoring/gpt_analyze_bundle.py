@@ -83,6 +83,18 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         momo_bt = {"error": str(exc)[:120]}
 
     try:
+        from monitoring.telegram_momo import build_telegram_momo_status
+        telegram_status = build_telegram_momo_status()
+    except Exception as exc:
+        telegram_status = {"error": str(exc)[:120]}
+
+    try:
+        from execution.order_preflight import get_recent_preflight_decisions
+        preflight_log = get_recent_preflight_decisions(limit=20)
+    except Exception as exc:
+        preflight_log = []
+
+    try:
         from monitoring.resource_monitor import resolve_resource_snapshot_for_api, fetch_resource_snapshots_history
         resource_snap = resolve_resource_snapshot_for_api()
         resource_hist = fetch_resource_snapshots_history(20)
@@ -137,6 +149,11 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     except Exception as exc:
         mission_summary = {"ok": False, "error": str(exc)[:120]}
 
+    # Extract crypto push/pull events from activity export (shows why crypto buy failed)
+    crypto_push_pull_events = []
+    if isinstance(activity, dict):
+        crypto_push_pull_events = (activity.get("crypto_push_pull_events") or [])[:15]
+
     bundle = {
         "generated_at": generated,
         "config_summary": config_summary,
@@ -159,6 +176,9 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "positions_summary": positions,
         "why_no_trade": activity.get("why_no_trade") if isinstance(activity, dict) else None,
         "why_no_sell": activity.get("why_no_sell") if isinstance(activity, dict) else None,
+        "latest_crypto_push_pull_events": crypto_push_pull_events,
+        "telegram_status": telegram_status,
+        "preflight_log_recent": preflight_log,
         "recent_ops_logs": ops_logs[:40],
         "recent_errors": errors[:20],
         "recent_critical_events": critical,
@@ -176,9 +196,20 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
             "Why is buying power low?",
             "Is crypto night mode blocked?",
             "Is runtime state clean after broker/account transition?",
+            "Did any crypto buy attempts fail, and why?",
+            "Is Telegram configured and polling correctly?",
         ],
     }
-    return scrub_evidence(bundle)
+    scrubbed = scrub_evidence(bundle)
+    # Add size hint AFTER scrubbing so operators know how large the bundle is
+    try:
+        scrubbed["bundle_size_hint"] = {
+            "sections": len(scrubbed),
+            "approx_chars": len(json.dumps(scrubbed, default=str)),
+        }
+    except Exception:
+        pass
+    return scrubbed
 
 
 def bundle_as_text(bundle: dict[str, Any]) -> str:

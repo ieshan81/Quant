@@ -171,6 +171,41 @@ def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]
         if att:
             parts.append("Attention: " + "; ".join(att[:5]))
 
+    # Crypto failure / attempt / blocked questions
+    _crypto_fail_kw = (
+        ("crypto" in ql and ("fail" in ql or "block" in ql or "attempt" in ql or "try" in ql or "tried" in ql))
+        or ("crypto" in ql and "why" in ql and "trade" not in ql)
+        or "crypto push" in ql
+    )
+    if _crypto_fail_kw:
+        act = ctx.get("activity_export") or {}
+        evts = act.get("crypto_push_pull_events") or []
+        cr = mc.get("crypto_night") or {}
+        push_ok = cr.get("push_possible")
+        blocked = cr.get("blocked_reason") or cr.get("push_blocked_reason")
+        if blocked:
+            parts.append(f"Crypto push is blocked: {blocked}.")
+        elif push_ok is False:
+            parts.append("Crypto push is not possible right now (see Mission Control crypto card).")
+        elif push_ok is True:
+            parts.append("Crypto push reports possible, but no recent buy was recorded.")
+        if evts:
+            recent = evts[:5]
+            lines = []
+            for e in recent:
+                sym = e.get("symbol", "?")
+                rc_val = e.get("reason_code", e.get("decision", "?"))
+                meta = e.get("meta") or {}
+                sub = meta.get("push_allowed_subreason") or e.get("sub_reason", "")
+                ts = e.get("created_at") or e.get("decided_at") or ""
+                lines.append(f"  {sym}: {rc_val}{(' — ' + str(sub)) if sub else ''} {ts[:16]}")
+            parts.append("Recent crypto push/pull events:\n" + "\n".join(lines))
+        elif not blocked:
+            parts.append(
+                "No recent crypto push/pull events found. "
+                "Check that crypto_push_enabled=1 and buying power is available."
+            )
+
     if not parts:
         eq = ac.get("equity")
         mode = ac.get("mode", "paper")

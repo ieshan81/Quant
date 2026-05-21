@@ -158,20 +158,36 @@ def handle_command(cmd: str) -> str:
             f"Equity: ${a.get('equity', '?')}\nBP: ${a.get('buying_power', '?')}"
         )
     if c == "/gpt_bundle":
-        from monitoring.gpt_analyze_bundle import build_gpt_analyze_bundle, bundle_as_text
-        from core.app_config_registry import get_value
+        from monitoring.gpt_analyze_bundle import build_gpt_analyze_bundle
         b = build_gpt_analyze_bundle()
-        txt = bundle_as_text(b)
-        max_chunks = int(get_value("telegram_gpt_bundle_max_chunks"))
-        chunk_size = 3200
-        parts = [txt[i : i + chunk_size] for i in range(0, len(txt), chunk_size)]
-        if len(parts) > max_chunks:
-            return (
-                f"GPT bundle too large ({len(txt)} chars). "
-                f"Sent summary only. Download full bundle from Mission Control.\n"
-                f"Mode: {config.MODE} Equity: {(b.get('account_summary') or {}).get('equity')}"
-            )[:3500]
-        return parts[0][:3500] + ("\n...(truncated)" if len(parts) > 1 else "")
+        acct = b.get("account_summary") or {}
+        trans = b.get("broker_account_transition_status") or {}
+        momo_st = b.get("momo_status") or {}
+        crypto_ev = b.get("latest_crypto_push_pull_events") or []
+        tg_st = b.get("telegram_status") or {}
+        errors = b.get("recent_errors") or []
+        size = (b.get("bundle_size_hint") or {}).get("approx_chars", "?")
+        why_trade = b.get("why_no_trade") or "—"
+        lines = [
+            "📊 GPT Analyze Bundle",
+            f"Mode: {acct.get('mode', config.MODE)}",
+            f"Equity: ${acct.get('equity', '?')}  BP: ${acct.get('buying_power', '?')}",
+            f"Cash: ${acct.get('cash', '?')}  DayPnL: {acct.get('day_pnl', '?')}",
+            f"Momo: {momo_st.get('name', 'Momo')} ({momo_st.get('status', '?')})",
+            f"Why no trade: {str(why_trade)[:200]}",
+            f"Broker alignment: {trans.get('headline', '?')}",
+        ]
+        if errors:
+            lines.append(f"Recent errors ({len(errors)}): " + "; ".join(
+                str(e.get("message", e))[:80] for e in errors[:3]
+            ))
+        if crypto_ev:
+            lines.append(f"Crypto events ({len(crypto_ev)}): " + "; ".join(
+                f"{e.get('symbol','?')}:{e.get('reason_code','?')}" for e in crypto_ev[:3]
+            ))
+        lines.append(f"Telegram: enabled={tg_st.get('enabled')}, polling={tg_st.get('polling_active')}")
+        lines.append(f"Bundle: ~{size} chars. Download full JSON from Mission Control dashboard.")
+        return "\n".join(lines)[:3500]
     if c == "/momo":
         from monitoring.momo import build_momo_status
         return json.dumps(build_momo_status(), indent=2)[:3500]
