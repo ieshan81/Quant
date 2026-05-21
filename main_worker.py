@@ -4349,7 +4349,7 @@ def run_trading_cycle_once(
         _crypto_syms = [str(s).strip().upper() for s in (cr or []) if "/" in str(s)]
         if not _crypto_syms:
             _crypto_syms = [str(s).strip().upper() for s in (crypto_symbols or []) if "/" in str(s)]
-        from data.crypto_quote_snapshot import build_crypto_asset_metadata, build_crypto_market_snapshot
+        from execution.crypto_quote_snapshot import build_crypto_asset_metadata, build_crypto_market_snapshot
 
         q_snap, _quote_diag = build_crypto_market_snapshot(_crypto_syms, rest_client=cli3)
         for _k, _v in (prices_dict or {}).items():

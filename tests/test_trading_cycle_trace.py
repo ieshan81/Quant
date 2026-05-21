@@ -102,9 +102,9 @@ def test_successful_cycle_updates_heartbeat(tmp_path: Path) -> None:
 
 
 def test_quote_snapshot_ccxt_fallback_alpaca() -> None:
-    from data.crypto_quote_snapshot import build_crypto_market_snapshot
+    from execution.crypto_quote_snapshot import build_crypto_market_snapshot
 
-    with patch("data.crypto_quote_snapshot._quote_via_ccxt") as mock_ccxt:
+    with patch("execution.crypto_quote_snapshot._quote_via_ccxt") as mock_ccxt:
         mock_ccxt.return_value = {
             "symbol": "BTC/USD",
             "provider": "binance",
@@ -112,7 +112,7 @@ def test_quote_snapshot_ccxt_fallback_alpaca() -> None:
             "last_trade_price": None,
             "spread_pct": None,
         }
-        with patch("data.crypto_quote_snapshot._quote_via_alpaca") as mock_alp:
+        with patch("execution.crypto_quote_snapshot._quote_via_alpaca") as mock_alp:
             mock_alp.return_value = {
                 "symbol": "BTC/USD",
                 "provider": "alpaca",
