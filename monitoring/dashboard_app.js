@@ -41,6 +41,36 @@
     return "$" + n.toFixed(2);
   }
 
+  /** Mission Control + exports use fmtUsd — alias to fmtMoney (was undefined in production). */
+  function fmtUsd(v) {
+    return fmtMoney(v);
+  }
+
+  function safeText(v, fallback) {
+    if (v == null || v === "") return fallback !== undefined ? fallback : "—";
+    try {
+      return String(v);
+    } catch (e1) {
+      return fallback !== undefined ? fallback : "—";
+    }
+  }
+
+  function safeFmtMoney(v) {
+    try {
+      return fmtMoney(v);
+    } catch (e2) {
+      return "—";
+    }
+  }
+
+  function safeFmtPct(v) {
+    try {
+      return fmtPct(v);
+    } catch (e3) {
+      return "—";
+    }
+  }
+
   // +$14.04 / -$0.74 / $0.00 (signed dollar)
   function fmtMoneySigned(v) {
     if (!isFiniteNum(v)) return "—";
@@ -864,6 +894,18 @@
       .then(function (d) {
         var series = d.series || [];
         renderEquityChart({ equitySeries: series });
+        var noteEl = document.getElementById("eqHistoryNote");
+        if (noteEl) {
+          var hasCash = series.some(function (p) { return p.cash != null || p.cash_total != null; });
+          var hasBp = series.some(function (p) { return p.buying_power != null; });
+          if (!hasCash && !hasBp) {
+            noteEl.style.display = "block";
+            noteEl.textContent = "Showing equity only for " + range + ". Cash / buying power / exposure history not available yet.";
+          } else {
+            noteEl.style.display = "none";
+            noteEl.textContent = "";
+          }
+        }
       })
       .catch(function () {});
   }
@@ -2326,16 +2368,59 @@
   var _aiLoaded = false;
 
   function loadAiStatus() {
-    fetch("/api/ai/status").then(function (r) { return r.json(); }).then(function (d) {
-      var el = function (id) { return document.getElementById(id); };
-      if (el("aiProvider")) el("aiProvider").textContent = d.provider || "—";
-      if (el("aiModel")) el("aiModel").textContent = d.model || "—";
-      if (el("aiEnabled")) el("aiEnabled").textContent = d.enabled ? "enabled" : "disabled";
-      if (el("aiNotesCount")) el("aiNotesCount").textContent = d.notes_count != null ? d.notes_count : "—";
-      if (el("aiPatternsCount")) el("aiPatternsCount").textContent = d.patterns_count != null ? d.patterns_count : "—";
-      if (el("aiSkillsCount")) el("aiSkillsCount").textContent = d.skills_count != null ? d.skills_count : "—";
-      if (el("aiLastRun")) el("aiLastRun").textContent = d.last_run_at || "—";
-    }).catch(function () {});
+    var el = function (id) { return document.getElementById(id); };
+    var foot = document.getElementById("aiStatusFootnote");
+    fetch("/api/ai/status", { cache: "no-store" })
+      .then(function (r) {
+        if (!r.ok) {
+          throw new Error("/api/ai/status HTTP " + r.status);
+        }
+        return r.json();
+      })
+      .then(function (d) {
+        var momo = d.momo_status || {};
+        var auth = d.momo_authority_status || {};
+        var mem = d.memory_state_summary || {};
+        var assistant = safeText(d.assistant_name || momo.name, "Momo");
+        var provider = safeText(d.provider, "");
+        if (!provider || provider === "disabled_missing_key") {
+          provider = d.enabled ? "Momo (deterministic)" : "Momo (no Gemini key)";
+        }
+        if (el("aiProvider")) el("aiProvider").textContent = assistant + " · " + provider;
+        if (el("aiModel")) {
+          el("aiModel").textContent = d.model
+            ? safeText(d.model)
+            : (provider.indexOf("Gemini") >= 0 || provider.indexOf("gemini") >= 0 ? "—" : "rules + memory");
+        }
+        if (el("aiEnabled")) {
+          el("aiEnabled").textContent = d.schema_initialized
+            ? (d.enabled ? "active" : "disabled")
+            : "schema pending";
+        }
+        if (el("aiNotesCount")) {
+          el("aiNotesCount").textContent = d.notes_count != null
+            ? String(d.notes_count)
+            : (mem.useful_memory_count != null ? String(mem.useful_memory_count) : "—");
+        }
+        if (el("aiPatternsCount")) el("aiPatternsCount").textContent = d.patterns_count != null ? String(d.patterns_count) : "—";
+        if (el("aiSkillsCount")) el("aiSkillsCount").textContent = d.skills_count != null ? String(d.skills_count) : "—";
+        if (el("aiLastRun")) el("aiLastRun").textContent = safeText(d.last_run_at || mem.last_memory_note_at, "—");
+        if (foot) {
+          var canCfg = momo.can_change_config === true || d.can_update_config === true;
+          foot.innerHTML =
+            "Assistant: <strong>" + esc(assistant) + "</strong> · authority: " + esc(safeText(momo.authority_level || auth.authority_level, "backtester")) +
+            "<br>can_submit_orders: <strong style=\"color:var(--bad);\">false</strong> · " +
+            "can_update_config: <strong style=\"color:var(--bad);\">false</strong> (config changes require operator approval) · " +
+            "allowed_to_execute: <strong style=\"color:var(--bad);\">false</strong>";
+          if (momo.can_touch_crypto_execution_loop === false) {
+            foot.innerHTML += "<br>Crypto execution: deterministic math only (Momo not in execution loop).";
+          }
+        }
+      })
+      .catch(function (e) {
+        if (el("aiProvider")) el("aiProvider").textContent = "Momo — status unavailable";
+        if (foot) foot.textContent = "Could not load /api/ai/status: " + safeText(e && e.message, String(e));
+      });
   }
 
   function loadAiNotes() {
@@ -2396,45 +2481,140 @@
     }).catch(function () {});
   }
 
+  function renderMissionControl(d) {
+    var cards = [
+      {
+        id: "mcAccount",
+        render: function () {
+          var ac = d.account || {};
+          return (
+            "Equity: " + safeFmtMoney(ac.equity) + "\nCash: " + safeFmtMoney(ac.cash) +
+            "\nBP: " + safeFmtMoney(ac.buying_power) + "\nMode: " + safeText(ac.mode, "paper") +
+            (ac.live_enabled ? " (live flag set)" : " (paper)")
+          );
+        }
+      },
+      {
+        id: "mcMission",
+        render: function () {
+          var mi = d.mission || {};
+          var rec = mi.recovery_status;
+          var recTxt = "—";
+          try {
+            recTxt = rec && typeof rec === "object" ? JSON.stringify(rec) : safeText(rec, "—");
+          } catch (eR) {
+            recTxt = "—";
+          }
+          return (
+            "Mode: " + safeText(mi.mission_mode, "—") + "\nSession: " + safeText(mi.session_mode, "—") +
+            "\nRecovery: " + recTxt
+          );
+        }
+      },
+      {
+        id: "mcCapital",
+        render: function () {
+          var cp = d.capital_protection || {};
+          var pr = cp.dynamic_profile || {};
+          var alloc = cp.allocator || {};
+          return (
+            "Profile: " + safeText(pr.profile, "—") + "\nReserve: " + safeFmtPct(pr.hard_cash_reserve_pct) +
+            "\nAvail stock: " + safeFmtMoney(pr.available_for_stock) +
+            "\nWhy BP low: " + safeText(cp.why_buying_power_low || alloc.why_buying_power_low, "—")
+          );
+        }
+      },
+      {
+        id: "mcPositions",
+        render: function () {
+          var pos = d.positions || {};
+          var n = pos.count != null ? pos.count : (pos.open ? pos.open.length : 0);
+          return "Open positions: " + String(n);
+        }
+      },
+      {
+        id: "mcCrypto",
+        render: function () {
+          var cr = d.crypto_night || {};
+          var pol = cr.crypto_execution_policy || {};
+          return (
+            "Push possible: " + safeText(cr.push_possible, "—") +
+            "\nMomo in loop: " + (pol.ai_in_execution_loop === true ? "true" : "false") +
+            "\nBlocked: " + safeText(cr.blocked_reason || pol.blocked_reason, "—")
+          );
+        }
+      },
+      {
+        id: "mcMomo",
+        render: function () {
+          var ms = d.momo_summary || {};
+          var saw = Array.isArray(ms.saw) ? ms.saw.join("; ") : safeText(ms.saw, "");
+          var att = Array.isArray(ms.attention) ? ms.attention.join("; ") : safeText(ms.attention, "");
+          var learned = Array.isArray(ms.learned) ? ms.learned.join("; ") : safeText(ms.learned, "");
+          return (
+            "Saw: " + (saw || "—") + "\nLearned: " + (learned || "—") +
+            "\nAttention: " + (att || "—")
+          );
+        }
+      },
+      {
+        id: "mcOps",
+        render: function () {
+          var oh = d.ops_health || {};
+          return (
+            "CPU: " + (oh.process_cpu_pct != null ? safeFmtPct(oh.process_cpu_pct) : "—") +
+            "\nMem: " + (oh.system_memory_pct != null ? safeFmtPct(oh.system_memory_pct) : "—") +
+            "\nDisk: " + (oh.disk_used_pct != null ? safeFmtPct(oh.disk_used_pct) : "—")
+          );
+        }
+      }
+    ];
+    cards.forEach(function (c) {
+      try {
+        setMcCard(c.id, c.render());
+      } catch (cardErr) {
+        setMcCard(c.id, "Card error: " + safeText(cardErr && cardErr.message, "see console"));
+      }
+    });
+  }
+
   function loadMissionTab() {
     var st = document.getElementById("mcStatus");
+    if (st) st.textContent = "Loading /api/mission-control/summary…";
     fetch("/api/mission-control/summary", { cache: "no-store" })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.text().then(function (txt) {
+            var msg = "/api/mission-control/summary HTTP " + r.status;
+            try {
+              var errBody = JSON.parse(txt);
+              if (errBody.error) msg += ": " + errBody.error;
+            } catch (eJ) {
+              if (txt) msg += ": " + txt.slice(0, 120);
+            }
+            throw new Error(msg);
+          });
+        }
+        return r.json();
+      })
       .then(function (d) {
-        if (!d.ok) {
-          if (st) st.textContent = d.error || "Mission Control unavailable";
+        if (!d || d.ok === false) {
+          if (st) st.textContent = "Mission Control: " + safeText(d && d.error, "unavailable");
+          if (d) renderMissionControl(d);
           return;
         }
-        if (st) st.textContent = "Updated " + new Date().toLocaleString();
-        var ac = d.account || {};
-        setMcCard("mcAccount",
-          "Equity: " + fmtUsd(ac.equity) + "\nCash: " + fmtUsd(ac.cash) +
-          "\nBP: " + fmtUsd(ac.buying_power) + "\nMode: " + (ac.mode || "paper"));
-        var mi = d.mission || {};
-        setMcCard("mcMission",
-          "Mode: " + (mi.mission_mode || "—") + "\nSession: " + (mi.session_mode || "—") +
-          "\nRecovery: " + JSON.stringify(mi.recovery_status || {}));
-        var cp = d.capital_protection || {};
-        var pr = cp.dynamic_profile || {};
-        setMcCard("mcCapital",
-          "Profile: " + (pr.profile || "—") + "\nReserve: " + (pr.hard_cash_reserve_pct || "—") + "%\n" +
-          "Avail stock: " + fmtUsd(pr.available_for_stock));
-        var pos = d.positions || {};
-        setMcCard("mcPositions", "Open: " + (pos.count || 0));
-        var cr = d.crypto_night || {};
-        setMcCard("mcCrypto",
-          "Push: " + (cr.push_possible != null ? cr.push_possible : "—") +
-          "\nMomo in loop: false\nBlocked: " + (cr.blocked_reason || "—"));
-        var ms = d.momo_summary || {};
-        setMcCard("mcMomo",
-          "Saw: " + (ms.saw || []).join("; ") + "\nAttention: " + (ms.attention || []).join("; "));
-        var oh = d.ops_health || {};
-        setMcCard("mcOps",
-          "CPU: " + (oh.process_cpu_pct != null ? oh.process_cpu_pct + "%" : "—") +
-          "\nMem: " + (oh.system_memory_pct != null ? oh.system_memory_pct + "%" : "—"));
+        if (st) st.textContent = "Updated " + new Date().toLocaleString() + " · GET /api/mission-control/summary";
+        try {
+          renderMissionControl(d);
+        } catch (renderErr) {
+          if (st) st.textContent = "Render error: " + safeText(renderErr && renderErr.message, String(renderErr));
+        }
       })
       .catch(function (e) {
-        if (st) st.textContent = "Load failed: " + (e && e.message ? e.message : e);
+        if (st) st.textContent = safeText(e && e.message, String(e));
+        ["mcAccount", "mcMission", "mcCapital", "mcPositions", "mcCrypto", "mcMomo", "mcOps"].forEach(function (id) {
+          setMcCard(id, "—");
+        });
       });
   }
 
@@ -2497,7 +2677,12 @@
 
   function wireGptAnalyze() {
     function fetchBundle() {
-      return fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store" }).then(function (r) { return r.json(); });
+      return fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store" }).then(function (r) {
+        if (!r.ok) {
+          throw new Error("/api/ops/gpt-analyze-bundle HTTP " + r.status);
+        }
+        return r.json();
+      });
     }
     var copy = document.getElementById("btnCopyGPTAnalyzeBundle");
     var dl = document.getElementById("btnDownloadGPTAnalyzeBundle");
@@ -2508,23 +2693,30 @@
         return navigator.clipboard.writeText(JSON.stringify(d, null, 2));
       }).then(function () {
         var st = document.getElementById("mcStatus");
-        if (st) st.textContent = "GPT bundle copied.";
+        if (st) st.textContent = "GPT bundle copied from /api/ops/gpt-analyze-bundle.";
+      }).catch(function (e) {
+        var st = document.getElementById("mcStatus");
+        if (st) st.textContent = safeText(e && e.message, String(e));
       });
     });
     if (dl) dl.addEventListener("click", function () {
-      fetchBundle().then(function (d) { _downloadJson(d, "gpt_analyze_" + _timestamp() + ".json"); });
+      fetchBundle().then(function (d) {
+        _downloadJson(d, "gpt_analyze_" + _timestamp() + ".json");
+        var st = document.getElementById("mcStatus");
+        if (st) st.textContent = "GPT bundle downloaded.";
+      }).catch(function (e) {
+        var st = document.getElementById("mcStatus");
+        if (st) st.textContent = safeText(e && e.message, String(e));
+      });
     });
     if (main) main.addEventListener("click", function () {
       if (copy) copy.click();
     });
     if (tg) tg.addEventListener("click", function () {
-      fetchBundle().then(function (d) {
-        return fetch("/api/ai/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Dashboard-Secret": DASHBOARD_SECRET },
-          body: JSON.stringify({ message: "Send this GPT analyze bundle summary to operator via Telegram if configured.", include_activity_export: true })
-        });
-      });
+      var st = document.getElementById("mcStatus");
+      if (st) {
+        st.textContent = "Telegram full bundle send is not fully configured — use Copy/Download and paste into Telegram, or enable TELEGRAM_MOMO_CHAT_ENABLED and /gpt_bundle.";
+      }
     });
     var ask = document.getElementById("btnAskMomoWhatHappened");
     if (ask) ask.addEventListener("click", function () {

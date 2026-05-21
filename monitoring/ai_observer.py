@@ -110,9 +110,11 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
 
 def _attach_momo_exports(status: dict[str, Any]) -> dict[str, Any]:
     try:
+        from core.memory_state import build_memory_state_summary
         from monitoring.momo import build_momo_status, build_momo_authority_status
         status["momo_status"] = build_momo_status()
         status["momo_authority_status"] = build_momo_authority_status()
+        status["memory_state_summary"] = build_memory_state_summary()
         status["assistant_name"] = "Momo"
     except Exception:
         pass
@@ -1290,7 +1292,7 @@ def handle_chat(
             "warnings": gemini_resp.get("warnings", []),
             "suggested_operator_actions": gemini_resp.get("suggested_operator_actions", []),
             "allowed_to_execute": False,
-        })
+        }
 
     out = _deterministic_chat(message, evidence_used, include_activity_export)
     out["assistant_name"] = "Momo"

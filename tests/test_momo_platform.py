@@ -89,6 +89,50 @@ def test_dashboard_shows_momo_not_jarvis(dash_app) -> None:
     assert "Ask Momo" in html
     assert "Mission Control" in html
     assert "Ask Jarvis" not in html
+    assert "aiStatusFootnote" in html
+    assert "Loading Momo status" in html
+
+
+def test_mission_control_summary_endpoint(dash_app) -> None:
+    r = dash_app.test_client().get("/api/mission-control/summary")
+    assert r.status_code == 200
+    data = __import__("json").loads(r.data)
+    assert "ok" in data
+    if data.get("ok"):
+        assert "account" in data
+        assert "momo_status" in data
+    else:
+        assert data.get("error")
+
+
+def test_ai_status_includes_momo_fields(dash_app) -> None:
+    r = dash_app.test_client().get("/api/ai/status")
+    assert r.status_code == 200
+    data = __import__("json").loads(r.data)
+    assert data.get("assistant_name") == "Momo"
+    assert data.get("momo_status", {}).get("name") == "Momo"
+    assert data.get("can_update_config") is False
+    assert "momo_authority_status" in data
+    assert "memory_state_summary" in data
+
+
+def test_gpt_analyze_bundle_endpoint(dash_app) -> None:
+    r = dash_app.test_client().get("/api/ops/gpt-analyze-bundle")
+    assert r.status_code == 200
+    data = __import__("json").loads(r.data)
+    assert data.get("momo_status", {}).get("name") == "Momo"
+
+
+def test_dashboard_js_mission_control_helpers(dash_app) -> None:
+    js = dash_app.test_client().get("/dashboard-app.js").data.decode("utf-8", errors="replace")
+    assert "function fmtUsd" in js
+    assert "function safeFmtMoney" in js
+    assert "function renderMissionControl" in js
+    assert "/api/mission-control/summary" in js
+    assert "/api/ops/gpt-analyze-bundle" in js
+    assert "Telegram full bundle send is not fully configured" in js
+    assert "config changes require operator approval" in js
+    assert "eqHistoryNote" in js or "Cash / buying power / exposure history not available" in js
 
 
 @pytest.fixture()

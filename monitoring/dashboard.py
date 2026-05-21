@@ -908,6 +908,7 @@ _PAGE = """<!DOCTYPE html>
           <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
           <p class="empty-hint" id="eqEmptyHint" style="display:none;">No equity series returned.</p>
           <p class="empty-hint" id="eqSparseHint" style="display:none;color:#f59e0b;"></p>
+          <p class="empty-hint" id="eqHistoryNote" style="display:none;margin-top:6px;"></p>
         </div>
         <div class="card ops-card" id="opsSummaryCard">
           <h2>Operator summary</h2>
@@ -1124,10 +1125,8 @@ _PAGE = """<!DOCTYPE html>
           <div class="metric"><div class="lab">Skills</div><div class="val mono" id="aiSkillsCount">—</div></div>
           <div class="metric"><div class="lab">Last run</div><div class="val mono" id="aiLastRun">—</div></div>
         </div>
-        <p style="margin:10px 0 0;font-size:12px;color:var(--muted);">
-          can_submit_orders: <strong style="color:var(--bad);">false</strong> &middot;
-          can_update_config: <strong style="color:var(--bad);">false</strong> &middot;
-          allowed_to_execute: <strong style="color:var(--bad);">false</strong>
+        <p id="aiStatusFootnote" style="margin:10px 0 0;font-size:12px;color:var(--muted);">
+          Loading Momo status…
         </p>
       </div>
 
@@ -1135,7 +1134,7 @@ _PAGE = """<!DOCTYPE html>
         <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Ask Momo</h2>
         <textarea id="aiChatInput" placeholder="e.g. Why did HAO not sell? What is the current capital allocation status?" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
-          <button type="button" class="primary" id="aiChatSend" style="padding:6px 18px;">Ask AI</button>
+          <button type="button" class="primary" id="aiChatSend" style="padding:6px 18px;">Ask Momo</button>
           <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncExport" checked> Activity export</label>
           <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncBroker"> Broker diagnostic</label>
           <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncMemory" checked> AI memory</label>
