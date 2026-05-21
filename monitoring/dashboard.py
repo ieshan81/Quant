@@ -1866,7 +1866,7 @@ def create_app() -> Flask:
         )
 
         try:
-            with get_connection() as conn:
+            with get_connection(timeout_sec=5.0) as conn:
                 payload = build_dashboard_payload(
                     conn, rest_client=None, equity_period=period
                 )
@@ -2206,8 +2206,31 @@ def create_app() -> Flask:
 
         force = str(request.args.get("force", "") or "").strip().lower() in ("1", "true", "yes")
         live = str(request.args.get("live", "") or "").strip().lower() in ("1", "true", "yes")
+        full = str(request.args.get("full", "") or "").strip().lower() in ("1", "true", "yes")
+        fast = str(request.args.get("fast", "") or "").strip().lower() in ("1", "true", "yes")
         timer = EndpointTimer("/api/mission-control/summary")
-        if force:
+        if fast or (not force and not full):
+            from monitoring.mission_control_api import build_mission_control_summary_minimal
+
+            payload = build_mission_control_summary_minimal()
+            payload["cache_hit"] = False
+            payload["fast_path"] = True
+        elif force and live:
+            from monitoring.mission_control_api import build_mission_control_summary_full
+
+            payload = build_mission_control_summary_full(live_broker=True)
+            payload["cache_hit"] = False
+            payload["live_broker_refresh"] = True
+        elif full:
+            from monitoring.mission_control_api import build_mission_control_summary_full
+
+            payload = get_mission_control_cached(
+                lambda: build_mission_control_summary_full(live_broker=False),
+                force_refresh=force,
+                ttl_sec=30.0,
+                build_timeout_sec=12.0,
+            )
+        elif force:
             payload = build_mission_control_summary_fast(live_broker=live)
             payload["cache_hit"] = False
             payload["stale"] = False
@@ -2217,6 +2240,7 @@ def create_app() -> Flask:
                 lambda: build_mission_control_summary_fast(live_broker=False),
                 force_refresh=False,
                 ttl_sec=8.0,
+                build_timeout_sec=3.0,
             )
         if payload.get("simple_fallback") and "momo_status" not in payload:
             from monitoring.mission_control_api import build_mission_control_summary_minimal

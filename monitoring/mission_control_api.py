@@ -163,9 +163,9 @@ def _assemble_summary(
     fresh_mc: dict[str, Any] = {}
     try:
         from core.session_mode import compute_mission_control
-        from data.data_store import load_runtime_config_dict
+        from core.paper_trading_path import load_runtime_config_for_worker
 
-        rt = load_runtime_config_dict()
+        rt = load_runtime_config_for_worker()
         fresh_mc = compute_mission_control(
             rt=rt,
             recovery_state=rs,
@@ -211,38 +211,34 @@ def _assemble_summary(
     crypto_executor: dict[str, Any] = {}
     _crypto_build_err = ""
     try:
-        from data.data_store import load_runtime_config_dict
-        from execution.crypto_execution_readiness import build_crypto_executor_readiness
+        from core.paper_trading_path import load_runtime_config_for_worker
+        from execution.crypto_trade_decision import build_crypto_trade_decision
 
-        _rt_mc = load_runtime_config_dict()
-        recovery_block = bool(rs.get("block_new_buys"))
-        crypto_executor = build_crypto_executor_readiness(
-            rt=_rt_mc,
-            cash_available=cash,
-            buying_power=bp,
-            crypto_reserved_usd=float(alloc.get("crypto_reserved_usd") or 0),
-            reconciliation_clean=recon_clean,
-            recovery_block=recovery_block,
+        _rt_mc = load_runtime_config_for_worker()
+        crypto_executor = build_crypto_trade_decision(
+            {
+                "rt": _rt_mc,
+                "cash_available": cash,
+                "buying_power": bp,
+                "equity": eq,
+                "reconciliation_clean": recon_clean,
+                "recovery_block": bool(rs.get("block_new_buys")),
+            }
         )
         cpp = crypto_executor.get("crypto_push_pull_status") or {}
         crypto_elig = {
             "can_trade_crypto": bool(crypto_executor.get("can_trade_crypto")),
             "executor_enabled": crypto_executor.get("executor_enabled"),
             "push_allowed": crypto_executor.get("push_allowed"),
-            "push_blocked_reason": crypto_executor.get("push_blocked_reason"),
-            "disabling_config_key": crypto_executor.get("disabling_config_key"),
+            "push_blocked_reason": crypto_executor.get("reason_code"),
+            "disabling_config_key": (crypto_executor.get("config_flags") or {}).get("disabling_config_key"),
             "config_flags": crypto_executor.get("config_flags"),
             "crypto_push_pull_status": cpp,
-            "usable_crypto_buying_power": float(
-                bp_diag.get("crypto_buying_power_available")
-                or bp_diag.get("usable_crypto_buying_power")
-                or bp
-                or cash
-                or 0
-            ),
-            "latest_human_reason": crypto_executor.get("latest_human_reason"),
+            "usable_crypto_buying_power": crypto_executor.get("usable_buying_power"),
+            "latest_human_reason": crypto_executor.get("human_reason"),
             "blockers": crypto_executor.get("blockers") or [],
             "theoretical_session_allowed": bool(mc.get("crypto_entries_allowed")),
+            "crypto_trade_decision": crypto_executor,
         }
     except Exception as exc:
         _crypto_build_err = str(exc)[:240]
@@ -343,7 +339,7 @@ def build_mission_control_summary_minimal(
     from monitoring.simple_status import build_simple_worker_status
 
     base = build_simple_worker_status()
-    reason = (degraded_reason or "advanced_mission_control_unavailable")[:200]
+    reason = (degraded_reason or "")[:200] if degraded_reason else ""
     acct = base.get("account") or {}
     worker = base.get("worker") or {}
     trading = base.get("trading") or {}
@@ -370,13 +366,21 @@ def build_mission_control_summary_minimal(
             "blockers": ["MC_DEGRADED"],
         }
 
+    crypto_events = _fetch_crypto_push_pull_brief(5)
+    block_headline = (
+        crypto_dec.get("human_reason")
+        or trading.get("last_no_trade_reason")
+        or (reason if reason else "Paper mode — worker heartbeat status.")
+    )
+    degraded = bool(reason)
+
     return {
         "ok": True,
         "simple_fallback": True,
-        "fallback": True,
+        "fallback": degraded,
         "generated_at": base.get("generated_at"),
-        "degraded": True,
-        "degraded_reason": reason,
+        "degraded": degraded,
+        "degraded_reason": reason or None,
         "topline": {
             **(base.get("topline") or {}),
             "mission_mode": "STARTUP",
@@ -394,9 +398,11 @@ def build_mission_control_summary_minimal(
         "capital_protection": {},
         "positions": {"open": [], "count": 0},
         "crypto_night": {
-            "crypto_block_headline": trading.get("last_no_trade_reason")
-            or reason
-            or "Mission Control degraded — worker heartbeat only.",
+            "crypto_block_headline": block_headline,
+            "push_possible": crypto_dec.get("push_allowed"),
+            "blocked_reason": crypto_dec.get("reason_code"),
+            "latest_crypto_attempts": crypto_events,
+            "latest_push_pull_events": crypto_events,
         },
         "crypto_eligibility": {
             "can_trade_crypto": crypto_dec.get("can_trade_crypto", False),
@@ -409,7 +415,7 @@ def build_mission_control_summary_minimal(
             "source": "crypto_trade_decision",
         },
         "momo_summary": {
-            "saw": ["Mission Control using simple worker heartbeat fallback."],
+            "saw": ["Mission Control loaded from worker heartbeat (fast path)."],
             "did": [],
             "refused": [],
             "learned": [],
@@ -445,7 +451,13 @@ def _minimal_transition_status(*, equity: float, buying_power: float) -> dict[st
 
 
 def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str, Any]:
-    """Lightweight summary — canonical account metrics + DB execution health."""
+    """Sub-second Mission Control — heartbeat + crypto decision only (no heavy DB/Alpaca)."""
+    _ = live_broker
+    return build_mission_control_summary_minimal(degraded_reason=None)
+
+
+def build_mission_control_summary_full(*, live_broker: bool = False) -> dict[str, Any]:
+    """Heavier Mission Control build (optional ?full=1); may take several seconds."""
     deferred_n = 0
     try:
         from data.data_store import get_connection
@@ -463,7 +475,7 @@ def build_mission_control_summary_fast(*, live_broker: bool = False) -> dict[str
         cash = float(acct.get("cash") or 0)
         bp = float(acct.get("buying_power") or 0)
 
-        with get_connection(timeout_sec=2.5) as conn:
+        with get_connection(timeout_sec=3.0) as conn:
             eh = fetch_latest_execution_health(conn) or {}
             positions = fetch_open_positions_from_trades(conn) or []
             try:

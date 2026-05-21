@@ -67,12 +67,15 @@ def test_logs_json_attachment_header(dash_app) -> None:
 
 
 def test_mission_control_buying_power_diagnostic(dash_app) -> None:
-    r = dash_app.test_client().get("/api/mission-control/summary")
+    r = dash_app.test_client().get("/api/mission-control/summary?fast=1")
     data = json.loads(r.data)
-    if data.get("ok"):
-        diag = (data.get("capital_protection") or {}).get("buying_power_diagnostic") or {}
-        assert "human_reason" in diag
-        assert "reason_code" in diag
+    assert data.get("ok")
+    assert data.get("fast_path") is True
+    acct = data.get("account") or {}
+    assert acct.get("buying_power") is not None
+    cr = data.get("crypto_executor_readiness") or {}
+    assert cr.get("human_reason")
+    assert cr.get("reason_code")
 
 
 def test_telegram_status_missing_config_keys(dash_app) -> None:

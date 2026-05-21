@@ -2870,7 +2870,9 @@
     }
     if (force) _mcProgressStart("Refreshing Mission Control…");
     if (st && !force) st.textContent = _mcCache ? "Refreshing quietly…" : "Loading Mission Control…";
-    var url = "/api/mission-control/summary" + (force ? "?force=1" : "");
+    var url = force
+      ? "/api/mission-control/summary?force=1&full=1"
+      : "/api/mission-control/summary?fast=1";
     fetch(url, { cache: "no-store", headers: _authHeaders() })
       .then(function (r) {
         if (!r.ok) {

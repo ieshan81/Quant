@@ -17,7 +17,7 @@ _CACHE: dict[str, Any] = {
     "error": None,
 }
 DEFAULT_TTL_SEC = 8.0
-DEFAULT_BUILD_TIMEOUT_SEC = 8.0
+DEFAULT_BUILD_TIMEOUT_SEC = 3.0
 
 
 def clear_mission_control_cache() -> None:

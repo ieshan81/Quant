@@ -85,9 +85,14 @@ def cfg_is_enabled(val: Any, default: bool = True) -> bool:
 
 
 def cfg_float(rt: dict, key: str, default: float) -> float:
-    """Safely extract a float from runtime config dict."""
+    """Safely extract a float from runtime config dict (skips JSON snapshot strings)."""
     try:
-        return float(rt.get(key, default) or default)
+        from core.safe_numeric import parse_float
+
+        val = rt.get(key, default)
+        if val is None:
+            return default
+        return parse_float(val, default=default, field_name=key)
     except (TypeError, ValueError):
         return default
 
