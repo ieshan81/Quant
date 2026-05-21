@@ -1225,3 +1225,94 @@ def test_simple_status_endpoint_fast_and_safe(dash_app) -> None:
         assert isinstance(cs["reason_code"], str)
     if "human_reason" in cs:
         assert isinstance(cs["human_reason"], str)
+
+
+def test_crypto_paper_auto_enable_not_blocked_by_ghost_positions() -> None:
+    """Regression: ghost positions (stale SQLite rows, no active recovery) must NOT block
+    the paper crypto night-mode auto-enable gate.
+
+    Root cause of the original 'Blocked without reason' symptom:
+    - reconciliation_clean=False (from ghost positions)
+    - block_new_buys=False (evaluate_startup_recovery says no active recovery)
+    - resolve_crypto_config_flags safety_ok=False -> auto-enable skipped
+    - effective_push=False -> CRYPTO_DISABLED (shown as 'Blocked' with no clear reason)
+
+    After the _effective_recon_clean fix:
+    - _effective_recon_clean = _recon_clean OR NOT block_new_buys = False OR True = True
+    - safety_ok=True -> paper auto-enable fires -> effective_push=True
+    - Executor enabled, proceeds to buying-power check (transparent reason)
+    """
+    from execution.crypto_execution_readiness import (
+        resolve_crypto_config_flags,
+        build_crypto_executor_readiness,
+    )
+    from execution.crypto_trade_decision import build_crypto_trade_decision
+
+    # Simulate the bot_config state: crypto_push_enabled NOT explicitly set (None),
+    # which is the real DB state — auto-enable is the only path to enable crypto.
+    rt_no_explicit_push: dict = {
+        "crypto_night_mode_enabled": 1.0,
+        "crypto_min_order_notional": 1.0,
+        "hard_min_cash_reserve_pct": 15.0,
+    }
+
+    # Old code path: raw recon_clean=False, block_new_buys=False
+    old_recon_clean = False
+    old_block_new_buys = False
+
+    flags_old = resolve_crypto_config_flags(
+        rt_no_explicit_push,
+        reconciliation_clean=old_recon_clean,
+        recovery_block=old_block_new_buys,
+    )
+    # The bug: auto-enable was skipped, effective_push=False
+    assert flags_old["crypto_push_enabled_effective"] is False, (
+        "pre-fix: ghost positions should have prevented auto-enable"
+    )
+    assert flags_old["paper_auto_enabled"] is False
+    assert flags_old["disabling_config_key"] == "crypto_push_enabled"
+
+    # New code path: _effective_recon_clean = raw_recon OR NOT block_new_buys = True
+    _effective_recon_clean = old_recon_clean or not old_block_new_buys
+    assert _effective_recon_clean is True
+
+    flags_new = resolve_crypto_config_flags(
+        rt_no_explicit_push,
+        reconciliation_clean=_effective_recon_clean,
+        recovery_block=old_block_new_buys,
+    )
+    # After fix: safety_ok=True -> auto-enable fires
+    assert flags_new["crypto_push_enabled_effective"] is True, (
+        "post-fix: ghost positions (no active recovery) must not block auto-enable"
+    )
+    assert flags_new["paper_auto_enabled"] is True
+    assert flags_new["disabling_config_key"] is None
+
+    # With buying power available after fix, only correct reasons should block
+    dec = build_crypto_trade_decision({
+        "rt": rt_no_explicit_push,
+        "cash_available": 50.0,
+        "buying_power": 50.0,
+        "equity": 200.0,
+        "reconciliation_clean": _effective_recon_clean,
+        "recovery_block": False,
+    })
+    # Executor is enabled; block reason is NOT reconciliation-related
+    assert dec.get("executor_enabled") is True
+    assert dec.get("reason_code") not in (
+        "RECONCILIATION_NOT_CLEAN",
+        "RECONCILE_BLOCK",
+        "CRYPTO_DISABLED",
+    ), f"unexpected reconciliation block after fix: {dec.get('reason_code')}"
+
+    # With zero buying power, must block with clear reason
+    dec_no_bp = build_crypto_trade_decision({
+        "rt": rt_no_explicit_push,
+        "cash_available": 0.0,
+        "buying_power": 0.0,
+        "equity": 200.0,
+        "reconciliation_clean": _effective_recon_clean,
+        "recovery_block": False,
+    })
+    assert dec_no_bp.get("reason_code") == "INSUFFICIENT_BUYING_POWER"
+    assert dec_no_bp.get("executor_enabled") is True  # executor ON, just no cash
