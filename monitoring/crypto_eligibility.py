@@ -87,18 +87,41 @@ def build_crypto_eligibility(
 
     can_trade = len(blockers) == 0 and usable >= min_order and push_possible is not False
 
-    return {
-        "can_trade_crypto": can_trade,
-        "usable_crypto_buying_power": round(usable, 2),
-        "usable_source": usable_source,
-        "min_order": min_order,
-        "reserve_required": round(reserve, 2),
-        "available_after_reserve": round(max(0.0, usable), 2),
-        "session_allowed": session_allowed,
-        "config_enabled": config_enabled,
-        "reconciliation_clean": reconciliation_clean,
-        "account_tradable": account_tradable,
-        "latest_blocker": latest_blocker,
-        "latest_human_reason": human,
-        "blockers": blockers,
-    }
+    try:
+        from execution.crypto_trade_decision import build_crypto_trade_decision
+
+        unified = build_crypto_trade_decision(
+            {
+                "cash_available": cash,
+                "buying_power": buying_power,
+                "equity": equity,
+                "reconciliation_clean": reconciliation_clean,
+            }
+        )
+        return {
+            "can_trade_crypto": unified.get("can_trade_crypto", can_trade),
+            "reason_code": unified.get("reason_code", latest_blocker or "OK"),
+            "human_reason": unified.get("human_reason", human),
+            "usable_crypto_buying_power": unified.get("usable_buying_power", round(usable, 2)),
+            "usable_source": usable_source,
+            "min_order": min_order,
+            "reserve_required": unified.get("reserve_required", round(reserve, 2)),
+            "available_after_reserve": unified.get("available_after_reserve", round(max(0.0, usable), 2)),
+            "session_allowed": session_allowed,
+            "config_enabled": config_enabled,
+            "reconciliation_clean": reconciliation_clean,
+            "account_tradable": account_tradable,
+            "latest_blocker": latest_blocker or unified.get("reason_code"),
+            "latest_human_reason": unified.get("human_reason", human),
+            "blockers": blockers,
+            "crypto_trade_decision": unified,
+        }
+    except Exception as exc:
+        return {
+            "can_trade_crypto": False,
+            "reason_code": "CRYPTO_ELIGIBILITY_BUILD_FAILED",
+            "human_reason": str(exc)[:200],
+            "blockers": ["CRYPTO_ELIGIBILITY_BUILD_FAILED"],
+            "usable_crypto_buying_power": round(usable, 2),
+            "available_after_reserve": round(max(0.0, usable), 2),
+        }

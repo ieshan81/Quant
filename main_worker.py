@@ -4345,7 +4345,9 @@ def run_trading_cycle_once(
         )
         from monitoring import dashboard_data as _dd_dca
 
-        rt_d = load_runtime_config_dict(config.DB_PATH)
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt_d = load_runtime_config_for_worker(config.DB_PATH)
         _trace.stage("crypto_allocator_start")
         cli3 = stock_broker.get_rest_client()
         _crypto_syms = [str(s).strip().upper() for s in (cr or []) if "/" in str(s)]
@@ -4402,6 +4404,9 @@ def run_trading_cycle_once(
         _trace.stage("crypto_allocator_done")
         persist_dynamic_capital_plan(config.DB_PATH, dplan)
         summary["dynamic_capital_plan"] = dplan
+        summary["_quote_snapshot"] = q_snap
+        summary["_quote_diagnostics"] = _quote_diag
+        summary["_meta_diagnostics"] = _meta_diag
         summary["capital_allocator_summary"] = build_capital_allocator_summary(dplan)
         bg = dict(summary.get("buy_gate") or {})
         bkt = (dplan.get("capital_buckets") or {}) if isinstance(dplan, dict) else {}
@@ -4490,6 +4495,10 @@ def run_trading_cycle_once(
                 "holds": summary.get("holds"),
                 "overnight_risk_plan": summary.get("overnight_risk_plan"),
                 "capital_plan_enforcement": summary.get("capital_plan_enforcement"),
+                "cycle_outcome": summary.get("cycle_outcome"),
+                "last_no_trade_reason": summary.get("last_no_trade_reason"),
+                "selected_engine": summary.get("selected_engine"),
+                "crypto_executor_readiness": summary.get("crypto_executor_readiness"),
             },
         )
     except Exception:
@@ -4563,13 +4572,53 @@ def run_trading_cycle_once(
         })
     except Exception:
         logger.debug("[account_history] snapshot skipped", exc_info=True)
+    stocks_open = bool(portfolio_limiter.us_stock_market_open())
+    summary["selected_engine"] = "stock" if stocks_open else ("crypto" if cr else "none")
+    if sorted_crypto_scores:
+        summary["best_candidate_symbol"] = sorted_crypto_scores[0][0]
+        summary["best_candidate_action"] = "BUY"
+    try:
+        from execution.crypto_trade_decision import build_crypto_trade_decision
+
+        bg_c = summary.get("buy_gate") or {}
+        summary["crypto_executor_readiness"] = build_crypto_trade_decision(
+            {
+                "rt": rt,
+                "cash_available": bg_c.get("cash"),
+                "buying_power": bg_c.get("buying_power"),
+                "equity": equity,
+                "crypto_scores": dict(sorted_crypto_scores[:5]) if sorted_crypto_scores else {},
+                "reconciliation_clean": _recon_clean,
+                "recovery_block": _recovery_block,
+                "quote_snapshot": summary.get("_quote_snapshot"),
+                "quote_diagnostics": summary.get("_quote_diagnostics"),
+            }
+        )
+    except Exception as exc:
+        from monitoring.crypto_readiness_payload import fallback_crypto_executor_readiness
+
+        summary["crypto_executor_readiness"] = fallback_crypto_executor_readiness(
+            safe_error=str(exc)[:200]
+        )
+    summary["equity"] = float(equity or trader.equity_total())
     _trace.stage("cycle_success")
-    _trace.record_success(
-        summary,
-        equity=float(trader.equity_total()),
-        cash=float((summary.get("buy_gate") or {}).get("cash") or 0),
-        buying_power=float((summary.get("buy_gate") or {}).get("buying_power") or 0),
-    )
+    try:
+        from execution.cycle_result import persist_cycle_outcome
+
+        persist_cycle_outcome(
+            _trace,
+            summary,
+            equity=float(trader.equity_total()),
+            cash=float((summary.get("buy_gate") or {}).get("cash") or 0),
+            buying_power=float((summary.get("buy_gate") or {}).get("buying_power") or 0),
+        )
+    except Exception:
+        _trace.record_success(
+            summary,
+            equity=float(trader.equity_total()),
+            cash=float((summary.get("buy_gate") or {}).get("cash") or 0),
+            buying_power=float((summary.get("buy_gate") or {}).get("buying_power") or 0),
+        )
     from execution.trading_cycle_trace import clear_active_trace
 
     clear_active_trace()

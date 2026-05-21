@@ -17,7 +17,17 @@ _CACHE: dict[str, Any] = {
     "error": None,
 }
 DEFAULT_TTL_SEC = 8.0
-DEFAULT_BUILD_TIMEOUT_SEC = 12.0
+DEFAULT_BUILD_TIMEOUT_SEC = 8.0
+
+
+def clear_mission_control_cache() -> None:
+    """Reset in-process MC cache (tests / admin)."""
+    with _LOCK:
+        _CACHE["payload"] = None
+        _CACHE["cached_at"] = 0.0
+        _CACHE["duration_ms"] = 0
+        _CACHE["stale"] = False
+        _CACHE["error"] = None
 
 
 def _minimal_fallback(err: str | None) -> dict[str, Any]:
@@ -54,7 +64,7 @@ def get_mission_control_cached(
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(builder)
-            fresh = fut.result(timeout=max(1.0, float(build_timeout_sec)))
+            fresh = fut.result(timeout=max(0.15, float(build_timeout_sec)))
     except FuturesTimeoutError:
         err = f"Mission Control build timed out after {build_timeout_sec:.0f}s"
     except Exception as exc:
@@ -75,10 +85,15 @@ def get_mission_control_cached(
             out["backend_duration_ms"] = duration_ms
             return out
 
+        if err and force_refresh:
+            _CACHE["error"] = err
+            return _minimal_fallback(err)
+
         if _CACHE.get("payload"):
             out = dict(_CACHE["payload"])
             out["cache_age_seconds"] = round(now - float(_CACHE.get("cached_at") or now), 2)
             out["stale"] = True
+            out["degraded"] = True
             out["cache_hit"] = True
             out["backend_duration_ms"] = duration_ms
             out["refresh_error"] = err or _CACHE.get("error")

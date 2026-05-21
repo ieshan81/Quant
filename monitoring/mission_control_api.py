@@ -340,55 +340,73 @@ def build_mission_control_summary_minimal(
     degraded_reason: str | None = None,
 ) -> dict[str, Any]:
     """Heartbeat-only summary when full Mission Control build fails or times out."""
-    from datetime import datetime, timezone
+    from monitoring.simple_status import build_simple_worker_status
 
-    from monitoring.canonical_account import resolve_canonical_account_metrics
-    from monitoring.worker_status import resolve_worker_ops_status
-
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    worker = resolve_worker_ops_status()
-    acct = resolve_canonical_account_metrics(live_broker=False)
-    eq = float(acct.get("equity") or worker.get("last_equity") or 0)
-    cash = float(acct.get("cash") or 0)
-    bp = float(acct.get("buying_power") or worker.get("last_buying_power") or 0)
+    base = build_simple_worker_status()
     reason = (degraded_reason or "advanced_mission_control_unavailable")[:200]
+    acct = base.get("account") or {}
+    worker = base.get("worker") or {}
+    trading = base.get("trading") or {}
+    crypto_dec: dict[str, Any] = {}
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+        from execution.crypto_trade_decision import build_crypto_trade_decision
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
+        crypto_dec = build_crypto_trade_decision(
+            {
+                "rt": rt,
+                "cash_available": acct.get("cash"),
+                "buying_power": acct.get("buying_power"),
+                "equity": acct.get("equity"),
+            }
+        )
+    except Exception as exc:
+        crypto_dec = {
+            "can_trade_crypto": False,
+            "push_allowed": False,
+            "reason_code": "MC_DEGRADED",
+            "human_reason": f"{reason}; crypto_decision: {exc}"[:200],
+            "blockers": ["MC_DEGRADED"],
+        }
+
     return {
         "ok": True,
         "simple_fallback": True,
-        "generated_at": generated,
+        "fallback": True,
+        "generated_at": base.get("generated_at"),
         "degraded": True,
         "degraded_reason": reason,
         "topline": {
-            "equity": eq,
-            "cash": cash,
-            "buying_power": bp,
-            "mode": config.MODE,
+            **(base.get("topline") or {}),
             "mission_mode": "STARTUP",
-            "account_source": acct.get("primary_source") or "worker_heartbeat",
+            "account_source": acct.get("account_source") or "worker_heartbeat",
         },
         "account": {
-            "equity": eq,
-            "cash": cash,
-            "buying_power": bp,
+            **acct,
             "mode": config.MODE,
             "live_enabled": config.trading_is_live(),
-            "account_source": acct.get("primary_source") or "worker_heartbeat",
         },
-        "ops_health": worker,
+        "ops_health": base.get("ops_health") or worker,
+        "worker": worker,
+        "trading": trading,
         "mission": {"mission_mode": "STARTUP", "next_allowed_action": {}},
         "capital_protection": {},
         "positions": {"open": [], "count": 0},
-        "crypto_night": {"crypto_block_headline": "Mission Control degraded — worker heartbeat only."},
+        "crypto_night": {
+            "crypto_block_headline": trading.get("last_no_trade_reason")
+            or reason
+            or "Mission Control degraded — worker heartbeat only.",
+        },
         "crypto_eligibility": {
-            "can_trade_crypto": False,
-            "reason_code": "MC_DEGRADED",
-            "human_reason": reason,
+            "can_trade_crypto": crypto_dec.get("can_trade_crypto", False),
+            "reason_code": crypto_dec.get("reason_code", "MC_DEGRADED"),
+            "human_reason": crypto_dec.get("human_reason", reason),
+            "blockers": crypto_dec.get("blockers") or ["MC_DEGRADED"],
         },
         "crypto_executor_readiness": {
-            "push_allowed": False,
-            "can_trade_crypto": False,
-            "reason_code": "MC_DEGRADED",
-            "human_reason": reason,
+            **crypto_dec,
+            "source": "crypto_trade_decision",
         },
         "momo_summary": {
             "saw": ["Mission Control using simple worker heartbeat fallback."],

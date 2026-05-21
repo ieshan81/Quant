@@ -35,6 +35,10 @@ def ensure_heartbeat_cycle_columns(conn: Any) -> None:
         ("failed_traceback_short", "TEXT"),
         ("current_cycle_stage", "TEXT"),
         ("worker_still_alive", "INTEGER"),
+        ("last_no_trade_reason", "TEXT"),
+        ("selected_engine", "TEXT"),
+        ("candidate_symbol", "TEXT"),
+        ("order_submitted", "INTEGER"),
     )
     for name, typ in cols:
         try:
@@ -99,9 +103,11 @@ class TradingCycleTrace:
         equity: float | None = None,
         cash: float | None = None,
         buying_power: float | None = None,
+        cycle_outcome: dict[str, Any] | None = None,
     ) -> None:
         now = _now()
         bg = summary.get("buy_gate") or {}
+        outcome = cycle_outcome or summary.get("cycle_outcome") or {}
         try:
             from data.data_store import get_connection
 
@@ -121,6 +127,10 @@ class TradingCycleTrace:
                         failed_cycle_stage = NULL,
                         failed_cycle_safe_error = NULL,
                         failed_traceback_short = NULL,
+                        last_no_trade_reason = ?,
+                        selected_engine = ?,
+                        candidate_symbol = ?,
+                        order_submitted = ?,
                         updated_at = ?
                     WHERE id = 1
                     """,
@@ -131,6 +141,10 @@ class TradingCycleTrace:
                         equity,
                         cash if cash is not None else bg.get("cash"),
                         buying_power if buying_power is not None else bg.get("buying_power"),
+                        outcome.get("last_no_trade_reason"),
+                        outcome.get("selected_engine"),
+                        outcome.get("candidate_symbol"),
+                        1 if outcome.get("order_submitted") else 0,
                         now,
                     ),
                 )

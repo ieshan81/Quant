@@ -936,6 +936,7 @@ _PAGE = """<!DOCTYPE html>
       </div>
     </section>
     <section id="panel-overview" class="tab-panel">
+      <p id="overviewDataHint" class="muted" style="display:none;margin:0 0 12px;font-size:13px;"></p>
       <div class="grid-metrics">
         <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mMode">—</div></div>
         <div class="metric"><div class="lab">Total equity</div><div class="val mono" id="mEq">—</div></div>
@@ -1880,11 +1881,34 @@ def create_app() -> Flask:
                     else -1,
                 },
             )
+            try:
+                from monitoring.simple_status import build_simple_worker_status
+
+                payload["simple_status"] = build_simple_worker_status()
+                payload["overview_hint"] = (
+                    (payload.get("simple_status") or {}).get("trading", {}).get("last_no_trade_reason")
+                    or "no data yet"
+                )
+            except Exception:
+                payload["simple_status"] = {"ok": False, "error": "simple_status_unavailable"}
+                payload["overview_hint"] = "overview data unavailable"
             return payload
         except Exception:
             logger.exception("[dashboard] build_dashboard_payload failed — fallback open_conn")
             _debug_log("H8", "build_dashboard_payload_safe exception fallback", {"period": period})
-            return build_dashboard_payload(None, rest_client=None, equity_period=period)
+            try:
+                from monitoring.simple_status import build_simple_worker_status
+
+                return {
+                    "open_positions": [],
+                    "recent_signals": [],
+                    "equity_series": [],
+                    "execution_health": {},
+                    "simple_status": build_simple_worker_status(),
+                    "overview_hint": "dashboard build failed — showing worker heartbeat only",
+                }
+            except Exception:
+                return build_dashboard_payload(None, rest_client=None, equity_period=period)
 
     app.extensions["socketio"] = socketio
     # WebSocket push disabled — dashboard uses HTTP polling only.

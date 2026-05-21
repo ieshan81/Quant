@@ -45,7 +45,9 @@ def test_account_history_record_and_fetch(tmp_path, monkeypatch) -> None:
 
 
 def test_mission_control_cache_hit() -> None:
-    from monitoring.mission_control_cache import get_mission_control_cached
+    from monitoring.mission_control_cache import clear_mission_control_cache, get_mission_control_cached
+
+    clear_mission_control_cache()
     calls = {"n": 0}
 
     def builder():

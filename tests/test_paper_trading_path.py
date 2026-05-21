@@ -50,6 +50,9 @@ def test_mission_control_minimal_fallback_ok() -> None:
 
 
 def test_mission_control_cache_timeout_returns_minimal() -> None:
+    from monitoring.mission_control_cache import clear_mission_control_cache
+
+    clear_mission_control_cache()
     def _hang() -> dict:
         time.sleep(30)
         return {"ok": True}

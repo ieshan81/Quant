@@ -20,21 +20,40 @@ def answer_momo_question(
     ctx: dict[str, Any] = {"question": q}
     missing: list[str] = []
 
+    _ops_q = any(
+        k in q.lower()
+        for k in (
+            "buying power", "bp", "crypto", "recovery", "reconciliation", "why no",
+            "worker", "trade", "position", "running", "failed", "cycle",
+        )
+    )
+
     if include.get("mission_control", True):
         try:
-            from monitoring.mission_control_api import build_mission_control_summary_fast
-            ctx["mission_control"] = build_mission_control_summary_fast()
+            if _ops_q:
+                from monitoring.simple_status import build_simple_worker_status
+
+                ctx["mission_control"] = build_simple_worker_status()
+            else:
+                from monitoring.mission_control_cache import get_mission_control_cached
+                from monitoring.mission_control_api import build_mission_control_summary_fast
+
+                ctx["mission_control"] = get_mission_control_cached(
+                    build_mission_control_summary_fast,
+                    ttl_sec=8.0,
+                    build_timeout_sec=3.0,
+                )
         except Exception as exc:
             missing.append(f"mission_control: {exc}")
 
-    if include.get("broker_diagnostic", True):
+    if include.get("broker_diagnostic", True) and not _ops_q:
         try:
             from monitoring.broker_diagnostic import build_broker_diagnostic
             ctx["broker_diagnostic"] = build_broker_diagnostic()
         except Exception as exc:
             missing.append(f"broker_diagnostic: {exc}")
 
-    if include.get("activity_export", True):
+    if include.get("activity_export", True) and not _ops_q:
         try:
             from data.data_store import get_connection
             from monitoring.cycle_activity_export import build_activity_export_payload
@@ -57,13 +76,6 @@ def answer_momo_question(
     answer = _deterministic_answer(q, ctx, missing)
     provider = "momo_rules"
 
-    _ops_q = any(
-        k in q.lower()
-        for k in (
-            "buying power", "bp", "crypto", "recovery", "reconciliation", "why no",
-            "worker", "trade", "position", "reset",
-        )
-    )
     if include.get("momo_memory", True) and not _ops_q:
         try:
             from monitoring.ai_observer import handle_chat

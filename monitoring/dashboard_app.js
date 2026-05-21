@@ -236,7 +236,9 @@
       buyGate: p.buy_gate && typeof p.buy_gate === "object" ? p.buy_gate : {},
       capitalStatus: p.capital_status && typeof p.capital_status === "object" ? p.capital_status : {},
       dynamicCapitalPlan: p.dynamic_capital_plan && typeof p.dynamic_capital_plan === "object" ? p.dynamic_capital_plan : null,
-      capitalAllocatorSummary: p.capital_allocator_summary && typeof p.capital_allocator_summary === "object" ? p.capital_allocator_summary : {}
+      capitalAllocatorSummary: p.capital_allocator_summary && typeof p.capital_allocator_summary === "object" ? p.capital_allocator_summary : {},
+      simpleStatus: p.simple_status && typeof p.simple_status === "object" ? p.simple_status : null,
+      overviewHint: p.overview_hint != null ? String(p.overview_hint) : ""
     };
   }
 
@@ -1011,6 +1013,19 @@
   // ---------------------------------------------------------------------------
 
   function renderOverview(vm) {
+    var hint = vm.overviewHint || (vm.simpleStatus && vm.simpleStatus.trading && vm.simpleStatus.trading.last_no_trade_reason);
+    var hintEl = document.getElementById("overviewDataHint");
+    if (hintEl) {
+      if (hint) {
+        hintEl.textContent = "Last cycle: " + String(hint);
+        hintEl.style.display = "block";
+      } else if (vm.equity == null && vm.cash == null) {
+        hintEl.textContent = "No account data yet — worker may not have completed a cycle.";
+        hintEl.style.display = "block";
+      } else {
+        hintEl.style.display = "none";
+      }
+    }
     document.getElementById("mMode").textContent = vm.mode ? String(vm.mode).toUpperCase() : "—";
     document.getElementById("mEq").textContent = vm.equity != null ? fmtMoney(vm.equity) : "—";
 
