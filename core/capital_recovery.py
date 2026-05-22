@@ -54,6 +54,10 @@ def _evaluate_trim_candidate(
     if broker_qty <= 1e-9:
         return None
     mv = _f(pos.get("market_value"))
+    if mv <= 0:
+        cur = _f(pos.get("current_price") or pos.get("mark_price") or pos.get("price"))
+        if cur > 0:
+            mv = cur * abs(broker_qty)
     if mv > 0 and mv < min_notional:
         return None
     pnl = _position_pnl_pct(pos)
@@ -116,10 +120,28 @@ def build_capital_recovery_state(
             if str(p.get("asset_class") or "").lower() != "crypto"
         ]
 
+    exit_candidates = list(pos.get("operator_exit_rows") or [])[:10]
+
+    exit_by_sym = {
+        str(e.get("canonical_symbol") or e.get("symbol") or "").upper(): e
+        for e in exit_candidates
+        if str(e.get("canonical_symbol") or e.get("symbol") or "")
+    }
+
     trim_candidates: list[dict[str, Any]] = []
     for p in active:
         cand = _evaluate_trim_candidate(p, now_epoch=now, min_notional=min_notional)
         if cand:
+            sym = cand["symbol"]
+            ex_row = exit_by_sym.get(sym) or {}
+            block = str(p.get("exit_block_reason") or ex_row.get("exit_block_reason") or "")
+            sell_allowed = bool(cand.get("broker_available")) and not block
+            cand["sell_allowed_by_exit_engine"] = sell_allowed
+            cand["recovery_trim_eligible"] = bool(cand.get("broker_available")) and (
+                cand.get("market_value_usd") or 0
+            ) >= min_notional
+            if block:
+                cand["exit_block_reason"] = block
             trim_candidates.append(cand)
 
     def _sort_key(c: dict[str, Any]) -> tuple:
@@ -131,7 +153,6 @@ def build_capital_recovery_state(
         return (2, pnl)
 
     trim_candidates.sort(key=_sort_key)
-    exit_candidates = list(pos.get("operator_exit_rows") or [])[:10]
     blocked_exits = list(ex.get("blocked_before_submit") or []) + list(
         ex.get("stale_exit_signals") or []
     )
@@ -163,7 +184,10 @@ def build_capital_recovery_state(
         )
         for c in trim_candidates[:4]:
             pnl_s = f"{c['pnl_pct']:+.1f}%" if c.get("pnl_pct") is not None else "pnl n/a"
-            lines.append(f"Candidate trim: {c['symbol']} {pnl_s}, MV ${c.get('market_value_usd', 0):,.2f}.")
+            sell_ok = "sell OK" if c.get("sell_allowed_by_exit_engine") else "sell blocked"
+            lines.append(
+                f"Candidate trim: {c['symbol']} {pnl_s}, MV ${c.get('market_value_usd', 0):,.2f} ({sell_ok})."
+            )
         if not trim_candidates:
             lines.append("No broker-qty trim candidates — review blocked exits or wait for fills.")
     else:

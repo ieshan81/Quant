@@ -218,22 +218,56 @@ def build_config_schema() -> dict[str, Any]:
     }
 
 
+def _masked_secrets(raw: dict[str, Any]) -> dict[str, Any]:
+    out = dict(raw)
+    for name, meta in out.items():
+        if isinstance(meta, dict) and meta.get("present") and any(m in name for m in _SECRET_ENV_MARKERS):
+            meta = dict(meta)
+            meta["masked"] = "***"
+            out[name] = meta
+    return out
+
+
 def build_config_summary() -> dict[str, Any]:
+    from runtime_config.runtime_config_schema import (
+        DEPRECATED_ENV_KEYS,
+        operational_env_status,
+        secret_status,
+    )
+
     items = [resolve_config_item(e.key) for e in _entries()]
+    bot_config_keys = {i["key"]: i["value"] for i in items if i.get("source") == "bot_config"}
+    default_keys = {i["key"]: i["value"] for i in items if i.get("source") == "default"}
+    env_override_keys = {i["key"]: i["value"] for i in items if i.get("source") == "env"}
+
     summary: dict[str, Any] = {
         "mode": config.MODE,
         "items": items,
         "values": {i["key"]: i["value"] for i in items},
         "sources": {i["key"]: i["source"] for i in items},
-        "secrets": {},
+        "secrets": _masked_secrets(secret_status()),
+        "env_overrides": operational_env_status(),
+        "bot_config": bot_config_keys,
+        "defaults": default_keys,
+        "deprecated_env_vars": sorted(DEPRECATED_ENV_KEYS),
+        "precedence": "env > bot_config > defaults",
         "momo_can_apply_config": False,
         "config_changes_require_operator_approval": True,
     }
     for name in RAILWAY_ESSENTIAL_ENV_VARS:
+        if name in summary["secrets"]:
+            continue
         if any(m in name for m in _SECRET_ENV_MARKERS):
-            summary["secrets"][name] = "***" if os.getenv(name, "").strip() else "(not set)"
+            summary["secrets"][name] = {
+                "present": bool(os.getenv(name, "").strip()),
+                "masked": "***",
+                "kind": "secret",
+            }
         else:
-            summary["secrets"][name] = os.getenv(name, "") or "(not set)"
+            summary["secrets"][name] = {
+                "present": bool(os.getenv(name, "").strip()),
+                "value": os.getenv(name, "") or "(not set)",
+            }
     return summary
 
 

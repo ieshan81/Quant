@@ -18,8 +18,8 @@ from monitoring.dashboard import create_app
 @pytest.fixture()
 def dash_app(tmp_path: Path):
     db = tmp_path / "broker_diag.sqlite3"
-    with patch.object(config, "DB_PATH", db), patch(
-        "execution.stock_broker.get_rest_client", return_value=None
+    with patch.object(config, "DB_PATH", db), patch.object(config, "PERSIST_DIR", tmp_path), patch(
+        "monitoring.broker_diagnostic.get_rest_client", return_value=None
     ):
         app = create_app()
         app.config["TESTING"] = True

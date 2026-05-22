@@ -176,6 +176,7 @@ def build_simple_worker_status() -> dict[str, Any]:
 
         _as = build_account_state(live_broker=False)
         _fl = build_fast_loop_state()
+        fl_diag = _fl.get("fast_loop_scoring_diagnostics") or {}
         canonical_truth_summary = {
             "generated_at": _now_iso(),
             "account_state": {
@@ -191,12 +192,17 @@ def build_simple_worker_status() -> dict[str, Any]:
                 "scan_enabled": _fl.get("scan_enabled"),
                 "execution_enabled": _fl.get("execution_enabled"),
                 "human_summary": _fl.get("human_summary"),
+                "symbols_scanned": _fl.get("symbols_scanned"),
+                "scored_count": _fl.get("scored_count"),
+                "top_rejected_reason": fl_diag.get("top_rejected_reason"),
             },
             "note": (
                 "Full canonical_truth on Mission Control and GPT bundle; "
                 "capital/position consistency requires full build_canonical_state()."
             ),
         }
+        if bp < 1.0:
+            canonical_truth_summary["capital_recovery_active"] = True
         if bp < 1.0:
             canonical_truth_summary["capital_alert"] = (
                 "Buying power near zero — open GPT bundle canonical_truth.capital_state "

@@ -414,7 +414,7 @@ def run_crypto_fast_loop_once(
     scan_syms, batch_meta = _select_scan_batch(universe, rt_eff)
     from execution.fast_loop_scoring import build_scoring_batch_diagnostics
 
-    scoring_diag = build_scoring_batch_diagnostics(scan_syms, min_score=min_score)
+    scoring_diag = build_scoring_batch_diagnostics(scan_syms, min_score=min_score, rt=rt_eff)
     scored = [
         (p["symbol"], float(p["score"]))
         for p in scoring_diag.get("scored_pairs") or []

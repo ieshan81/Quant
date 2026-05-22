@@ -1314,16 +1314,26 @@ def build_canonical_state(
     )
     universe_state = build_universe_state()
     provider_health = _build_provider_health()
-    strategy_weights_state = (
-        build_strategy_weights_state()
-        if weights_audit is None
-        else _envelope(
-            source="monitoring.strategy_weights",
-            human_summary=f"{weights_audit.get('unwired_count', 0)} unwired weights",
-            extra={"audit": weights_audit, **weights_audit},
-            machine_evidence={"unwired_count": weights_audit.get("unwired_count", 0)},
+    if weights_audit is None:
+        strategy_weights_state = build_strategy_weights_state()
+    else:
+        uw_list = weights_audit.get("unwired_weights") or []
+        unwired_n = (
+            int(weights_audit["unwired_count"])
+            if weights_audit.get("unwired_count") is not None
+            else len(uw_list)
         )
-    )
+        strategy_weights_state = _envelope(
+            source="monitoring.strategy_weights",
+            human_summary=f"{unwired_n} unwired weights",
+            reason_code="WEIGHTS_OK",
+            extra={
+                "audit": weights_audit,
+                **weights_audit,
+                "unwired_count": unwired_n,
+            },
+            machine_evidence={"unwired_count": unwired_n},
+        )
 
     live_readiness_state = build_live_readiness_state(
         mission_summary=mission_summary,
@@ -1393,9 +1403,30 @@ def build_universe_state() -> dict[str, Any]:
 
 def _build_provider_health() -> dict[str, Any]:
     try:
-        from data_providers import snapshot
+        from data_providers import mark_enabled, snapshot
 
-        return snapshot()
+        mark_enabled("yfinance", enabled=True)
+        mark_enabled("alpaca", enabled=bool(getattr(config, "ALPACA_API_KEY", "")))
+        mark_enabled("ccxt", enabled=False)
+        mark_enabled("alpha_vantage", enabled=False)
+        mark_enabled("sentiment", enabled=True)
+        mark_enabled("cache", enabled=True)
+        snap = snapshot()
+        for name in ("alpaca", "ccxt", "alpha_vantage", "sentiment", "cache", "yfinance"):
+            if name not in snap:
+                snap[name] = {
+                    "name": name,
+                    "enabled": name in ("yfinance", "sentiment", "cache"),
+                    "hits": 0,
+                    "misses": 0,
+                    "successes": 0,
+                    "failures": 0,
+                    "last_success_epoch": None,
+                    "last_failure_epoch": None,
+                    "last_error": None,
+                    "data_quality_score": 0.0,
+                }
+        return snap
     except Exception:
         return {}
 

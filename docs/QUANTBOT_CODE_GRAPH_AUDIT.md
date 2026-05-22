@@ -4,11 +4,11 @@ Generated from **Graphify** (`graphifyy` 0.8.15) AST graph (cluster-only on AST 
 
 ## Graphify across cleanup phases
 
-| Metric | Phase 0 baseline | Canonical-state cleanup | Architecture overhaul (current) |
-|--------|------------------|--------------------------|---------------------------------|
-| Nodes | 3660 | 3745 | **3854** (+194 vs baseline) |
-| Edges | 7794 | 7987 | **8211** (+417 vs baseline) |
-| Communities | 209 | 207 | **226** |
+| Metric | Phase 0 baseline | Canonical-state cleanup | Architecture overhaul | Live-grade acceptance (2026-05-22) |
+|--------|------------------|--------------------------|---------------------|----------------------------------|
+| Nodes | 3660 | 3745 | 3854 | **4105** |
+| Edges | 7794 | 7987 | 8211 | **8757** |
+| Communities | 209 | 207 | 226 | **223** |
 | New hubs | — | `core/canonical_state.py` | + `data_providers/`, `runtime_config/`, `core/universe_state.py`, `monitoring/momo_quant_memo.py`, `execution/order_forensics.py` |
 
 The architecture overhaul deliberately adds nodes/edges by introducing reusable provider scaffolds (`data_providers/`), a runtime config schema, a universe truth module, and a Momo quant memo. **Goal is fewer duplicate truth paths, not fewer files** — `build_canonical_state()` now owns 15 sub-states and downstream API endpoints consume that single facade.
@@ -18,6 +18,8 @@ The architecture overhaul deliberately adds nodes/edges by introducing reusable 
 **Architecture change (this pass):** `build_canonical_state()` is the single domain truth facade; GPT bundle, Mission Control minimal, and simple_status summary delegate to it. Duplicate builders remain for worker cycle paths but are **wrapped** at API boundaries.
 
 Artifacts: `graphify-out/graph.html`, `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`
+
+**Acceptance gate:** `python tools/live_grade_acceptance_audit.py --local` (or `--production-url`) — 20 AC checks; reports under `data/exports/live_grade_acceptance_report.{json,md}`.
 
 ---
 

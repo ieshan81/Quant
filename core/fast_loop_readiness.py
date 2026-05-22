@@ -127,9 +127,14 @@ def build_fast_loop_execution_readiness(
         and len([b for b in blockers if b != "operator_approval_required"]) == 0
     )
 
+    enable_note = (
+        "Set crypto_fast_loop_execute_orders=1 in bot_config after all blockers clear and operator approval."
+    )
+
     return {
         "can_enable_paper_execution": bool(can_enable),
         "blockers": blockers,
+        "enable_config_key": "crypto_fast_loop_execute_orders",
         "capital_ready": capital_ready,
         "scoring_ready": scoring_ready,
         "exit_forensics_ready": forensics_ok,
@@ -141,9 +146,8 @@ def build_fast_loop_execution_readiness(
         "daily_trade_limit_configured": daily_ok,
         "operator_approval_required": True,
         "human_summary": (
-            "Fast-loop paper execution can be enabled when blockers clear and operator sets "
-            "crypto_fast_loop_execute_orders=1."
+            f"Fast-loop paper execution ready — {enable_note}"
             if can_enable
-            else f"Fast-loop execution blocked: {', '.join(blockers[:5])}."
+            else f"Fast-loop execution blocked: {', '.join(blockers[:5])}. {enable_note}"
         )[:400],
     }

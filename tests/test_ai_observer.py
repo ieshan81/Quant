@@ -233,7 +233,7 @@ def test_repeated_notes_create_pattern(tmp_path: Path) -> None:
     for i in range(5):
         write_note(conn, {
             "severity": "warning", "category": "exit_logic",
-            "finding": "HAO: pnl exceeds TP threshold but final_action=NO_EXIT_SIGNAL",
+            "finding": f"HAO: pnl exceeds TP threshold but final_action=NO_EXIT_SIGNAL ({i})",
             "symbol": "HAO", "confidence": 0.9, "source": "deterministic",
         })
     conn.commit()
@@ -256,12 +256,14 @@ def test_skill_proposed_from_pattern(tmp_path: Path) -> None:
     )
     init_ai_memory_schema(db)
     conn = get_ai_memory_connection(db)
-    for i in range(5):
-        write_note(conn, {
-            "severity": "warning", "category": "exit_logic",
-            "finding": "Repeated blocker test", "symbol": "XYZ",
-            "confidence": 0.8, "source": "deterministic",
-        })
+    finding = "Repeated blocker exit logic signal"
+    for _ in range(5):
+        conn.execute(
+            """INSERT INTO ai_observer_notes
+            (severity, category, symbol, finding, evidence_json, confidence, source, allowed_to_execute, requires_operator_review)
+            VALUES (?,?,?,?,?,?,?,0,1)""",
+            ("warning", "exit_logic", "XYZ", finding, "{}", 0.8, "deterministic"),
+        )
     conn.commit()
     patterns = detect_patterns_from_notes(conn, min_seen=3)
     skills = propose_skills_from_patterns(conn, patterns)
@@ -606,9 +608,9 @@ def test_ai_console_tab_in_dashboard(tmp_path: Path, monkeypatch: pytest.MonkeyP
     r = client.get("/")
     html = r.data.decode()
     assert 'data-tab="ai"' in html
-    assert "AI Console" in html
+    assert "MoMo Console" in html
     assert "panel-ai" in html
-    assert "Ask Momo" in html
+    assert "Ask MoMo" in html
 
 
 # ═══════════════════════════════════════════════════════════════════════════

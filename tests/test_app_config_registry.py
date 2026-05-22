@@ -26,9 +26,12 @@ def test_railway_template_lists_essential_only() -> None:
 def test_config_summary_scrubs_secrets() -> None:
     with patch.dict("os.environ", {"ALPACA_API_KEY": "secret123", "GEMINI_API_KEY": "gsecret"}, clear=False):
         s = build_config_summary()
-    assert s["secrets"]["ALPACA_API_KEY"] == "***"
+    sec = s["secrets"]["ALPACA_API_KEY"]
+    assert sec.get("masked") == "***" or sec == "***"
     assert s["momo_can_apply_config"] is False
     assert "secret123" not in str(s)
+    assert "precedence" in s
+    assert "env_overrides" in s
 
 
 def test_telegram_flag_reads_bot_config_default(tmp_path) -> None:

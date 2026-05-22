@@ -123,6 +123,32 @@ def build_quant_risk_memo(canonical_truth: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    recovery = capital.get("capital_recovery_state") or {}
+    if recovery.get("enabled"):
+        if "capital_recovery_active" not in blockers:
+            blockers.append("capital_recovery_active")
+        quality_notes.append(str(recovery.get("human_summary") or "")[:300])
+
+    arch = list(live.get("architecture_blockers") or [])
+    for ab in arch:
+        if ab not in blockers:
+            blockers.append(ab)
+
+    fl_diag = fast_loop.get("fast_loop_scoring_diagnostics") or {}
+    if fl_diag.get("top_rejected_reason"):
+        quality_notes.append(
+            f"Fast-loop scoring: top reject {fl_diag['top_rejected_reason']} — {fl_diag.get('next_fix', '')}"[:200]
+        )
+    if fast_loop.get("execution_mode") == "observe_only":
+        quality_notes.append(
+            "Fast-loop execution observe-only (crypto_fast_loop_execute_orders=0)."
+        )
+    fl_ready = fast_loop.get("fast_loop_execution_readiness") or {}
+    for fb in (fl_ready.get("blockers") or [])[:5]:
+        note = f"Fast-loop readiness: {fb}"
+        if note not in quality_notes:
+            quality_notes.append(note)
+
     if not live.get("live_allowed", False):
         for b in (live.get("blockers") or [])[:6]:
             if b not in blockers:
