@@ -157,9 +157,19 @@ def test_live_readiness_blocks_on_capital_and_fast_loop():
             "symbols_scanned": 15,
             "scored_count": 0,
             "last_loop_at": "now",
+            "fast_loop_scoring_diagnostics": {
+                "symbols_scanned": 15,
+                "symbols_scored": 0,
+                "top_rejected_reason": "SCORE_BELOW_THRESHOLD",
+            },
+            "fast_loop_execution_readiness": {"can_enable_paper_execution": False},
         },
         weights_audit={"current_weights": {}, "live_safe_status": "paper_only", "unwired_count": 5},
-        capital_state={"buying_power": 0.01, "capital_lock_reason": "STOCK_DEPLOYMENT_PRIORITY"},
+        capital_state={
+            "buying_power": 0.01,
+            "capital_recovery_state": {"enabled": True, "target_recovery_cash": 10.0},
+            "sleeve_enforcement_audit": {"cash_floor_preserved": False, "sleeve_enforcement_enabled": True},
+        },
         exit_state={
             "broker_rejections": {
                 "active_unresolved": [
@@ -178,11 +188,12 @@ def test_live_readiness_blocks_on_capital_and_fast_loop():
     )
     blockers = lr.get("architecture_blockers") or []
     for need in (
-        "buying_power_near_zero",
+        "capital_recovery_active",
         "capital_sleeve_unenforced",
         "alpaca_rejection_meta_missing",
         "fast_loop_observe_only",
         "fast_loop_scored_count_zero",
+        "fast_loop_execution_readiness_blocked",
         "crypto_scanner_api_fallback",
     ):
         assert need in blockers, f"missing {need}"

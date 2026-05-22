@@ -132,9 +132,11 @@ def evaluate_sleeve_gate(
     floor = sleeves["min_cash_floor_usd"]
 
     if bp - note < floor - 1e-9:
+        _record_sleeve(engine, False, rc.BUY_BLOCKED_MIN_CASH_FLOOR, note, bp, sleeves)
         return False, rc.BUY_BLOCKED_MIN_CASH_FLOOR, {"sleeves": sleeves, "candidate_notional": note}
 
     if cfg.get("allow_full_deployment"):
+        _record_sleeve(engine, True, None, note, bp, sleeves)
         return True, None, {"sleeves": sleeves, "candidate_notional": note, "note": "allow_full_deployment_bypass"}
 
     if cfg.get("tiny_account_mode") and eq < 50.0:
@@ -153,37 +155,73 @@ def evaluate_sleeve_gate(
             )
 
     if bp - note < sleeves["emergency_reserve"] - 1e-9:
+        _record_sleeve(engine, False, rc.BUY_BLOCKED_EMERGENCY_RESERVE, note, bp, sleeves)
         return False, rc.BUY_BLOCKED_EMERGENCY_RESERVE, {"sleeves": sleeves, "candidate_notional": note}
 
     if engine == "stock":
         if note > sleeves["stock_available_cash"] + 1e-9:
             if cfg.get("allow_stock_to_use_crypto_sleeve") and note <= sleeves["stock_available_cash"] + sleeves["crypto_available_cash"] + 1e-9:
                 return True, None, {"sleeves": sleeves, "borrow": "crypto_sleeve"}
+            _record_sleeve(engine, False, rc.STOCK_BUY_BLOCKED_STOCK_SLEEVE_EXHAUSTED, note, bp, sleeves)
             return (
                 False,
                 rc.STOCK_BUY_BLOCKED_STOCK_SLEEVE_EXHAUSTED,
                 {"sleeves": sleeves, "candidate_notional": note, "engine": engine},
             )
+        _record_sleeve(engine, True, None, note, bp, sleeves)
         return True, None, {"sleeves": sleeves, "engine": engine}
 
     if engine == "crypto":
         if note > sleeves["crypto_available_cash"] + 1e-9:
             if cfg.get("allow_crypto_to_use_stock_sleeve") and note <= sleeves["crypto_available_cash"] + sleeves["stock_available_cash"] + 1e-9:
                 return True, None, {"sleeves": sleeves, "borrow": "stock_sleeve"}
+            _record_sleeve(engine, False, rc.CRYPTO_BUY_BLOCKED_CRYPTO_SLEEVE_EXHAUSTED, note, bp, sleeves)
             return (
                 False,
                 rc.CRYPTO_BUY_BLOCKED_CRYPTO_SLEEVE_EXHAUSTED,
                 {"sleeves": sleeves, "candidate_notional": note, "engine": engine},
             )
+        _record_sleeve(engine, True, None, note, bp, sleeves)
         return True, None, {"sleeves": sleeves, "engine": engine}
 
     if engine == "fast_loop":
         if note > sleeves["fast_loop_available_cash"] + 1e-9:
+            _record_sleeve(engine, False, rc.FAST_LOOP_BLOCKED_FAST_LOOP_RESERVE, note, bp, sleeves)
             return (
                 False,
                 rc.FAST_LOOP_BLOCKED_FAST_LOOP_RESERVE,
                 {"sleeves": sleeves, "candidate_notional": note, "engine": engine},
             )
+        _record_sleeve(engine, True, None, note, bp, sleeves)
         return True, None, {"sleeves": sleeves, "engine": engine}
 
     return True, None, {"sleeves": sleeves}
+
+
+def _record_sleeve(
+    engine: str,
+    allowed: bool,
+    reason_code: str | None,
+    notional: float,
+    buying_power: float,
+    sleeves: dict[str, Any],
+) -> None:
+    try:
+        from monitoring.sleeve_enforcement_journal import record_sleeve_gate_event
+
+        record_sleeve_gate_event(
+            engine=engine,
+            allowed=allowed,
+            reason_code=reason_code,
+            candidate_notional=notional,
+            buying_power=buying_power,
+            evidence={"sleeves": {k: sleeves.get(k) for k in (
+                "min_cash_floor_usd",
+                "emergency_reserve",
+                "stock_available_cash",
+                "crypto_available_cash",
+                "fast_loop_available_cash",
+            )}},
+        )
+    except Exception:
+        pass

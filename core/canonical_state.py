@@ -168,6 +168,47 @@ def build_capital_state(
     if why_unavailable:
         human += f" — {'; '.join(why_unavailable[:3])}"
 
+    rt_loaded: dict[str, Any] = {}
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt_loaded = load_runtime_config_for_worker(config.DB_PATH)
+    except Exception:
+        rt_loaded = {}
+
+    capital_recovery_state: dict[str, Any] = {}
+    sleeve_enforcement_audit: dict[str, Any] = {}
+    try:
+        from core.capital_recovery import build_capital_recovery_state
+
+        capital_recovery_state = build_capital_recovery_state(
+            account_state=account_state,
+            position_state=position_state,
+            capital_state={
+                "buying_power": bp,
+                "total_equity": eq,
+                "emergency_reserve": emergency_reserve,
+            },
+            exit_state=None,
+            rt=rt_loaded,
+        )
+    except Exception:
+        capital_recovery_state = {"enabled": False, "human_summary": "capital_recovery_unavailable"}
+
+    try:
+        from core.sleeve_enforcement_audit import build_sleeve_enforcement_audit
+
+        sleeve_enforcement_audit = build_sleeve_enforcement_audit(
+            account_state=account_state,
+            position_state=position_state,
+            rt=rt_loaded,
+        )
+    except Exception:
+        sleeve_enforcement_audit = {}
+
+    if capital_recovery_state.get("enabled"):
+        human = str(capital_recovery_state.get("human_summary") or human)[:500]
+
     return _envelope(
         source="core.canonical_state.build_capital_state",
         human_summary=human,
@@ -191,6 +232,8 @@ def build_capital_state(
             "capital_lock_reason": capital_lock_reason,
             "fast_loop_enabled": fl_enabled,
             "fast_loop_execution_enabled": fl_execute,
+            "capital_recovery_state": capital_recovery_state,
+            "sleeve_enforcement_audit": sleeve_enforcement_audit,
         },
     )
 
@@ -305,6 +348,72 @@ def build_position_state(
             "counts": audit.get("counts") or {},
         },
     )
+
+
+def _refresh_capital_recovery_envelope(
+    capital_state: dict[str, Any],
+    *,
+    account_state: dict[str, Any],
+    position_state: dict[str, Any],
+    exit_state: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        from core.capital_recovery import build_capital_recovery_state
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
+        recovery = build_capital_recovery_state(
+            account_state=account_state,
+            position_state=position_state,
+            capital_state=capital_state,
+            exit_state=exit_state,
+            rt=rt,
+        )
+        out = dict(capital_state)
+        out["capital_recovery_state"] = recovery
+        if recovery.get("enabled"):
+            out["human_summary"] = str(recovery.get("human_summary") or out.get("human_summary"))[:400]
+        return out
+    except Exception:
+        return capital_state
+
+
+def _enrich_fast_loop_readiness(
+    fast_loop_state: dict[str, Any],
+    *,
+    capital_state: dict[str, Any],
+    exit_state: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        from core.fast_loop_readiness import (
+            build_fast_loop_execution_readiness,
+            build_fast_loop_scoring_diagnostics,
+        )
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
+        scoring = build_fast_loop_scoring_diagnostics(fast_loop_state)
+        readiness = build_fast_loop_execution_readiness(
+            fast_loop_state=fast_loop_state,
+            capital_state=capital_state,
+            capital_recovery=capital_state.get("capital_recovery_state") or {},
+            exit_state=exit_state,
+            sleeve_audit=capital_state.get("sleeve_enforcement_audit") or {},
+            scoring_diagnostics=scoring,
+            rt=rt,
+        )
+        out = dict(fast_loop_state)
+        out["fast_loop_scoring_diagnostics"] = scoring
+        out["fast_loop_execution_readiness"] = readiness
+        if scoring.get("next_fix") and int(scoring.get("symbols_scored") or 0) == 0:
+            why = list(out.get("why_scored_count_zero") or [])
+            if scoring.get("top_rejected_reason"):
+                why.append(f"top_reject:{scoring['top_rejected_reason']}")
+            why.append(str(scoring.get("next_fix"))[:120])
+            out["why_scored_count_zero"] = why[:6]
+        return out
+    except Exception:
+        return fast_loop_state
 
 
 def build_fast_loop_state() -> dict[str, Any]:
@@ -963,9 +1072,17 @@ def build_live_readiness_state(
     if weights_audit and (weights_audit.get("unwired_count") or 0) > 0:
         arch_blockers.append("unwired_strategy_weights")
     if capital_state:
-        if _f(capital_state.get("buying_power")) < 1.0:
+        recovery = capital_state.get("capital_recovery_state") or {}
+        sleeve_audit = capital_state.get("sleeve_enforcement_audit")
+        if recovery.get("enabled"):
+            arch_blockers.append("capital_recovery_active")
+            live_evidence["capital_recovery_active"] = True
+            live_evidence["target_recovery_cash"] = recovery.get("target_recovery_cash")
+        elif _f(capital_state.get("buying_power")) < 1.0:
             arch_blockers.append("buying_power_near_zero")
-        if (capital_state.get("capital_lock_reason") or "") == "STOCK_DEPLOYMENT_PRIORITY":
+        if not sleeve_audit or sleeve_audit.get("sleeve_enforcement_enabled") is None:
+            arch_blockers.append("capital_sleeve_audit_missing")
+        elif sleeve_audit.get("cash_floor_preserved") is False:
             arch_blockers.append("capital_sleeve_unenforced")
     if exit_state:
         rej_obj = exit_state.get("broker_rejections")
@@ -999,12 +1116,19 @@ def build_live_readiness_state(
             arch_blockers.append("stale_exit_signals_quarantined")
             live_evidence["stale_exit_signals_quarantined"] = len(stale_exits)
     if fast_loop_state:
+        fl_ready = fast_loop_state.get("fast_loop_execution_readiness") or {}
+        scoring_diag = fast_loop_state.get("fast_loop_scoring_diagnostics")
+        if fl_ready and not fl_ready.get("can_enable_paper_execution"):
+            arch_blockers.append("fast_loop_execution_readiness_blocked")
         if fast_loop_state.get("execution_mode") == "observe_only":
             arch_blockers.append("fast_loop_observe_only")
-        if int(fast_loop_state.get("scored_count") or 0) == 0 and int(
-            fast_loop_state.get("symbols_scanned") or 0
-        ) > 0:
-            arch_blockers.append("fast_loop_scored_count_zero")
+        scanned = int(fast_loop_state.get("symbols_scanned") or 0)
+        scored = int(fast_loop_state.get("scored_count") or 0)
+        if scanned > 0 and scored == 0:
+            if not scoring_diag or scoring_diag.get("note") == "diagnostics_not_yet_populated":
+                arch_blockers.append("fast_loop_scoring_diagnostics_missing")
+            else:
+                arch_blockers.append("fast_loop_scored_count_zero")
     if crypto_state:
         main_sc = crypto_state.get("main_scanner") or {}
         if main_sc.get("api_fallback"):
@@ -1159,6 +1283,17 @@ def build_canonical_state(
         fast_loop_state=fast_loop_state,
     )
     exit_state = build_exit_state(mission_summary=mission_summary, position_state=position_state)
+    capital_state = _refresh_capital_recovery_envelope(
+        capital_state,
+        account_state=account_state,
+        position_state=position_state,
+        exit_state=exit_state,
+    )
+    fast_loop_state = _enrich_fast_loop_readiness(
+        fast_loop_state,
+        capital_state=capital_state,
+        exit_state=exit_state,
+    )
     engine_state = build_engine_state(
         mission_summary=mission_summary,
         simple_status=simple_status,

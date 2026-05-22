@@ -412,27 +412,14 @@ def run_crypto_fast_loop_once(
 
     universe, universe_source = _resolve_fast_loop_universe(crypto_symbols, rt_eff)
     scan_syms, batch_meta = _select_scan_batch(universe, rt_eff)
-    scored: list[tuple[str, float]] = []
-    for sym in scan_syms:
-        try:
-            from training.backtester import load_yfinance_history
-            from training.paper_trading_loop import discrete_signal_bundle
+    from execution.fast_loop_scoring import build_scoring_batch_diagnostics
 
-            yf_sym = sym.replace("/", "-").upper()
-            df = load_yfinance_history(yf_sym, days=120)
-            if df is None or len(df) < 28:
-                continue
-            df = df.tail(40)
-            mid = float(df["Close"].astype(float).iloc[-1])
-            if mid <= 0:
-                continue
-            bundle = discrete_signal_bundle(df, asset_class="crypto")
-            sc = float(bundle.get("combined_score") or 0.0)
-            scored.append((sym, sc))
-        except Exception:
-            continue
-
-    scored.sort(key=lambda x: x[1], reverse=True)
+    scoring_diag = build_scoring_batch_diagnostics(scan_syms, min_score=min_score)
+    scored = [
+        (p["symbol"], float(p["score"]))
+        for p in scoring_diag.get("scored_pairs") or []
+        if p.get("symbol") is not None
+    ]
     top_candidates = [
         {"symbol": s, "score": round(sc, 4), "threshold": min_score}
         for s, sc in scored[:8]
@@ -445,6 +432,7 @@ def run_crypto_fast_loop_once(
             "symbols_scanned": len(scan_syms),
             "scored_count": len(scored),
             "top_candidates": top_candidates[:5],
+            "fast_loop_scoring_diagnostics": scoring_diag,
             **batch_meta,
             "universe_source": universe_source,
         },
@@ -580,6 +568,7 @@ def run_crypto_fast_loop_once(
         "universe_source": universe_source,
         "symbols_scanned": len(scan_syms),
         "scored_count": len(scored),
+        "fast_loop_scoring_diagnostics": scoring_diag,
         "batch_index": batch_meta.get("batch_index"),
         "batch_count": batch_meta.get("batch_count"),
         "scan_strategy": batch_meta.get("scan_strategy"),

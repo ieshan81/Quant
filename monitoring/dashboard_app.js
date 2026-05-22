@@ -3808,9 +3808,15 @@
           return "";
         },
         render: function () {
+          var ct = d.canonical_truth || {};
+          var capSt = ct.capital_state || {};
+          var rec = capSt.capital_recovery_state || {};
+          if (rec.enabled && rec.human_summary) {
+            return "Capital recovery: " + String(rec.human_summary);
+          }
           var cp = d.capital_protection || {};
           var diag = cp.buying_power_diagnostic || {};
-          var human = diag.headline || cp.human_summary || cp.why_buying_power_low;
+          var human = capSt.human_summary || diag.headline || cp.human_summary || cp.why_buying_power_low;
           if (human) return String(human);
           var pr = cp.dynamic_profile || {};
           return (
