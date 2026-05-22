@@ -26,8 +26,8 @@ def _parse_ts_age_sec(ts: str | None) -> float | None:
 
 def resolve_worker_ops_status(
     *,
-    heartbeat_stale_sec: float = 180.0,
-    cycle_stale_sec: float = 600.0,
+    heartbeat_stale_sec: float | None = None,
+    cycle_stale_sec: float | None = None,
 ) -> dict[str, Any]:
     """Return worker running/stopped from bot_runtime_heartbeat + latest worker cycle row."""
     hb: dict[str, Any] = {}
@@ -52,6 +52,16 @@ def resolve_worker_ops_status(
             "trading_will_run": False,
         }
 
+    from monitoring.worker_wait_context import build_worker_wait_context
+
+    wait_ctx = build_worker_wait_context(hb)
+    effective_hb_stale = float(wait_ctx.get("stale_threshold_seconds") or 180.0)
+    if heartbeat_stale_sec is not None:
+        effective_hb_stale = max(effective_hb_stale, float(heartbeat_stale_sec))
+    effective_cycle_stale = float(cycle_stale_sec) if cycle_stale_sec is not None else max(
+        effective_hb_stale * 2.0, 600.0
+    )
+
     last_hb = str(hb.get("last_worker_heartbeat_at") or hb.get("updated_at") or "")
     last_cycle = str(hb.get("last_cycle_id") or "")
     hb_age = _parse_ts_age_sec(last_hb)
@@ -63,24 +73,37 @@ def resolve_worker_ops_status(
     except (TypeError, ValueError):
         worker_pid = None
 
-    heartbeat_fresh = hb_age is not None and hb_age <= heartbeat_stale_sec
-    process_alive = still_alive_flag and heartbeat_fresh
-    cycle_fresh = cycle_age is not None and cycle_age <= cycle_stale_sec
+    within_wait = bool(wait_ctx.get("within_scheduled_wait"))
+    heartbeat_fresh = hb_age is not None and hb_age <= effective_hb_stale
+    process_alive = still_alive_flag and (heartbeat_fresh or within_wait)
+    cycle_fresh = cycle_age is not None and cycle_age <= effective_cycle_stale
+    if within_wait:
+        cycle_fresh = True
     trading_loop_running = process_alive and str(hb.get("current_cycle_stage") or "") not in (
         "",
         "cycle_failed",
     )
 
-    if process_alive and cycle_fresh:
+    interval = wait_ctx.get("expected_cycle_interval_seconds")
+    stall_cat = wait_ctx.get("stall_blocking_category")
+
+    if process_alive and cycle_fresh and heartbeat_fresh:
         health = "ok"
         msg = f"Worker running; last cycle {int(cycle_age)}s ago (id {last_cycle or 'n/a'})."
         trading_will_run = True
+    elif process_alive and within_wait:
+        health = "cycle_waiting"
+        msg = (
+            f"Worker waiting between cycles — last cycle {int(cycle_age) if cycle_age is not None else '?'}s ago, "
+            f"expected interval ~{int(interval or 0)}s (+ grace). Stage: {hb.get('current_cycle_stage') or 'unknown'}."
+        )
+        trading_will_run = False
     elif process_alive and not cycle_fresh:
         health = "trading_loop_stale"
         msg = (
             f"Worker alive but trading loop stale — heartbeat {int(hb_age)}s ago, "
             f"last successful cycle {int(cycle_age) if cycle_age is not None else 'unknown'}s ago "
-            f"(>{int(cycle_stale_sec)}s). Check main_worker logs; trading may not be progressing."
+            f"(>{int(effective_cycle_stale)}s). Stall category: {stall_cat}. Check main_worker logs."
         )
         trading_will_run = False
     else:
@@ -94,7 +117,7 @@ def resolve_worker_ops_status(
         else:
             msg = (
                 f"Worker appears stopped — last heartbeat {int(hb_age)}s ago "
-                f"(>{int(heartbeat_stale_sec)}s). Trading will not run until worker restarts."
+                f"(>{int(effective_hb_stale)}s). Stall category: {stall_cat}."
             )
 
     running = process_alive
@@ -126,4 +149,9 @@ def resolve_worker_ops_status(
         "mode": config.MODE,
         "trading_will_run": trading_will_run,
         "dashboard_only_warning": not process_alive,
+        "within_scheduled_wait": within_wait,
+        "expected_cycle_interval_seconds": wait_ctx.get("expected_cycle_interval_seconds"),
+        "stale_threshold_seconds": wait_ctx.get("stale_threshold_seconds"),
+        "stall_blocking_category": stall_cat,
+        "worker_wait_context": wait_ctx,
     }

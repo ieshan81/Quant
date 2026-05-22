@@ -27,6 +27,70 @@ def _mission_mode_human(mode: str) -> str:
     return mapping.get(m, m.replace("_", " ").title())
 
 
+def _resolve_mission_mode_for_display(
+    *,
+    worker: dict[str, Any],
+    gate: dict[str, Any] | None = None,
+    trading: dict[str, Any] | None = None,
+) -> tuple[str, str | None]:
+    """Prefer last known cycle mission mode when worker is stale/waiting."""
+    last_known = _latest_mission_mode_fallback(default="STARTUP")
+    g = gate or {}
+    w = worker or {}
+    stale_display = None
+    blocked = bool(g.get("blocked")) or not bool(w.get("trading_loop_fresh"))
+    if blocked:
+        try:
+            from execution.trading_cycle_trace import fetch_cycle_status_from_db
+            from monitoring.worker_wait_context import (
+                build_worker_wait_context,
+                worker_stale_display_message,
+            )
+
+            hb = fetch_cycle_status_from_db()
+            wait_ctx = build_worker_wait_context(hb or {})
+            stale_display = worker_stale_display_message(
+                last_known_mission_mode=last_known,
+                wait_ctx=wait_ctx,
+                worker={
+                    **w,
+                    "last_cycle_duration_ms": (hb or {}).get("last_cycle_duration_ms"),
+                    "current_cycle_stage": (hb or {}).get("current_cycle_stage"),
+                },
+            )
+        except Exception:
+            stale_display = f"Worker stale — last known mode: {_mission_mode_human(last_known)}"
+        return last_known, stale_display
+
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+        from core.session_mode import compute_mission_control
+        from market_hours import nyse_regular_session_open
+
+        rt_mc = load_runtime_config_for_worker(config.DB_PATH)
+        t = trading or {}
+        _no_trade = t.get("last_no_trade_reason") or ""
+        _recovery_hint = _no_trade in ("RECONCILE_BLOCK", "RECOVERY_BLOCK_NEW_BUYS")
+        _recovery_state: dict[str, Any] = {
+            "block_new_buys": _recovery_hint,
+            "exit_only": False,
+            "skip_scanners": _recovery_hint,
+        }
+        _stock_open = bool(nyse_regular_session_open())
+        mc_out = compute_mission_control(
+            rt=rt_mc,
+            recovery_state=_recovery_state,
+            stock_market_open=_stock_open,
+            stock_session_label="regular_stock_session" if _stock_open else "closed",
+        )
+        mode = str(mc_out.get("mission_mode") or last_known)
+        if mode in ("STARTUP", "WAITING_FOR_FIRST_CYCLE"):
+            mode = last_known
+        return mode, None
+    except Exception:
+        return last_known, None
+
+
 def _latest_mission_mode_fallback(default: str = "STARTUP") -> str:
     try:
         from monitoring.cycle_brief import fetch_latest_mission_mode
@@ -472,45 +536,23 @@ def build_mission_control_summary_minimal(
     )
     degraded = bool(reason)
 
-    # Derive a real mission mode for the minimal path from latest cycle evidence first.
-    mission_mode = _latest_mission_mode_fallback(default="STARTUP")
+    mission_mode, worker_stale_display = _resolve_mission_mode_for_display(
+        worker=worker,
+        gate=base.get("worker_gate") or {},
+        trading=trading,
+    )
     session_mode = ""
     recovery_gate: dict[str, Any] = {}
-    try:
-        from core.paper_trading_path import load_runtime_config_for_worker
-        from core.session_mode import compute_mission_control
-        from market_hours import nyse_regular_session_open
-
-        rt_mc = load_runtime_config_for_worker(config.DB_PATH)
-        # Recovery state: use what the heartbeat tells us.
-        _no_trade = trading.get("last_no_trade_reason") or ""
-        _recovery_hint = _no_trade in ("RECONCILE_BLOCK", "RECOVERY_BLOCK_NEW_BUYS")
-        _recovery_state: dict[str, Any] = {
-            "block_new_buys": _recovery_hint,
-            "exit_only": False,
-            "skip_scanners": _recovery_hint,
-        }
-        _stock_open = bool(nyse_regular_session_open())
-        _sess_label = "regular_stock_session" if _stock_open else "closed"
-        mc_out = compute_mission_control(
-            rt=rt_mc,
-            recovery_state=_recovery_state,
-            stock_market_open=_stock_open,
-            stock_session_label=_sess_label,
-        )
-        mission_mode = str(mc_out.get("mission_mode") or _latest_mission_mode_fallback(default="STARTUP"))
-        if bool(worker.get("trading_loop_fresh")) and str(worker.get("cycle_status") or "").lower() in ("success", "cycle_success"):
-            if mission_mode in ("STARTUP", "WAITING_FOR_FIRST_CYCLE"):
-                mission_mode = _latest_mission_mode_fallback(default="AFTER_HOURS_CRYPTO_ONLY")
-        session_mode = str(mc_out.get("session_mode") or "")
-        recovery_gate = {
-            "recovery_active": _recovery_hint,
-            "block_new_buys": _recovery_hint,
-            "block_new_buys_reason": _no_trade if _recovery_hint else "",
-            "recovery_reason": _no_trade if _recovery_hint else "",
-        }
-    except Exception:
-        pass
+    _no_trade = trading.get("last_no_trade_reason") or ""
+    _recovery_hint = _no_trade in ("RECONCILE_BLOCK", "RECOVERY_BLOCK_NEW_BUYS")
+    recovery_gate = {
+        "recovery_active": _recovery_hint,
+        "block_new_buys": _recovery_hint,
+        "block_new_buys_reason": _no_trade if _recovery_hint else "",
+        "recovery_reason": _no_trade if _recovery_hint else "",
+    }
+    if worker_stale_display:
+        block_headline = worker_stale_display
 
     # Build a minimal capital_protection so the MC Capital card is not blank.
     _eq = float(acct.get("equity") or 0)
@@ -556,10 +598,12 @@ def build_mission_control_summary_minimal(
         "ops_health": base.get("ops_health") or worker,
         "worker": worker,
         "trading": trading,
+        "worker_stale_display": worker_stale_display,
         "mission": {
             "mission_mode": mission_mode,
             "session_mode": session_mode,
             "mission_mode_human": _mission_mode_human(mission_mode),
+            "worker_stale_display": worker_stale_display,
             "next_allowed_action": {},
         },
         "recovery_gate": recovery_gate,

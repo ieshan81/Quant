@@ -99,6 +99,40 @@ def test_confidence_not_low_when_aligned(monkeypatch) -> None:
     assert out["confidence_reason"]
 
 
+def test_within_scheduled_wait_not_worker_stale(tmp_path, monkeypatch) -> None:
+    import time
+    from pathlib import Path
+
+    import config
+    from data.data_store import get_connection, init_schema
+    from execution.trading_cycle_trace import ensure_heartbeat_cycle_columns
+    from execution.worker_trading_gate import resolve_worker_trading_gate
+
+    db = tmp_path / "wait.sqlite3"
+    now = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(time.time() - 200))
+    monkeypatch.setattr(config, "DB_PATH", db)
+    init_schema(db)
+    with get_connection(db) as conn:
+        ensure_heartbeat_cycle_columns(conn)
+        conn.execute(
+            """
+            INSERT INTO bot_runtime_heartbeat (
+                id, last_worker_heartbeat_at, last_successful_cycle_at,
+                worker_still_alive, current_cycle_stage, last_cycle_duration_ms, updated_at
+            ) VALUES (1, ?, ?, 1, 'cycle_success', 12000.0, ?)
+            """,
+            (now, now, now),
+        )
+        conn.commit()
+    monkeypatch.setattr(
+        "monitoring.worker_wait_context.expected_between_cycle_interval_sec",
+        lambda: (300.0, "worker_trade_interval_sec"),
+    )
+    gate = resolve_worker_trading_gate()
+    assert gate["reason_code"] == "CYCLE_WAITING_MARKET_CLOSED"
+    assert gate.get("within_scheduled_wait") is True
+
+
 def test_cycle_outcome_carries_slow_cycle_diagnostics() -> None:
     out = derive_cycle_outcome(
         {

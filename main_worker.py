@@ -4912,6 +4912,7 @@ def run_trading_cycle_once(
             )
         except Exception:
             logger.debug("[cycle] WORKER_CYCLE_SLOW emit skipped", exc_info=True)
+    _stage_durations = dict(getattr(_trace, "stage_durations_ms", None) or {})
     summary["worker_cycle_diagnostics"] = {
         "last_cycle_duration_ms": cycle_duration_ms,
         "last_slow_cycle_stage": slow_stage,
@@ -4919,6 +4920,16 @@ def run_trading_cycle_once(
         "db_lock_wait_count_recent": 0,
         "external_api_wait_ms": None,
         "blocking_section": slow_stage,
+        "stage_durations_ms": _stage_durations,
+        "stall_blocking_category": (
+            "blocked_on_alpaca"
+            if slow_stage and "broker" in str(slow_stage).lower()
+            else (
+                "blocked_on_sqlite"
+                if slow_stage and any(k in str(slow_stage).lower() for k in ("stale", "cleanup", "reconcile"))
+                else ("unknown" if slow_stage else "scheduled_cycle_wait")
+            )
+        ),
     }
     _trace.stage("cycle_success")
     try:
@@ -5326,7 +5337,38 @@ def run_worker_forever() -> None:
                     else:
                         raise
                 if not _stop.is_set():
-                    time.sleep(_trade_interval_sec())
+                    _sleep_sec = _trade_interval_sec()
+                    _interval_source = "worker_trade_interval_sec"
+                    try:
+                        from monitoring.worker_wait_context import expected_between_cycle_interval_sec
+
+                        _, _interval_source = expected_between_cycle_interval_sec()
+                    except Exception:
+                        pass
+                    try:
+                        from monitoring.reason_codes import WORKER_CYCLE_WAIT
+                        from monitoring.ops_log_store import write_ops_event
+
+                        write_ops_event(
+                            level="info",
+                            event_type="WORKER_CYCLE_WAIT",
+                            message=f"Worker sleeping {_sleep_sec:.0f}s until next cycle.",
+                            reason_code=WORKER_CYCLE_WAIT,
+                            evidence={
+                                "sleep_seconds": round(_sleep_sec, 1),
+                                "interval_source": _interval_source,
+                                "blocking_section": "scheduled_cycle_wait",
+                                "stall_blocking_category": "scheduled_cycle_wait",
+                            },
+                        )
+                    except Exception:
+                        logger.debug("[worker] WORKER_CYCLE_WAIT log skipped", exc_info=True)
+                    logger.info(
+                        "[worker] cycle_wait sleeping {:.0f}s until next cycle ({})",
+                        _sleep_sec,
+                        _interval_source,
+                    )
+                    time.sleep(_sleep_sec)
         except Exception as e:
             crashed = True
             logger.error("[worker] CRASHED: {}", e, exc_info=True)

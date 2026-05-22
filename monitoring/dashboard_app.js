@@ -2730,7 +2730,11 @@
         render: function () {
           var mi = d.mission || {};
           var rg = d.recovery_gate || {};
-          var mode = safeText(mi.mission_mode, "normal");
+          var staleDisp = d.worker_stale_display || mi.worker_stale_display;
+          if (staleDisp) {
+            return String(staleDisp);
+          }
+          var mode = safeText(mi.mission_mode_human || mi.mission_mode, "normal");
           var sess = safeText(mi.session_mode, "—");
           var lines = ["Mission mode is " + mode + ". Session: " + sess + "."];
           if (rg.recovery_active) {

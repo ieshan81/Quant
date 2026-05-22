@@ -22,17 +22,26 @@ def resolve_worker_trading_gate(
     cycle_fresh = bool(ws.get("trading_loop_fresh"))
     trading_will_run = bool(ws.get("trading_will_run"))
 
+    within_wait = bool(ws.get("within_scheduled_wait"))
+
     if not process_alive and not alive_flag:
         code = "WORKER_STOPPED"
         human = (
             "Trading is stopped because the worker is not running. "
             "Start main_worker.py (Railway worker service / start.sh exec)."
         )
+    elif within_wait:
+        code = "CYCLE_WAITING_MARKET_CLOSED"
+        human = ws.get("status_message") or (
+            "Worker is waiting between scheduled cycles (market closed / idle interval)."
+        )
     elif process_alive and not cycle_fresh:
         code = "WORKER_STALE"
+        stall = ws.get("stall_blocking_category") or "unknown"
         human = (
             "Trading is stopped because the worker trading loop is stale. "
-            f"{ws.get('status_message') or 'Check main_worker logs.'}"
+            f"{ws.get('status_message') or 'Check main_worker logs.'} "
+            f"Likely stall: {stall}."
         )
     elif not trading_will_run:
         code = "WORKER_STALE"
@@ -59,6 +68,8 @@ def worker_blocked_crypto_decision(gate: dict[str, Any]) -> dict[str, Any]:
     )[:240]
     if code == "WORKER_STOPPED":
         human = "Crypto cannot trade because the worker is stopped."
+    elif code == "CYCLE_WAITING_MARKET_CLOSED":
+        human = "Crypto cannot trade while the worker waits for the next scheduled cycle."
     elif code == "WORKER_STALE":
         human = "Crypto cannot trade because the worker trading loop is stale."
     return {

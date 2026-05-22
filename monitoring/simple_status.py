@@ -88,7 +88,13 @@ def build_simple_worker_status() -> dict[str, Any]:
         "failed" if hb.get("failed_cycle_stage") else "stale"
     )
     if gate.get("blocked"):
-        cycle_status = "stopped" if gate.get("reason_code") == "WORKER_STOPPED" else "stale"
+        rc = str(gate.get("reason_code") or "")
+        if rc == "WORKER_STOPPED":
+            cycle_status = "stopped"
+        elif rc == "CYCLE_WAITING_MARKET_CLOSED":
+            cycle_status = "waiting"
+        else:
+            cycle_status = "stale"
 
     primary_message = gate.get("trading_stopped_primary_message")
     last_reason, trading_reason = _resolve_last_no_trade_reason(hb, gate, worker)
@@ -104,6 +110,29 @@ def build_simple_worker_status() -> dict[str, Any]:
     except Exception:
         pass
 
+    worker_stale_display = None
+    if gate.get("blocked") or not worker.get("trading_loop_fresh"):
+        try:
+            from monitoring.worker_wait_context import (
+                build_worker_wait_context,
+                worker_stale_display_message,
+            )
+
+            wait_ctx = build_worker_wait_context(hb)
+            worker_stale_display = worker_stale_display_message(
+                last_known_mission_mode=mission_mode,
+                wait_ctx=wait_ctx,
+                worker={
+                    **worker,
+                    "last_cycle_duration_ms": hb.get("last_cycle_duration_ms"),
+                    "current_cycle_stage": hb.get("current_cycle_stage"),
+                },
+            )
+            if worker_stale_display and not primary_message:
+                primary_message = worker_stale_display
+        except Exception:
+            pass
+
     return {
         "ok": True,
         "fallback": True,
@@ -112,6 +141,7 @@ def build_simple_worker_status() -> dict[str, Any]:
         "deploy": deploy,
         "mode": config.MODE,
         "primary_message": primary_message,
+        "worker_stale_display": worker_stale_display,
         "account": {
             "equity": eq,
             "cash": cash,

@@ -62,8 +62,18 @@ class TradingCycleTrace:
     def __init__(self, cycle_id: str) -> None:
         self.cycle_id = cycle_id
         self.stage_name = "cycle_start"
+        self._stage_t0: float | None = None
+        self.stage_durations_ms: dict[str, float] = {}
 
     def stage(self, name: str) -> None:
+        import time as _time
+
+        now = _time.perf_counter()
+        if self._stage_t0 is not None and self.stage_name:
+            self.stage_durations_ms[self.stage_name] = round(
+                (now - self._stage_t0) * 1000.0, 1
+            )
+        self._stage_t0 = now
         self.stage_name = name
         logger.info("[cycle:{}] stage={}", self.cycle_id, name)
         try:

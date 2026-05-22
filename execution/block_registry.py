@@ -114,6 +114,14 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         operator_action_needed=True,
         cpu_skip=True,
     ),
+    "CYCLE_WAITING_MARKET_CLOSED": _entry(
+        reason_code="CYCLE_WAITING_MARKET_CLOSED",
+        severity="info",
+        subsystem="worker",
+        human_reason="Worker is waiting between scheduled cycles (market closed / idle interval).",
+        operator_action_needed=False,
+        cpu_skip=False,
+    ),
     "QUOTE_MISSING": _entry(
         reason_code="QUOTE_MISSING",
         severity="warning",
