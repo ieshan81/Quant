@@ -468,7 +468,8 @@
     if (empty) empty.style.display = rows.length ? "none" : "block";
     tbl.innerHTML = rows.map(function (r) {
       var rec = r.recommended_action != null ? String(r.recommended_action) : String(r.exit_eligibility || "");
-      return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(String(r.local_qty != null ? r.local_qty : "")) + "</td><td class=\"mono\">" + esc(String(r.broker_qty != null ? r.broker_qty : "")) + "</td><td>" + esc(rec) + "</td><td>" + esc(String(r.exit_block_reason || "")) + "</td><td>" + esc(String(r.pdt_status || "")) + "</td><td class=\"mono\">" + esc(String(r.cooldown_remaining || "")) + "</td><td class=\"mono\">" + esc(String(r.pnl_pct || "")) + "</td></tr>";
+      var brokerQty = r.broker_qty != null ? r.broker_qty : (r.qty != null ? r.qty : "");
+      return "<tr><td>" + esc(r.symbol) + "</td><td>" + esc(r.asset_class || "") + "</td><td class=\"mono\">" + esc(String(brokerQty)) + "</td><td class=\"mono\">" + esc(String(brokerQty)) + "</td><td>" + esc(rec) + "</td><td>" + esc(String(r.exit_block_reason || "")) + "</td><td>" + esc(String(r.pdt_status || "")) + "</td><td class=\"mono\">" + esc(String(r.cooldown_remaining || "")) + "</td><td class=\"mono\">" + esc(String(r.pnl_pct || "")) + "</td></tr>";
     }).join("");
     try {
       wrap.open = rows.length > 0 && rows.length <= 12;
@@ -2766,8 +2767,9 @@
       workerSub += " · " + cycleAgeSec + "s ago";
     }
     if (withinWait && waitMsg) workerSub = "Waiting for next cycle · " + workerSub;
+    var canonicalNT = d.canonical_no_trade_reason || {};
     var cryptoCand = formatCryptoCandidateLabel(tr, diag);
-    var pushReason = push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
+    var pushReason = canonicalNT.human_reason || push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
     var cards = [
       { lab: "Equity", val: safeFmtMoney(eq), sub: ac.day_pnl != null ? "Day P&L " + safeFmtMoneySigned(ac.day_pnl) : "Paper account", tone: "" },
       { lab: "Cash / BP", val: safeFmtMoney(t.cash != null ? t.cash : ac.cash), sub: "BP " + safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power) + (prof.reserve_cash != null ? " · reserve " + safeFmtMoney(prof.reserve_cash) : ""), tone: "" },

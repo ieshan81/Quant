@@ -109,15 +109,25 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
             graph_edges = int(gconn.execute("SELECT COUNT(*) FROM momo_graph_edges").fetchone()[0] or 0)
     except Exception:
         pass
+    sched_health: dict[str, Any] = {}
+    try:
+        from monitoring.ai_observer_scheduler import get_observer_health
+
+        sched_health = get_observer_health() or {}
+    except Exception:
+        sched_health = {}
     observer_health = {
         "last_run_at": last_run_at,
-        "last_observer_attempt_at": None,
-        "last_observer_success_at": last_run_at,
-        "last_observer_error": None,
-        "scheduled_in_worker_cycle": False,
+        "last_observer_attempt_at": sched_health.get("last_observer_attempt_at"),
+        "last_observer_success_at": sched_health.get("last_observer_success_at") or last_run_at,
+        "last_observer_error": sched_health.get("last_observer_error"),
+        "cycles_since_last_observer": sched_health.get("cycles_since_last_observer"),
+        "next_observer_due_at": sched_health.get("next_observer_due_at"),
+        "last_summary": sched_health.get("last_summary"),
+        "scheduled_in_worker_cycle": True,
         "note": (
-            "Momo observer runs with full activity/GPT export builds, not every trading cycle. "
-            "Stale last_run_at usually means no export-triggered observer pass recently."
+            sched_health.get("cadence_note")
+            or "Worker schedules Momo every ai_observer_cycle_interval cycles with rate limiting."
         ),
     }
     return _attach_momo_exports({

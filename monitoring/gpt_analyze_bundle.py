@@ -133,6 +133,13 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "memory_compaction_status": ai_notes_meta.get("memory_compaction_status") or {},
     }
 
+    try:
+        from monitoring.strategy_weights import build_strategy_weights_audit
+
+        strategy_weights_audit = build_strategy_weights_audit()
+    except Exception as _sw_exc:
+        strategy_weights_audit = {"error": str(_sw_exc)[:200]}
+
     broker_diag, ms, err = _timed_section(
         "broker_diagnostic",
         lambda: _build_broker_diag_light(),
@@ -252,6 +259,9 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
             mission_summary, crypto_dec, simple
         ),
         "crypto_strategy_viability": _bundle_crypto_strategy_viability(mission_summary),
+        "strategy_weights_audit": strategy_weights_audit,
+        "live_readiness_checklist": _build_live_readiness_checklist(mission_summary, account, strategy_weights_audit),
+        "engine_schedule": _build_engine_schedule(mission_summary, simple),
         "service_info": {
             **deploy,
             "mode": config.MODE,
@@ -445,6 +455,90 @@ def _bundle_crypto_strategy_viability(mission_summary: dict[str, Any] | None) ->
         return build_crypto_strategy_viability(load_runtime_config_for_worker(), diag or {})
     except Exception as exc:
         return {"error": str(exc)[:120]}
+
+
+def _build_live_readiness_checklist(
+    mission_summary: dict[str, Any] | None,
+    account: dict[str, Any] | None,
+    weights_audit: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """PAPER-ONLY live readiness gate — every check must pass before live trading.
+
+    This builds the checklist payload; it does NOT change runtime behavior.
+    Live trading remains gated by mode/keys/operator approval elsewhere.
+    """
+    ms = mission_summary or {}
+    acc = account or {}
+    wa = weights_audit or {}
+    rh = (ms.get("execution_health") or {}).get("reconciliation_health") or {}
+    pos = (ms.get("positions") or {}).get("open") or []
+    stale_count = int((ms.get("positions") or {}).get("stale_local_count") or 0)
+    mismatch_count = int(rh.get("broker_local_mismatch_count") or 0)
+    checks = {
+        "mode_is_paper": bool(str(acc.get("mode") or "").lower() == "paper"),
+        "live_trading_disabled": bool(not acc.get("live_enabled")),
+        "broker_reconciled": bool(rh.get("clean", True)) and mismatch_count == 0,
+        "no_active_stale_rows": stale_count == 0,
+        "buying_power_known": float(acc.get("buying_power") or 0) >= 0,
+        "positions_visible": isinstance(pos, list),
+        "strategy_weights_audited": isinstance(wa, dict) and bool(wa.get("current_weights")),
+        "no_unapproved_live_tuning": bool(
+            wa.get("live_safe_status", "").startswith("paper_only")
+        ),
+    }
+    failed = [k for k, v in checks.items() if not v]
+    return {
+        "checks": checks,
+        "all_pass": not failed,
+        "failed_checks": failed,
+        "required_for_live": [
+            "paper_trade_count_minimum (operator-defined)",
+            "paper_days_minimum (operator-defined)",
+            "max_drawdown_below_limit (operator-defined)",
+            "live_notional_cap_set (operator-defined)",
+            "kill_switch_active (operator-defined)",
+            "operator_explicit_approval",
+        ],
+        "note": (
+            "Live trading remains DISABLED. Changing mode/API keys alone does not lift "
+            "this gate — operator must run the checklist and explicitly approve live."
+        ),
+    }
+
+
+def _build_engine_schedule(
+    mission_summary: dict[str, Any] | None,
+    simple_status: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Map current mission/session to explicit engine selection."""
+    ms = mission_summary or {}
+    ss = simple_status or {}
+    mission = str((ms.get("mission") or {}).get("mission_mode") or ss.get("mission_mode") or "").upper()
+    stock_open = bool((ss.get("market") or {}).get("us_stock_market_open"))
+    mode_label = "MARKET_CLOSED_WAITING"
+    if "OVERNIGHT_CRYPTO_ONLY" in mission or "AFTER_HOURS_CRYPTO_ONLY" in mission:
+        mode_label = "OVERNIGHT_CRYPTO_ONLY"
+    elif stock_open or "REGULAR" in mission:
+        mode_label = "MARKET_OPEN_STOCKS_AND_CRYPTO"
+    return {
+        "engine_mode": mode_label,
+        "selected_engines": {
+            "stock_scanner_active": mode_label == "MARKET_OPEN_STOCKS_AND_CRYPTO",
+            "stock_exits_only": mode_label == "OVERNIGHT_CRYPTO_ONLY"
+            and bool((ms.get("pending_exits") or [])),
+            "crypto_scanner_active": mode_label in (
+                "OVERNIGHT_CRYPTO_ONLY",
+                "MARKET_OPEN_STOCKS_AND_CRYPTO",
+            ),
+        },
+        "stock_market_open": stock_open,
+        "mission_mode": mission or None,
+        "human_reason": {
+            "OVERNIGHT_CRYPTO_ONLY": "US market closed — crypto-only scanning; stock exits queued for open.",
+            "MARKET_OPEN_STOCKS_AND_CRYPTO": "US market open — stock + crypto engines share allocator.",
+            "MARKET_CLOSED_WAITING": "Market closed and crypto not active — waiting cycle.",
+        }.get(mode_label, ""),
+    }
 
 
 def bundle_as_text(bundle: dict[str, Any]) -> str:

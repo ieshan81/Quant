@@ -1519,11 +1519,17 @@ def _check_and_execute_exits(
         )
         cd = _cooldown_remaining_seconds(symbol)
         cd_s = f"{cd:.0f}s" if cd > 1.0 else "—"
+        # Operator-facing 'qty' MUST equal broker_qty (broker is source of truth).
+        # Doubled local_qty stays only as diagnostic so audits can spot the bug.
+        op_qty = broker_qty if broker_qty is not None else local_qty
         row = {
             "symbol": symbol,
             "asset_class": asset_class,
-            "local_qty": local_qty,
+            "qty": op_qty,
             "broker_qty": broker_qty,
+            "local_qty": broker_qty,
+            "local_qty_audit_double_counted": local_qty,
+            "local_qty_diagnostic": local_qty,
             "entry_price": entry_p,
             "current_price": mid_p,
             "pnl_pct": pq,
@@ -4265,6 +4271,27 @@ def run_trading_cycle_once(
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
     _mkt_open = bool(portfolio_limiter.us_stock_market_open())
+    _crypto_universe_source = "universe_snapshot"
+    if crypto_override is not None:
+        _crypto_universe_source = "override"
+    elif not crypto_symbols:
+        # Universe-refresh thread may not have populated yet — fall back to Alpaca-supported pairs
+        # so overnight crypto-only mode never silently scans 0 symbols.
+        try:
+            from execution.crypto_scanner_diagnostics import _resolve_universe_symbols
+
+            _fb_syms, _fb_src, _fb_n = _resolve_universe_symbols()
+            if _fb_syms:
+                crypto_symbols = list(_fb_syms)
+                _crypto_universe_source = f"fallback:{_fb_src}"
+                logger.info(
+                    "[crypto_scan] universe empty; using {} Alpaca-supported pairs from {}",
+                    len(crypto_symbols),
+                    _fb_src,
+                )
+        except Exception:
+            logger.debug("[crypto_scan] supported-universe fallback failed", exc_info=True)
+    rt["_crypto_universe_source"] = _crypto_universe_source
     _cash_snap = float(rt.get("_cycle_buying_power") or 0.0)
     try:
         from execution.cycle_scan_gates import evaluate_crypto_scan_gate, evaluate_stock_scan_gate
@@ -4345,6 +4372,21 @@ def run_trading_cycle_once(
     cr = crypto_symbols
     stock_tasks: list[tuple[AssetClass, str]] = [("stock", s) for s in st]
     crypto_tasks: list[tuple[AssetClass, str]] = [("crypto", s) for s in cr]
+    try:
+        logger.info(
+            "[crypto_scan] CRYPTO_UNIVERSE_LOADED count={} source={} market_open={}",
+            len(cr),
+            _crypto_universe_source,
+            _mkt_open,
+        )
+        logger.info(
+            "[crypto_scan] CRYPTO_SCAN_STARTED universe={} stocks={} mkt_open={}",
+            len(cr),
+            len(st),
+            _mkt_open,
+        )
+    except Exception:
+        pass
     max_sym = os.getenv("SPRINT9_MAX_CYCLE_SYMBOLS")
     if max_sym:
         cap = int(max_sym)
@@ -4751,11 +4793,9 @@ def run_trading_cycle_once(
         )
 
         _scan_t0 = time.perf_counter()
-        _uni_src = "universe_snapshot"
-        if crypto_override is not None:
-            _uni_src = "override"
-        elif (rt.get("_crypto_scan_gate") or {}).get("heavy_scan_skipped"):
-            _uni_src = "gate_skipped"
+        _uni_src = rt.get("_crypto_universe_source") or "universe_snapshot"
+        if (rt.get("_crypto_scan_gate") or {}).get("heavy_scan_skipped"):
+            _uni_src = f"{_uni_src}|gate_skipped"
         summary["crypto_scanner_diagnostics"] = build_crypto_scanner_diagnostics_from_cycle(
             rt=rt,
             results=results,
@@ -4777,6 +4817,41 @@ def run_trading_cycle_once(
                 int(_diag.get("symbols_scanned_this_cycle") or 0)
                 - int(_diag.get("scored_count") or 0),
             )
+            _scanned = int(_diag.get("symbols_scanned_this_cycle") or 0)
+            _universe = int(_diag.get("universe_count") or 0)
+            _scored = int(_diag.get("scored_count") or 0)
+            _best = _diag.get("top_candidates") or []
+            _best0 = _best[0] if _best else {}
+            try:
+                logger.info(
+                    "[crypto_scan] CRYPTO_SCAN_SUMMARY scanned={} universe={} scored={} "
+                    "best={} score={} threshold={} reason={} duration_ms={}",
+                    _scanned,
+                    _universe,
+                    _scored,
+                    _best0.get("symbol") or "-",
+                    _best0.get("score"),
+                    _best0.get("threshold"),
+                    _diag.get("final_reason_code"),
+                    _diag.get("scan_duration_ms"),
+                )
+                if _scored == 0 and _scanned > 0:
+                    logger.info(
+                        "[crypto_scan] CRYPTO_NO_SIGNAL_ALL_ZERO scanned={} universe={} reason={}",
+                        _scanned,
+                        _universe,
+                        _diag.get("final_reason_code"),
+                    )
+                if _scanned > 0 and _universe > 0 and _scanned < max(15, _universe // 2):
+                    logger.warning(
+                        "[crypto_scan] CRYPTO_SCAN_COVERAGE_LOW scanned={} universe={} "
+                        "source={}",
+                        _scanned,
+                        _universe,
+                        _uni_src,
+                    )
+            except Exception:
+                pass
     except Exception:
         logger.debug("crypto_scanner_diagnostics skipped", exc_info=True)
     logger.info(
@@ -4907,6 +4982,30 @@ def run_trading_cycle_once(
         )
     except Exception:
         logger.debug("[cycle_brief] skipped", exc_info=True)
+    try:
+        from monitoring.ai_observer_scheduler import maybe_run_observer_in_cycle
+
+        def _light_observer_payload() -> dict:
+            return {
+                "cycle_id": str(summary.get("cycle_id") or cid),
+                "mission_mode": str(_effective_mission_control(rt).get("mission_mode") or ""),
+                "crypto_scanner_diagnostics": summary.get("crypto_scanner_diagnostics") or {},
+                "crypto_strategy_viability": summary.get("crypto_strategy_viability") or {},
+                "hold_counts": summary.get("hold_counts") or {},
+                "buys": summary.get("buys"),
+                "sells": summary.get("sells"),
+                "holds": summary.get("holds"),
+                "last_no_trade_reason": summary.get("last_no_trade_reason"),
+                "selected_engine": summary.get("selected_engine"),
+            }
+
+        maybe_run_observer_in_cycle(
+            rt=rt,
+            cycle_id=str(summary.get("cycle_id") or cid),
+            payload_builder=_light_observer_payload,
+        )
+    except Exception:
+        logger.debug("[observer_scheduler] cycle hook failed", exc_info=True)
     try:
         from monitoring.account_history_store import record_account_snapshot
         bg = summary.get("buy_gate") or {}

@@ -152,6 +152,21 @@ def build_simple_worker_status() -> dict[str, Any]:
             last_cycle_evidence=brief_ev,
         )
         crypto_scanner_summary = str(diag.get("human_reason") or "")[:200] or None
+        try:
+            from monitoring.mission_control_api import _canonical_no_trade_reason
+
+            canonical = _canonical_no_trade_reason(
+                crypto_diag=diag,
+                crypto_dec=None,
+                recon_clean=True,
+                recovery_block=bool(gate.get("blocked")),
+            )
+            if canonical and canonical.get("reason_code"):
+                last_reason = canonical.get("reason_code")
+                if not crypto_scanner_summary:
+                    crypto_scanner_summary = canonical.get("human_reason")
+        except Exception:
+            pass
     except Exception:
         pass
 

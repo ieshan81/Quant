@@ -141,6 +141,68 @@ def _fetch_crypto_push_pull_brief(limit: int = 5) -> list[dict[str, Any]]:
         return []
 
 
+def _canonical_no_trade_reason(
+    *,
+    crypto_diag: dict[str, Any] | None,
+    crypto_dec: dict[str, Any] | None,
+    recon_clean: bool,
+    recovery_block: bool,
+) -> dict[str, Any]:
+    """Single, current-cycle no-trade reason. Stale mismatch must NOT override."""
+    diag = crypto_diag or {}
+    dec = crypto_dec or {}
+    scanned = int(diag.get("symbols_scanned_this_cycle") or 0)
+    scored = int(diag.get("scored_count") or 0)
+    universe = int(diag.get("universe_count") or 0)
+    top = diag.get("top_candidates") or []
+    th = (diag.get("thresholds") or {}).get("crypto_buy_threshold") or 0.04
+    best = top[0] if top else None
+    code = "NO_SIGNAL"
+    human = "Awaiting fresh worker cycle."
+    if recovery_block:
+        code = "RECOVERY_BLOCK_NEW_BUYS"
+        human = "Recovery gate blocks new buys."
+    elif not recon_clean:
+        code = "RECONCILIATION_NOT_CLEAN"
+        human = "Reconciliation not clean — scanner skipped."
+    elif scanned == 0:
+        code = "NO_CRYPTO_CANDIDATES" if universe == 0 else "SCANNER_NO_SYMBOLS"
+        human = "No crypto symbols scanned this cycle."
+    elif universe and scanned < max(15, universe // 2):
+        code = "CRYPTO_SCAN_COVERAGE_LOW"
+        human = (
+            f"Scanned {scanned}/{universe} symbols this cycle — coverage too low for confident signal."
+        )
+    elif scored == 0:
+        code = "SCANNER_FAILED"
+        human = f"Scanned {scanned} symbols but none produced a valid score."
+    elif best and abs(float(best.get("score") or 0)) < 1e-6:
+        code = "SIGNAL_MODEL_FLAT_ZERO"
+        human = (
+            f"Scanned {scanned} symbols; best {best.get('symbol')} scored 0.0000 below threshold {float(th):.4f}."
+        )
+    elif best and float(best.get("score") or 0) < float(th):
+        code = "SCORE_BELOW_THRESHOLD"
+        human = (
+            f"Scanned {scanned} symbols; best {best.get('symbol')} scored {float(best.get('score')):.4f} "
+            f"below threshold {float(th):.4f}."
+        )
+    else:
+        code = str(dec.get("reason_code") or "NO_SIGNAL")
+        human = str(dec.get("human_reason") or human)
+    return {
+        "reason_code": code,
+        "human_reason": human[:240],
+        "scanned": scanned,
+        "scored": scored,
+        "universe": universe,
+        "best_symbol": (best or {}).get("symbol") if best else None,
+        "best_score": (best or {}).get("score") if best else None,
+        "threshold": float(th),
+        "note": "Current-cycle truth — stale BROKER_LOCAL_MISMATCH does not override this.",
+    }
+
+
 def _top_ai_attention_note() -> dict[str, Any] | None:
     try:
         from monitoring.ai_observer import fetch_latest_notes
@@ -462,6 +524,15 @@ def _assemble_summary(
         "human_summary": why_bp,
         "buying_power_diagnostic": bp_diag,
     }
+
+    # Canonical no-trade reason: derive from current crypto scanner state, not
+    # stale BROKER_LOCAL_MISMATCH or carried-over reason codes.
+    _canonical_reason = _canonical_no_trade_reason(
+        crypto_diag=crypto_scanner_diagnostics,
+        crypto_dec=crypto_executor,
+        recon_clean=recon_clean,
+        recovery_block=bool(rs.get("block_new_buys")),
+    )
     if _cockpit_alloc.get("available"):
         _cap_prot["cockpit_allocation"] = _cockpit_alloc
         _cap_prot["allocator"] = {
@@ -471,6 +542,23 @@ def _assemble_summary(
             "stock_market_value": _cockpit_alloc.get("stock_market_value"),
             "crypto_market_value": _cockpit_alloc.get("crypto_market_value"),
         }
+
+    try:
+        from monitoring.gpt_analyze_bundle import _build_engine_schedule
+
+        _engine_sched = _build_engine_schedule({"mission": {"mission_mode": mission_mode}}, {
+            "mission_mode": mission_mode,
+            "market": {"us_stock_market_open": False},
+        })
+    except Exception:
+        _engine_sched = {"engine_mode": "OVERNIGHT_CRYPTO_ONLY" if "OVERNIGHT" in mission_mode else "UNKNOWN"}
+
+    try:
+        from monitoring.strategy_weights import build_strategy_weights_audit
+
+        _weights_audit = build_strategy_weights_audit()
+    except Exception:
+        _weights_audit = {}
 
     return {
         "ok": True,
@@ -510,6 +598,9 @@ def _assemble_summary(
             "recovery_status": eh.get("startup_recovery_status"),
             "next_allowed_action": allowed,
         },
+        "canonical_no_trade_reason": _canonical_reason,
+        "engine_schedule": _engine_sched,
+        "strategy_weights_audit": _weights_audit,
         "pending_exits": _pending_exits,
         "capital_protection": _cap_prot,
         "positions": {"open": positions[:20], "count": len(positions)},
@@ -658,6 +749,9 @@ def build_mission_control_summary_minimal(
 
     _mc_crypto_diag: dict[str, Any] = {}
     _mc_crypto_viability: dict[str, Any] = {}
+    _mc_canonical_reason: dict[str, Any] = {}
+    _mc_engine_sched: dict[str, Any] = {}
+    _mc_weights_audit: dict[str, Any] = {}
     try:
         from execution.crypto_scanner_diagnostics import build_crypto_scanner_diagnostics_for_api
         from execution.trading_cycle_trace import fetch_cycle_status_from_db
@@ -680,9 +774,29 @@ def build_mission_control_summary_minimal(
             last_cycle_evidence=_brief_ev_mc,
         )
         _mc_crypto_viability = _mc_crypto_diag.pop("crypto_strategy_viability", None) or {}
+        _mc_canonical_reason = _canonical_no_trade_reason(
+            crypto_diag=_mc_crypto_diag,
+            crypto_dec=crypto_dec,
+            recon_clean=True,
+            recovery_block=False,
+        )
     except Exception:
         _mc_crypto_diag = {}
         _mc_crypto_viability = {}
+        _mc_canonical_reason = {}
+
+    try:
+        from monitoring.gpt_analyze_bundle import _build_engine_schedule
+        from monitoring.strategy_weights import build_strategy_weights_audit
+
+        _mc_engine_sched = _build_engine_schedule(
+            {"mission": {"mission_mode": mission_mode}},
+            {"mission_mode": mission_mode, "market": {"us_stock_market_open": False}},
+        )
+        _mc_weights_audit = build_strategy_weights_audit()
+    except Exception:
+        _mc_engine_sched = {"engine_mode": "OVERNIGHT_CRYPTO_ONLY" if "OVERNIGHT" in mission_mode else "UNKNOWN"}
+        _mc_weights_audit = {}
 
     _pending_exits: list[dict[str, Any]] = []
     _session_label = ""
@@ -758,6 +872,9 @@ def build_mission_control_summary_minimal(
             "next_allowed_action": {},
         },
         "pending_exits": _pending_exits,
+        "canonical_no_trade_reason": _mc_canonical_reason,
+        "engine_schedule": _mc_engine_sched,
+        "strategy_weights_audit": _mc_weights_audit,
         "position_exit_rows": _pe_rows[:20],
         "recovery_gate": recovery_gate,
         "capital_protection": _capital_protection,
