@@ -90,6 +90,102 @@ def _range_cutoff(range_key: str) -> str:
     return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _alpaca_period_for_range(range_key: str) -> str:
+    rk = (range_key or "1D").upper().strip()
+    return {"1D": "1D", "5D": "1W", "1W": "1W", "1M": "1M", "ALL": "3M"}.get(rk, "1D")
+
+
+def _portfolio_state_limit(range_key: str) -> int:
+    rk = (range_key or "1D").upper().strip()
+    return {"1D": 240, "5D": 600, "1W": 800, "1M": 1200, "ALL": 3000}.get(rk, 240)
+
+
+def _legacy_rows_to_points(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        ts = r.get("snapshot_at") or r.get("timestamp") or r.get("ts")
+        eq = r.get("equity_total")
+        if eq is None:
+            eq = r.get("equity")
+        try:
+            eqf = float(eq) if eq is not None else 0.0
+        except (TypeError, ValueError):
+            eqf = 0.0
+        if not ts or eqf <= 0:
+            continue
+        out.append({
+            "timestamp": ts,
+            "equity": round(eqf, 4),
+            "cash": r.get("cash"),
+            "buying_power": r.get("buying_power"),
+        })
+    return out
+
+
+def _merge_history_points(primary: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_ts: dict[str, dict[str, Any]] = {}
+    for p in extra:
+        ts = str(p.get("timestamp") or "")
+        if ts:
+            by_ts[ts] = p
+    for p in primary:
+        ts = str(p.get("timestamp") or "")
+        if ts:
+            by_ts[ts] = p
+    merged = sorted(by_ts.values(), key=lambda x: str(x.get("timestamp") or ""))
+    return merged
+
+
+def _supplement_history(points: list[dict[str, Any]], range_key: str) -> list[dict[str, Any]]:
+    """Fill sparse ops snapshots with Alpaca curves and local portfolio_state rows."""
+    rk = (range_key or "1D").upper().strip()
+    need = len(points) < 8
+    if not need and len(points) >= 2:
+        try:
+            t0 = str(points[0].get("timestamp") or "")
+            t1 = str(points[-1].get("timestamp") or "")
+            d0 = datetime.fromisoformat(t0.replace("Z", "+00:00"))
+            d1 = datetime.fromisoformat(t1.replace("Z", "+00:00"))
+            span_h = (d1 - d0).total_seconds() / 3600.0
+            want_h = float(_RANGE_HOURS.get(rk, _RANGE_HOURS["1D"]))
+            if rk != "ALL" and span_h < want_h * 0.35:
+                need = True
+        except Exception:
+            pass
+    if not need:
+        return points
+
+    legacy: list[dict[str, Any]] = []
+    try:
+        from monitoring.dashboard_data import get_alpaca_background_snapshot
+
+        per = _alpaca_period_for_range(rk)
+        curves = get_alpaca_background_snapshot().get("equity_curves") or {}
+        raw = curves.get(per) if isinstance(curves, dict) else None
+        if isinstance(raw, list):
+            legacy = _legacy_rows_to_points(raw)
+    except Exception:
+        logger.debug("[account_history] alpaca curve supplement skipped", exc_info=True)
+
+    if len(legacy) < 3:
+        try:
+            import config
+            from data.data_store import get_connection
+            from monitoring.dashboard_data import fetch_portfolio_equity_series
+
+            with get_connection(config.DB_PATH) as conn:
+                ps = fetch_portfolio_equity_series(conn, limit=_portfolio_state_limit(rk))
+            legacy = _legacy_rows_to_points(ps)
+        except Exception:
+            logger.debug("[account_history] portfolio_state supplement skipped", exc_info=True)
+
+    if not legacy:
+        return points
+    return _merge_history_points(points, legacy)
+
+
 def fetch_account_history(range_key: str = "1D") -> dict[str, Any]:
     import time as _time
 
@@ -150,6 +246,12 @@ def fetch_account_history(range_key: str = "1D") -> dict[str, Any]:
         "stock_exposure": _has("stock_market_value") or _has("stock_exposure_pct"),
         "crypto_exposure": _has("crypto_market_value") or _has("crypto_exposure_pct"),
     }
+    _orig_count = len(points)
+    points = _supplement_history(points, rk)
+    _was_supplemented = len(points) > _orig_count
+    if _was_supplemented:
+        series_available["equity"] = _has("equity")
+
     insufficient = len(points) < 3
     msg = None
     if insufficient:
@@ -163,6 +265,7 @@ def fetch_account_history(range_key: str = "1D") -> dict[str, Any]:
         "message": msg,
         "count": len(points),
         "cached": False,
+        "supplemented": _was_supplemented,
     }
     _HISTORY_CACHE[rk] = (_time.time(), out)
     return out

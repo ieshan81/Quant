@@ -10,6 +10,25 @@
     return h;
   }
 
+  window._symIconError = function (img) {
+    if (!img) return;
+    if (img.dataset.fallbackTried === "1") {
+      img.style.display = "none";
+      var n = img.nextElementSibling;
+      if (n) n.style.display = "inline-flex";
+      return;
+    }
+    img.dataset.fallbackTried = "1";
+    var sym = String(img.dataset.symbol || "").trim();
+    var ac = String(img.dataset.ac || "stock").toLowerCase();
+    var base = sym.split("/")[0].toLowerCase();
+    if (ac === "crypto") {
+      img.src = "https://assets.coincap.io/assets/icons/" + base + "@2x.png";
+    } else {
+      img.src = "https://storage.googleapis.com/iex/api/logos/" + sym.split("/")[0].toUpperCase() + ".png";
+    }
+  };
+
   function _copyWithFallback(text, statusEl, okMsg) {
     var fb = document.getElementById("mcCopyFallback");
     function showFb() {
@@ -46,6 +65,7 @@
 
   var equityChart = null;
   var mcEquityChart = null;
+  var mcAllocDonutChart = null;
   var _mcEqFetchGen = 0;
   var POLL_MS = 30000;
   var MIN_ORDER_NOTIONAL = 1.0;
@@ -922,6 +942,77 @@
     return day + " " + mon + " " + hh + ":" + mmStr;
   }
 
+  function symbolIconHtml(assetClass, symbol) {
+    var sym = String(symbol || "").trim();
+    if (!sym) return "";
+    var letter = esc(sym.split("/")[0].charAt(0).toUpperCase() || "?");
+    var src = "/api/symbol-icon?asset_class=" + encodeURIComponent(assetClass || "stock") +
+      "&symbol=" + encodeURIComponent(sym);
+    return (
+      '<span class="sym-icon-wrap">' +
+      '<img class="sym-icon" src="' + src + '" alt="" loading="lazy" ' +
+      'data-symbol="' + esc(sym) + '" data-ac="' + esc(String(assetClass || "stock")) + '" ' +
+      'onerror="window._symIconError&&window._symIconError(this)"/>' +
+      '<span class="sym-fallback" style="display:none">' + letter + "</span>" +
+      "<span>" + esc(sym) + "</span></span>"
+    );
+  }
+
+  function _parseEquityHistoryJson(d) {
+    var raw = d.points || d.series || d.legacy_equity_series || [];
+    return raw.map(function (p) {
+      return {
+        snapshot_at: p.timestamp || p.snapshot_at || p.ts,
+        equity_total: p.equity != null ? p.equity : p.equity_total
+      };
+    }).filter(function (r) {
+      return isFiniteNum(r.equity_total) && Number(r.equity_total) > 0;
+    });
+  }
+
+  function _equityYScaleBounds(vals) {
+    if (!vals || !vals.length) return {};
+    var minV = Math.min.apply(null, vals);
+    var maxV = Math.max.apply(null, vals);
+    var span = maxV - minV;
+    var pad = span > 0.02 ? Math.max(span * 0.15, 0.35) : Math.max(Math.abs(minV) * 0.003, 1.0);
+    return {
+      min: minV - pad,
+      max: maxV + pad,
+      ticks: {
+        callback: function (v) { return "$" + Number(v).toFixed(2); },
+        color: "#9ca3af"
+      },
+      grid: { color: "rgba(148,163,184,0.08)" }
+    };
+  }
+
+  function _chartAreaGradient(ctx, canvas, topColor, bottomAlpha) {
+    var h = (canvas && canvas.height) || 200;
+    var g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, topColor);
+    g.addColorStop(1, bottomAlpha || "rgba(56, 189, 248, 0)");
+    return g;
+  }
+
+  function _premiumLineDataset(vals, rawDates, color, fillTop) {
+    var last = vals.length - 1;
+    return {
+      data: vals,
+      borderColor: color,
+      backgroundColor: fillTop,
+      fill: true,
+      tension: 0.35,
+      borderWidth: 2.5,
+      pointRadius: vals.map(function (_, i) { return i === last ? 5 : i % Math.max(1, Math.floor(vals.length / 8)) === 0 ? 2 : 0; }),
+      pointBackgroundColor: color,
+      pointBorderColor: "#e0f2fe",
+      pointBorderWidth: 1,
+      pointHoverRadius: 6,
+      rawDates: rawDates
+    };
+  }
+
   function _updateEqRangeChange(series) {
     var el = document.getElementById("eqRangeChange");
     if (!el) return;
@@ -964,13 +1055,20 @@
       }
     }
     _updateEqRangeChange(series);
-    var labels = series.map(function (r) { return _fmtEqLabel(r.snapshot_at || ""); });
+    var labels = series.map(function (r) {
+      return _eqCurrentRange === "1D" ? _fmtEqLabel(r.snapshot_at || "") : _fmtEqDateLabel(r.snapshot_at || "");
+    });
     var vals = series.map(function (r) { return num(r.equity_total, 0); });
     var rawDates = series.map(function (r) { return r.snapshot_at || ""; });
+    var octx = canvas.getContext("2d");
+    var ograd = _chartAreaGradient(octx, canvas, "rgba(52, 211, 153, 0.28)", "rgba(52, 211, 153, 0)");
     if (!equityChart) {
-      equityChart = new Chart(canvas.getContext("2d"), {
+      equityChart = new Chart(octx, {
         type: "line",
-        data: { labels: labels, datasets: [{ data: vals, borderColor: "#34d399", tension: 0.2, pointRadius: 1, rawDates: rawDates }] },
+        data: {
+          labels: labels,
+          datasets: [_premiumLineDataset(vals, rawDates, "#34d399", ograd)]
+        },
         options: {
           animation: false,
           responsive: true,
@@ -990,10 +1088,7 @@
             }
           },
           scales: {
-            y: {
-              ticks: { callback: function (v) { return "$" + Number(v).toFixed(2); }, color: "#9ca3af" },
-              grid: { color: "rgba(148,163,184,0.08)" }
-            },
+            y: _equityYScaleBounds(vals),
             x: {
               ticks: { color: "#9ca3af", maxTicksLimit: 8 },
               grid: { display: false }
@@ -1005,6 +1100,10 @@
       equityChart.data.labels = labels;
       equityChart.data.datasets[0].data = vals;
       equityChart.data.datasets[0].rawDates = rawDates;
+      equityChart.data.datasets[0].pointRadius = vals.map(function (_, i) {
+        return i === vals.length - 1 ? 5 : i % Math.max(1, Math.floor(vals.length / 8)) === 0 ? 2 : 0;
+      });
+      equityChart.options.scales.y = _equityYScaleBounds(vals);
       equityChart.update("none");
     }
   }
@@ -1034,11 +1133,10 @@
       })
       .then(function (d) {
         if (gen !== _eqFetchGen) return;
-        var raw = d.points || d.series || d.legacy_equity_series || [];
-        var series = raw.map(function (p) {
+        var series = _parseEquityHistoryJson(d).map(function (p) {
           return {
-            snapshot_at: p.timestamp || p.snapshot_at || p.ts,
-            equity_total: p.equity != null ? p.equity : p.equity_total,
+            snapshot_at: p.snapshot_at,
+            equity_total: p.equity_total,
             cash_total: p.cash,
             buying_power: p.buying_power
           };
@@ -1046,8 +1144,9 @@
         var meta = document.getElementById("eqRangeChange");
         var ms = Date.now() - t0;
         if (meta) {
-          var start = series.length ? _fmtEqLabel(series[0].snapshot_at) : "—";
-          var end = series.length ? _fmtEqLabel(series[series.length - 1].snapshot_at) : "—";
+          var fmtTs = range === "1D" ? _fmtEqLabel : _fmtEqDateLabel;
+          var start = series.length ? fmtTs(series[0].snapshot_at) : "—";
+          var end = series.length ? fmtTs(series[series.length - 1].snapshot_at) : "—";
           meta.textContent = range + " · " + (d.count || series.length) + " pts · " + start + " → " + end + " · " + ms + "ms";
         }
         if (d.insufficient_history || !series.length) {
@@ -1142,7 +1241,7 @@
         var up = num(r.unrealized_pnl_pct, null);
         var stRow = exitStateFor(r, vm);
         return "<tr>" +
-          "<td>" + esc(r.symbol) + "</td>" +
+          "<td>" + symbolIconHtml(ac, r.symbol) + "</td>" +
           "<td class=\"mono\">" + esc(q != null ? fmtQty(q, ac === "crypto") : "—") + "</td>" +
           "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
           "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
@@ -1219,7 +1318,7 @@
             ">Sell</button>"
           : "—";
       return "<tr>" +
-        "<td>" + esc(r.symbol) + "</td>" +
+        "<td>" + symbolIconHtml(ac, symU) + "</td>" +
         "<td>" + esc(r.asset_class || "") + "</td>" +
         "<td" +
         (openedTitle ? ' title="' + esc(openedTitle) + '"' : "") +
@@ -2968,16 +3067,17 @@
       (th != null ? "<span>Threshold <strong>" + esc(String(th)) + "</strong></span>" : "") +
       "</div>";
     var statusLab = code ? String(code).replace(/_/g, " ") : (push.push_allowed ? "Signal OK" : "No signal");
+    var thDisp = th != null ? String(th) : "70";
     var rows = tops.slice(0, 6).map(function (c) {
-      return "<tr><td>" + esc(c.symbol) + '</td><td class="mono">' + esc(String(c.score != null ? Number(c.score).toFixed(3) : "—")) +
-        "</td><td>" + esc(String(c.reject_reason || c.action || "").replace(/_/g, " ")) + "</td></tr>";
+      return "<tr><td>" + symbolIconHtml("crypto", c.symbol) + '</td><td class="mono">' + esc(String(c.score != null ? Number(c.score).toFixed(0) : "—")) +
+        '</td><td class="mono muted">' + esc(thDisp) + "</td><td>" + esc(String(c.reject_reason || c.action || "").replace(/_/g, " ")) + "</td></tr>";
     }).join("");
     el.innerHTML =
       stats +
       '<div style="margin-bottom:6px">' + _mcBadge(scanning ? "ok" : "warn", statusLab) +
       ' <span style="font-size:11px;color:var(--muted)">' + esc(human) + "</span></div>" +
       (rows
-        ? '<table class="mc-mini-table"><thead><tr><th>Symbol</th><th>Score</th><th>Reason</th></tr></thead><tbody>' + rows + "</tbody></table>"
+        ? '<table class="mc-mini-table"><thead><tr><th>Coin</th><th>Score</th><th>Threshold</th><th>Reason</th></tr></thead><tbody>' + rows + "</tbody></table>"
         : '<span class="muted">No scored candidates this cycle.</span>');
   }
 
@@ -3021,8 +3121,12 @@
     var canonicalNT = d.canonical_no_trade_reason || {};
     var cryptoCand = formatCryptoCandidateLabel(tr, diag);
     var pushReason = canonicalNT.human_reason || push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
+    var dayPct = ac.day_pnl_pct != null ? Number(ac.day_pnl_pct) : (ac.equity && ac.day_pnl ? (Number(ac.day_pnl) / Number(ac.equity)) * 100 : null);
+    var eqSub = ac.day_pnl != null
+      ? "Day P&L " + safeFmtMoneySigned(ac.day_pnl) + (dayPct != null && isFinite(dayPct) ? " (" + (dayPct >= 0 ? "+" : "") + dayPct.toFixed(2) + "%)" : "")
+      : "Paper account";
     var cards = [
-      { lab: "Equity", val: safeFmtMoney(eq), sub: ac.day_pnl != null ? "Day P&L " + safeFmtMoneySigned(ac.day_pnl) : "Paper account", tone: "" },
+      { lab: "Equity", val: safeFmtMoney(eq), sub: eqSub, tone: "", equityCard: true },
       { lab: "Cash / BP", val: safeFmtMoney(t.cash != null ? t.cash : ac.cash), sub: "BP " + safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power) + (prof.reserve_cash != null ? " · reserve " + safeFmtMoney(prof.reserve_cash) : ""), tone: "" },
       {
         lab: "Usable capital",
@@ -3047,9 +3151,68 @@
       { lab: "Broker", val: br.aligned_with_broker ? "Aligned" : "Review", sub: "Broker " + safeText(br.broker_positions_count, "—") + " · runtime " + safeText(br.runtime_positions_count, "—"), tone: br.aligned_with_broker ? "ok" : "warn" }
     ];
     host.innerHTML = cards.map(function (c) {
-      return '<div class="mc-cmd-card mc-' + esc(c.tone) + '"><div class="mc-cmd-lab">' + esc(c.lab) + '</div><div class="mc-cmd-val">' +
-        (c.pulse ? '<span class="mc-pulse"></span>' : "") + esc(c.val) + '</div><div class="mc-cmd-sub">' + esc(c.sub) + "</div></div>";
+      var cls = "mc-cmd-card mc-" + esc(c.tone) + (c.equityCard ? " mc-cmd-equity" : "");
+      return '<div class="' + cls + '"><div class="mc-cmd-lab">' + esc(c.lab) + '</div><div class="mc-cmd-val">' +
+        (c.pulse ? '<span class="mc-pulse"></span>' : "") + esc(c.val) + "</div>" +
+        (c.equityCard ? '<div class="mc-cmd-spark" id="mcEquitySpark"></div>' : "") +
+        '<div class="mc-cmd-sub">' + esc(c.sub) + "</div></div>";
     }).join("");
+    _mcLoadEquitySpark();
+  }
+
+  function _mcRenderAllocDonut(alloc, equityTotal) {
+    var canvas = document.getElementById("mcAllocDonut");
+    var center = document.getElementById("mcAllocDonutCenter");
+    var legend = document.getElementById("mcCapitalAllocLegend");
+    if (!canvas || typeof Chart === "undefined") return;
+    if (alloc.available === false || (alloc.actual_stock_pct == null && alloc.actual_crypto_pct == null)) {
+      if (legend) legend.innerHTML = '<span class="muted">' + esc(alloc.human_label || "Allocation unavailable") + "</span>";
+      if (center) center.innerHTML = "<span>Total</span><strong>—</strong>";
+      if (mcAllocDonutChart) { mcAllocDonutChart.destroy(); mcAllocDonutChart = null; }
+      return;
+    }
+    var stockPct = Number(alloc.actual_stock_pct || 0);
+    var cryptoPct = Number(alloc.actual_crypto_pct || 0);
+    var cashPct = Number(alloc.cash_pct || alloc.reserve_pct || 0);
+    var reserved = Number(alloc.reserved_pct || 0);
+    var data = [cashPct, stockPct, cryptoPct];
+    var colors = ["#38bdf8", "#34d399", "#fb923c"];
+    var labels = ["Cash", "Stocks", "Crypto"];
+    if (reserved > 0.01) {
+      data.push(reserved);
+      colors.push("#64748b");
+      labels.push("Reserved");
+    }
+    if (center) {
+      center.innerHTML = "<span>Total Equity</span><strong>" + esc(safeFmtMoney(equityTotal)) + "</strong>";
+    }
+    if (legend) {
+      legend.innerHTML = labels.map(function (lab, i) {
+        return '<div class="leg-row"><span class="leg-dot" style="background:' + colors[i] + '"></span>' +
+          esc(lab) + " <strong style=\"color:var(--text);margin-left:auto\">" + esc(data[i].toFixed(1)) + "%</strong></div>";
+      }).join("");
+    }
+    if (mcAllocDonutChart) {
+      mcAllocDonutChart.data.labels = labels;
+      mcAllocDonutChart.data.datasets[0].data = data;
+      mcAllocDonutChart.data.datasets[0].backgroundColor = colors;
+      mcAllocDonutChart.update("none");
+      return;
+    }
+    mcAllocDonutChart = new Chart(canvas.getContext("2d"), {
+      type: "doughnut",
+      data: {
+        labels: labels,
+        datasets: [{ data: data, backgroundColor: colors, borderWidth: 0, hoverOffset: 4 }]
+      },
+      options: {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: true,
+        cutout: "62%",
+        plugins: { legend: { display: false }, tooltip: { enabled: true } }
+      }
+    });
   }
 
   function _mcRenderCockpitMain(d) {
@@ -3057,42 +3220,47 @@
     var pos = (d.positions && d.positions.open) || [];
     var cp = d.capital_protection || {};
     var alloc = cp.cockpit_allocation || cp.allocator || {};
-    var prof = cp.dynamic_profile || {};
     var diag = d.crypto_scanner_diagnostics || {};
-    var eqEl = document.getElementById("mcEquityChartBody");
-    if (eqEl) {
-      eqEl.textContent = "Equity " + safeFmtMoney(ac.equity) + (ac.day_pnl != null ? " · day " + safeFmtMoneySigned(ac.day_pnl) : "");
-    }
-    var capEl = document.getElementById("mcCapitalAllocBody");
-    if (capEl) {
-      if (alloc.available === false || (alloc.actual_stock_pct == null && alloc.actual_crypto_pct == null)) {
-        capEl.innerHTML = '<span class="muted">' + esc(alloc.human_label || "Allocation unavailable") + "</span>";
-      } else {
-        var stockPct = Number(alloc.actual_stock_pct || 0);
-        var cryptoPct = Number(alloc.actual_crypto_pct || 0);
-        var cashPct = Number(alloc.cash_pct || alloc.reserve_pct || 0);
-        capEl.innerHTML =
-          '<div class="mc-donut-bar"><span style="width:' + stockPct + '%;background:#38bdf8"></span>' +
-          '<span style="width:' + cryptoPct + '%;background:#a78bfa"></span>' +
-          '<span style="width:' + cashPct + '%;background:#334155"></span></div>' +
-          '<div style="font-size:11px;color:var(--muted)">' + esc(alloc.human_label || (
-            "Stock " + stockPct.toFixed(1) + "% · Crypto " + cryptoPct.toFixed(1) + "% · Cash " + cashPct.toFixed(1) + "%"
-          )) + "</div>";
-      }
-    }
+    _mcRenderAllocDonut(alloc, ac.equity);
     var hold = document.getElementById("mcHoldingsMini");
+    var holdFoot = document.getElementById("mcHoldingsFooter");
     if (hold) {
-      if (!pos.length) hold.innerHTML = '<span class="muted">No open positions</span>';
-      else {
+      if (!pos.length) {
+        hold.innerHTML = '<span class="muted">No open positions</span>';
+        if (holdFoot) holdFoot.style.display = "none";
+      } else {
+        var stockRows = [];
+        var totalMv = 0;
+        var totalPnl = 0;
         hold.innerHTML =
-          '<table class="mc-mini-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Value</th><th>P&amp;L</th></tr></thead><tbody>' +
-          pos.slice(0, 8).map(function (p) {
+          '<table class="mc-holdings-table"><thead><tr><th>Symbol</th><th>Asset</th><th>Qty</th><th>Mkt Value</th><th>Avg Entry</th><th>Last</th><th>P&amp;L</th><th>Status</th></tr></thead><tbody>' +
+          pos.slice(0, 10).map(function (p) {
+            var acp = String(p.asset_class || "stock").toLowerCase();
+            var isCrypto = acp === "crypto";
             var up = num(p.unrealized_pnl_pct != null ? p.unrealized_pnl_pct : p.pnl_pct, null);
-            return "<tr><td>" + esc(p.symbol) + "</td><td class=\"mono\">" +
-              esc(fmtQty(p.net_qty || p.qty, String(p.asset_class).toLowerCase() === "crypto")) +
+            var mv = num(p.market_value, 0);
+            var pnlD = num(p.unrealized_pnl, null);
+            if (!isCrypto) {
+              stockRows.push(p);
+              totalMv += mv;
+              if (pnlD != null) totalPnl += pnlD;
+            }
+            var status = (p.pending_exit || p.exit_pending) ? '<span class="mc-badge warn">Pending exit</span>' : '<span class="mc-status-held">Held</span>';
+            return "<tr><td>" + symbolIconHtml(acp, p.symbol) + "</td><td>" + esc(isCrypto ? "Crypto" : "Stocks") +
+              "</td><td class=\"mono\">" + esc(fmtQty(p.net_qty || p.qty, isCrypto)) +
               "</td><td class=\"mono\">" + esc(fmtMoney(p.market_value)) +
-              "</td><td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td></tr>";
+              "</td><td class=\"mono\">" + esc(fmtPrice(p.avg_entry_price)) +
+              "</td><td class=\"mono\">" + esc(fmtPrice(p.current_price)) +
+              "</td><td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td><td>" + status + "</td></tr>";
           }).join("") + "</tbody></table>";
+        if (holdFoot && stockRows.length) {
+          holdFoot.style.display = "flex";
+          var stockPctTot = totalMv && ac.equity ? (totalMv / Number(ac.equity)) * 100 : null;
+          holdFoot.innerHTML =
+            "<span><strong>Total stocks</strong> " + esc(fmtMoney(totalMv)) +
+            (stockPctTot != null ? " (" + stockPctTot.toFixed(1) + "%)" : "") + "</span>" +
+            "<span class=\"" + pnlClass(totalPnl) + "\"><strong>P&amp;L</strong> " + esc(fmtMoneySigned(totalPnl)) + "</span>";
+        } else if (holdFoot) holdFoot.style.display = "none";
       }
     }
     var pend = document.getElementById("mcPendingExits");
@@ -3100,24 +3268,14 @@
       var pending = d.pending_exits || [];
       pend.innerHTML = pending.length
         ? pending.map(function (p) {
-          return "<div style=\"margin-bottom:6px\"><strong>" + esc(p.symbol) + "</strong> · " +
-            esc(fmtQty(p.qty, false)) + " · " + esc(String(p.reason || "").replace(/_/g, " ")) +
+          return "<div style=\"margin-bottom:6px\">" + symbolIconHtml(p.asset_class || "stock", p.symbol) +
+            " · " + esc(fmtQty(p.qty, false)) + " · " + esc(String(p.reason || "").replace(/_/g, " ")) +
             "<br><span class=\"muted\">" + esc(p.human_reason || "") +
             (p.unrealized_pnl_pct != null ? " · " + esc(String(p.unrealized_pnl_pct)) : "") + "</span></div>";
         }).join("")
-        : '<span class="muted">No pending exits</span>';
+        : '<div class="mc-pending-empty"><div class="mc-check-icon" aria-hidden="true">✓</div>No exits scheduled</div>';
     }
     _mcRenderCryptoScanner(d);
-    var blk = document.getElementById("mcActiveBlockers");
-    if (blk) {
-      var blockers = [].concat(diag.global_blockers || [], (d.crypto_executor_readiness || {}).blockers || []);
-      var rg = d.recovery_gate || {};
-      if (rg.block_new_buys) blockers.push(rg.block_new_buys_reason || "New buys blocked");
-      blockers = blockers.filter(function (x, i, a) { return x && a.indexOf(x) === i; }).slice(0, 6);
-      blk.innerHTML = blockers.length ? blockers.map(function (b) {
-        return "<div>• " + esc(String(b).replace(/_/g, " ")) + "</div>";
-      }).join("") : '<span class="muted">No active blockers</span>';
-    }
     var feed = document.getElementById("mcActionFeed");
     if (feed) {
       var events = (d.crypto_night && d.crypto_night.latest_push_pull_events) || [];
@@ -3137,20 +3295,27 @@
     var momoC = document.getElementById("mcMomoCritical");
     if (momoC) {
       var note = d.top_ai_note || {};
+      var ms = d.momo_summary || {};
+      var body = "";
       if (note.finding) {
         var sev = String(note.severity || "info").toLowerCase();
-        momoC.innerHTML = _mcBadge(sev, sev === "critical" ? "bad" : sev === "warning" ? "warn" : "ok") +
-          " <span style=\"font-size:12px\">" + esc((note.finding || "").slice(0, 180)) + "</span>" +
-          (note.suggested_action ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + esc(note.suggested_action) + "</div>" : "") +
-          ' <a href="#" data-tab-jump="ai" style="font-size:11px">AI Console →</a>';
+        body = _mcBadge(sev, sev === "critical" ? "bad" : sev === "warning" ? "warn" : "ok") +
+          " <span style=\"font-size:12px;line-height:1.45\">" + esc((note.finding || "").slice(0, 280)) + "</span>" +
+          (note.suggested_action ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + esc(note.suggested_action) + "</div>" : "");
+      } else if (ms.summary_text || ms.headline) {
+        body = '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(String(ms.summary_text || ms.headline).slice(0, 320)) + "</p>";
       } else {
-        var att = (d.momo_summary && d.momo_summary.attention) || [];
-        momoC.innerHTML = att.length ? esc(att[0]) : '<span class="muted">No critical Momo notes</span>';
+        var att = ms.attention || [];
+        var canon = canonicalNoTradeHuman(d);
+        body = att.length
+          ? '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(att[0]) + "</p>"
+          : (canon ? '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(canon) + "</p>" : '<span class="muted">No critical Momo notes</span>');
       }
+      momoC.innerHTML = body + ' <a href="#" data-tab-jump="ai" style="font-size:11px;display:inline-block;margin-top:6px">AI Console →</a>';
     }
   }
 
-  function _mcLoadEquitySpark(d) {
+  function _mcLoadEquitySpark() {
     fetch("/api/account/history?range=1D", { cache: "no-store", headers: _authHeaders() })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (h) {
@@ -3482,6 +3647,23 @@
       });
   }
 
+  var _mcEqRange = "1D";
+
+  function _updateMcEqRangeChange(series) {
+    var el = document.getElementById("mcEqRangeChange");
+    if (!el) return;
+    if (!series || series.length < 2) { el.textContent = ""; return; }
+    var first = num(series[0].equity_total, 0);
+    var last = num(series[series.length - 1].equity_total, 0);
+    if (first <= 0) { el.textContent = ""; return; }
+    var chg = last - first;
+    var pct = (chg / first) * 100;
+    var sign = chg >= 0 ? "+" : "";
+    var color = chg >= 0 ? "#34d399" : "#f87171";
+    el.style.color = color;
+    el.textContent = _mcEqRange + ": " + sign + "$" + chg.toFixed(2) + " (" + sign + pct.toFixed(1) + "%)";
+  }
+
   function renderMcEquityChart(series) {
     var canvas = document.getElementById("mcEquityChart");
     var hint = document.getElementById("mcEqEmptyHint");
@@ -3505,24 +3687,21 @@
       return;
     }
     if (hint) hint.style.display = "none";
-    var labels = series.map(function (r) { return _fmtEqLabel(r.snapshot_at || ""); });
+    var labels = series.map(function (r) {
+      return _mcEqRange === "1D" ? _fmtEqLabel(r.snapshot_at || "") : _fmtEqDateLabel(r.snapshot_at || "");
+    });
     var vals = series.map(function (r) { return num(r.equity_total, 0); });
     var rawDates = series.map(function (r) { return r.snapshot_at || ""; });
+    _updateMcEqRangeChange(series);
+    var yScale = _equityYScaleBounds(vals);
+    var mctx = canvas.getContext("2d");
+    var mgrad = _chartAreaGradient(mctx, canvas, "rgba(56, 189, 248, 0.32)", "rgba(56, 189, 248, 0)");
     if (!mcEquityChart) {
-      mcEquityChart = new Chart(canvas.getContext("2d"), {
+      mcEquityChart = new Chart(mctx, {
         type: "line",
         data: {
           labels: labels,
-          datasets: [{
-            data: vals,
-            borderColor: "#38bdf8",
-            backgroundColor: "rgba(56,189,248,0.12)",
-            fill: true,
-            tension: 0.25,
-            pointRadius: 0,
-            pointHitRadius: 6,
-            rawDates: rawDates
-          }]
+          datasets: [_premiumLineDataset(vals, rawDates, "#38bdf8", mgrad)]
         },
         options: {
           animation: false,
@@ -3543,10 +3722,7 @@
             }
           },
           scales: {
-            y: {
-              ticks: { callback: function (v) { return "$" + Number(v).toFixed(0); }, color: "#9ca3af" },
-              grid: { color: "rgba(148,163,184,0.08)" }
-            },
+            y: yScale,
             x: {
               ticks: { color: "#9ca3af", maxTicksLimit: 6 },
               grid: { display: false }
@@ -3558,37 +3734,82 @@
       mcEquityChart.data.labels = labels;
       mcEquityChart.data.datasets[0].data = vals;
       mcEquityChart.data.datasets[0].rawDates = rawDates;
+      mcEquityChart.data.datasets[0].pointRadius = vals.map(function (_, i) {
+        return i === vals.length - 1 ? 5 : i % Math.max(1, Math.floor(vals.length / 8)) === 0 ? 2 : 0;
+      });
+      mcEquityChart.options.scales.y = yScale;
       mcEquityChart.update("none");
     }
   }
 
-  function _mcLoadEquityChart() {
+  function _fmtEqDateLabel(raw) {
+    if (!raw) return "";
+    var d = new Date(String(raw).replace(" ", "T") + (raw.indexOf("Z") < 0 ? "Z" : ""));
+    if (isNaN(d.getTime())) return String(raw);
+    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return d.getDate() + " " + months[d.getMonth()];
+  }
+
+  function _mcLoadEquityChart(range) {
+    _mcEqRange = range || _mcEqRange || "1D";
     var gen = ++_mcEqFetchGen;
     var hint = document.getElementById("mcEqEmptyHint");
+    document.querySelectorAll(".mc-eq-range").forEach(function (b) {
+      b.classList.toggle("eq-range-active", b.getAttribute("data-range") === _mcEqRange);
+    });
+    if (mcEquityChart) {
+      mcEquityChart.destroy();
+      mcEquityChart = null;
+    }
     if (hint) {
       hint.style.display = "block";
       hint.textContent = "Equity chart loading…";
     }
-    fetch("/api/account/history?range=1D", { cache: "no-store", headers: _authHeaders() })
+    _mcSyncEqRangeUi(_mcEqRange);
+    fetch("/api/account/history?range=" + encodeURIComponent(_mcEqRange), { cache: "no-store", headers: _authHeaders() })
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
       })
       .then(function (d) {
         if (gen !== _mcEqFetchGen) return;
-        var raw = d.points || d.series || [];
-        var series = raw.map(function (p) {
-          return {
-            snapshot_at: p.timestamp || p.snapshot_at || p.ts,
-            equity_total: p.equity != null ? p.equity : p.equity_total
-          };
-        });
+        var series = _parseEquityHistoryJson(d);
+        if (d.insufficient_history && series.length < 3 && hint) {
+          hint.textContent = d.message || "Not enough history for this range yet.";
+          hint.style.display = "block";
+        }
         renderMcEquityChart(series);
-        if (hint && series.length) hint.style.display = "none";
+        if (hint && series.length >= 2) hint.style.display = "none";
       })
       .catch(function (e) {
         if (hint) hint.textContent = "Equity chart unavailable: " + safeText(e && e.message, String(e));
       });
+  }
+
+  function _mcSyncEqRangeUi(range) {
+    document.querySelectorAll(".mc-eq-range").forEach(function (b) {
+      b.classList.toggle("eq-range-active", b.getAttribute("data-range") === range);
+    });
+    var sel = document.getElementById("mcEqRangeSelect");
+    if (sel && sel.value !== range) sel.value = range;
+  }
+
+  function wireMcEquityRangeButtons() {
+    document.querySelectorAll(".mc-eq-range").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var r = btn.getAttribute("data-range");
+        _mcSyncEqRangeUi(r);
+        _mcLoadEquityChart(r);
+      });
+    });
+    var sel = document.getElementById("mcEqRangeSelect");
+    if (sel) {
+      sel.addEventListener("change", function () {
+        var r = sel.value || "1D";
+        _mcSyncEqRangeUi(r);
+        _mcLoadEquityChart(r);
+      });
+    }
   }
 
   function scheduleMissionGraphLoad() {
@@ -4220,6 +4441,7 @@
     wireAiChat();
     wireAiMemoryButtons();
     wireEquityRangeButtons();
+    wireMcEquityRangeButtons();
     // Pre-fill Overview tab from fast heartbeat endpoint before full dashboard loads.
     prefetchSimpleStatus();
     fetchDashboard();

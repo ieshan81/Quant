@@ -152,7 +152,7 @@ def _alpaca_background_refresh_once() -> None:
         performance = _safe_section("alpaca_bg_performance", None, lambda: get_real_performance(cli))
 
         curves: dict[str, list] = {}
-        for per in ("1D", "1W", "1M", "3M"):
+        for per in ("1D", "1W", "1M", "3M", "1A"):
             cur = _safe_section(
                 f"alpaca_bg_curve_{per}",
                 None,

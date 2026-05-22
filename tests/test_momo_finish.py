@@ -44,6 +44,29 @@ def test_account_history_record_and_fetch(tmp_path, monkeypatch) -> None:
     assert data["series_available"]["equity"] is True
 
 
+def test_account_history_supplements_sparse_snapshots(tmp_path, monkeypatch) -> None:
+    ops = tmp_path / "ops.sqlite"
+    monkeypatch.setenv("OPS_DB_PATH", str(ops))
+    from monitoring.account_history_store import fetch_account_history, record_account_snapshot
+
+    record_account_snapshot({"equity": 200.0, "recorded_at": "2026-05-20T12:00:00Z"})
+    legacy = [
+        {"timestamp": "2026-05-18T10:00:00Z", "equity": 198.0},
+        {"timestamp": "2026-05-19T10:00:00Z", "equity": 199.0},
+        {"timestamp": "2026-05-20T10:00:00Z", "equity": 201.0},
+        {"timestamp": "2026-05-21T10:00:00Z", "equity": 203.0},
+    ]
+    monkeypatch.setattr(
+        "monitoring.dashboard_data.get_alpaca_background_snapshot",
+        lambda: {"equity_curves": {"1W": legacy}},
+    )
+    data = fetch_account_history("5D")
+    assert data["count"] >= 3
+    equities = [p["equity"] for p in data["points"]]
+    assert max(equities) >= 201.0
+    assert min(equities) <= 199.0
+
+
 def test_mission_control_cache_hit() -> None:
     from monitoring.mission_control_cache import clear_mission_control_cache, get_mission_control_cached
 
@@ -110,6 +133,15 @@ def test_config_page_html(dash_app) -> None:
     html = dash_app.test_client().get("/").data.decode()
     assert "configEditorRoot" in html
     assert 'data-tab="config"' in html
+
+
+def test_symbol_icons_resolve() -> None:
+    from monitoring.symbol_icons import resolve_symbol_icon
+
+    c = resolve_symbol_icon("crypto", "AVAX/USD")
+    assert c["url"] and "avax" in c["url"].lower()
+    s = resolve_symbol_icon("stock", "AMC")
+    assert s["url"] and "AMC.png" in s["url"]
 
 
 def test_telegram_polling_lock() -> None:

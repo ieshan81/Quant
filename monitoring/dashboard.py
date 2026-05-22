@@ -784,29 +784,90 @@ _PAGE = """<!DOCTYPE html>
       70% { box-shadow: 0 0 0 8px rgba(52,211,153,0); }
       100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
     }
-    .mc-cockpit-main {
+    .mc-mock-grid { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+    .mc-row-charts {
       display: grid;
-      grid-template-columns: 1.2fr 1fr;
+      grid-template-columns: minmax(0, 1.45fr) minmax(0, 0.85fr) minmax(0, 1.15fr);
       gap: 12px;
-      margin-bottom: 14px;
+      align-items: stretch;
     }
-    @media (max-width: 960px) { .mc-cockpit-main { grid-template-columns: 1fr; } }
+    .mc-row-bottom {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    @media (max-width: 1100px) {
+      .mc-row-charts { grid-template-columns: 1fr; }
+      .mc-row-bottom { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 640px) { .mc-row-bottom { grid-template-columns: 1fr; } }
     .mc-panel {
-      background: #0b1220;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px 12px;
-      margin-bottom: 10px;
+      background: linear-gradient(145deg, rgba(12, 20, 36, 0.95) 0%, rgba(8, 14, 24, 0.98) 100%);
+      border: 1px solid rgba(56, 189, 248, 0.14);
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 0;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
     }
-    .mc-panel h4 { margin: 0 0 8px; font-size: 0.82rem; color: var(--accent); font-weight: 600; }
-    .mc-chart-wrap { background: #0b1220; border-radius: 8px; border: 1px solid var(--border); }
+    .mc-panel h4 { margin: 0; font-size: 0.82rem; color: #7dd3fc; font-weight: 600; letter-spacing: 0.02em; }
+    .mc-panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    .mc-range-select {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      font-size: 11px;
+      padding: 4px 8px;
+    }
+    .mc-chart-wrap {
+      background: rgba(6, 12, 22, 0.85);
+      border-radius: 10px;
+      border: 1px solid rgba(56, 189, 248, 0.12);
+      box-shadow: inset 0 0 40px rgba(56, 189, 248, 0.04);
+    }
+    .mc-chart-wrap.mc-chart-tall { height: 220px; min-height: 220px; }
     .mc-chart-wrap canvas { width: 100% !important; height: 100% !important; }
+    .mc-donut-host { position: relative; width: 148px; height: 148px; margin: 4px auto 10px; }
+    .mc-donut-host canvas { width: 100% !important; height: 100% !important; }
+    .mc-donut-center-label {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 10px; color: var(--muted); pointer-events: none; text-align: center; line-height: 1.3;
+    }
+    .mc-donut-center-label strong { font-size: 13px; color: var(--text); display: block; }
+    .mc-alloc-legend { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 5px; }
+    .mc-alloc-legend .leg-row { display: flex; align-items: center; gap: 6px; }
+    .mc-alloc-legend .leg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .mc-holdings-table { width: 100%; font-size: 10px; border-collapse: collapse; }
+    .mc-holdings-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 5px 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    .mc-holdings-table td { padding: 6px 4px; border-bottom: 1px solid rgba(51,65,85,0.3); vertical-align: middle; }
+    .mc-holdings-footer { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 11px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+    .mc-status-held { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: #6ee7b7; }
+    .mc-status-held::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,0.6); }
+    .mc-cmd-card.mc-cmd-equity .mc-cmd-val { font-size: 1.28rem; }
+    .mc-cmd-spark { height: 30px; margin-top: 6px; opacity: 0.95; }
+    .mc-cmd-spark svg { width: 100%; height: 100%; display: block; }
+    .mc-pending-empty { text-align: center; padding: 20px 8px; color: var(--muted); }
+    .mc-pending-empty .mc-check-icon { font-size: 2.2rem; line-height: 1; color: #34d399; opacity: 0.75; margin-bottom: 6px; }
+    .mc-ask-footer { margin: 16px 0 12px; padding: 14px 16px; border-radius: 12px; }
+    .mc-ask-footer .mc-ask-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .mc-ask-footer input { flex: 1; min-width: 200px; }
+    .mc-momo-row { display: flex; gap: 12px; align-items: flex-start; }
+    .mc-momo-avatar {
+      width: 48px; height: 48px; border-radius: 12px; flex-shrink: 0;
+      background: linear-gradient(135deg, #4f46e5, #06b6d4);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; box-shadow: 0 0 20px rgba(79, 70, 229, 0.35);
+    }
     .mc-donut-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .mc-donut-bar { flex: 1; min-width: 120px; height: 10px; background: rgba(148,163,184,0.12); border-radius: 6px; overflow: hidden; display: flex; }
     .mc-donut-bar span { height: 100%; }
     .mc-mini-table { width: 100%; font-size: 11px; border-collapse: collapse; }
     .mc-mini-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px 4px 0; border-bottom: 1px solid var(--border); }
     .mc-mini-table td { padding: 5px 6px 5px 0; border-bottom: 1px solid rgba(51,65,85,0.35); }
+    .sym-icon-wrap { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+    .sym-icon { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; background: rgba(15,23,42,0.8); border: 1px solid rgba(56,189,248,0.2); flex-shrink: 0; }
+    .sym-fallback { display: inline-flex; width: 20px; height: 20px; border-radius: 50%; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; background: rgba(56,189,248,0.15); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.35); }
     .mc-feed li { font-size: 11px; color: var(--muted); margin: 4px 0; list-style: none; padding-left: 0; }
     .mc-feed li strong { color: var(--text); }
     .mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.75rem; }
@@ -948,19 +1009,71 @@ _PAGE = """<!DOCTYPE html>
       <main class="tab-content">
     <section id="panel-mission" class="tab-panel active">
       <div class="mc-command-strip" id="mcCommandStrip"></div>
-      <div class="mc-cockpit-main" id="mcCockpitMain">
-        <div class="mc-cockpit-left">
-          <div class="mc-panel mc-equity-panel"><h4>Equity &amp; P&amp;L</h4><div id="mcEquityChartBody" class="mono" style="font-size:12px;margin-bottom:6px;">Loading…</div><div class="chart-wrap mc-chart-wrap" style="position:relative;height:168px;min-height:168px;"><canvas id="mcEquityChart"></canvas></div><p id="mcEqEmptyHint" class="empty-hint" style="display:none;margin:6px 0 0;font-size:11px;"></p></div>
-          <div class="mc-panel"><h4>Capital allocation</h4><div id="mcCapitalAllocBody" class="mc-donut-row">—</div></div>
+      <div class="mc-mock-grid" id="mcCockpitMain">
+        <div class="mc-row-charts">
+          <div class="mc-panel glass-card mc-equity-panel">
+            <div class="mc-panel-head">
+              <h4>Equity Curve</h4>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                <select id="mcEqRangeSelect" class="mc-range-select" aria-label="Equity range">
+                  <option value="1D">Last 1 Day</option>
+                  <option value="5D">Last 5 Days</option>
+                  <option value="1W">Last 1 Week</option>
+                  <option value="1M">Last 1 Month</option>
+                  <option value="ALL">All History</option>
+                </select>
+                <button type="button" class="eq-range-btn mc-eq-range eq-range-active" data-range="1D">1D</button>
+                <button type="button" class="eq-range-btn mc-eq-range" data-range="5D">5D</button>
+                <button type="button" class="eq-range-btn mc-eq-range" data-range="1W">1W</button>
+                <button type="button" class="eq-range-btn mc-eq-range" data-range="1M">1M</button>
+                <button type="button" class="eq-range-btn mc-eq-range" data-range="ALL">ALL</button>
+              </div>
+            </div>
+            <div id="mcEqRangeChange" class="mono" style="font-size:11px;margin-bottom:6px;color:var(--muted);"></div>
+            <div class="chart-wrap mc-chart-wrap mc-chart-tall"><canvas id="mcEquityChart"></canvas></div>
+            <p id="mcEqEmptyHint" class="empty-hint" style="display:none;margin:6px 0 0;font-size:11px;"></p>
+          </div>
+          <div class="mc-panel glass-card mc-alloc-panel">
+            <h4>Capital Allocation</h4>
+            <div class="mc-donut-host">
+              <canvas id="mcAllocDonut" aria-label="Capital allocation chart"></canvas>
+              <div id="mcAllocDonutCenter" class="mc-donut-center-label"><span>Total</span><strong>—</strong></div>
+            </div>
+            <div id="mcCapitalAllocLegend" class="mc-alloc-legend"></div>
+          </div>
+          <div class="mc-panel glass-card mc-holdings-panel">
+            <h4>Holdings</h4>
+            <div id="mcHoldingsMini"><span class="muted">Loading…</span></div>
+            <div id="mcHoldingsFooter" class="mc-holdings-footer" style="display:none;"></div>
+          </div>
         </div>
-        <div class="mc-cockpit-right">
-          <div class="mc-panel"><h4>Holdings</h4><div id="mcHoldingsMini"><span class="muted">Loading…</span></div></div>
-          <div class="mc-panel"><h4>Pending exits</h4><div id="mcPendingExits"><span class="muted">None</span></div></div>
-          <div class="mc-panel mc-crypto-scanner glass-card" id="mcCryptoScannerPanel"><h4>Crypto scanner</h4><div id="mcCryptoScanner"><span class="muted">Loading…</span></div></div>
-          <div class="mc-panel"><h4>Active blockers</h4><div id="mcActiveBlockers"><span class="muted">None</span></div></div>
-          <div class="mc-panel"><h4>Last actions</h4><ul class="mc-feed timeline-feed" id="mcActionFeed"><li>—</li></ul></div>
-          <div class="mc-panel mc-momo-observer glass-card" id="mcMomoCriticalPanel"><h4>Momo AI Observer</h4><div class="momo-role">Observer · paper recommendations only</div><div id="mcMomoCritical"><span class="muted">—</span></div></div>
+        <div class="mc-row-bottom">
+          <div class="mc-panel glass-card"><h4>Pending Exits</h4><div id="mcPendingExits"><span class="muted">None</span></div></div>
+          <div class="mc-panel mc-crypto-scanner glass-card" id="mcCryptoScannerPanel"><h4>Crypto Scanner</h4><div id="mcCryptoScanner"><span class="muted">Loading…</span></div></div>
+          <div class="mc-panel glass-card"><h4>Last Actions</h4><ul class="mc-feed timeline-feed" id="mcActionFeed"><li>—</li></ul></div>
+          <div class="mc-panel mc-momo-observer glass-card" id="mcMomoCriticalPanel">
+            <h4>Momo · AI Observer</h4>
+            <div class="momo-role">Observer · paper recommendations only</div>
+            <div class="mc-momo-row">
+              <div class="mc-momo-avatar" aria-hidden="true">🤖</div>
+              <div id="mcMomoCritical" style="flex:1;min-width:0;"><span class="muted">—</span></div>
+            </div>
+          </div>
         </div>
+      </div>
+      <div class="mc-ask-footer glass-card">
+        <h3 style="margin:0 0 8px;font-size:0.9rem;color:#a78bfa;">Ask Momo</h3>
+        <div class="mc-ask-row">
+          <input type="text" id="mcMomoInput" placeholder="Ask a question or request analysis…" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px;" />
+          <button type="button" id="btnMcAskMomo" class="btn primary">Send</button>
+        </div>
+        <div class="mc-quick-btns">
+          <button type="button" class="btn secondary mc-quick" data-q="Why no crypto?">Why no crypto?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Summarize risk">Summarize risk</button>
+          <button type="button" class="btn secondary mc-quick" data-q="What changed?">What changed?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Can it trade tonight?">Can it trade tonight?</button>
+        </div>
+        <div id="mcMomoAnswer" class="mc-body" style="margin-top:8px;min-height:1.25rem;max-height:100px;overflow:auto;font-size:12px;color:var(--muted);">—</div>
       </div>
       <details class="diag-drawer mc-diagnostics-zone" id="mcDiagnosticsZone">
         <summary>Advanced diagnostics &amp; exports (operator)</summary>
@@ -995,19 +1108,6 @@ _PAGE = """<!DOCTYPE html>
         <div class="mc-card" id="mcCryptoPull"><h3>Crypto Pull</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcMomo"><h3>Momo Summary</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcOps"><h3>Ops Health</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
-      </div>
-      <div class="mc-momo-box">
-        <h3 style="margin:0 0 6px;font-size:0.9rem;">Ask Momo</h3>
-        <input type="text" id="mcMomoInput" placeholder="Why no crypto? Why blocked? …" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 8px;font-size:13px;" />
-        <div class="mc-quick-btns">
-          <button type="button" class="btn secondary mc-quick" data-q="Why no crypto?">Why no crypto?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Why no stock sell?">Why no stock sell?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Summarize risk">Summarize risk</button>
-          <button type="button" class="btn secondary mc-quick" data-q="What changed?">What changed?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Can it trade tonight?">Can it trade tonight?</button>
-        </div>
-        <button type="button" id="btnMcAskMomo" class="btn primary">Ask Momo</button>
-        <div id="mcMomoAnswer" class="mc-body" style="margin-top:6px;min-height:1.5rem;max-height:120px;overflow:auto;font-size:12px;">—</div>
       </div>
       <pre id="mcDevJson" class="mono sec" style="display:none;">{}</pre>
       </details>
@@ -2452,6 +2552,22 @@ def create_app() -> Flask:
         data = fetch_account_history(rk)
         timer.finish()
         return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.get("/api/symbol-icon")
+    def api_symbol_icon() -> Response:
+        """Resolve a stock/crypto logo URL for dashboard tables (redirect to CDN)."""
+        from flask import redirect
+
+        from monitoring.symbol_icons import resolve_symbol_icon
+
+        info = resolve_symbol_icon(
+            str(request.args.get("asset_class", "stock")),
+            str(request.args.get("symbol", "")),
+        )
+        url = info.get("url")
+        if not url:
+            return Response(status=404)
+        return redirect(url, code=302)
 
     @app.get("/api/config/schema")
     def api_config_schema() -> Response:

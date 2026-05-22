@@ -1325,3 +1325,26 @@ def test_crypto_paper_auto_enable_not_blocked_by_ghost_positions() -> None:
     })
     assert dec_no_bp.get("reason_code") == "INSUFFICIENT_BUYING_POWER"
     assert dec_no_bp.get("executor_enabled") is True  # executor ON, just no cash
+
+
+def test_symbol_icon_redirects(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/api/symbol-icon?symbol=BTC/USD&asset_class=crypto", follow_redirects=False)
+    assert r.status_code == 302
+    assert "icon/btc.png" in (r.headers.get("Location") or "").lower()
+    r2 = client.get("/api/symbol-icon?symbol=AMC&asset_class=stock", follow_redirects=False)
+    assert r2.status_code == 302
+    assert "AMC.png" in (r2.headers.get("Location") or "")
+
+
+def test_mission_control_equity_range_buttons(dash_app) -> None:
+    html, bundle, _ = _html_and_js(dash_app.test_client())
+    assert "mc-eq-range" in html
+    assert 'data-range="5D"' in html
+    assert "mcEqRangeSelect" in html
+    assert "mcAllocDonut" in html
+    assert "mc-mock-grid" in html
+    assert "mc-ask-footer" in html
+    assert "wireMcEquityRangeButtons" in bundle
+    assert "_mcRenderAllocDonut" in bundle
+    assert "symbolIconHtml" in bundle
