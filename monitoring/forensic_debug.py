@@ -49,11 +49,20 @@ def build_forensic_debug(
     canon = ms.get("canonical_no_trade_reason") or ss.get("canonical_no_trade_reason") or {}
     crypto_session = ms.get("crypto_night") or ms.get("crypto_push_pull_session") or dec.get("crypto_session") or {}
 
+    fast_forensics: dict[str, Any] = {}
+    try:
+        from execution.crypto_fast_loop import get_crypto_fast_loop_status
+
+        fast_forensics = get_crypto_fast_loop_status()
+    except Exception as exc:
+        fast_forensics = {"error": str(exc)[:120]}
+
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "position_truth_audit": truth_audit,
         "crypto_push_forensics": _crypto_push_forensics(diag, dec, canon, rt),
         "crypto_pull_forensics": _crypto_pull_forensics(crypto_session, truth_audit, dec),
+        "crypto_fast_loop_forensics": fast_forensics,
         "momo_forensics": _momo_forensics(ms),
         "ui_data_sources": _ui_data_sources(ms, ss),
     }

@@ -86,11 +86,14 @@ def test_crypto_policy_blocks_ai() -> None:
 
 def test_dashboard_shows_momo_not_jarvis(dash_app) -> None:
     html = dash_app.test_client().get("/").data.decode("utf-8", errors="replace")
-    assert "Ask Momo" in html
+    # UI branding is "MoMo"; Mission Control footer uses Send + mcMomoInput.
+    assert "Ask MoMo" in html
+    assert "btnMcAskMomo" in html
+    assert "mcMomoInput" in html
     assert "Mission Control" in html
     assert "Ask Jarvis" not in html
     assert "aiStatusFootnote" in html
-    assert "Loading Momo status" in html
+    assert "Loading MoMo status" in html
 
 
 def test_mission_control_summary_endpoint(dash_app) -> None:

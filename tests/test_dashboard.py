@@ -356,7 +356,8 @@ def test_exec_health_tile_relabels(dash_app) -> None:
     client = dash_app.test_client()
     html, bundle, _ = _html_and_js(client)
     assert "Stale local rows" in bundle
-    assert "Broker/local mismatches" in bundle
+    assert "Active broker mismatches" in bundle
+    assert "Historical audit rows" in bundle
     assert "Usable buy power" in bundle
     assert "Last broker snapshot" in bundle
     assert "DB lock waits/retries" in bundle

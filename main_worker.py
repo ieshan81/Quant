@@ -5698,6 +5698,18 @@ def run_worker_forever() -> None:
         crashed = False
         try:
             trader, universe, market_ctx, scan_thread = _worker_startup()
+            try:
+                from execution.crypto_fast_loop import start_crypto_fast_loop_thread
+
+                start_crypto_fast_loop_thread(
+                    stop_event=_stop,
+                    trader_lock=_trader_lock,
+                    get_trader=lambda: trader,
+                    get_crypto_symbols=lambda: list(getattr(universe, "crypto_symbols", None) or [])[:50],
+                )
+                logger.info("[crypto_fast_loop] background thread started (paper-only until live readiness)")
+            except Exception:
+                logger.debug("[crypto_fast_loop] thread start skipped", exc_info=True)
             while not _stop.is_set():
                 if _halted.is_set():
                     raise RuntimeError("worker halted flag set; forcing restart")

@@ -328,8 +328,30 @@ def push_decision_from_canonical(
             "human_reason": human or "Crypto push ready.",
             "candidate_symbol": ex.get("best_candidate_symbol") or canon.get("best_symbol"),
         }
-    if code == "NO_CRYPTO_CANDIDATES" and canon.get("best_symbol"):
-        code = str(ex.get("push_blocked_reason") or ex.get("reason_code") or code)
+    _stale_no_candidate = code in (
+        "NO_CRYPTO_CANDIDATES",
+        "NO_SIGNAL",
+        "HOLD",
+        "SCORE_BELOW_THRESHOLD",
+    )
+    best_sym = canon.get("best_symbol")
+    best_sc = canon.get("best_score")
+    th = canon.get("threshold")
+    above = (
+        best_sym
+        and best_sc is not None
+        and th is not None
+        and float(best_sc) >= float(th)
+    )
+    if _stale_no_candidate and above:
+        code = str(
+            ex.get("push_blocked_reason")
+            or ex.get("reason_code")
+            or canon.get("reason_code")
+            or code
+        )
+        if code in ("NO_CRYPTO_CANDIDATES", "NO_SIGNAL", "HOLD"):
+            code = "CRYPTO_PUSH_BLOCKED_PREFLIGHT"
     return {
         "push_allowed": False,
         "reason_code": code,

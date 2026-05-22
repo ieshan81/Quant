@@ -27,9 +27,11 @@ def build_crypto_push_status(
     push_decision: dict[str, Any],
     *,
     scan_gate: dict[str, Any] | None = None,
+    canonical_reason: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """New-buy / push eligibility only."""
     gate = scan_gate or {}
+    canon = canonical_reason or {}
     if gate.get("heavy_scan_skipped"):
         code = str(gate.get("skip_reason_code") or "SCAN_SKIPPED")
         return {
@@ -41,6 +43,24 @@ def build_crypto_push_status(
             "headline": f"Crypto push: blocked — {gate.get('saved_cpu_reason') or code}",
         }
     code = str(push_decision.get("reason_code") or "UNKNOWN")
+    if code == "NO_CRYPTO_CANDIDATES" and canon.get("best_symbol"):
+        ccode = str(canon.get("reason_code") or code)
+        if ccode != "NO_CRYPTO_CANDIDATES":
+            code = ccode
+            push_decision = {
+                **push_decision,
+                "reason_code": code,
+                "human_reason": canon.get("human_reason") or push_decision.get("human_reason"),
+            }
+    th = float(canon.get("threshold") or 0)
+    best_sc = canon.get("best_score")
+    if code == "NO_CRYPTO_CANDIDATES" and best_sc is not None and th and float(best_sc) >= th:
+        code = str(canon.get("reason_code") or "CRYPTO_PUSH_BLOCKED_PREFLIGHT")
+        push_decision = {
+            **push_decision,
+            "reason_code": code,
+            "human_reason": canon.get("human_reason") or push_decision.get("human_reason"),
+        }
     push_ok = bool(push_decision.get("push_allowed"))
     if push_ok:
         sym = push_decision.get("candidate_symbol")
@@ -189,8 +209,13 @@ def build_crypto_session_status(
     stock_scan_gate: dict[str, Any] | None = None,
     crypto_scan_gate: dict[str, Any] | None = None,
     reconcile_issues: list[dict[str, Any]] | None = None,
+    canonical_reason: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    push = build_crypto_push_status(push_decision, scan_gate=crypto_scan_gate)
+    push = build_crypto_push_status(
+        push_decision,
+        scan_gate=crypto_scan_gate,
+        canonical_reason=canonical_reason,
+    )
     pull = build_crypto_pull_status(
         positions=positions,
         exit_rows=exit_rows,

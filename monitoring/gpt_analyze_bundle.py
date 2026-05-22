@@ -223,19 +223,37 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
                 e2["human_reason"] = human_reason_code(str(e2.get("reason_code") or ""))
                 crypto_push_pull_events.append(e2)
 
-    try:
-        from execution.crypto_push_pull_status import build_crypto_session_status
-
-        _open_pos = (mission_summary or {}).get("positions", {}).get("open") if isinstance(mission_summary, dict) else []
-        crypto_session = build_crypto_session_status(
-            crypto_dec if isinstance(crypto_dec, dict) else {},
-            positions=_open_pos,
-            exit_rows=(mission_summary or {}).get("execution_health", {}).get("position_exit_rows")
-            if isinstance(mission_summary, dict)
-            else None,
+    crypto_session: dict[str, Any] = {}
+    if isinstance(mission_summary, dict):
+        crypto_session = (
+            mission_summary.get("crypto_push_pull_session")
+            or {
+                "crypto_push": mission_summary.get("crypto_push") or {},
+                "crypto_pull": mission_summary.get("crypto_pull") or {},
+            }
         )
-    except Exception:
-        crypto_session = {}
+    if not crypto_session.get("crypto_push"):
+        try:
+            from core.position_truth import push_decision_from_canonical
+            from execution.crypto_push_pull_status import build_crypto_session_status
+
+            _open_pos = (
+                (mission_summary or {}).get("positions", {}).get("open")
+                if isinstance(mission_summary, dict)
+                else []
+            )
+            _canon = (mission_summary or {}).get("canonical_no_trade_reason") or {}
+            _push_dec = push_decision_from_canonical(_canon, executor=crypto_dec if isinstance(crypto_dec, dict) else {})
+            crypto_session = build_crypto_session_status(
+                _push_dec,
+                positions=_open_pos,
+                exit_rows=(mission_summary or {}).get("execution_health", {}).get("position_exit_rows")
+                if isinstance(mission_summary, dict)
+                else None,
+                canonical_reason=_canon,
+            )
+        except Exception:
+            crypto_session = {}
 
     forensic_debug: dict[str, Any] = {}
     try:
@@ -275,6 +293,8 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "crypto_strategy_viability": _bundle_crypto_strategy_viability(mission_summary),
         "strategy_weights_audit": strategy_weights_audit,
         "live_readiness_checklist": _build_live_readiness_checklist(mission_summary, account, strategy_weights_audit),
+        "live_readiness": _bundle_live_readiness(mission_summary, account, strategy_weights_audit),
+        "crypto_fast_loop_status": _bundle_crypto_fast_loop_status(),
         "engine_schedule": _build_engine_schedule(mission_summary, simple),
         "service_info": {
             **deploy,
@@ -303,8 +323,11 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "recent_ops_logs": (ops_logs or [])[:40],
         "recent_errors": errors[:20],
         "recent_critical_events": critical,
-        "momo_latest_notes": [],
+        "momo_latest_notes": _bundle_momo_notes(mission_summary),
         "momo_backtest_status": {},
+        "momo_quant_recommendations": _bundle_momo_quant_recommendations(mission_summary, strategy_weights_audit),
+        "momo_weight_patch_proposals": [],
+        "momo_config_patch_proposals": [],
         "world_monitor_status": {"skipped": True},
         "resource_snapshot": resource_snap,
         "resource_history_summary": {"count": 0, "items": []},
@@ -518,6 +541,101 @@ def _build_live_readiness_checklist(
             "this gate — operator must run the checklist and explicitly approve live."
         ),
     }
+
+
+def _bundle_crypto_fast_loop_status() -> dict[str, Any]:
+    try:
+        from execution.crypto_fast_loop import get_crypto_fast_loop_status
+
+        return get_crypto_fast_loop_status()
+    except Exception as exc:
+        return {"enabled": False, "error": str(exc)[:120], "live_ready": False}
+
+
+def _bundle_live_readiness(
+    mission_summary: dict[str, Any] | None,
+    account: dict[str, Any] | None,
+    weights_audit: dict[str, Any] | None,
+) -> dict[str, Any]:
+    try:
+        from monitoring.live_readiness import build_live_readiness
+
+        return build_live_readiness(
+            mission_summary=mission_summary,
+            account=account,
+            weights_audit=weights_audit,
+            crypto_fast_loop_status=_bundle_crypto_fast_loop_status(),
+        )
+    except Exception as exc:
+        return {"status": "error", "live_allowed": False, "blockers": [str(exc)[:80]]}
+
+
+def _bundle_momo_notes(mission_summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    try:
+        from monitoring.ai_observer import fetch_latest_notes
+        from monitoring.mission_control_api import _ai_note_is_stale_or_resolved
+
+        rg = (mission_summary or {}).get("recovery_gate") or {}
+        worker = (mission_summary or {}).get("worker") or (mission_summary or {}).get("ops_health") or {}
+        out = []
+        for n in fetch_latest_notes(limit=20):
+            if not isinstance(n, dict):
+                continue
+            stale = _ai_note_is_stale_or_resolved(n, recovery_gate=rg, worker=worker)
+            row = {**n, "resolved": stale}
+            if not stale:
+                out.append(row)
+        return out[:10]
+    except Exception:
+        return []
+
+
+def _bundle_momo_quant_recommendations(
+    mission_summary: dict[str, Any] | None,
+    weights_audit: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Paper-only quant recommendations — no auto-apply."""
+    ms = mission_summary or {}
+    diag = ms.get("crypto_scanner_diagnostics") or {}
+    canon = ms.get("canonical_no_trade_reason") or {}
+    recs: list[dict[str, Any]] = []
+    code = str(canon.get("reason_code") or diag.get("final_reason_code") or "")
+    if code == "CRYPTO_PUSH_BLOCKED_LOW_BUYING_POWER":
+        recs.append({
+            "observed_problem": "Crypto push blocked by buying power after reserve",
+            "sample_size": int(diag.get("scored_count") or 0),
+            "proposed_change": "Review hard_min_cash_reserve_pct / crypto sleeve caps",
+            "expected_effect": "More usable crypto budget without bypassing preflight",
+            "rollback_condition": "Reinstate prior reserve if drawdown increases",
+            "risk_note": "Paper-only; does not enable live",
+            "paper_only": True,
+        })
+    if code == "SCORE_BELOW_THRESHOLD" and diag.get("top_candidates"):
+        recs.append({
+            "observed_problem": "Scores cluster below buy threshold",
+            "sample_size": len(diag.get("top_candidates") or []),
+            "proposed_change": "Momo may propose crypto_buy_threshold patch after backtest",
+            "expected_effect": "Higher signal pass rate",
+            "rollback_condition": "Restore default threshold if win rate drops",
+            "risk_note": "Requires operator approval via strategy_weights",
+            "paper_only": True,
+        })
+    wa = weights_audit or {}
+    unwired: list[str] = []
+    for _grp_name, grp in (wa.get("current_weights") or {}).items():
+        if not isinstance(grp, dict):
+            continue
+        for k, meta in grp.items():
+            if isinstance(meta, dict) and not meta.get("wired"):
+                unwired.append(str(k))
+    if unwired:
+        recs.append({
+            "observed_problem": "Strategy weight metadata exists but is not wired into scoring",
+            "affected_symbols": unwired[:5],
+            "proposed_change": "Wire weights before tuning live-allowed parameters",
+            "paper_only": True,
+        })
+    return recs
 
 
 def _build_engine_schedule(

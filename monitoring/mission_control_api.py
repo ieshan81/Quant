@@ -13,6 +13,15 @@ from execution.crypto_execution_policy import build_crypto_execution_policy
 from monitoring.momo import build_momo_authority_status, build_momo_status
 
 
+def _bundle_crypto_fast_loop_status_safe() -> dict[str, Any]:
+    try:
+        from execution.crypto_fast_loop import get_crypto_fast_loop_status
+
+        return get_crypto_fast_loop_status()
+    except Exception:
+        return {"enabled": False, "live_ready": False}
+
+
 def _mission_mode_human(mode: str) -> str:
     mapping = {
         "AFTER_HOURS_CRYPTO_ONLY": "After Hours: Crypto Only",
@@ -236,6 +245,8 @@ def _ai_note_is_stale_or_resolved(
     wh = str((worker or {}).get("worker_health") or "").lower()
     worker_ok = wh in ("ok", "healthy", "") and bool((worker or {}).get("trading_loop_fresh", True))
     if worker_ok and not bool(rg.get("recovery_active")) and not bool(rg.get("block_new_buys")):
+        if "worker recovery active" in finding:
+            return True
         if "recovery" in finding and ("block" in finding or "stale" in finding or "reconcile" in finding):
             return True
         if "broker_local_mismatch" in finding or "reconciliation" in finding:
@@ -620,6 +631,7 @@ def _assemble_summary(
         crypto = build_crypto_session_status(
             _push_dec,
             scan_gate=crypto_scanner_diagnostics.get("crypto_gate"),
+            canonical_reason=_canonical_reason,
         )
         if isinstance(crypto_scanner_diagnostics, dict) and _canonical_reason.get("reason_code"):
             crypto_scanner_diagnostics = {
@@ -704,6 +716,7 @@ def _assemble_summary(
         "canonical_no_trade_reason": _canonical_reason,
         "engine_schedule": _engine_sched,
         "strategy_weights_audit": _weights_audit,
+        "crypto_fast_loop_status": _bundle_crypto_fast_loop_status_safe(),
         "pending_exits": _pending_exits,
         "capital_protection": _cap_prot,
         "positions": {
@@ -900,7 +913,11 @@ def build_mission_control_summary_minimal(
             _positions, config_rt=_rt_mc_fast if isinstance(locals().get("_rt_mc_fast"), dict) else None,
         )
         _push_dec_mc = push_decision_from_canonical(_mc_canonical_reason, executor=crypto_dec)
-        crypto_session = build_crypto_session_status(_push_dec_mc, positions=_positions)
+        crypto_session = build_crypto_session_status(
+            _push_dec_mc,
+            positions=_positions,
+            canonical_reason=_mc_canonical_reason,
+        )
         if _mc_canonical_reason.get("reason_code"):
             crypto_dec = {
                 **crypto_dec,
@@ -1044,6 +1061,7 @@ def build_mission_control_summary_minimal(
         },
         "crypto_scanner_diagnostics": _mc_crypto_diag,
         "crypto_strategy_viability": _mc_crypto_viability,
+        "crypto_fast_loop_status": _bundle_crypto_fast_loop_status_safe(),
         "top_ai_note": top_ai_note,
         "crypto_executor_readiness": {
             **crypto_dec,

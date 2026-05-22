@@ -199,29 +199,20 @@ def reconcile_crypto_scanner_push_reason(
             if max_open <= 1:
                 sub = "MAX_POSITIONS"
 
-    if not sub:
-        try:
-            from execution import crypto_push_pull
+    from execution.crypto_push_preflight import resolve_crypto_push_preflight
 
-            usable = _safe_float(ready.get("usable_buying_power"), 0.0)
-            if usable <= 0:
-                usable = _safe_float((diag.get("buy_gate") or {}).get("max_usable_for_new_buys_crypto"), 0.0)
-            ok, sub = crypto_push_pull.push_allowed(
-                rt=rt,
-                symbol=best_sym or "BTC/USD",
-                combined_score=float(best_score or 0.0),
-                crypto_buy_threshold=th,
-                usable_crypto_buying_power=usable,
-                open_crypto_positions=int(open_crypto_positions),
-                holding_symbol=bool(held and any(crypto_symbols_equivalent(h, best_sym) for h in held)),
-                last_exit_ts_by_symbol={},
-            )
-            if ok:
-                sub = "OK"
-        except Exception:
-            sub = sub or reason_codes.CRYPTO_PUSH_BLOCKED_PREFLIGHT
-
-    code = _map_push_subreason_to_final_code(str(sub or ""), rt=rt)
+    pf = resolve_crypto_push_preflight(
+        rt=rt,
+        chosen_symbol=best_sym,
+        chosen_score=float(best_score or 0.0),
+        crypto_buy_threshold=th,
+        executor_readiness=ready,
+        open_crypto_positions=int(open_crypto_positions),
+        held_crypto_symbols=held,
+        push_subreason=str(sub or "") if sub else None,
+    )
+    sub = str(pf.get("push_subreason") or sub or "")
+    code = str(pf.get("exact_final_blocker") or _map_push_subreason_to_final_code(sub, rt=rt))
     if (
         code == reason_codes.CRYPTO_PUSH_BLOCKED_ALREADY_HOLDING
         and open_crypto_positions >= 1
@@ -342,15 +333,25 @@ def build_crypto_scanner_diagnostics_from_cycle(
     else:
         passing = _candidates_above_threshold(top_candidates, crypto_buy_th)
         if passing:
-            final_code = reason_codes.CRYPTO_PUSH_BLOCKED_PREFLIGHT
             best_c = passing[0]
+            from execution.crypto_push_preflight import resolve_crypto_push_preflight
+
+            pf = resolve_crypto_push_preflight(
+                rt=rt,
+                chosen_symbol=str(best_c.get("symbol") or ""),
+                chosen_score=_safe_float(best_c.get("score"), 0.0),
+                crypto_buy_threshold=crypto_buy_th,
+                executor_readiness={"buy_gate": bg},
+            )
+            final_code = str(pf.get("exact_final_blocker") or reason_codes.CRYPTO_PUSH_BLOCKED_PREFLIGHT)
             human = _human_for_push_block(
                 final_code,
                 best_sym=str(best_c.get("symbol") or ""),
                 best_score=_safe_float(best_c.get("score"), None),
-                sub="PREFLIGHT",
+                sub=str(pf.get("push_subreason") or ""),
                 open_crypto=0,
                 held_symbols=None,
+                ready=pf,
             )
         else:
             final_code = "NO_CRYPTO_CANDIDATES"
@@ -642,4 +643,17 @@ def build_crypto_scanner_diagnostics_for_api(
         "api_fallback": not bool(stored),
     }
     out["crypto_strategy_viability"] = build_crypto_strategy_viability(rt, out)
+    try:
+        passing = _candidates_above_threshold(out.get("top_candidates") or [], crypto_buy_th)
+        if passing or (best and score is not None and float(score) >= crypto_buy_th):
+            out = reconcile_crypto_scanner_push_reason(
+                out,
+                rt=rt,
+                sorted_crypto_scores=[(str(best), float(score or 0))] if best else None,
+                executor_readiness=dec,
+                push_subreason=str(dec.get("push_blocked_reason") or dec.get("reason_code") or ""),
+                best_push_symbol=str(best) if best else None,
+            )
+    except Exception:
+        pass
     return out

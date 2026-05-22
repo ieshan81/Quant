@@ -572,8 +572,9 @@
     var mismatch = numOr(rh.broker_local_mismatch_count != null ? rh.broker_local_mismatch_count : eh.broker_local_mismatch_count, 0);
     var currMismatch = numOr(rh.current_broker_position_mismatches, 0);
     var degraded = vm.payloadDegraded === true;
-    var warnAny = blocked > 0 || stale > 0 || mismatch > 0 || degraded;
-    var badAny = stale > 2 || mismatch > 2 || blocked > 5;
+    var operatorAligned = currMismatch === 0 && mismatch > 0 && stale > 0;
+    var warnAny = blocked > 0 || currMismatch > 0 || (stale > 0 && currMismatch > 0) || degraded;
+    var badAny = currMismatch > 0 || blocked > 5;
 
     var banner = document.getElementById("execHealthBanner");
     var sev = document.getElementById("execHealthSeverity");
@@ -583,12 +584,12 @@
         var parts = [];
         if (blocked > 0) parts.push(blocked + " blocked exit(s)");
         if (stale > 0) parts.push(stale + " stale local row(s)");
-        if (mismatch > 0) {
-          if (currMismatch === 0 && stale > 0) {
-            parts.push(stale + " historical stale row(s) quarantined (broker aligned)");
-          } else {
-            parts.push(mismatch + " broker/local mismatch(es)");
-          }
+        if (currMismatch > 0) {
+          parts.push(currMismatch + " active broker mismatch(es)");
+        } else if (operatorAligned || (mismatch > 0 && stale > 0)) {
+          parts.push("Broker aligned · " + stale + " historical stale audit row(s) quarantined");
+        } else if (mismatch > 0) {
+          parts.push(mismatch + " historical mismatch row(s) in diagnostics");
         }
         if (rh.message) parts.push(String(rh.message));
         if (degraded) parts.push("dashboard payload degraded");
@@ -622,9 +623,9 @@
       html += tile("", "Buying power", bp);
       html += tile("", "Usable buy power", ubp);
       html += tile(blocked > 0 ? "warn" : "", "Blocked exits", String(blocked));
-      html += tile(mismatch > 0 ? "warn" : "", "Broker/local mismatches", String(mismatch));
-      html += tile(currMismatch > 0 ? "warn" : "", "Current broker mismatches", String(currMismatch));
-      html += tile(stale > 0 ? "warn" : "", "Stale local rows", String(stale));
+      html += tile(currMismatch > 0 ? "warn" : "", "Active broker mismatches", String(currMismatch));
+      html += tile(operatorAligned ? "" : (mismatch > 0 ? "warn" : ""), "Historical audit rows", String(Math.max(mismatch, stale)));
+      html += tile(stale > 0 && currMismatch === 0 ? "" : (stale > 0 ? "warn" : ""), "Stale local rows", String(stale));
       html += tile("", "DB lock waits/retries (24h)", dblk);
       html += tile("", "Alpaca cache age", cacheAge);
       html += tile("", "Last broker snapshot", lastSync);
@@ -3408,6 +3409,13 @@
     var canonicalNT = d.canonical_no_trade_reason || {};
     var cryptoCand = formatCryptoCandidateLabel(tr, diag);
     var pushReason = canonicalNT.human_reason || push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
+    var cfl = d.crypto_fast_loop_status || {};
+    var fastLab = cfl.enabled
+      ? "Fast loop " + (cfl.loop_age_seconds != null ? cfl.loop_age_seconds + "s ago" : "active")
+      : "Fast loop off";
+    var fastSub = cfl.exact_push_blocker
+      ? "Push: " + String(cfl.exact_push_blocker).replace(/_/g, " ")
+      : (cfl.next_action || "");
     var dayPct = ac.day_pnl_pct != null ? Number(ac.day_pnl_pct) : (ac.equity && ac.day_pnl ? (Number(ac.day_pnl) / Number(ac.equity)) * 100 : null);
     var eqSub = ac.day_pnl != null
       ? "Day P&L " + safeFmtMoneySigned(ac.day_pnl) + (dayPct != null && isFinite(dayPct) ? " (" + (dayPct >= 0 ? "+" : "") + dayPct.toFixed(2) + "%)" : "")
@@ -3428,6 +3436,12 @@
         tone: ""
       },
       { lab: "Worker", val: workerLab, sub: workerSub, tone: workerTone, pulse: fresh },
+      {
+        lab: "Fast crypto loop",
+        val: fastLab,
+        sub: fastSub || safeText(cfl.pull_status, ""),
+        tone: cfl.enabled ? "ok" : ""
+      },
       {
         lab: "Crypto push",
         val: safeText(push.label || push.status, "—"),
