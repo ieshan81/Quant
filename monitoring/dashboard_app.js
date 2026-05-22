@@ -63,11 +63,29 @@
     URL.revokeObjectURL(a.href);
   }
 
+  var P = typeof window !== "undefined" && window.MomoDashPerf ? window.MomoDashPerf : {};
   var equityChart = null;
   var mcEquityChart = null;
   var mcAllocDonutChart = null;
   var _mcEqFetchGen = 0;
   var POLL_MS = 30000;
+  var POLL_MS_HIDDEN = 120000;
+  var _dashFetchCtrl = { current: null };
+  var _mcFetchCtrl = { current: null };
+  var _fetchDashGen = 0;
+  var _fetchMcGen = 0;
+  var _dashHasData = false;
+  var _lastVmSig = "";
+  var _lastMcSig = "";
+  var _lastMcStripSig = "";
+  var _lastMcScannerSig = "";
+  var _lastMcFeedSig = "";
+  var _lastMcHoldSig = "";
+  var _mcEquitySeriesCache = null;
+  var _mcEquitySeriesSig = "";
+  var _eqHistorySeriesSig = "";
+  var _pollTimer = null;
+  var _hydratedFromCache = false;
   var MIN_ORDER_NOTIONAL = 1.0;
   var _sellSubmitting = false;
   var _manualSellRow = null;
@@ -347,7 +365,10 @@
 
     var when = "Updated " + fmtTimeShort(new Date());
     var stamp = document.getElementById("dashUpdatedAt");
-    if (stamp) stamp.textContent = when;
+    if (stamp) {
+      stamp.textContent = when;
+      stamp.setAttribute("data-base", when);
+    }
     updateHeaderStrip(vm, null);
   }
 
@@ -962,17 +983,53 @@
   function symbolIconHtml(assetClass, symbol) {
     var sym = String(symbol || "").trim();
     if (!sym) return "";
-    var letter = esc(sym.split("/")[0].charAt(0).toUpperCase() || "?");
-    var src = "/api/symbol-icon?asset_class=" + encodeURIComponent(assetClass || "stock") +
-      "&symbol=" + encodeURIComponent(sym);
+    var ac = String(assetClass || "stock").toLowerCase();
+    var meta = P.getSymMeta ? P.getSymMeta(ac, sym) : null;
+    var letter = meta && meta.fallback_letter ? meta.fallback_letter : (sym.split("/")[0].charAt(0).toUpperCase() || "?");
+    var src = P.iconSrc ? P.iconSrc(ac, sym) : (
+      "/api/symbol-icon?asset_class=" + encodeURIComponent(ac) + "&symbol=" + encodeURIComponent(sym)
+    );
+    var sk = P.symKey ? P.symKey(ac, sym) : ac + "|" + sym;
     return (
-      '<span class="sym-icon-wrap">' +
-      '<img class="sym-icon" src="' + src + '" alt="" loading="lazy" ' +
-      'data-symbol="' + esc(sym) + '" data-ac="' + esc(String(assetClass || "stock")) + '" ' +
+      '<span class="sym-icon-wrap" data-sym-key="' + esc(sk) + '">' +
+      '<img class="sym-icon" src="' + esc(src) + '" alt="" loading="lazy" decoding="async" ' +
+      'data-symbol="' + esc(sym) + '" data-ac="' + esc(ac) + '" ' +
       'onerror="window._symIconError&&window._symIconError(this)"/>' +
-      '<span class="sym-fallback" style="display:none">' + letter + "</span>" +
+      '<span class="sym-fallback" style="display:none">' + esc(letter) + "</span>" +
       "<span>" + esc(sym) + "</span></span>"
     );
+  }
+
+  function _collectSymbolPairsFromVm(vm) {
+    var out = [];
+    var seen = {};
+    function add(ac, sym) {
+      var k = (P.symKey ? P.symKey(ac, sym) : ac + sym);
+      if (!sym || seen[k]) return;
+      seen[k] = true;
+      out.push({ ac: ac, symbol: sym });
+    }
+    (vm && vm.positions || []).forEach(function (p) {
+      add(String(p.asset_class || "stock").toLowerCase(), p.symbol);
+    });
+    return out;
+  }
+
+  function _collectSymbolPairsFromMc(d) {
+    var out = [];
+    var seen = {};
+    function add(ac, sym) {
+      var k = (P.symKey ? P.symKey(ac, sym) : ac + sym);
+      if (!sym || seen[k]) return;
+      seen[k] = true;
+      out.push({ ac: ac, symbol: sym });
+    }
+    var pos = (d && d.positions && d.positions.open) || [];
+    pos.forEach(function (p) { add(String(p.asset_class || "stock").toLowerCase(), p.symbol); });
+    var tops = ((d && d.crypto_scanner_diagnostics) || {}).top_candidates || [];
+    tops.forEach(function (c) { add("crypto", c.symbol); });
+    (d && d.pending_exits || []).forEach(function (p) { add(p.asset_class || "stock", p.symbol); });
+    return out;
   }
 
   function _parseEquityHistoryJson(d) {
@@ -1085,6 +1142,9 @@
         sparseHint.style.display = "none";
       }
     }
+    var sig = P.seriesSignature ? P.seriesSignature(series) : (P.stableJson ? P.stableJson(series) : "");
+    if (sig === _eqHistorySeriesSig && equityChart) return;
+    _eqHistorySeriesSig = sig;
     _updateEqRangeChange(series);
     var labels = series.map(function (r) {
       return _fmtEqAxisLabel(r.snapshot_at || "", _eqCurrentRange);
@@ -1147,17 +1207,16 @@
     document.querySelectorAll(".eq-range-btn").forEach(function (b) {
       b.classList.toggle("eq-range-active", b.getAttribute("data-range") === range);
     });
-    if (equityChart) {
-      equityChart.destroy();
-      equityChart = null;
-    }
     var eqHint = document.getElementById("eqEmptyHint");
-    if (eqHint) {
+    if (eqHint && !equityChart && !_dashHasData) {
       eqHint.style.display = "block";
       eqHint.textContent = "Loading " + range + "…";
+    } else if (eqHint && equityChart) {
+      eqHint.style.display = "none";
     }
     var t0 = Date.now();
-    fetch("/api/account/history?range=" + encodeURIComponent(range), { headers: _authHeaders(), cache: "no-store" })
+    var fetchFn = P.fetchWithAbort || fetch;
+    fetchFn("/api/account/history?range=" + encodeURIComponent(range), { headers: _authHeaders(), cache: "no-store" }, _dashFetchCtrl)
       .then(function (r) {
         if (!r.ok) throw new Error("/api/equity/history HTTP " + r.status);
         return r.json();
@@ -1270,31 +1329,58 @@
     var tb = document.querySelector("#tblOverviewPositions tbody");
     if (tb) {
       document.getElementById("posTopEmpty").style.display = top.length ? "none" : "block";
-      tb.innerHTML = top.map(function (r) {
-        var ac = String(r.asset_class || "").toLowerCase();
-        var q = num(r.net_qty, null);
-        var up = num(r.unrealized_pnl_pct, null);
-        var stRow = exitStateFor(r, vm);
-        return "<tr>" +
-          "<td>" + symbolIconHtml(ac, r.symbol) + "</td>" +
-          "<td class=\"mono\">" + esc(q != null ? fmtQty(q, ac === "crypto") : "—") + "</td>" +
-          "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
-          "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
-          "<td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td>" +
-          "<td>" + exitBadge(stRow.status) + "</td>" +
-          "</tr>";
-      }).join("");
+      if (P.patchTableByKey) {
+        P.patchTableByKey(tb, top, function (r) {
+          return String(r.symbol || "").toUpperCase();
+        }, function (r) {
+          var ac = String(r.asset_class || "").toLowerCase();
+          var q = num(r.net_qty, null);
+          var up = num(r.unrealized_pnl_pct, null);
+          var stRow = exitStateFor(r, vm);
+          return "<td>" + symbolIconHtml(ac, r.symbol) + "</td>" +
+            "<td class=\"mono\">" + esc(q != null ? fmtQty(q, ac === "crypto") : "—") + "</td>" +
+            "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
+            "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
+            "<td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td>" +
+            "<td>" + exitBadge(stRow.status) + "</td>";
+        });
+      } else {
+        tb.innerHTML = top.map(function (r) {
+          var ac = String(r.asset_class || "").toLowerCase();
+          var q = num(r.net_qty, null);
+          var up = num(r.unrealized_pnl_pct, null);
+          var stRow = exitStateFor(r, vm);
+          return "<tr>" +
+            "<td>" + symbolIconHtml(ac, r.symbol) + "</td>" +
+            "<td class=\"mono\">" + esc(q != null ? fmtQty(q, ac === "crypto") : "—") + "</td>" +
+            "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
+            "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
+            "<td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td>" +
+            "<td>" + exitBadge(stRow.status) + "</td>" +
+            "</tr>";
+        }).join("");
+      }
     }
 
     var decs = (vm.executionDecisions || []).slice(0, 10);
     document.getElementById("decEmpty").style.display = decs.length ? "none" : "block";
     var dt = document.querySelector("#tblOverviewDecisions tbody");
     if (dt) {
-      dt.innerHTML = decs.map(function (r) {
-        var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
-        var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
-        return "<tr><td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + decisionBadge(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
-      }).join("");
+      if (P.patchTableByKey) {
+        P.patchTableByKey(dt, decs, function (r) {
+          return String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.reason_code || "");
+        }, function (r) {
+          var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
+          var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
+          return "<td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + decisionBadge(r.decision || "") + "</td><td>" + esc(reason) + "</td>";
+        });
+      } else {
+        dt.innerHTML = decs.map(function (r) {
+          var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
+          var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
+          return "<tr><td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + decisionBadge(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
+        }).join("");
+      }
     }
   }
 
@@ -1327,6 +1413,53 @@
     document.getElementById("posAllEmpty").style.display = rows.length ? "none" : "block";
     var pb = document.querySelector("#tblPositionsFull tbody");
     if (!pb) return;
+    if (P.patchTableByKey) {
+      P.patchTableByKey(pb, rows, function (r) {
+        return String(r.symbol || "").toUpperCase() + "|" + String(r.asset_class || "stock");
+      }, function (r) {
+        var ac = String(r.asset_class || "").toLowerCase();
+        var q = num(r.net_qty, null);
+        var qs = q != null ? fmtQty(q, ac === "crypto") : "—";
+        var mv = num(r.market_value, null);
+        var up = num(r.unrealized_pnl, null);
+        var upp = num(r.unrealized_pnl_pct, null);
+        var st = exitStateFor(r, vm);
+        var warnNote = st.mismatchWarn
+          ? '<span class="row-warn-note" title="Local qty differs from broker qty. Broker qty is used for real orders.">⚠ broker qty differs</span>'
+          : "";
+        var openedDisp = r.opened_at_display != null ? String(r.opened_at_display) : "N/A";
+        var openedTitle =
+          r.opened_at_source === "broker_sync_fallback"
+            ? "Date inferred from broker sync, not original fill."
+            : "";
+        var symU = String(r.symbol || "").trim().toUpperCase();
+        var sellBtn =
+          ac === "stock" && q != null && q > 0
+            ? '<button type="button" class="tab-btn sell-open-btn" data-act="sell-open" data-symbol="' +
+              esc(symU) +
+              '" data-ac="stock"' +
+              (_sellSubmitting ? " disabled" : "") +
+              ">Sell</button>"
+            : "—";
+        return "<td>" + symbolIconHtml(ac, symU) + "</td>" +
+          "<td>" + esc(r.asset_class || "") + "</td>" +
+          "<td" +
+          (openedTitle ? ' title="' + esc(openedTitle) + '"' : "") +
+          "><small>" +
+          esc(openedDisp) +
+          "</small></td>" +
+          "<td class=\"mono\">" + esc(qs) + "</td>" +
+          "<td class=\"mono\">" + esc(fmtPrice(r.avg_entry_price)) + "</td>" +
+          "<td class=\"mono\">" + esc(fmtPrice(r.current_price)) + "</td>" +
+          "<td class=\"mono\">" + esc(mv != null ? fmtMoney(mv) : "—") + "</td>" +
+          "<td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtMoneySigned(up) : "—") + "</td>" +
+          "<td class=\"mono " + pnlClass(upp) + "\">" + esc(upp != null ? fmtPctSigned(upp) : "—") + "</td>" +
+          "<td>" + exitBadge(st.status) + "</td>" +
+          "<td><small>" + esc(st.explanation) + "</small>" + warnNote + "</td>" +
+          "<td>" + sellBtn + "</td>";
+      });
+      return;
+    }
     pb.innerHTML = rows.map(function (r) {
       var ac = String(r.asset_class || "").toLowerCase();
       var q = num(r.net_qty, null);
@@ -1382,35 +1515,71 @@
     var trCount = document.getElementById("actTradesCount");
     if (trCount) trCount.textContent = String(tr.length);
     document.getElementById("actTradesEmpty").style.display = tr.length ? "none" : "block";
-    document.querySelector("#tblActivityTrades tbody").innerHTML = tr.map(function (t) {
-      var ac = String(t.asset_class || "").toLowerCase();
-      var q = num(t.quantity, null);
-      var qs = q != null ? fmtQty(q, ac === "crypto") : "—";
-      return "<tr>" +
-        "<td class=\"mono\">" + esc(fmtTimestamp(t.created_at || "")) + "</td>" +
-        "<td>" + esc(t.symbol || "") + "</td>" +
-        "<td>" + esc(t.side || "") + "</td>" +
-        "<td class=\"mono\">" + esc(qs) + "</td>" +
-        "<td class=\"mono\">" + esc(fmtPrice(t.price)) + "</td>" +
-        "<td class=\"mono\">" + esc(t.notional != null ? fmtMoney(t.notional) : "—") + "</td>" +
-        "<td>" + tradeStatusBadge(t.status) + "</td>" +
-        "</tr>";
-    }).join("");
+    var actTrTb = document.querySelector("#tblActivityTrades tbody");
+    if (actTrTb) {
+      if (P.patchTableByKey) {
+        P.patchTableByKey(actTrTb, tr, function (t) {
+          return String(t.created_at || "") + "|" + String(t.symbol || "") + "|" + String(t.side || "") + "|" + String(t.status || "");
+        }, function (t) {
+          var ac = String(t.asset_class || "").toLowerCase();
+          var q = num(t.quantity, null);
+          var qs = q != null ? fmtQty(q, ac === "crypto") : "—";
+          return "<td class=\"mono\">" + esc(fmtTimestamp(t.created_at || "")) + "</td>" +
+            "<td>" + esc(t.symbol || "") + "</td>" +
+            "<td>" + esc(t.side || "") + "</td>" +
+            "<td class=\"mono\">" + esc(qs) + "</td>" +
+            "<td class=\"mono\">" + esc(fmtPrice(t.price)) + "</td>" +
+            "<td class=\"mono\">" + esc(t.notional != null ? fmtMoney(t.notional) : "—") + "</td>" +
+            "<td>" + tradeStatusBadge(t.status) + "</td>";
+        });
+      } else {
+        actTrTb.innerHTML = tr.map(function (t) {
+          var ac = String(t.asset_class || "").toLowerCase();
+          var q = num(t.quantity, null);
+          var qs = q != null ? fmtQty(q, ac === "crypto") : "—";
+          return "<tr>" +
+            "<td class=\"mono\">" + esc(fmtTimestamp(t.created_at || "")) + "</td>" +
+            "<td>" + esc(t.symbol || "") + "</td>" +
+            "<td>" + esc(t.side || "") + "</td>" +
+            "<td class=\"mono\">" + esc(qs) + "</td>" +
+            "<td class=\"mono\">" + esc(fmtPrice(t.price)) + "</td>" +
+            "<td class=\"mono\">" + esc(t.notional != null ? fmtMoney(t.notional) : "—") + "</td>" +
+            "<td>" + tradeStatusBadge(t.status) + "</td>" +
+            "</tr>";
+        }).join("");
+      }
+    }
 
     var sig = vm.recentSignals || [];
     var sigCount = document.getElementById("actSigCount");
     if (sigCount) sigCount.textContent = String(sig.length);
     document.getElementById("actSigEmpty").style.display = sig.length ? "none" : "block";
-    document.querySelector("#tblActivitySignals tbody").innerHTML = sig.map(function (s) {
-      var score = s.raw_value != null ? s.raw_value : "";
-      return "<tr>" +
-        "<td class=\"mono\">" + esc(fmtTimestamp(s.created_at || "")) + "</td>" +
-        "<td>" + esc(s.symbol || "") + "</td>" +
-        "<td>" + esc(s.signal_name || "") + "</td>" +
-        "<td>" + esc(s.direction || "") + "</td>" +
-        "<td class=\"mono\">" + esc(String(score)) + "</td>" +
-        "</tr>";
-    }).join("");
+    var actSigTb = document.querySelector("#tblActivitySignals tbody");
+    if (actSigTb) {
+      if (P.patchTableByKey) {
+        P.patchTableByKey(actSigTb, sig, function (s) {
+          return String(s.created_at || "") + "|" + String(s.symbol || "") + "|" + String(s.signal_name || "");
+        }, function (s) {
+          var score = s.raw_value != null ? s.raw_value : "";
+          return "<td class=\"mono\">" + esc(fmtTimestamp(s.created_at || "")) + "</td>" +
+            "<td>" + esc(s.symbol || "") + "</td>" +
+            "<td>" + esc(s.signal_name || "") + "</td>" +
+            "<td>" + esc(s.direction || "") + "</td>" +
+            "<td class=\"mono\">" + esc(String(score)) + "</td>";
+        });
+      } else {
+        actSigTb.innerHTML = sig.map(function (s) {
+          var score = s.raw_value != null ? s.raw_value : "";
+          return "<tr>" +
+            "<td class=\"mono\">" + esc(fmtTimestamp(s.created_at || "")) + "</td>" +
+            "<td>" + esc(s.symbol || "") + "</td>" +
+            "<td>" + esc(s.signal_name || "") + "</td>" +
+            "<td>" + esc(s.direction || "") + "</td>" +
+            "<td class=\"mono\">" + esc(String(score)) + "</td>" +
+            "</tr>";
+        }).join("");
+      }
+    }
 
     var ed = vm.executionDecisions || [];
     var decCount = document.getElementById("actDecCount");
@@ -1429,17 +1598,34 @@
     if (decCount) decCount.textContent = String(deduped.length);
     document.getElementById("actDecEmpty").style.display = deduped.length ? "none" : "block";
     window.__lastActivityDecisions = deduped;
-    document.querySelector("#tblActivityDecisions tbody").innerHTML = deduped.map(function (r) {
-      var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
-      var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
-      return "<tr>" +
-        "<td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td>" +
-        "<td>" + esc(r.symbol || "") + "</td>" +
-        "<td>" + esc(r.side || "") + "</td>" +
-        "<td>" + decisionBadge(r.decision || "") + "</td>" +
-        "<td>" + esc(reason) + "</td>" +
-        "</tr>";
-    }).join("");
+    var actDecTb = document.querySelector("#tblActivityDecisions tbody");
+    if (actDecTb) {
+      if (P.patchTableByKey) {
+        P.patchTableByKey(actDecTb, deduped, function (r) {
+          return String(r.created_at || "") + "|" + String(r.symbol || "") + "|" + String(r.reason_code || "") + "|" + String(r.decision || "");
+        }, function (r) {
+          var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
+          var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
+          return "<td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td>" +
+            "<td>" + esc(r.symbol || "") + "</td>" +
+            "<td>" + esc(r.side || "") + "</td>" +
+            "<td>" + decisionBadge(r.decision || "") + "</td>" +
+            "<td>" + esc(reason) + "</td>";
+        });
+      } else {
+        actDecTb.innerHTML = deduped.map(function (r) {
+          var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
+          var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
+          return "<tr>" +
+            "<td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td>" +
+            "<td>" + esc(r.symbol || "") + "</td>" +
+            "<td>" + esc(r.side || "") + "</td>" +
+            "<td>" + decisionBadge(r.decision || "") + "</td>" +
+            "<td>" + esc(reason) + "</td>" +
+            "</tr>";
+        }).join("");
+      }
+    }
 
     var perf = vm.performance || {};
     var parts = [];
@@ -1489,6 +1675,7 @@
     var items = [];
     trades.slice(0, 15).forEach(function (t) {
       items.push({
+        evKey: "tr|" + String(t.created_at || "") + "|" + String(t.symbol || "") + "|" + String(t.side || "") + "|" + String(t.status || ""),
         ts: t.created_at || "",
         kind: String(t.status || "").toLowerCase().indexOf("fail") >= 0 ? "error" : "ok",
         cat: "orders",
@@ -1502,6 +1689,7 @@
       var isWarn = !isErr && (rc.indexOf("BLOCK") >= 0 || rc.indexOf("SKIP") >= 0 || rc.indexOf("MAX_") >= 0);
       var ac = String(r.asset_class || "").toLowerCase();
       items.push({
+        evKey: "dc|" + String(r.created_at || "") + "|" + String(r.symbol || "cycle") + "|" + rc + "|" + String(r.side || ""),
         ts: r.created_at || "",
         kind: isErr ? "error" : isWarn ? "warn" : "ok",
         cat: ac === "crypto" ? "crypto" : ac === "stock" ? "stocks" : "orders",
@@ -1509,18 +1697,38 @@
       });
     });
     items.sort(function (a, b) { return String(b.ts).localeCompare(String(a.ts)); });
-    if (!items.length) {
-      host.style.display = "none";
+    var filtered = items.filter(function (it) {
+      return _actFilter === "all" || _actFilter === it.cat ||
+        (_actFilter === "warnings" && it.kind === "warn") ||
+        (_actFilter === "errors" && it.kind === "error");
+    });
+    if (!filtered.length) {
+      host.style.display = items.length ? "block" : "none";
+      if (!items.length) return;
+      if (host._patchSig !== "empty-filter") {
+        host._patchSig = "empty-filter";
+        host.innerHTML = '<li class="muted">No items for this filter.</li>';
+      }
       return;
     }
     host.style.display = "block";
-    host.innerHTML = items.slice(0, 18).map(function (it) {
-      if (_actFilter !== "all" && _actFilter !== it.cat && !(_actFilter === "warnings" && it.kind === "warn") && !(_actFilter === "errors" && it.kind === "error")) {
-        return "";
-      }
-      return '<li class="' + _activityItemClass(it.kind) + '"><span class="mono" style="color:var(--muted);margin-right:6px">' +
-        esc(fmtTimestamp(it.ts)) + "</span> " + it.html + "</li>";
-    }).join("") || '<li class="muted">No items for this filter.</li>';
+    host._patchSig = "list";
+    if (P.patchListByKey) {
+      P.patchListByKey(host, filtered, function (it) { return it.evKey; }, function (it) {
+        return '<span class="mono" style="color:var(--muted);margin-right:6px">' +
+          esc(fmtTimestamp(it.ts)) + "</span> " + it.html;
+      }, 18);
+      Array.prototype.forEach.call(host.children, function (li) {
+        var k = li.getAttribute("data-row-key");
+        var row = filtered.find(function (x) { return x.evKey === k; });
+        if (row) li.className = _activityItemClass(row.kind);
+      });
+    } else {
+      host.innerHTML = filtered.slice(0, 18).map(function (it) {
+        return '<li class="' + _activityItemClass(it.kind) + '"><span class="mono" style="color:var(--muted);margin-right:6px">' +
+          esc(fmtTimestamp(it.ts)) + "</span> " + it.html + "</li>";
+      }).join("");
+    }
   }
 
   function wireActivityFilters() {
@@ -1570,11 +1778,22 @@
     });
   }
 
-  function paintViewModel(vm) {
+  function paintViewModel(vm, fromCache) {
     window.__lastVm = vm;
-    renderOverview(vm);
-    renderPositionsTab(vm);
-    renderActivity(vm);
+    var sig = P.vmSignature ? P.vmSignature(vm) : "";
+    if (!fromCache && sig && sig === _lastVmSig) return;
+    _lastVmSig = sig;
+    var pairs = _collectSymbolPairsFromVm(vm);
+    var done = function () {
+      renderOverview(vm);
+      renderPositionsTab(vm);
+      renderActivity(vm);
+    };
+    if (P.ensureSymbolMeta) {
+      P.ensureSymbolMeta(pairs, _authHeaders).then(done).catch(done);
+    } else {
+      done();
+    }
   }
 
   function setDebugBlock(payload) {
@@ -1763,23 +1982,53 @@
   // Fetch loop
   // ---------------------------------------------------------------------------
 
-  async function fetchDashboard() {
-    setApiChip("info", "API …");
+  function _hydrateDashboardFromCache() {
+    if (_hydratedFromCache || !P.lsRead) return;
+    var payload = P.lsRead(P.LS_DASH);
+    if (!payload) return;
     try {
-      var response = await fetch("/api/dashboard", { cache: "no-store" });
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      var payload = await response.json();
       var vm = mapDashboardPayload(payload);
       window.__dashVm = vm;
-      paintViewModel(vm);
+      _dashHasData = true;
+      _lastVmSig = P.vmSignature ? P.vmSignature(vm) : "";
+      paintViewModel(vm, true);
+      applyHealthyChips(vm);
+      _hydratedFromCache = true;
+      if (P.setRefreshing) P.setRefreshing(false, true);
+    } catch (e) {}
+  }
+
+  async function fetchDashboard() {
+    var gen = ++_fetchDashGen;
+    if (P.setRefreshing) P.setRefreshing(true, false);
+    setApiChip("info", "API …");
+    try {
+      var fetchFn = P.fetchWithAbort || fetch;
+      var response = await fetchFn("/api/dashboard", { cache: "no-store", headers: _authHeaders() }, _dashFetchCtrl);
+      if (gen !== _fetchDashGen) return;
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      var payload = await response.json();
+      if (P.lsWrite) P.lsWrite(P.LS_DASH, payload);
+      var vm = mapDashboardPayload(payload);
+      window.__dashVm = vm;
+      _dashHasData = true;
+      paintViewModel(vm, false);
       setError("");
       applyHealthyChips(vm);
       setDebugBlock(payload);
+      if (P.setRefreshing) P.setRefreshing(false, false);
     } catch (error) {
+      if (gen !== _fetchDashGen) return;
       console.error(error);
-      var msg = error && error.message ? error.message : String(error);
-      setError(msg);
-      setApiChip("bad", "API error");
+      if (_dashHasData) {
+        if (P.setRefreshing) P.setRefreshing(false, true);
+        setApiChip("warn", "Stale data");
+      } else {
+        var msg = error && error.message ? error.message : String(error);
+        setError(msg);
+        setApiChip("bad", "API error");
+        if (P.setRefreshing) P.setRefreshing(false, false);
+      }
     }
   }
 
@@ -3107,13 +3356,16 @@
       return "<tr><td>" + symbolIconHtml("crypto", c.symbol) + '</td><td class="mono">' + esc(String(c.score != null ? Number(c.score).toFixed(0) : "—")) +
         '</td><td class="mono muted">' + esc(thDisp) + "</td><td>" + esc(String(c.reject_reason || c.action || "").replace(/_/g, " ")) + "</td></tr>";
     }).join("");
-    el.innerHTML =
+    var scanSig = P.stableJson ? P.stableJson({ stats: stats, statusLab: statusLab, human: human, rows: tops.slice(0, 6) }) : "";
+    var scanHtml =
       stats +
       '<div style="margin-bottom:6px">' + _mcBadge(scanning ? "ok" : "warn", statusLab) +
       ' <span style="font-size:11px;color:var(--muted)">' + esc(human) + "</span></div>" +
       (rows
         ? '<table class="mc-mini-table"><thead><tr><th>Coin</th><th>Score</th><th>Threshold</th><th>Reason</th></tr></thead><tbody>' + rows + "</tbody></table>"
         : '<span class="muted">No scored candidates this cycle.</span>');
+    if (P.patchHtmlIfChanged) P.patchHtmlIfChanged(el, scanSig, scanHtml);
+    else el.innerHTML = scanHtml;
   }
 
   function canonicalNoTradeHuman(d) {
@@ -3185,13 +3437,26 @@
       { lab: "Crypto pull", val: safeText(pull.label || pull.status, "—"), sub: safeText(pull.human_reason || pull.headline, ""), tone: "" },
       { lab: "Broker", val: br.aligned_with_broker ? "Aligned" : "Review", sub: "Broker " + safeText(br.broker_positions_count, "—") + " · runtime " + safeText(br.runtime_positions_count, "—"), tone: br.aligned_with_broker ? "ok" : "warn" }
     ];
-    host.innerHTML = cards.map(function (c) {
-      var cls = "mc-cmd-card mc-" + esc(c.tone) + (c.equityCard ? " mc-cmd-equity" : "");
-      return '<div class="' + cls + '"><div class="mc-cmd-lab">' + esc(c.lab) + '</div><div class="mc-cmd-val">' +
-        (c.pulse ? '<span class="mc-pulse"></span>' : "") + esc(c.val) + "</div>" +
-        (c.equityCard ? '<div class="mc-cmd-spark" id="mcEquitySpark"></div>' : "") +
-        '<div class="mc-cmd-sub">' + esc(c.sub) + "</div></div>";
-    }).join("");
+    var stripSig = P.stableJson ? P.stableJson(cards) : "";
+    if (stripSig === _lastMcStripSig && host.children.length === cards.length) {
+      cards.forEach(function (c, i) {
+        var el = host.children[i];
+        if (!el) return;
+        var v = el.querySelector(".mc-cmd-val");
+        var s = el.querySelector(".mc-cmd-sub");
+        if (v) v.innerHTML = (c.pulse ? '<span class="mc-pulse"></span>' : "") + esc(c.val);
+        if (s) s.textContent = c.sub;
+      });
+    } else {
+      _lastMcStripSig = stripSig;
+      host.innerHTML = cards.map(function (c, idx) {
+        var cls = "mc-cmd-card mc-" + esc(c.tone) + (c.equityCard ? " mc-cmd-equity" : "");
+        return '<div class="' + cls + '" data-cmd-idx="' + idx + '"><div class="mc-cmd-lab">' + esc(c.lab) + '</div><div class="mc-cmd-val">' +
+          (c.pulse ? '<span class="mc-pulse"></span>' : "") + esc(c.val) + "</div>" +
+          (c.equityCard ? '<div class="mc-cmd-spark" id="mcEquitySpark"></div>' : "") +
+          '<div class="mc-cmd-sub">' + esc(c.sub) + "</div></div>";
+      }).join("");
+    }
     _mcLoadEquitySpark();
   }
 
@@ -3261,40 +3526,66 @@
     var holdFoot = document.getElementById("mcHoldingsFooter");
     if (hold) {
       if (!pos.length) {
-        hold.innerHTML = '<span class="muted">No open positions</span>';
+        if (hold._patchSig !== "empty") {
+          hold._patchSig = "empty";
+          hold.innerHTML = '<span class="muted">No open positions</span>';
+        }
         if (holdFoot) holdFoot.style.display = "none";
       } else {
         var stockRows = [];
         var totalMv = 0;
         var totalPnl = 0;
-        hold.innerHTML =
-          '<table class="mc-holdings-table"><thead><tr><th>Symbol</th><th>Asset</th><th>Qty</th><th>Mkt Value</th><th>Avg Entry</th><th>Last</th><th>P&amp;L</th><th>Status</th></tr></thead><tbody>' +
-          pos.slice(0, 10).map(function (p) {
+        var slice = pos.slice(0, 10);
+        var holdSig = P.stableJson ? P.stableJson(slice) : "";
+        if (holdSig !== _lastMcHoldSig) {
+          _lastMcHoldSig = holdSig;
+          if (!hold.querySelector("table.mc-holdings-table")) {
+            hold.innerHTML =
+              '<table class="mc-holdings-table"><thead><tr><th>Symbol</th><th>Asset</th><th>Qty</th><th>Mkt Value</th><th>Avg Entry</th><th>Last</th><th>P&amp;L</th><th>Status</th></tr></thead><tbody></tbody></table>';
+          }
+          var tbody = hold.querySelector("tbody");
+          if (P.patchTableByKey && tbody) {
+            P.patchTableByKey(tbody, slice, function (p) {
+              return String(p.symbol || "").toUpperCase();
+            }, function (p) {
+              var acp = String(p.asset_class || "stock").toLowerCase();
+              var isCrypto = acp === "crypto";
+              var up = num(p.unrealized_pnl_pct != null ? p.unrealized_pnl_pct : p.pnl_pct, null);
+              var mv = num(p.market_value, 0);
+              var pnlD = num(p.unrealized_pnl, null);
+              if (!isCrypto) {
+                stockRows.push(p);
+                totalMv += mv;
+                if (pnlD != null) totalPnl += pnlD;
+              }
+              var status = (p.pending_exit || p.exit_pending) ? '<span class="mc-badge warn">Pending exit</span>' : '<span class="mc-status-held">Held</span>';
+              return "<td>" + symbolIconHtml(acp, p.symbol) + "</td><td>" + esc(isCrypto ? "Crypto" : "Stocks") +
+                "</td><td class=\"mono\">" + esc(fmtQty(p.net_qty || p.qty, isCrypto)) +
+                "</td><td class=\"mono\">" + esc(fmtMoney(p.market_value)) +
+                "</td><td class=\"mono\">" + esc(fmtPrice(p.avg_entry_price)) +
+                "</td><td class=\"mono\">" + esc(fmtPrice(p.current_price)) +
+                "</td><td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td><td>" + status + "</td>";
+            });
+          }
+        } else {
+          slice.forEach(function (p) {
             var acp = String(p.asset_class || "stock").toLowerCase();
-            var isCrypto = acp === "crypto";
-            var up = num(p.unrealized_pnl_pct != null ? p.unrealized_pnl_pct : p.pnl_pct, null);
-            var mv = num(p.market_value, 0);
-            var pnlD = num(p.unrealized_pnl, null);
-            if (!isCrypto) {
+            if (acp !== "crypto") {
               stockRows.push(p);
-              totalMv += mv;
+              totalMv += num(p.market_value, 0);
+              var pnlD = num(p.unrealized_pnl, null);
               if (pnlD != null) totalPnl += pnlD;
             }
-            var status = (p.pending_exit || p.exit_pending) ? '<span class="mc-badge warn">Pending exit</span>' : '<span class="mc-status-held">Held</span>';
-            return "<tr><td>" + symbolIconHtml(acp, p.symbol) + "</td><td>" + esc(isCrypto ? "Crypto" : "Stocks") +
-              "</td><td class=\"mono\">" + esc(fmtQty(p.net_qty || p.qty, isCrypto)) +
-              "</td><td class=\"mono\">" + esc(fmtMoney(p.market_value)) +
-              "</td><td class=\"mono\">" + esc(fmtPrice(p.avg_entry_price)) +
-              "</td><td class=\"mono\">" + esc(fmtPrice(p.current_price)) +
-              "</td><td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td><td>" + status + "</td></tr>";
-          }).join("") + "</tbody></table>";
+          });
+        }
         if (holdFoot && stockRows.length) {
           holdFoot.style.display = "flex";
           var stockPctTot = totalMv && ac.equity ? (totalMv / Number(ac.equity)) * 100 : null;
-          holdFoot.innerHTML =
+          var footHtml =
             "<span><strong>Total stocks</strong> " + esc(fmtMoney(totalMv)) +
             (stockPctTot != null ? " (" + stockPctTot.toFixed(1) + "%)" : "") + "</span>" +
             "<span class=\"" + pnlClass(totalPnl) + "\"><strong>P&amp;L</strong> " + esc(fmtMoneySigned(totalPnl)) + "</span>";
+          if (holdFoot.innerHTML !== footHtml) holdFoot.innerHTML = footHtml;
         } else if (holdFoot) holdFoot.style.display = "none";
       }
     }
@@ -3314,18 +3605,32 @@
     var feed = document.getElementById("mcActionFeed");
     if (feed) {
       var events = (d.crypto_night && d.crypto_night.latest_push_pull_events) || [];
-      var lines = events.slice(0, 5).map(function (e) {
-        return "<li><strong>" + esc(e.symbol || e.side || "cycle") + "</strong> " + esc(e.human_reason || e.reason_code || "") + "</li>";
+      var feedRows = events.slice(0, 8).map(function (e) {
+        return {
+          evKey: String(e.created_at || e.timestamp || "") + "|" + String(e.symbol || e.side || "cycle") + "|" + String(e.reason_code || e.human_reason || ""),
+          html: "<strong>" + esc(e.symbol || e.side || "cycle") + "</strong> " + esc(e.human_reason || e.reason_code || "")
+        };
       });
-      if (!lines.length) {
+      if (!feedRows.length) {
         var hc = (d.hold_counts || {});
-        if (hc.total_open_positions) {
-          lines = ["<li>Holding " + esc(String(hc.total_open_positions)) + " open position(s) — cycle idle / waiting for next signal.</li>"];
+        feedRows.push({
+          evKey: "idle|" + String(hc.total_open_positions || 0),
+          html: hc.total_open_positions
+            ? "Holding " + esc(String(hc.total_open_positions)) + " open position(s) — cycle idle / waiting for next signal."
+            : '<span class="muted">No recent actions — cycle idle / waiting for next signal.</span>'
+        });
+      }
+      var feedSig = P.stableJson ? P.stableJson(feedRows) : "";
+      if (feedSig !== _lastMcFeedSig) {
+        _lastMcFeedSig = feedSig;
+        if (P.patchListByKey) {
+          P.patchListByKey(feed, feedRows, function (e) { return e.evKey; }, function (e) { return e.html; }, 8);
         } else {
-          lines = ["<li class=\"muted\">No recent actions — cycle idle / waiting for next signal.</li>"];
+          feed.innerHTML = feedRows.map(function (e) {
+            return "<li data-row-key=\"" + esc(e.evKey) + "\">" + e.html + "</li>";
+          }).join("");
         }
       }
-      feed.innerHTML = lines.join("");
     }
     var momoC = document.getElementById("mcMomoCritical");
     if (momoC) {
@@ -3368,7 +3673,10 @@
   function _mcTopline(d) {
     _mcRenderCommandStrip(d);
     _mcRenderCockpitMain(d);
-    _mcLoadEquityChart();
+    if (_mcEquitySeriesCache && mcEquityChart) {
+      var liveEq = d.account ? (d.account.equity != null ? d.account.equity : (d.topline || {}).equity) : null;
+      renderMcEquityChart(_mergeLiveEquityIntoSeries(_mcEquitySeriesCache, liveEq));
+    }
   }
 
   function _mcProgressStart(label) {
@@ -3397,6 +3705,14 @@
 
   function renderMissionControl(d) {
     _mcCache = d;
+    var sig = P.mcSignature ? P.mcSignature(d) : "";
+    if (sig && sig === _lastMcSig) {
+      updateHeaderStrip(null, d);
+      return;
+    }
+    _lastMcSig = sig;
+    var pairs = _collectSymbolPairsFromMc(d);
+    if (P.ensureSymbolMeta) P.ensureSymbolMeta(pairs, _authHeaders);
     var ts = new Date().toLocaleString();
     updateHeaderStrip(null, d);
     _mcTopline(d);
@@ -3629,18 +3945,35 @@
     perf.textContent = parts.join(" · ");
   }
 
+  function _hydrateMcFromCache() {
+    if (!P.lsRead || _mcCache) return;
+    var cached = P.lsRead(P.LS_MC);
+    if (!cached) return;
+    try {
+      _mcCache = cached;
+      renderMissionControl(cached);
+      _updateMcPerf(cached, false);
+      if (P.setRefreshing) P.setRefreshing(false, true);
+    } catch (e) {}
+  }
+
   function loadMissionTab(force) {
+    var gen = ++_fetchMcGen;
     var st = document.getElementById("mcStatus");
     if (_mcCache) {
       try { renderMissionControl(_mcCache); } catch (e0) {}
       _updateMcPerf(_mcCache, true);
+    } else {
+      _hydrateMcFromCache();
     }
     if (force) _mcProgressStart("Refreshing Mission Control…");
-    if (st && !force) st.textContent = _mcCache ? "Refreshing quietly…" : "Loading Mission Control…";
+    else if (st && !_mcCache) st.textContent = "Loading Mission Control…";
+    else if (st && _mcCache) st.textContent = "Refreshing quietly…";
     var url = force
       ? "/api/mission-control/summary?force=1&full=1"
       : "/api/mission-control/summary?fast=1";
-    fetch(url, { cache: "no-store", headers: _authHeaders() })
+    var fetchFn = P.fetchWithAbort || fetch;
+    fetchFn(url, { cache: "no-store", headers: _authHeaders() }, _mcFetchCtrl)
       .then(function (r) {
         if (!r.ok) {
           return r.text().then(function (txt) {
@@ -3657,11 +3990,14 @@
         return r.json();
       })
       .then(function (d) {
+        if (gen !== _fetchMcGen) return;
         if (!d || d.ok === false) {
           if (st) st.textContent = "Mission Control: " + safeText(d && d.error, "unavailable");
           if (d) renderMissionControl(d);
+          if (_mcCache && P.setRefreshing) P.setRefreshing(false, true);
           return;
         }
+        if (P.lsWrite) P.lsWrite(P.LS_MC, d);
         if (force) {
           _mcProgressDone((d.stale_warning ? d.stale_warning + " · " : "") + "Updated " + new Date().toLocaleString(), true);
         } else if (st) {
@@ -3670,13 +4006,17 @@
         _updateMcPerf(d, false);
         try {
           renderMissionControl(d);
+          if (P.setRefreshing) P.setRefreshing(false, false);
         } catch (renderErr) {
           if (st) st.textContent = "Render error: " + safeText(renderErr && renderErr.message, String(renderErr));
         }
       })
       .catch(function (e) {
+        if (gen !== _fetchMcGen) return;
         if (force) _mcProgressDone(safeText(e && e.message, String(e)), false);
-        else if (st) st.textContent = safeText(e && e.message, String(e));
+        else if (st && !_mcCache) st.textContent = safeText(e && e.message, String(e));
+        else if (st && _mcCache) st.textContent = "Stale · " + safeText(e && e.message, String(e));
+        if (_mcCache && P.setRefreshing) P.setRefreshing(false, true);
         if (!_mcCache) {
           ["mcAccount", "mcMission", "mcCapital", "mcBroker", "mcPositions", "mcCrypto", "mcCryptoPull", "mcMomo", "mcOps"].forEach(function (id) {
             setMcCard(id, "—");
@@ -3706,6 +4046,7 @@
     var canvas = document.getElementById("mcEquityChart");
     var hint = document.getElementById("mcEqEmptyHint");
     if (!canvas) return;
+    _mcEquitySeriesCache = series || [];
     if (typeof Chart === "undefined") {
       if (hint) {
         hint.style.display = "block";
@@ -3725,6 +4066,9 @@
       return;
     }
     if (hint) hint.style.display = "none";
+    var sig = P.seriesSignature ? P.seriesSignature(series) : (P.stableJson ? P.stableJson(series) : "");
+    if (sig === _mcEquitySeriesSig && mcEquityChart) return;
+    _mcEquitySeriesSig = sig;
     var labels = series.map(function (r) {
       return _fmtEqAxisLabel(r.snapshot_at || "", _mcEqRange);
     });
@@ -3781,22 +4125,28 @@
   }
 
   function _mcLoadEquityChart(range) {
-    _mcEqRange = range || _mcEqRange || "1D";
+    var nextRange = range || _mcEqRange || "1D";
+    var rangeChanged = nextRange !== _mcEqRange;
+    _mcEqRange = nextRange;
     var gen = ++_mcEqFetchGen;
     var hint = document.getElementById("mcEqEmptyHint");
     document.querySelectorAll(".mc-eq-range").forEach(function (b) {
       b.classList.toggle("eq-range-active", b.getAttribute("data-range") === _mcEqRange);
     });
-    if (mcEquityChart) {
+    if (rangeChanged && mcEquityChart) {
       mcEquityChart.destroy();
       mcEquityChart = null;
+      _mcEquitySeriesSig = "";
     }
-    if (hint) {
+    if (hint && !mcEquityChart) {
       hint.style.display = "block";
       hint.textContent = "Equity chart loading…";
+    } else if (hint && mcEquityChart) {
+      hint.style.display = "none";
     }
     _mcSyncEqRangeUi(_mcEqRange);
-    fetch("/api/account/history?range=" + encodeURIComponent(_mcEqRange), { cache: "no-store", headers: _authHeaders() })
+    var fetchFn = P.fetchWithAbort || fetch;
+    fetchFn("/api/account/history?range=" + encodeURIComponent(_mcEqRange), { cache: "no-store", headers: _authHeaders() }, _mcFetchCtrl)
       .then(function (r) {
         if (!r.ok) throw new Error("HTTP " + r.status);
         return r.json();
@@ -4001,7 +4351,8 @@
     var prev = document.getElementById("mcGptPreview");
     var rail = document.getElementById("btnExportRailwayEnv");
     var refresh = document.getElementById("btnMcRefresh");
-    if (refresh) refresh.addEventListener("click", function () { loadMissionTab(true); });
+    var mcRefreshDebounced = P.debounce ? P.debounce(function () { loadMissionTab(true); }, 800) : function () { loadMissionTab(true); };
+    if (refresh) refresh.addEventListener("click", mcRefreshDebounced);
     var deep = document.getElementById("btnMcDeepRefresh");
     if (deep) deep.addEventListener("click", deepRefreshMission);
     if (rail) rail.addEventListener("click", function () {
@@ -4449,23 +4800,42 @@
     }
   }
 
+  function _scheduleDashPoll() {
+    if (_pollTimer) clearTimeout(_pollTimer);
+    var ms = P.pollIntervalMs ? P.pollIntervalMs(POLL_MS, POLL_MS_HIDDEN) : POLL_MS;
+    _pollTimer = setTimeout(function () {
+      fetchDashboard();
+      _scheduleDashPoll();
+    }, ms);
+  }
+
+  function _scheduleMcPoll() {
+    if (_mcPollTimer) clearTimeout(_mcPollTimer);
+    var hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    var ms = hidden ? 120000 : 35000;
+    _mcPollTimer = setTimeout(function () {
+      var panel = document.getElementById("panel-mission");
+      if (panel && panel.classList.contains("active")) loadMissionTab(false);
+      _scheduleMcPoll();
+    }, ms);
+  }
+
   function startDashboard() {
     bindTabs();
     wireMissionActions();
     wireGptAnalyze();
     wireMcMomoAsk();
     wireConfigEditor();
-    function mcPollTick() {
-      if (document.visibilityState === "hidden") return;
-      var panel = document.getElementById("panel-mission");
-      if (panel && panel.classList.contains("active")) loadMissionTab(false);
-    }
-    if (!_mcPollTimer) {
-      _mcPollTimer = setInterval(mcPollTick, 35000);
-      document.addEventListener("visibilitychange", function () {
-        if (document.visibilityState === "visible") mcPollTick();
-      });
-    }
+    _scheduleMcPoll();
+    document.addEventListener("visibilitychange", function () {
+      _scheduleDashPoll();
+      _scheduleMcPoll();
+      if (document.visibilityState === "visible") {
+        fetchDashboard();
+        var panel = document.getElementById("panel-mission");
+        if (panel && panel.classList.contains("active")) loadMissionTab(false);
+      }
+    });
     wireBacktest();
     wireActivityExport();
     wireBrokerDiagnosticCopy();
@@ -4478,10 +4848,11 @@
     wireAiMemoryButtons();
     wireEquityRangeButtons();
     wireMcEquityRangeButtons();
-    // Pre-fill Overview tab from fast heartbeat endpoint before full dashboard loads.
+    _hydrateDashboardFromCache();
+    _hydrateMcFromCache();
     prefetchSimpleStatus();
     fetchDashboard();
-    setInterval(fetchDashboard, POLL_MS);
+    _scheduleDashPoll();
     // loadAiStatus() is deferred — called lazily by loadAiTab() when the AI tab is opened.
     loadConfigEditor();
     document.querySelectorAll("nav .tab-btn").forEach(function (b) {

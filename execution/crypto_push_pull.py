@@ -68,17 +68,25 @@ def push_allowed(
     return True, "OK"
 
 
-def map_push_block_to_decision_code(subreason: str) -> str:
+def map_push_block_to_decision_code(subreason: str, *, rt: dict[str, float] | None = None) -> str:
     """Map :func:`push_allowed` second return value to ``execution_decisions`` reason codes."""
+    sub = str(subreason or "").strip()
+    if sub == "MAX_POSITIONS" and rt is not None:
+        try:
+            max_open = int(float(rt.get("crypto_max_open_positions", 8.0)))
+        except (TypeError, ValueError):
+            max_open = 8
+        if max_open <= 1:
+            return reason_codes.CRYPTO_POSITION_ALREADY_OPEN
     m = {
-        "INSUFFICIENT_BUYING_POWER": reason_codes.CRYPTO_BUY_BLOCKED_LOW_BUYING_POWER,
-        "ALREADY_LONG": reason_codes.CRYPTO_BUY_BLOCKED_ALREADY_HOLDING,
-        "COOLDOWN": reason_codes.CRYPTO_BUY_BLOCKED_COOLDOWN,
-        "MAX_POSITIONS": reason_codes.CRYPTO_BUY_BLOCKED_MAX_POSITIONS,
-        "SCORE_TOO_LOW": reason_codes.CRYPTO_BUY_BLOCKED_SCORE,
+        "INSUFFICIENT_BUYING_POWER": reason_codes.CRYPTO_PUSH_BLOCKED_LOW_BUYING_POWER,
+        "ALREADY_LONG": reason_codes.CRYPTO_PUSH_BLOCKED_ALREADY_HOLDING,
+        "COOLDOWN": reason_codes.CRYPTO_PUSH_BLOCKED_COOLDOWN,
+        "MAX_POSITIONS": reason_codes.CRYPTO_PUSH_BLOCKED_MAX_POSITIONS,
+        "SCORE_TOO_LOW": reason_codes.CRYPTO_PUSH_BLOCKED_SCORE,
         "CRYPTO_PUSH_DISABLED": reason_codes.CRYPTO_PUSH_DISABLED,
     }
-    return m.get(str(subreason or "").strip(), str(subreason or "").strip().upper())
+    return m.get(sub, sub.upper())
 
 
 def map_generic_exit_to_crypto_trade_reason(generic_exit: str | None) -> str:

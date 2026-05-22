@@ -6,6 +6,7 @@ from typing import Any
 
 from execution import reason_codes
 from execution.trading_constants import cfg_float, cfg_is_enabled
+from utils.symbols import crypto_symbols_equivalent, is_stablecoin_usd_pair, position_key_symbol
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
@@ -45,6 +46,183 @@ def _reject_reason(
     return "PASS"
 
 
+def _stablecoin_arbitrage_enabled(rt: dict[str, Any]) -> bool:
+    return bool(int(rt.get("crypto_stablecoin_arbitrage_enabled", 0) or 0) == 1)
+
+
+def _filter_stablecoin_scores(
+    sorted_crypto_scores: list[tuple[str, float]],
+    rt: dict[str, Any],
+) -> list[tuple[str, float]]:
+    if _stablecoin_arbitrage_enabled(rt):
+        return sorted_crypto_scores
+    return [(s, sc) for s, sc in sorted_crypto_scores if not is_stablecoin_usd_pair(s)]
+
+
+def _candidates_above_threshold(
+    top_candidates: list[dict[str, Any]],
+    crypto_buy_th: float,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for c in top_candidates:
+        sc = _safe_float(c.get("score"), -1.0)
+        if sc >= crypto_buy_th or str(c.get("reject_reason") or "") == "PASS" or str(c.get("action") or "") == "BUY":
+            out.append(c)
+    return out
+
+
+def _map_push_subreason_to_final_code(sub: str, *, rt: dict[str, Any]) -> str:
+    sub_u = str(sub or "").strip().upper()
+    if sub_u in ("OK", ""):
+        return reason_codes.CRYPTO_PUSH_ALLOWED
+    if sub_u == "INSUFFICIENT_BUYING_POWER":
+        return reason_codes.CRYPTO_PUSH_BLOCKED_LOW_BUYING_POWER
+    if sub_u == "ALREADY_LONG":
+        return reason_codes.CRYPTO_PUSH_BLOCKED_ALREADY_HOLDING
+    if sub_u == "COOLDOWN":
+        return reason_codes.CRYPTO_PUSH_BLOCKED_COOLDOWN
+    if sub_u == "SCORE_TOO_LOW":
+        return reason_codes.CRYPTO_PUSH_BLOCKED_SCORE
+    if sub_u == "CRYPTO_PUSH_DISABLED":
+        return reason_codes.CRYPTO_PUSH_DISABLED
+    if sub_u == "MAX_POSITIONS":
+        try:
+            max_open = int(float(rt.get("crypto_max_open_positions", 8.0)))
+        except (TypeError, ValueError):
+            max_open = 8
+        if max_open <= 1:
+            return reason_codes.CRYPTO_POSITION_ALREADY_OPEN
+        return reason_codes.CRYPTO_PUSH_BLOCKED_MAX_POSITIONS
+    return reason_codes.CRYPTO_PUSH_BLOCKED_PREFLIGHT
+
+
+def _human_for_push_block(
+    code: str,
+    *,
+    best_sym: str | None,
+    best_score: float | None,
+    sub: str,
+    open_crypto: int,
+    held_symbols: list[str] | None,
+) -> str:
+    held = held_symbols or []
+    if code == reason_codes.CRYPTO_PUSH_BLOCKED_LOW_BUYING_POWER:
+        return "Crypto buy blocked — usable buying power below minimum order size."
+    if code == reason_codes.CRYPTO_PUSH_BLOCKED_ALREADY_HOLDING:
+        return f"Already holding {best_sym or 'candidate'} — no duplicate entry."
+    if code == reason_codes.CRYPTO_POSITION_ALREADY_OPEN:
+        return (
+            f"Crypto position already open ({held[0] if held else 'open slot used'}) — "
+            "strategy allows one crypto position."
+        )
+    if code == reason_codes.NO_ADDITIONAL_CRYPTO_ENTRY_AVAILABLE:
+        return (
+            f"Holding {held[0] if held else 'crypto'} with pull active — "
+            "no additional crypto entry this cycle."
+        )
+    if code == reason_codes.CRYPTO_PUSH_BLOCKED_MAX_POSITIONS:
+        return f"Open crypto positions ({open_crypto}) at max — new entry blocked."
+    if code == reason_codes.CRYPTO_PUSH_BLOCKED_COOLDOWN:
+        return f"Re-entry cooldown active for {best_sym or 'symbol'}."
+    if best_sym and best_score is not None:
+        return (
+            f"Best {best_sym} scored {best_score:.4f} but push preflight blocked ({sub or code})."
+        )
+    return "Scored candidates passed threshold but push preflight blocked this cycle."
+
+
+def reconcile_crypto_scanner_push_reason(
+    diag: dict[str, Any],
+    *,
+    rt: dict[str, Any],
+    sorted_crypto_scores: list[tuple[str, float]] | None = None,
+    executor_readiness: dict[str, Any] | None = None,
+    open_crypto_positions: int = 0,
+    held_crypto_symbols: list[str] | None = None,
+    push_subreason: str | None = None,
+    best_push_symbol: str | None = None,
+) -> dict[str, Any]:
+    """Align ``final_reason_code`` with scored candidates + push preflight truth."""
+    if not isinstance(diag, dict):
+        return diag
+    th = cfg_float(rt, "crypto_buy_threshold", 0.05)
+    passing = _candidates_above_threshold(diag.get("top_candidates") or [], th)
+    if not passing and sorted_crypto_scores:
+        passing = [
+            {"symbol": s, "score": sc, "threshold": th, "action": "BUY", "reject_reason": "PASS"}
+            for s, sc in sorted_crypto_scores[:5]
+            if _safe_float(sc, 0.0) >= th and not (
+                not _stablecoin_arbitrage_enabled(rt) and is_stablecoin_usd_pair(s)
+            )
+        ]
+    if not passing:
+        return diag
+
+    best = passing[0]
+    best_sym = str(best_push_symbol or best.get("symbol") or "")
+    best_score = _safe_float(best.get("score"), None)
+
+    ready = executor_readiness or {}
+    sub = push_subreason or ready.get("push_blocked_reason") or ready.get("reason_code")
+    if sub and str(sub).upper() in ("NO_CRYPTO_CANDIDATES", "NO_SIGNAL", "HOLD"):
+        sub = None
+
+    held = list(held_crypto_symbols or [])
+    if not sub and held:
+        if any(crypto_symbols_equivalent(h, best_sym) for h in held):
+            sub = "ALREADY_LONG"
+        elif open_crypto_positions >= 1:
+            try:
+                max_open = int(float(rt.get("crypto_max_open_positions", 8.0)))
+            except (TypeError, ValueError):
+                max_open = 8
+            if max_open <= 1:
+                sub = "MAX_POSITIONS"
+
+    if not sub:
+        try:
+            from execution import crypto_push_pull
+
+            usable = _safe_float(ready.get("usable_buying_power"), 0.0)
+            if usable <= 0:
+                usable = _safe_float((diag.get("buy_gate") or {}).get("max_usable_for_new_buys_crypto"), 0.0)
+            ok, sub = crypto_push_pull.push_allowed(
+                rt=rt,
+                symbol=best_sym or "BTC/USD",
+                combined_score=float(best_score or 0.0),
+                crypto_buy_threshold=th,
+                usable_crypto_buying_power=usable,
+                open_crypto_positions=int(open_crypto_positions),
+                holding_symbol=bool(held and any(crypto_symbols_equivalent(h, best_sym) for h in held)),
+                last_exit_ts_by_symbol={},
+            )
+            if ok:
+                sub = "OK"
+        except Exception:
+            sub = sub or reason_codes.CRYPTO_PUSH_BLOCKED_PREFLIGHT
+
+    code = _map_push_subreason_to_final_code(str(sub or ""), rt=rt)
+    if (
+        code == reason_codes.CRYPTO_PUSH_BLOCKED_ALREADY_HOLDING
+        and open_crypto_positions >= 1
+        and held
+    ):
+        code = reason_codes.NO_ADDITIONAL_CRYPTO_ENTRY_AVAILABLE
+
+    human = _human_for_push_block(
+        code,
+        best_sym=best_sym,
+        best_score=best_score,
+        sub=str(sub or ""),
+        open_crypto=open_crypto_positions,
+        held_symbols=held,
+    )
+    out = {**diag, "final_reason_code": code, "human_reason": human[:320]}
+    if ready:
+        out["push_block_subreason"] = str(sub or "")
+    return out
+
+
 def build_crypto_scanner_diagnostics_from_cycle(
     *,
     rt: dict[str, Any],
@@ -62,6 +240,7 @@ def build_crypto_scanner_diagnostics_from_cycle(
     crypto_buy_th = cfg_float(rt, "crypto_buy_threshold", 0.05)
     crypto_min_score = cfg_float(rt, "crypto_min_score", 0.01)
     crypto_night_min = cfg_float(rt, "crypto_night_min_score", 0.3)
+    sorted_crypto_scores = _filter_stablecoin_scores(list(sorted_crypto_scores or []), rt)
 
     crypto_results = [r for r in results if getattr(r, "asset_class", None) == "crypto"]
     symbols_considered = universe_symbols or [getattr(r, "symbol", "") for r in crypto_results]
@@ -140,8 +319,21 @@ def build_crypto_scanner_diagnostics_from_cycle(
         final_code = "SCORE_BELOW_MIN"
         human = f"Best {best_sym} scored {best_score:.4f} — below crypto_min_score {crypto_min_score:.4f}."
     else:
-        final_code = "NO_CRYPTO_CANDIDATES"
-        human = "No crypto symbol passed push preflight this cycle."
+        passing = _candidates_above_threshold(top_candidates, crypto_buy_th)
+        if passing:
+            final_code = reason_codes.CRYPTO_PUSH_BLOCKED_PREFLIGHT
+            best_c = passing[0]
+            human = _human_for_push_block(
+                final_code,
+                best_sym=str(best_c.get("symbol") or ""),
+                best_score=_safe_float(best_c.get("score"), None),
+                sub="PREFLIGHT",
+                open_crypto=0,
+                held_symbols=None,
+            )
+        else:
+            final_code = "NO_CRYPTO_CANDIDATES"
+            human = "No crypto symbol passed score threshold this cycle."
 
     try:
         from monitoring.worker_wait_context import expected_between_cycle_interval_sec

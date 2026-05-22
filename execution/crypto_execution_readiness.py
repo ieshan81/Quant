@@ -148,20 +148,28 @@ def build_crypto_executor_readiness(
         if usable < mn:
             push_blocked_reason = "INSUFFICIENT_BUYING_POWER"
         elif crypto_scores:
+            from utils.symbols import crypto_symbols_equivalent
+
+            best_sym = max(crypto_scores, key=lambda k: float(crypto_scores[k] or 0.0))
+            best_score = float(crypto_scores[best_sym] or 0.0)
+            holding = any(
+                crypto_symbols_equivalent(str(p.get("symbol") or ""), best_sym)
+                for p in (crypto_positions or [])
+            )
             ok, sub = crypto_push_pull.push_allowed(
                 rt=rt_eff,
-                symbol=next(iter(crypto_scores)),
-                combined_score=float(max(crypto_scores.values())),
+                symbol=best_sym,
+                combined_score=best_score,
                 crypto_buy_threshold=float(rt_eff.get("crypto_buy_threshold", 0.0)),
                 usable_crypto_buying_power=usable,
                 open_crypto_positions=len(crypto_positions or []),
-                holding_symbol=False,
+                holding_symbol=holding,
                 last_exit_ts_by_symbol={},
             )
             if ok:
                 push_allowed = True
             else:
-                push_blocked_reason = sub
+                push_blocked_reason = crypto_push_pull.map_push_block_to_decision_code(sub, rt=rt_eff)
         else:
             push_blocked_reason = "NO_CRYPTO_CANDIDATES"
 

@@ -65,6 +65,29 @@ def build_crypto_push_status(
             "push_allowed": False,
             "headline": human,
         }
+    blocked_codes = {
+        "CRYPTO_PUSH_BLOCKED_LOW_BUYING_POWER",
+        "CRYPTO_PUSH_BLOCKED_ALREADY_HOLDING",
+        "CRYPTO_PUSH_BLOCKED_PREFLIGHT",
+        "CRYPTO_POSITION_ALREADY_OPEN",
+        "NO_ADDITIONAL_CRYPTO_ENTRY_AVAILABLE",
+        "CRYPTO_PUSH_BLOCKED_MAX_POSITIONS",
+        "CRYPTO_PUSH_BLOCKED_COOLDOWN",
+        "CRYPTO_PUSH_BLOCKED_SCORE",
+        "INSUFFICIENT_BUYING_POWER",
+        "ALREADY_LONG",
+        "MAX_POSITIONS",
+    }
+    if code in blocked_codes or str(code).startswith("CRYPTO_PUSH_BLOCKED"):
+        human = str(push_decision.get("human_reason") or code)
+        return {
+            "status": "blocked",
+            "label": "Blocked",
+            "reason_code": code,
+            "human_reason": human,
+            "push_allowed": False,
+            "headline": f"Crypto push: blocked — {human}",
+        }
     return {
         "status": "blocked",
         "label": "Blocked",

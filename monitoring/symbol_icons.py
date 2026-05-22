@@ -66,3 +66,17 @@ def resolve_symbol_icon(asset_class: str, symbol: str) -> dict[str, str | None]:
         url = stock_icon_url(sym)
         alt = stock_icon_fallback_url(sym)
     return {"url": url, "fallback_url": alt, "fallback_letter": letter, "symbol": sym, "asset_class": ac}
+
+
+def resolve_symbols_metadata_batch(entries: list[dict[str, str]]) -> list[dict[str, str | None]]:
+    """Resolve icon metadata for many symbols (dashboard batch endpoint)."""
+    out: list[dict[str, str | None]] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        ac = str(raw.get("asset_class") or "stock")
+        sym = str(raw.get("symbol") or "")
+        row = resolve_symbol_icon(ac, sym)
+        row["key"] = f"{ac}|{sym.strip().upper()}"
+        out.append(row)
+    return out

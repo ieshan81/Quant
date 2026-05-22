@@ -2450,6 +2450,22 @@ def _check_and_execute_exits(
         len(crypto_positions),
         exits_ok,
     )
+    from utils.symbols import position_key_symbol as _pk_exit
+
+    _exit_by_canon: dict[str, dict[str, Any]] = {}
+    for row in position_exit_rows:
+        ac_row = str(row.get("asset_class") or "stock").lower()
+        canon = _pk_exit(ac_row, str(row.get("symbol") or ""))
+        prev = _exit_by_canon.get(canon)
+        if prev is None:
+            _exit_by_canon[canon] = row
+            continue
+        prev_bq = float(prev.get("broker_qty") or prev.get("qty") or 0)
+        row_bq = float(row.get("broker_qty") or row.get("qty") or 0)
+        if row_bq > prev_bq:
+            _exit_by_canon[canon] = row
+    position_exit_rows = list(_exit_by_canon.values())
+
     health = {
         "blocked_exits_count": blocked_exits_count,
         "pdt_blocked_symbols": sorted(pdt_blocked_symbols),
@@ -3516,7 +3532,7 @@ def execute_cycle_results(
                         last_exit_ts_by_symbol=_crypto_last_exit_ts,
                     )
                     if not ok_push:
-                        code = crypto_push_pull.map_push_block_to_decision_code(sub)
+                        code = crypto_push_pull.map_push_block_to_decision_code(sub, rt=rt)
                         _persist_decision(
                             cycle_id=cid,
                             asset_class="crypto",
@@ -5202,6 +5218,42 @@ def run_trading_cycle_once(
                 "quote_diagnostics": summary.get("_quote_diagnostics"),
             }
         )
+        try:
+            from execution.crypto_scanner_diagnostics import reconcile_crypto_scanner_push_reason
+            from utils.symbols import position_key_symbol
+
+            _diag = summary.get("crypto_scanner_diagnostics")
+            _exec = summary.get("crypto_executor_readiness") or {}
+            _held_crypto: list[str] = []
+            for _pr in exit_health.get("position_exit_rows") or []:
+                if str(_pr.get("asset_class") or "").lower() != "crypto":
+                    continue
+                _bq = float(_pr.get("broker_qty") or _pr.get("qty") or 0)
+                if _bq > 1e-9:
+                    _held_crypto.append(
+                        position_key_symbol("crypto", str(_pr.get("symbol") or ""))
+                    )
+            _open_c = int((summary.get("hold_counts") or {}).get("crypto_open_positions") or len(_held_crypto))
+            if isinstance(_diag, dict):
+                _diag2 = reconcile_crypto_scanner_push_reason(
+                    _diag,
+                    rt=rt,
+                    sorted_crypto_scores=sorted_crypto_scores,
+                    executor_readiness=_exec,
+                    open_crypto_positions=_open_c,
+                    held_crypto_symbols=_held_crypto,
+                )
+                summary["crypto_scanner_diagnostics"] = _diag2
+                _fc = str(_diag2.get("final_reason_code") or "")
+                _fh = str(_diag2.get("human_reason") or "")
+                if _fc and not _exec.get("push_allowed"):
+                    _exec["reason_code"] = _fc
+                    _exec["push_blocked_reason"] = _fc
+                    _exec["human_reason"] = _fh
+                    _exec["latest_human_reason"] = _fh
+                    summary["crypto_executor_readiness"] = _exec
+        except Exception:
+            logger.debug("[crypto_scan] push reason reconcile skipped", exc_info=True)
     except Exception as exc:
         from monitoring.crypto_readiness_payload import fallback_crypto_executor_readiness
 

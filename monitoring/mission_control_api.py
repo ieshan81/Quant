@@ -207,8 +207,8 @@ def _canonical_no_trade_reason(
             f"below threshold {float(th):.4f}."
         )
     else:
-        code = str(dec.get("reason_code") or "NO_SIGNAL")
-        human = str(dec.get("human_reason") or human)
+        code = str(diag.get("final_reason_code") or dec.get("reason_code") or "NO_SIGNAL")
+        human = str(diag.get("human_reason") or dec.get("human_reason") or human)
     return {
         "reason_code": code,
         "human_reason": human[:240],
@@ -222,6 +222,25 @@ def _canonical_no_trade_reason(
     }
 
 
+def _ai_note_is_stale_or_resolved(note: dict[str, Any]) -> bool:
+    status = str(note.get("status") or note.get("note_status") or "").lower()
+    if status in ("resolved", "stale", "superseded", "inactive"):
+        return True
+    finding = str(note.get("finding") or note.get("summary") or "").lower()
+    if "max_position_pct" not in finding or "0.005" not in finding:
+        return False
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
+        cur = float(rt.get("max_position_pct", 0.5) or 0.5)
+        if cur >= 0.05:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _top_ai_attention_note() -> dict[str, Any] | None:
     try:
         from monitoring.ai_observer import fetch_latest_notes
@@ -231,12 +250,26 @@ def _top_ai_attention_note() -> dict[str, Any] | None:
         return None
     ranked = sorted(
         (n for n in notes if isinstance(n, dict)),
-        key=lambda n: (
-            {"critical": 0, "warning": 1, "info": 2}.get(str(n.get("severity") or "").lower(), 3),
-            str(n.get("created_at") or ""),
+        key=lambda n: str(n.get("created_at") or ""),
+        reverse=True,
+    )
+    ranked.sort(
+        key=lambda n: {"critical": 0, "warning": 1, "info": 2}.get(
+            str(n.get("severity") or "").lower(), 3
         ),
     )
-    return ranked[0] if ranked else None
+    for note in ranked:
+        if not _ai_note_is_stale_or_resolved(note):
+            out = dict(note)
+            out["note_status"] = "active"
+            return out
+    for note in ranked:
+        sev = str(note.get("severity") or "info").lower()
+        if sev in ("info", "warning"):
+            out = dict(note)
+            out["note_status"] = "historical"
+            return out
+    return None
 
 
 def _transition_evidence(eh: dict[str, Any], mem: dict[str, Any]) -> dict[str, Any]:

@@ -280,7 +280,7 @@ def position_key_symbol(asset_class: str | None, symbol: str | None) -> str:
 
 # USD-quoted stablecoins — not momentum targets; excluded from scan unless arbitrage mode.
 _STABLECOIN_USD_BASES: frozenset[str] = frozenset(
-    {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDP", "PYUSD", "FDUSD"}
+    {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDP", "PYUSD", "FDUSD", "USDG"}
 )
 
 

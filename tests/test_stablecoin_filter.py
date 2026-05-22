@@ -8,6 +8,7 @@ from utils.symbols import filter_tradeable_crypto_pairs, is_stablecoin_usd_pair
 def test_stablecoin_usd_detected() -> None:
     assert is_stablecoin_usd_pair("USDT/USD")
     assert is_stablecoin_usd_pair("USDCUSD")
+    assert is_stablecoin_usd_pair("USDG/USD")
     assert not is_stablecoin_usd_pair("BTC/USD")
 
 

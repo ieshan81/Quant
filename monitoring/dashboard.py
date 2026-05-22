@@ -31,6 +31,7 @@ _CLIENT_DEBUG_LOCK = threading.Lock()
 _CLIENT_DEBUG_EVENTS: list[dict[str, Any]] = []
 
 _DASHBOARD_APP_JS_PATH = Path(__file__).resolve().parent / "dashboard_app.js"
+_DASHBOARD_PERF_JS_PATH = Path(__file__).resolve().parent / "dashboard_perf.js"
 _DASHBOARD_THEME_PATH = Path(__file__).resolve().parent / "dashboard_theme.css"
 _DASHBOARD_LOGO_PATH = Path(__file__).resolve().parent / "static" / "momo-logo.png"
 
@@ -1663,6 +1664,7 @@ _PAGE = """<!DOCTYPE html>
     </div>
   </div>
 
+<script src="/dashboard-perf.js"></script>
 <script src="/dashboard-app.js" defer></script>
 </body>
 </html>
@@ -2577,6 +2579,25 @@ def create_app() -> Flask:
         data = fetch_account_history(rk)
         timer.finish()
         return Response(json.dumps(data, default=str), mimetype="application/json")
+
+    @app.get("/api/symbols/metadata")
+    def api_symbols_metadata() -> Response:
+        """Batch symbol icon metadata (CDN URLs) for dashboard caching."""
+        from monitoring.symbol_icons import resolve_symbols_metadata_batch
+
+        raw = str(request.args.get("symbols", "") or "")
+        entries: list[dict[str, str]] = []
+        for part in raw.split(","):
+            piece = part.strip()
+            if not piece:
+                continue
+            if "|" in piece:
+                sym, ac = piece.split("|", 1)
+                entries.append({"symbol": sym.strip(), "asset_class": ac.strip().lower() or "stock"})
+            else:
+                entries.append({"symbol": piece, "asset_class": "stock"})
+        items = resolve_symbols_metadata_batch(entries[:80])
+        return Response(json.dumps({"items": items}, default=str), mimetype="application/json")
 
     @app.get("/api/symbol-icon")
     def api_symbol_icon() -> Response:
@@ -3784,6 +3805,16 @@ def create_app() -> Flask:
         return Response(
             _DASHBOARD_THEME_PATH.read_text(encoding="utf-8"),
             mimetype="text/css",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/dashboard-perf.js")
+    def dashboard_perf_js() -> Response:
+        if not _DASHBOARD_PERF_JS_PATH.is_file():
+            return Response("window.MomoDashPerf={};\n", mimetype="application/javascript")
+        return Response(
+            _DASHBOARD_PERF_JS_PATH.read_text(encoding="utf-8"),
+            mimetype="application/javascript",
             headers={"Cache-Control": "no-store"},
         )
 

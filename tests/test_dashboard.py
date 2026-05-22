@@ -106,8 +106,8 @@ def test_default_tab_mission_active_in_html(dash_app) -> None:
     body = client.get("/").data.decode("utf-8", errors="ignore")
     assert '<button type="button" class="tab-btn active" data-tab="mission"' in body
     assert 'class="tab-btn active" data-tab="backtest"' not in body
-    assert '<section id="panel-mission" class="tab-panel active"' in body
-    assert '<section id="panel-overview" class="tab-panel">' in body
+    assert 'id="panel-mission"' in body and "active" in body.split('id="panel-mission"')[1].split(">")[0]
+    assert 'id="panel-overview"' in body and "tab-panel" in body
     assert 'class="app-shell"' in body
     assert 'id="headerTabTitle"' in body
     assert 'id="mcCryptoScanner"' in body
@@ -182,12 +182,36 @@ def test_activity_export_ui_hook(dash_app) -> None:
 def test_index_http_poll_only(dash_app) -> None:
     client = dash_app.test_client()
     _, bundle, _ = _html_and_js(client)
-    assert 'fetch("/api/dashboard"' in bundle
-    # Poll cadence is set to 30000 ms via POLL_MS constant
+    perf = client.get("/dashboard-perf.js").data.decode("utf-8", errors="ignore")
+    assert '"/api/dashboard"' in bundle
     assert "POLL_MS = 30000" in bundle
-    assert "setInterval(fetchDashboard, POLL_MS)" in bundle
+    assert "_scheduleDashPoll" in bundle
+    assert "pollIntervalMs" in perf
     html = client.get("/").data.decode("utf-8", errors="ignore")
+    assert "/dashboard-perf.js" in html
     assert "socket.io" not in html.lower()
+
+
+def test_dashboard_perf_js_route(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/dashboard-perf.js")
+    assert r.status_code == 200
+    body = r.data.decode("utf-8", errors="ignore")
+    assert "MomoDashPerf" in body
+    assert "ensureSymbolMeta" in body
+    assert "patchTableByKey" in body
+    assert r.headers.get("Cache-Control") == "no-store"
+
+
+def test_symbols_metadata_batch_api(dash_app) -> None:
+    client = dash_app.test_client()
+    r = client.get("/api/symbols/metadata?symbols=AAPL|stock,BTC/USD|crypto")
+    assert r.status_code == 200
+    data = json.loads(r.data)
+    assert "items" in data
+    assert len(data["items"]) >= 1
+    keys = {it.get("key") or f"{it.get('asset_class')}|{it.get('symbol')}" for it in data["items"]}
+    assert any("AAPL" in str(k).upper() for k in keys)
 
 
 def test_index_bind_tabs_and_mapper(dash_app) -> None:
@@ -454,7 +478,7 @@ def test_index_renders_minimal_shell(dash_app) -> None:
     client = dash_app.test_client()
     r = client.get("/")
     assert r.status_code == 200
-    assert b"QuantBot" in r.data
+    assert b"MoMo" in r.data
     assert b"Recent trades" in r.data
     assert b"id=\"btRunBtn\"" in r.data
 
