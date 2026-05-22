@@ -876,7 +876,26 @@ def build_dashboard_payload(
         for item in pe_rows:
             ji = _json_safe(item)
             pe_clean.append(ji if isinstance(ji, dict) else {"_raw": ji})
-    eh_safe["position_exit_rows"] = pe_clean
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+        from core.position_truth import apply_operator_position_filter, build_position_truth_audit
+
+        _rt_dash = load_runtime_config_for_worker(config.DB_PATH)
+        positions, _quarantined_pos = apply_operator_position_filter(
+            positions if isinstance(positions, list) else [],
+            config_rt=_rt_dash,
+        )
+        _truth_audit = build_position_truth_audit(
+            broker_positions=positions,
+            exit_rows=pe_clean,
+            reconciliation_health=eh_safe,
+            config_rt=_rt_dash,
+        )
+        pe_clean = list(_truth_audit.get("operator_exit_rows") or [])
+        eh_safe["position_truth_diagnostics"] = _truth_audit
+        eh_safe["position_exit_rows"] = pe_clean
+    except Exception:
+        eh_safe["position_exit_rows"] = pe_clean
 
     snap_out = get_alpaca_background_snapshot()
     lu_out = float(snap_out.get("last_updated") or 0)

@@ -222,11 +222,25 @@ def _canonical_no_trade_reason(
     }
 
 
-def _ai_note_is_stale_or_resolved(note: dict[str, Any]) -> bool:
+def _ai_note_is_stale_or_resolved(
+    note: dict[str, Any],
+    *,
+    recovery_gate: dict[str, Any] | None = None,
+    worker: dict[str, Any] | None = None,
+) -> bool:
     status = str(note.get("status") or note.get("note_status") or "").lower()
     if status in ("resolved", "stale", "superseded", "inactive"):
         return True
     finding = str(note.get("finding") or note.get("summary") or "").lower()
+    rg = recovery_gate or {}
+    wh = str((worker or {}).get("worker_health") or "").lower()
+    worker_ok = wh in ("ok", "healthy", "") and bool((worker or {}).get("trading_loop_fresh", True))
+    if worker_ok and not bool(rg.get("recovery_active")) and not bool(rg.get("block_new_buys")):
+        if "recovery" in finding and ("block" in finding or "stale" in finding or "reconcile" in finding):
+            return True
+        if "broker_local_mismatch" in finding or "reconciliation" in finding:
+            if int(rg.get("broker_local_mismatch_count") or 0) == 0:
+                return True
     if "max_position_pct" not in finding or "0.005" not in finding:
         return False
     try:
@@ -241,7 +255,11 @@ def _ai_note_is_stale_or_resolved(note: dict[str, Any]) -> bool:
     return False
 
 
-def _top_ai_attention_note() -> dict[str, Any] | None:
+def _top_ai_attention_note(
+    *,
+    recovery_gate: dict[str, Any] | None = None,
+    worker: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     try:
         from monitoring.ai_observer import fetch_latest_notes
 
@@ -259,7 +277,7 @@ def _top_ai_attention_note() -> dict[str, Any] | None:
         ),
     )
     for note in ranked:
-        if not _ai_note_is_stale_or_resolved(note):
+        if not _ai_note_is_stale_or_resolved(note, recovery_gate=recovery_gate, worker=worker):
             out = dict(note)
             out["note_status"] = "active"
             return out
@@ -333,16 +351,6 @@ def _assemble_summary(
 
     profile = build_dynamic_account_profile(equity=eq, cash=cash, buying_power=bp)
     crypto_policy = build_crypto_execution_policy(cash_available=cash, blocked_reason=crypto.get("blocked_reason"))
-
-    top_ai_note = _top_ai_attention_note() if include_notes else None
-    if top_ai_note:
-        sev = str(top_ai_note.get("severity") or "info").upper()
-        finding = str(top_ai_note.get("finding") or "")[:160]
-        ts = str(top_ai_note.get("created_at") or "")
-        conf = top_ai_note.get("confidence")
-        momo_summary["attention"].append(
-            f"{sev}: {finding} ({ts}){f' conf={conf}' if conf is not None else ''}"
-        )
 
     from monitoring.buying_power_diagnostic import build_buying_power_diagnostic
 
@@ -427,6 +435,20 @@ def _assemble_summary(
         "mission_mode_derived": mission_mode,
         "mission_mode_human": _mission_mode_human(mission_mode),
     }
+
+    top_ai_note = (
+        _top_ai_attention_note(recovery_gate=recovery_gate, worker=eh)
+        if include_notes
+        else None
+    )
+    if top_ai_note:
+        sev = str(top_ai_note.get("severity") or "info").upper()
+        finding = str(top_ai_note.get("finding") or "")[:160]
+        ts = str(top_ai_note.get("created_at") or "")
+        conf = top_ai_note.get("confidence")
+        momo_summary["attention"].append(
+            f"{sev}: {finding} ({ts}){f' conf={conf}' if conf is not None else ''}"
+        )
 
     from monitoring.crypto_readiness_payload import (
         crypto_block_headline_from_readiness,
@@ -531,7 +553,7 @@ def _assemble_summary(
         pass
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    top_ai_note = _top_ai_attention_note()
+    top_ai_note = _top_ai_attention_note(recovery_gate=recovery_gate, worker=resource)
     momo_attention = (
         [f"{str(top_ai_note.get('severity') or 'info').upper()}: {str(top_ai_note.get('finding') or '')[:160]}"]
         if top_ai_note
@@ -585,6 +607,35 @@ def _assemble_summary(
         recon_clean=recon_clean,
         recovery_block=bool(rs.get("block_new_buys")),
     )
+    _pos_quarantine: list[dict[str, Any]] = []
+    try:
+        from core.position_truth import apply_operator_position_filter, push_decision_from_canonical
+        from execution.crypto_push_pull_status import build_crypto_session_status
+
+        positions, _pos_quarantine = apply_operator_position_filter(
+            list(positions) if isinstance(positions, list) else [],
+            config_rt=_rt_mc,
+        )
+        _push_dec = push_decision_from_canonical(_canonical_reason, executor=crypto_executor)
+        crypto = build_crypto_session_status(
+            _push_dec,
+            scan_gate=crypto_scanner_diagnostics.get("crypto_gate"),
+        )
+        if isinstance(crypto_scanner_diagnostics, dict) and _canonical_reason.get("reason_code"):
+            crypto_scanner_diagnostics = {
+                **crypto_scanner_diagnostics,
+                "final_reason_code": _canonical_reason["reason_code"],
+                "human_reason": _canonical_reason.get("human_reason")
+                or crypto_scanner_diagnostics.get("human_reason"),
+            }
+            crypto_executor = {
+                **crypto_executor,
+                "reason_code": _canonical_reason["reason_code"],
+                "push_blocked_reason": _canonical_reason["reason_code"],
+                "human_reason": _canonical_reason.get("human_reason") or crypto_executor.get("human_reason"),
+            }
+    except Exception:
+        _pos_quarantine = []
     if _cockpit_alloc.get("available"):
         _cap_prot["cockpit_allocation"] = _cockpit_alloc
         _cap_prot["allocator"] = {
@@ -655,7 +706,11 @@ def _assemble_summary(
         "strategy_weights_audit": _weights_audit,
         "pending_exits": _pending_exits,
         "capital_protection": _cap_prot,
-        "positions": {"open": positions[:20], "count": len(positions)},
+        "positions": {
+            "open": positions[:20],
+            "count": len(positions),
+            "quarantined_diagnostics": _pos_quarantine[:20],
+        },
         "crypto_night": {
             **crypto,
             "momo_in_execution_loop": False,
@@ -792,7 +847,7 @@ def build_mission_control_summary_minimal(
         "human_summary": _cap_human,
         "buying_power_diagnostic": {},
     }
-    top_ai_note = _top_ai_attention_note()
+    top_ai_note = _top_ai_attention_note(recovery_gate=recovery_gate, worker=worker)
     momo_attention = (
         [f"{str(top_ai_note.get('severity') or 'info').upper()}: {str(top_ai_note.get('finding') or '')[:160]}"]
         if top_ai_note
@@ -836,6 +891,24 @@ def build_mission_control_summary_minimal(
         _mc_crypto_diag = {}
         _mc_crypto_viability = {}
         _mc_canonical_reason = {}
+
+    try:
+        from core.position_truth import apply_operator_position_filter, push_decision_from_canonical
+        from execution.crypto_push_pull_status import build_crypto_session_status
+
+        _positions, _pos_quarantine_mc = apply_operator_position_filter(
+            _positions, config_rt=_rt_mc_fast if isinstance(locals().get("_rt_mc_fast"), dict) else None,
+        )
+        _push_dec_mc = push_decision_from_canonical(_mc_canonical_reason, executor=crypto_dec)
+        crypto_session = build_crypto_session_status(_push_dec_mc, positions=_positions)
+        if _mc_canonical_reason.get("reason_code"):
+            crypto_dec = {
+                **crypto_dec,
+                "reason_code": _mc_canonical_reason["reason_code"],
+                "human_reason": _mc_canonical_reason.get("human_reason") or crypto_dec.get("human_reason"),
+            }
+    except Exception:
+        _pos_quarantine_mc = []
 
     try:
         from monitoring.gpt_analyze_bundle import _build_engine_schedule
@@ -884,6 +957,18 @@ def build_mission_control_summary_minimal(
                 "stock_market_value": _alloc.get("stock_market_value"),
                 "crypto_market_value": _alloc.get("crypto_market_value"),
             }
+        try:
+            from core.position_truth import build_position_truth_audit
+
+            _truth_mc = build_position_truth_audit(
+                broker_positions=_positions,
+                local_stale_rows=_stale_rows,
+                exit_rows=_pe_rows,
+                config_rt=_rt_mc_fast if isinstance(locals().get("_rt_mc_fast"), dict) else None,
+            )
+            _pe_rows = list(_truth_mc.get("operator_exit_rows") or [])
+        except Exception:
+            pass
         _pending_exits = build_pending_exits(position_exit_rows=_pe_rows, positions=_positions)
         crypto_events = filter_mission_action_feed(crypto_events)
         if not str(session_mode or "").strip():

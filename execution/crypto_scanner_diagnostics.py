@@ -104,10 +104,29 @@ def _human_for_push_block(
     sub: str,
     open_crypto: int,
     held_symbols: list[str] | None,
+    ready: dict[str, Any] | None = None,
 ) -> str:
     held = held_symbols or []
+    r = ready or {}
+    usable = _safe_float(r.get("usable_buying_power"), None)
+    avail = _safe_float(r.get("available_after_reserve"), None)
+    reserve = _safe_float(r.get("reserve_required"), None)
+    min_n = _safe_float(r.get("min_order_notional"), None)
+    bp_tail = ""
+    if usable is not None:
+        bp_tail = (
+            f" Usable ${usable:.2f}"
+            + (f", after reserve ${avail:.2f}" if avail is not None else "")
+            + (f", reserve ${reserve:.2f}" if reserve is not None else "")
+            + (f", min order ${min_n:.2f}" if min_n is not None else "")
+            + "."
+        )
     if code == reason_codes.CRYPTO_PUSH_BLOCKED_LOW_BUYING_POWER:
-        return "Crypto buy blocked — usable buying power below minimum order size."
+        return (
+            f"Best {best_sym or 'candidate'} scored {best_score:.4f} but buy blocked by low buying power after reserve.{bp_tail}"
+            if best_score is not None
+            else "Crypto buy blocked — usable buying power below minimum order size." + bp_tail
+        )
     if code == reason_codes.CRYPTO_PUSH_BLOCKED_ALREADY_HOLDING:
         return f"Already holding {best_sym or 'candidate'} — no duplicate entry."
     if code == reason_codes.CRYPTO_POSITION_ALREADY_OPEN:
@@ -125,10 +144,11 @@ def _human_for_push_block(
     if code == reason_codes.CRYPTO_PUSH_BLOCKED_COOLDOWN:
         return f"Re-entry cooldown active for {best_sym or 'symbol'}."
     if best_sym and best_score is not None:
+        detail = sub or code.replace("CRYPTO_PUSH_BLOCKED_", "").replace("_", " ").lower()
         return (
-            f"Best {best_sym} scored {best_score:.4f} but push preflight blocked ({sub or code})."
+            f"Best {best_sym} scored {best_score:.4f} but buy was blocked by {detail}.{bp_tail}"
         )
-    return "Scored candidates passed threshold but push preflight blocked this cycle."
+    return "Scored candidates passed threshold but push preflight blocked this cycle." + bp_tail
 
 
 def reconcile_crypto_scanner_push_reason(
@@ -216,6 +236,7 @@ def reconcile_crypto_scanner_push_reason(
         sub=str(sub or ""),
         open_crypto=open_crypto_positions,
         held_symbols=held,
+        ready=ready,
     )
     out = {**diag, "final_reason_code": code, "human_reason": human[:320]}
     if ready:

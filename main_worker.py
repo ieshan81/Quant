@@ -2465,6 +2465,16 @@ def _check_and_execute_exits(
         if row_bq > prev_bq:
             _exit_by_canon[canon] = row
     position_exit_rows = list(_exit_by_canon.values())
+    try:
+        from core.position_truth import build_position_truth_audit
+
+        _truth_exit = build_position_truth_audit(
+            exit_rows=position_exit_rows,
+            config_rt=rt,
+        )
+        position_exit_rows = list(_truth_exit.get("operator_exit_rows") or [])
+    except Exception:
+        logger.debug("[exits] position truth firewall skipped", exc_info=True)
 
     health = {
         "blocked_exits_count": blocked_exits_count,
@@ -5247,10 +5257,13 @@ def run_trading_cycle_once(
                 _fc = str(_diag2.get("final_reason_code") or "")
                 _fh = str(_diag2.get("human_reason") or "")
                 if _fc and not _exec.get("push_allowed"):
+                    from execution import crypto_push_pull
+
                     _exec["reason_code"] = _fc
                     _exec["push_blocked_reason"] = _fc
                     _exec["human_reason"] = _fh
                     _exec["latest_human_reason"] = _fh
+                    _exec["min_order_notional"] = crypto_push_pull.crypto_min_notional_usd(rt)
                     summary["crypto_executor_readiness"] = _exec
         except Exception:
             logger.debug("[crypto_scan] push reason reconcile skipped", exc_info=True)

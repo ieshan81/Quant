@@ -237,8 +237,22 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     except Exception:
         crypto_session = {}
 
+    forensic_debug: dict[str, Any] = {}
+    try:
+        from monitoring.forensic_debug import build_forensic_debug
+
+        forensic_debug = build_forensic_debug(
+            mission_summary=mission_summary if isinstance(mission_summary, dict) else {},
+            simple_status=simple if isinstance(simple, dict) else {},
+            crypto_dec=crypto_dec if isinstance(crypto_dec, dict) else {},
+            activity=activity if isinstance(activity, dict) else {},
+        )
+    except Exception:
+        forensic_debug = {"error": "forensic_debug_build_failed"}
+
     bundle = {
         "generated_at": generated,
+        "forensic_debug": forensic_debug,
         "section_timings_ms": timings,
         "timeout_sections": [k for k, v in timings.items() if (v or {}).get("error")],
         "activity_export_included": activity_included,
