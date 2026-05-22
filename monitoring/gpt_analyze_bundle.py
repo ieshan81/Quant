@@ -374,6 +374,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "memory_state_summary": build_memory_state_summary(),
         "dynamic_account_profile": dynamic_profile,
         "broker_account_transition_status": transition,
+        "broker_transition_wizard": _bundle_broker_transition_wizard(),
         "money_graph_data": {"skipped": True, "message": "bundle_lightweight"},
         "operator_questions_for_gpt": [
             "Why did the bot not trade?",
@@ -744,6 +745,24 @@ def _bundle_runtime_config_schema() -> dict[str, Any]:
         }
     except Exception as exc:
         return {"error": str(exc)[:160]}
+
+
+def _bundle_broker_transition_wizard() -> dict[str, Any]:
+    try:
+        from monitoring.broker_transition_service import build_transition_status, preview_broker_transition
+
+        pv = preview_broker_transition()
+        return {
+            "status": build_transition_status(),
+            "preview_summary": {
+                "transition_type": pv.get("transition_type"),
+                "wizard_state": pv.get("wizard_state"),
+                "risk_level": pv.get("risk_level"),
+                "reset_allowed": pv.get("reset_allowed"),
+            },
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:200]}
 
 
 def _bundle_code_graph_summary() -> dict[str, Any]:

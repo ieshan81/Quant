@@ -1547,6 +1547,26 @@ _PAGE = """<!DOCTYPE html>
         </div>
         <p id="opsCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
       </div>
+      <div class="danger-zone card" id="brokerTransitionCard">
+        <h3>Broker Account Transition / Runtime Sync</h3>
+        <p class="empty-hint" id="btWizardState" style="margin:0 0 8px;">Loading…</p>
+        <div class="grid-metrics" style="margin-bottom:8px;">
+          <div class="metric"><div class="lab">Transition</div><div class="val mono" id="btTransitionType">—</div></div>
+          <div class="metric"><div class="lab">Risk</div><div class="val" id="btRiskLevel">—</div></div>
+          <div class="metric"><div class="lab">Broker mode</div><div class="val mono" id="btBrokerMode">—</div></div>
+          <div class="metric"><div class="lab">Acceptance</div><div class="val" id="btAcceptance">—</div></div>
+        </div>
+        <p class="mono" id="btConfigLine" style="font-size:11px;color:var(--muted);margin:0 0 8px;"></p>
+        <pre id="btPreviewSummary" class="sec" style="max-height:160px;font-size:11px;margin:0 0 8px;"></pre>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <button type="button" id="btnBtPreview" class="tab-btn" style="font-size:12px;">Preview Transition</button>
+          <button type="button" id="btnBtBackup" class="tab-btn" style="font-size:12px;">Download Backup</button>
+          <button type="button" id="btnBtApply" class="tab-btn" style="font-size:12px;">Apply Runtime Sync</button>
+          <button type="button" id="btnBtAudit" class="tab-btn" style="font-size:12px;">Run Acceptance Audit</button>
+          <button type="button" id="btnBtHistory" class="tab-btn" style="font-size:12px;">View Transition History</button>
+        </div>
+        <p id="btActionStatus" style="font-size:12px;color:var(--muted);margin:0;"></p>
+      </div>
       <div class="danger-zone card">
         <h3>Danger zone</h3>
         <button type="button" id="btnOpsBackup" class="tab-btn" style="font-size:12px;">Backup DBs</button>
@@ -2720,6 +2740,65 @@ def create_app() -> Flask:
     def api_gpt_analyze_bundle_txt() -> Response:
         from monitoring.gpt_analyze_bundle import build_gpt_analyze_bundle, bundle_as_text
         return Response(bundle_as_text(build_gpt_analyze_bundle()), mimetype="text/plain")
+
+    @app.get("/api/ops/broker-transition/preview")
+    def api_broker_transition_preview() -> Response:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring.broker_transition_service import preview_broker_transition
+
+        return Response(json.dumps(preview_broker_transition(), default=str), mimetype="application/json")
+
+    @app.post("/api/ops/broker-transition/apply")
+    def api_broker_transition_apply() -> Any:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        from monitoring.broker_transition_service import apply_broker_transition
+
+        out = apply_broker_transition(
+            transition_type_acknowledged=str(body.get("transition_type_acknowledged") or ""),
+            confirmation_text=str(body.get("confirmation_text") or "").strip(),
+            backup_first=bool(body.get("backup_first", True)),
+            preserve_ai_memory=bool(body.get("preserve_ai_memory", True)),
+            preserve_graphify=bool(body.get("preserve_graphify", True)),
+            preserve_config=bool(body.get("preserve_config", True)),
+            run_acceptance_audit=bool(body.get("run_acceptance_audit", True)),
+            acknowledged_open_orders=bool(body.get("acknowledged_open_orders")),
+            acknowledged_broker_positions=bool(body.get("acknowledged_broker_positions")),
+            production_audit_url=str(body.get("production_audit_url") or "") or None,
+            notes=str(body.get("notes") or "")[:500],
+        )
+        return jsonify(out), (200 if out.get("ok") else 400)
+
+    @app.get("/api/ops/broker-transition/status")
+    def api_broker_transition_status() -> Response:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring.broker_transition_service import build_transition_status
+
+        return Response(json.dumps(build_transition_status(), default=str), mimetype="application/json")
+
+    @app.post("/api/ops/broker-transition/audit")
+    def api_broker_transition_audit() -> Response:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        body = request.get_json(force=True, silent=True) or {}
+        from monitoring.broker_transition_service import run_acceptance_audit_only
+
+        out = run_acceptance_audit_only(production_url=str(body.get("production_url") or "") or None)
+        return Response(json.dumps(out, default=str), mimetype="application/json")
+
+    @app.get("/api/ops/broker-transition/history")
+    def api_broker_transition_history() -> Response:
+        if not _check_auth():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        from monitoring.broker_transition_service import fetch_transition_history
+
+        return Response(
+            json.dumps({"history": fetch_transition_history()}, default=str),
+            mimetype="application/json",
+        )
 
     @app.post("/api/ops/backup-dbs")
     def api_ops_backup_dbs() -> Any:

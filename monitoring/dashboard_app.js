@@ -2668,6 +2668,7 @@
       if (!_opsLogsCache.length) {
         _opsStamp("No ops log rows yet — worker cycle events will appear after the next trading cycle.");
       }
+      loadBrokerTransitionWizard();
       _opsLoaded = true;
     }).catch(function (e) {
       _opsStamp("Ops load failed: " + (e && e.message ? e.message : e));
@@ -3113,6 +3114,159 @@
         window.open(url, "_blank");
       });
     }
+  }
+
+  var _btPreviewCache = null;
+
+  function renderBrokerTransitionCard(data) {
+    data = data || {};
+    var st = document.getElementById("btWizardState");
+    var tt = document.getElementById("btTransitionType");
+    var rk = document.getElementById("btRiskLevel");
+    var bm = document.getElementById("btBrokerMode");
+    var ac = document.getElementById("btAcceptance");
+    var cfg = document.getElementById("btConfigLine");
+    var pre = document.getElementById("btPreviewSummary");
+    if (st) st.textContent = "State: " + safeText(data.wizard_state, "—");
+    if (tt) tt.textContent = safeText(data.transition_type, "—");
+    if (rk) rk.textContent = safeText(data.risk_level, "—");
+    var fp = data.broker_fingerprint || {};
+    if (bm) bm.textContent = safeText(fp.mode, "—");
+    if (ac) ac.textContent = safeText(data.acceptance_status || (data.active_epoch || {}).acceptance_audit_result, "—");
+    var cd = data.config_display || {};
+    if (cfg) {
+      cfg.textContent =
+        "URL " + safeText(cd.ALPACA_BASE_URL, "—") +
+        " · QUANTBOT_MODE " + safeText(cd.QUANTBOT_MODE, "—") +
+        " · BP $" + safeText(fp.buying_power, "—");
+    }
+    if (pre) {
+      pre.textContent = JSON.stringify({
+        preserved: data.preserved,
+        rows_to_clear: data.rows_to_clear,
+        warnings: data.warnings,
+        required_confirmation: data.required_confirmation,
+        reset_allowed: data.reset_allowed
+      }, null, 2);
+    }
+  }
+
+  function loadBrokerTransitionWizard() {
+    fetch("/api/ops/broker-transition/status", { cache: "no-store", headers: _authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (st) {
+        return fetch("/api/ops/broker-transition/preview", { cache: "no-store", headers: _authHeaders() })
+          .then(function (r2) {
+            if (!r2.ok) throw new Error("preview HTTP " + r2.status);
+            return r2.json();
+          })
+          .then(function (pv) {
+            _btPreviewCache = pv;
+            renderBrokerTransitionCard(Object.assign({}, pv, {
+              acceptance_status: st.acceptance_status,
+              active_epoch: st.active_epoch
+            }));
+          });
+      })
+      .catch(function (e) {
+        var el = document.getElementById("btActionStatus");
+        if (el) el.textContent = "Broker transition load failed: " + (e && e.message ? e.message : e);
+      });
+  }
+
+  function wireBrokerTransitionWizard() {
+    var btnPreview = document.getElementById("btnBtPreview");
+    var btnBackup = document.getElementById("btnBtBackup");
+    var btnApply = document.getElementById("btnBtApply");
+    var btnAudit = document.getElementById("btnBtAudit");
+    var btnHist = document.getElementById("btnBtHistory");
+    if (!btnPreview) return;
+
+    function setStatus(msg) {
+      var el = document.getElementById("btActionStatus");
+      if (el) el.textContent = msg;
+    }
+
+    btnPreview.addEventListener("click", function () {
+      fetch("/api/ops/broker-transition/preview", { cache: "no-store", headers: _authHeaders() })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          _btPreviewCache = d;
+          renderBrokerTransitionCard(d);
+          setStatus("Preview refreshed.");
+        })
+        .catch(function (e) { setStatus(String(e && e.message ? e.message : e)); });
+    });
+
+    btnBackup.addEventListener("click", function () {
+      fetch("/api/ops/backup-dbs", { method: "POST", headers: volHeaders(true) })
+        .then(function (r) { return r.json(); })
+        .then(function (d) { setStatus("Backup: " + (d.backup_path || JSON.stringify(d))); })
+        .catch(function (e) { setStatus(String(e && e.message ? e.message : e)); });
+    });
+
+    btnAudit.addEventListener("click", function () {
+      setStatus("Running acceptance audit (local)…");
+      fetch("/api/ops/broker-transition/audit", {
+        method: "POST",
+        headers: volHeaders(true),
+        body: JSON.stringify({})
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setStatus("Audit: " + safeText(d.acceptance_status, d.error || "—"));
+        loadBrokerTransitionWizard();
+      }).catch(function (e) { setStatus(String(e && e.message ? e.message : e)); });
+    });
+
+    btnHist.addEventListener("click", function () {
+      fetch("/api/ops/broker-transition/history", { cache: "no-store", headers: _authHeaders() })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var pre = document.getElementById("btPreviewSummary");
+          if (pre) pre.textContent = JSON.stringify(d.history || [], null, 2);
+          setStatus("History loaded.");
+        });
+    });
+
+    btnApply.addEventListener("click", function () {
+      var pv = _btPreviewCache || {};
+      var req = pv.required_confirmation || "RESET PAPER RUNTIME";
+      var conf = window.prompt("Type exactly:\n" + req);
+      if (!conf) return;
+      if (!window.confirm("This will backup, sync runtime to broker truth, and may clear stale runtime rows. Continue?")) return;
+      var ackOrders = false;
+      var ackPos = false;
+      if ((pv.open_orders || []).length > 0) {
+        ackOrders = window.confirm("Open broker orders exist. Acknowledge and continue?");
+        if (!ackOrders) return;
+      }
+      if ((pv.broker_positions || []).length > 0) {
+        ackPos = window.confirm("Broker positions exist. Local runtime may be cleared/archived. Continue?");
+        if (!ackPos) return;
+      }
+      fetch("/api/ops/broker-transition/apply", {
+        method: "POST",
+        headers: volHeaders(true),
+        body: JSON.stringify({
+          transition_type_acknowledged: pv.transition_type,
+          confirmation_text: conf,
+          backup_first: true,
+          run_acceptance_audit: true,
+          preserve_ai_memory: true,
+          preserve_graphify: true,
+          preserve_config: true,
+          acknowledged_open_orders: ackOrders,
+          acknowledged_broker_positions: ackPos
+        })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setStatus(d.ok ? "Sync completed." : ("Blocked: " + (d.error || "unknown")));
+        var pre = document.getElementById("btPreviewSummary");
+        if (pre) pre.textContent = JSON.stringify(d, null, 2);
+        loadBrokerTransitionWizard();
+      }).catch(function (e) { setStatus(String(e && e.message ? e.message : e)); });
+    });
   }
 
   function wireOpsCenter() {
@@ -4892,6 +5046,7 @@
     wireBrokerDiagnosticCopy();
     wireCapitalAllocatorCopy();
     wireOpsCenter();
+    wireBrokerTransitionWizard();
     wireVolumeFiles();
     wireManualSell();
     wireActivityFilters();

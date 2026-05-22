@@ -1202,11 +1202,23 @@ def build_diagnostics_state(
     fl = (crypto_state or {}).get("fast_loop") or {}
     if int(fl.get("symbols_scanned") or 0) > 0 and int(ms.get("symbols_scanned") or 0) == 0:
         issues.append("scanner_main_vs_fast_loop_divergence")
+    broker_transition: dict[str, Any] = {}
+    try:
+        from monitoring.broker_transition_service import build_transition_status
+
+        broker_transition = build_transition_status()
+    except Exception as exc:
+        broker_transition = {"error": str(exc)[:120]}
     return _envelope(
         source="core.canonical_state.build_diagnostics_state",
         human_summary=f"{len(issues)} architecture signals" if issues else "No architecture drift flags",
         reason_code="DIAG_OK" if not issues else "DIAG_DRIFT",
-        extra={"architecture_issues": issues},
+        extra={
+            "architecture_issues": issues,
+            "broker_transition_wizard": broker_transition,
+            "acceptance_status": broker_transition.get("acceptance_status"),
+            "broker_transition_wizard_state": broker_transition.get("wizard_state"),
+        },
     )
 
 
