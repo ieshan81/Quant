@@ -733,6 +733,80 @@ _PAGE = """<!DOCTYPE html>
     .mc-top-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .mc-top-metrics .metric { text-align: center; }
     .mc-top-metrics .val { font-size: 1.05rem; }
+    .mc-command-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .mc-cmd-card {
+      background: linear-gradient(145deg, #0c1424 0%, #0a101c 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      min-height: 88px;
+      position: relative;
+      overflow: hidden;
+    }
+    .mc-cmd-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, rgba(56,189,248,0.35), transparent);
+      opacity: 0.6;
+    }
+    .mc-cmd-card.mc-fresh { border-color: rgba(52,211,153,0.4); }
+    .mc-cmd-card.mc-warn { border-color: rgba(245,158,11,0.45); }
+    .mc-cmd-card.mc-bad { border-color: rgba(248,113,113,0.45); }
+    .mc-cmd-lab { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
+    .mc-cmd-val { font-size: 1.12rem; font-weight: 600; font-family: ui-monospace, monospace; line-height: 1.2; }
+    .mc-cmd-sub { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.35; }
+    .mc-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      margin-top: 4px;
+    }
+    .mc-badge.ok { color: #6ee7b7; border-color: rgba(52,211,153,0.45); background: rgba(52,211,153,0.08); }
+    .mc-badge.warn { color: #fcd34d; border-color: rgba(245,158,11,0.45); background: rgba(245,158,11,0.08); }
+    .mc-badge.bad { color: #fecaca; border-color: rgba(248,113,113,0.45); background: rgba(248,113,113,0.08); }
+    .mc-pulse { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #34d399; margin-right: 6px;
+      box-shadow: 0 0 0 0 rgba(52,211,153,0.5); animation: mc-pulse 2s infinite; vertical-align: middle; }
+    @keyframes mc-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.45); }
+      70% { box-shadow: 0 0 0 8px rgba(52,211,153,0); }
+      100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+    }
+    .mc-cockpit-main {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    @media (max-width: 960px) { .mc-cockpit-main { grid-template-columns: 1fr; } }
+    .mc-panel {
+      background: #0b1220;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+    }
+    .mc-panel h4 { margin: 0 0 8px; font-size: 0.82rem; color: var(--accent); font-weight: 600; }
+    .mc-spark { height: 36px; margin-top: 6px; background: rgba(56,189,248,0.06); border-radius: 6px; position: relative; overflow: hidden; }
+    .mc-spark svg { width: 100%; height: 100%; display: block; }
+    .mc-donut-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .mc-donut-bar { flex: 1; min-width: 120px; height: 10px; background: rgba(148,163,184,0.12); border-radius: 6px; overflow: hidden; display: flex; }
+    .mc-donut-bar span { height: 100%; }
+    .mc-mini-table { width: 100%; font-size: 11px; border-collapse: collapse; }
+    .mc-mini-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px 4px 0; border-bottom: 1px solid var(--border); }
+    .mc-mini-table td { padding: 5px 6px 5px 0; border-bottom: 1px solid rgba(51,65,85,0.35); }
+    .mc-feed li { font-size: 11px; color: var(--muted); margin: 4px 0; list-style: none; padding-left: 0; }
+    .mc-feed li strong { color: var(--text); }
     .mc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.75rem; }
     .mc-card { background: #0b1220; border: 1px solid var(--border); border-radius: 10px; padding: 0.85rem; }
     .mc-card h3 { margin: 0 0 0.35rem; font-size: 0.9rem; color: var(--accent); }
@@ -844,15 +918,19 @@ _PAGE = """<!DOCTYPE html>
 
   <main>
     <section id="panel-mission" class="tab-panel active">
-      <div class="mc-top-metrics grid-metrics" id="mcTopMetrics">
-        <div class="metric"><div class="lab">Equity</div><div class="val mono" id="mcTopEq">—</div></div>
-        <div class="metric"><div class="lab">Cash</div><div class="val mono" id="mcTopCash">—</div></div>
-        <div class="metric"><div class="lab">Buying Power</div><div class="val mono" id="mcTopBp">—</div></div>
-        <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mcTopMode">—</div></div>
-        <div class="metric"><div class="lab">Mission</div><div class="val mono" id="mcTopMission">—</div></div>
-        <div class="metric"><div class="lab">Crypto Push</div><div class="val mono" id="mcTopCrypto">—</div></div>
-        <div class="metric"><div class="lab">Crypto Pull</div><div class="val mono" id="mcTopCryptoPull">—</div></div>
-        <div class="metric"><div class="lab">Worker</div><div class="val mono" id="mcTopWorker">—</div></div>
+      <div class="mc-command-strip" id="mcCommandStrip"></div>
+      <div class="mc-cockpit-main" id="mcCockpitMain">
+        <div class="mc-cockpit-left">
+          <div class="mc-panel"><h4>Equity &amp; P&amp;L</h4><div id="mcEquityChartBody" class="mono" style="font-size:12px;">Loading…</div><div class="mc-spark" id="mcEquitySpark"></div></div>
+          <div class="mc-panel"><h4>Capital allocation</h4><div id="mcCapitalAllocBody" class="mc-donut-row">—</div></div>
+        </div>
+        <div class="mc-cockpit-right">
+          <div class="mc-panel"><h4>Holdings</h4><div id="mcHoldingsMini"><span class="muted">Loading…</span></div></div>
+          <div class="mc-panel"><h4>Pending exits</h4><div id="mcPendingExits"><span class="muted">None</span></div></div>
+          <div class="mc-panel"><h4>Active blockers</h4><div id="mcActiveBlockers"><span class="muted">None</span></div></div>
+          <div class="mc-panel"><h4>Last actions</h4><ul class="mc-feed" id="mcActionFeed"><li>—</li></ul></div>
+          <div class="mc-panel" id="mcMomoCriticalPanel"><h4>Momo critical</h4><div id="mcMomoCritical"><span class="muted">—</span></div></div>
+        </div>
       </div>
       <div class="mc-action-center">
         <details class="mc-action-group" open>
@@ -865,15 +943,8 @@ _PAGE = """<!DOCTYPE html>
             <button type="button" id="btnCopyAiMemory" class="btn secondary">AI Memory Copy</button>
           </div>
         </details>
-        <details class="mc-action-group">
-          <summary>More logs</summary>
-          <div class="mc-action-btns">
-            <button type="button" id="btnCopyLogsBundle" class="btn secondary">Copy Logs</button>
-            <button type="button" id="btnDownloadLogsJson" class="btn secondary">Download JSON</button>
-            <button type="button" id="btnDownloadLogsTxt" class="btn secondary">Download TXT</button>
-          </div>
-        </details>
         <div class="mc-action-btns" style="margin-top:6px;">
+          <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Telegram Summary</button>
           <button type="button" id="btnMcRefresh" class="btn secondary">Refresh</button>
         </div>
       </div>

@@ -4713,6 +4713,32 @@ def run_trading_cycle_once(
         reverse=True,
     )
     logger.info(f"Top crypto scores: {sorted_crypto_scores[:4]}")
+    try:
+        from execution.crypto_scanner_diagnostics import (
+            build_crypto_scanner_diagnostics_from_cycle,
+            build_crypto_strategy_viability,
+        )
+
+        _uni_src = "universe_snapshot"
+        if crypto_override is not None:
+            _uni_src = "override"
+        elif (rt.get("_crypto_scan_gate") or {}).get("heavy_scan_skipped"):
+            _uni_src = "gate_skipped"
+        summary["crypto_scanner_diagnostics"] = build_crypto_scanner_diagnostics_from_cycle(
+            rt=rt,
+            results=results,
+            sorted_crypto_scores=sorted_crypto_scores,
+            crypto_gate=rt.get("_crypto_scan_gate"),
+            buy_gate=summary.get("buy_gate"),
+            crypto_buys_disabled_cycle=crypto_buys_disabled_cycle,
+            universe_symbols=list(cr) if cr else [],
+            universe_source=_uni_src,
+        )
+        summary["crypto_strategy_viability"] = build_crypto_strategy_viability(
+            rt, summary["crypto_scanner_diagnostics"]
+        )
+    except Exception:
+        logger.debug("crypto_scanner_diagnostics skipped", exc_info=True)
     logger.info(
         "Cycle complete | analyzed={} buys={} sells={} holds={} errs={}",
         summary["analyzed"],

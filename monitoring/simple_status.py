@@ -133,6 +133,28 @@ def build_simple_worker_status() -> dict[str, Any]:
         except Exception:
             pass
 
+    score_threshold = None
+    crypto_scanner_summary = None
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+        from execution.crypto_scanner_diagnostics import build_crypto_scanner_diagnostics_for_api
+        from monitoring.cycle_brief import fetch_latest_cycle_brief
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
+        score_threshold = float(rt.get("crypto_buy_threshold", 0.05))
+        brief_ev: dict[str, Any] = {}
+        rows = fetch_latest_cycle_brief(limit=1)
+        if rows and isinstance(rows[0], dict):
+            brief_ev = rows[0].get("evidence") or {}
+        diag = build_crypto_scanner_diagnostics_for_api(
+            rt=rt,
+            heartbeat=hb,
+            last_cycle_evidence=brief_ev,
+        )
+        crypto_scanner_summary = str(diag.get("human_reason") or "")[:200] or None
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "fallback": True,
@@ -190,7 +212,9 @@ def build_simple_worker_status() -> dict[str, Any]:
             "best_candidate_symbol": (hb.get("best_candidate_symbol") or None),
             "last_evaluated_symbol": (hb.get("last_evaluated_symbol") or hb.get("best_candidate_symbol") or None),
             "best_candidate_score": hb.get("best_candidate_score"),
+            "score_threshold": score_threshold,
             "order_submitted": bool(int(hb.get("order_submitted") or 0)),
+            "crypto_scanner_summary": crypto_scanner_summary,
             "last_order": None,
             "stopped": bool(gate.get("blocked")),
             "stop_reason_code": gate.get("reason_code"),
@@ -208,4 +232,9 @@ def build_simple_worker_status() -> dict[str, Any]:
             "reason_code": gate.get("reason_code"),
             "human_reason": gate.get("human_reason"),
         },
+        "crypto_scanner_diagnostics": (
+            {"human_reason": crypto_scanner_summary, "api_fallback": True}
+            if crypto_scanner_summary
+            else {}
+        ),
     }

@@ -36,6 +36,8 @@ def log_cycle_brief(*, cycle_id: str, mission_mode: str, summary: dict[str, Any]
         "crypto_push_possible": eh.get("crypto_push_possible"),
         "why_no_trade": eh.get("why_no_trade"),
         "momo_note_created": momo_note_created,
+        "crypto_scanner_diagnostics": summary.get("crypto_scanner_diagnostics"),
+        "crypto_strategy_viability": summary.get("crypto_strategy_viability"),
     }
     if resource_snap:
         brief["cpu_memory"] = f"cpu={resource_snap.get('process_cpu_pct')}% mem={resource_snap.get('system_memory_pct')}%"

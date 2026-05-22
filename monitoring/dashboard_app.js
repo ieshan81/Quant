@@ -189,23 +189,38 @@
     return "";
   }
 
-  function buildNoTradeHint(trading) {
+  function formatCryptoCandidateLabel(trading, diag) {
+    var best = (trading && (trading.best_candidate_symbol || trading.last_evaluated_symbol)) || "";
+    var score = trading && trading.best_candidate_score != null ? Number(trading.best_candidate_score) : null;
+    var th = (diag && diag.thresholds && diag.thresholds.crypto_buy_threshold) ||
+      (trading && trading.score_threshold);
+    th = th != null ? Number(th) : 0.05;
+    if (!best) return "No symbol evaluated yet.";
+    if (score != null && isFiniteNum(score) && score < th) {
+      return "Last evaluated: " + best + " — no valid signal (score " + score.toFixed(3) + " < " + th.toFixed(3) + ").";
+    }
+    if (diag && diag.human_reason) return String(diag.human_reason);
+    return "Candidate: " + best + (score != null ? " (score " + score.toFixed(3) + ")" : "");
+  }
+
+  function buildNoTradeHint(trading, diag) {
     var t = trading && typeof trading === "object" ? trading : {};
-    var reason = String(t.last_no_trade_reason || "").toUpperCase();
+    var d = diag && typeof diag === "object" ? diag : {};
+    if (d.human_reason) return String(d.human_reason);
+    var reason = String(t.last_no_trade_reason || d.final_reason_code || "").toUpperCase();
     var best = t.best_candidate_symbol || t.last_evaluated_symbol || "";
     var score = t.best_candidate_score != null ? Number(t.best_candidate_score) : null;
-    var th = t.score_threshold != null ? Number(t.score_threshold) : null;
-    if (!reason) return "";
-    if (reason === "NO_SIGNAL" || reason === "SCORE_BELOW_THRESHOLD") {
-      if (best && score != null && isFiniteNum(score)) {
-        if (th != null && isFiniteNum(th)) {
-          return "No trade: best symbol " + best + " scored " + score.toFixed(3) + " below threshold " + th.toFixed(3) + ".";
-        }
-        return "No trade: best symbol " + best + " scored " + score.toFixed(3) + ".";
-      }
-      return "No crypto candidate passed scanner.";
+    var th = t.score_threshold != null ? Number(t.score_threshold) : (
+      d.thresholds && d.thresholds.crypto_buy_threshold != null ? Number(d.thresholds.crypto_buy_threshold) : null
+    );
+    if (!reason && !best) return "";
+    if (reason === "NO_CRYPTO_CANDIDATES" || reason === "NO_SIGNAL" || reason === "SCORE_BELOW_THRESHOLD") {
+      return formatCryptoCandidateLabel(t, d);
     }
-    return "Last cycle: " + reason + ".";
+    if (best && score != null && isFiniteNum(score) && th != null && score < th) {
+      return "Last evaluated: " + best + " — no valid signal (score " + score.toFixed(3) + " < " + th.toFixed(3) + ").";
+    }
+    return reason ? "Last cycle: " + reason.replace(/_/g, " ").toLowerCase() + "." : "";
   }
 
   // ---------------------------------------------------------------------------
@@ -1032,7 +1047,8 @@
   // ---------------------------------------------------------------------------
 
   function renderOverview(vm) {
-    var hint = vm.overviewHint || buildNoTradeHint(vm.simpleStatus && vm.simpleStatus.trading);
+    var ss = vm.simpleStatus || {};
+    var hint = vm.overviewHint || buildNoTradeHint(ss.trading, ss.crypto_scanner_diagnostics);
     var hintEl = document.getElementById("overviewDataHint");
     if (hintEl) {
       if (hint) {
@@ -1198,7 +1214,19 @@
     var decCount = document.getElementById("actDecCount");
     if (decCount) decCount.textContent = String(ed.length);
     document.getElementById("actDecEmpty").style.display = ed.length ? "none" : "block";
-    document.querySelector("#tblActivityDecisions tbody").innerHTML = ed.map(function (r) {
+    var seenDec = {};
+    var deduped = ed.filter(function (r) {
+      var rc = String(r.reason_code || "");
+      if (rc === "STOCK_EXIT_SKIPPED_MARKET_CLOSED") {
+        if (seenDec[rc]) return false;
+        seenDec[rc] = true;
+      }
+      if (rc.indexOf("cycle_complete") >= 0) return false;
+      return true;
+    });
+    if (decCount) decCount.textContent = String(deduped.length);
+    document.getElementById("actDecEmpty").style.display = deduped.length ? "none" : "block";
+    document.querySelector("#tblActivityDecisions tbody").innerHTML = deduped.map(function (r) {
       var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
       var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
       return "<tr>" +
@@ -2574,9 +2602,25 @@
         if (el("aiPatternsCount")) el("aiPatternsCount").textContent = d.patterns_count != null ? String(d.patterns_count) : "—";
         if (el("aiSkillsCount")) el("aiSkillsCount").textContent = d.skills_count != null ? String(d.skills_count) : "—";
         if (el("aiLastRun")) el("aiLastRun").textContent = safeText(d.last_run_at || mem.last_memory_note_at, "—");
+        var compact = d.memory_compaction_status || {};
         if (foot) {
+          var gNodes = d.graph_nodes_count != null ? d.graph_nodes_count : "—";
+          var gEdges = d.graph_edges_count != null ? d.graph_edges_count : "—";
+          var hi = d.high_severity_notes_count != null ? d.high_severity_notes_count : "—";
           foot.innerHTML =
-            "Assistant: <strong>" + esc(assistant) + "</strong> · authority: " +
+            "Notes <strong>" + esc(String(d.notes_count != null ? d.notes_count : "—")) + "</strong>" +
+            " · high-severity <strong>" + esc(String(hi)) + "</strong>" +
+            " · patterns <strong>" + esc(String(d.patterns_count != null ? d.patterns_count : "—")) + "</strong>" +
+            " · skills <strong>" + esc(String(d.skills_count != null ? d.skills_count : "—")) + "</strong>" +
+            " · graph " + esc(String(gNodes)) + "/" + esc(String(gEdges)) + " nodes/edges<br>" +
+            "DB: <span class=\"mono\">" + esc(safeText(d.ai_memory_db_path, "—")) + "</span>" +
+            (compact.last_compacted_note_count != null
+              ? " · last compaction @ " + esc(String(compact.last_compacted_note_count)) + " notes"
+              : "") +
+            (compact.next_compaction_checkpoint != null
+              ? " · next checkpoint " + esc(String(compact.next_compaction_checkpoint))
+              : "") +
+            "<br>Assistant: <strong>" + esc(assistant) + "</strong> · authority: " +
             esc(safeText(momo.authority_level || auth.authority_level, "backtester")) +
             "<br>can_submit_orders: <strong style=\"color:var(--bad);\">false</strong> · " +
             "can_change_config: <strong style=\"color:var(--bad);\">false</strong> · " +
@@ -2658,30 +2702,163 @@
   var _mcCache = null;
   var _mcPollTimer = null;
 
-  function _mcTopline(d) {
+  function _mcBadge(text, tone) {
+    return '<span class="mc-badge ' + esc(tone || "") + '">' + esc(text) + "</span>";
+  }
+
+  function _mcSparkSvg(values) {
+    if (!values || values.length < 2) return "";
+    var min = Math.min.apply(null, values);
+    var max = Math.max.apply(null, values);
+    var span = max - min || 1;
+    var w = 120;
+    var h = 32;
+    var pts = values.map(function (v, i) {
+      var x = (i / (values.length - 1)) * w;
+      var y = h - ((v - min) / span) * (h - 4) - 2;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+    return '<svg viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none"><polyline fill="none" stroke="#38bdf8" stroke-width="1.5" points="' + pts + '"/></svg>';
+  }
+
+  function _mcRenderCommandStrip(d) {
+    var host = document.getElementById("mcCommandStrip");
+    if (!host) return;
     var t = d.topline || {};
     var ac = d.account || {};
-    var elEq = document.getElementById("mcTopEq");
-    var elCash = document.getElementById("mcTopCash");
-    var elBp = document.getElementById("mcTopBp");
-    var elMode = document.getElementById("mcTopMode");
-    var elMis = document.getElementById("mcTopMission");
-    var elCr = document.getElementById("mcTopCrypto");
-    if (elEq) elEq.textContent = safeFmtMoney(t.equity != null ? t.equity : ac.equity);
-    if (elCash) elCash.textContent = safeFmtMoney(t.cash != null ? t.cash : ac.cash);
-    if (elBp) elBp.textContent = safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power);
-    if (elMode) elMode.textContent = safeText(t.mode || ac.mode, "paper");
-    if (elMis) elMis.textContent = safeText(t.mission_mode || (d.mission || {}).mission_mode, "—");
-    var elCrPull = document.getElementById("mcTopCryptoPull");
-    var elWorker = document.getElementById("mcTopWorker");
-    var pushSt = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
-    var pullSt = d.crypto_pull || (d.crypto_night || {}).crypto_pull || {};
-    if (elCr) elCr.textContent = safeText(pushSt.label || pushSt.status, "—");
-    if (elCrPull) elCrPull.textContent = safeText(pullSt.label || pullSt.status, "—");
-    if (elWorker) {
-      var w = d.worker || d.ops_health || {};
-      elWorker.textContent = w.worker_health === "ok" ? "OK" : safeText(w.worker_health || w.status_message, "—");
+    var mi = d.mission || {};
+    var cp = d.capital_protection || {};
+    var alloc = cp.allocator || {};
+    var prof = cp.dynamic_profile || {};
+    var w = d.worker || d.ops_health || {};
+    var tr = d.trading || {};
+    var push = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
+    var pull = d.crypto_pull || (d.crypto_night || {}).crypto_pull || {};
+    var br = d.broker_account_transition_status || {};
+    var diag = d.crypto_scanner_diagnostics || {};
+    var eq = t.equity != null ? t.equity : ac.equity;
+    var fresh = w.trading_loop_fresh || w.worker_health === "ok";
+    var waitMsg = d.worker_stale_display || w.status_message || "";
+    var withinWait = w.within_scheduled_wait === true || String(w.health || "").indexOf("waiting") >= 0;
+    var workerTone = fresh ? "ok" : withinWait ? "warn" : "bad";
+    var workerLab = fresh ? "Fresh" : withinWait ? "Waiting" : "Check";
+    var cycleAge = w.last_cycle_age_seconds != null ? String(w.last_cycle_age_seconds) + "s ago" : "—";
+    var cycleDur = w.last_cycle_duration_ms != null ? (Number(w.last_cycle_duration_ms) / 1000).toFixed(1) + "s" : "—";
+    if (withinWait && waitMsg) cycleAge = "Waiting for next cycle";
+    var cryptoCand = formatCryptoCandidateLabel(tr, diag);
+    var pushReason = push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
+    var cards = [
+      { lab: "Equity", val: safeFmtMoney(eq), sub: ac.day_pnl != null ? "Day P&L " + safeFmtMoneySigned(ac.day_pnl) : "Paper account", tone: "" },
+      { lab: "Cash / BP", val: safeFmtMoney(t.cash != null ? t.cash : ac.cash), sub: "BP " + safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power) + (prof.reserve_cash != null ? " · reserve " + safeFmtMoney(prof.reserve_cash) : ""), tone: "" },
+      { lab: "Usable capital", val: safeFmtMoney(prof.available_for_stock), sub: "Stocks · crypto " + safeFmtMoney(prof.available_for_crypto || alloc.available_for_crypto), tone: "" },
+      { lab: "Mission", val: safeText(mi.mission_mode_human || t.mission_mode_human || mi.mission_mode, "—"), sub: safeText(mi.session_mode, "session"), tone: "" },
+      { lab: "Worker", val: workerLab, sub: cycleAge + " · cycle " + cycleDur, tone: workerTone, pulse: fresh },
+      { lab: "Crypto push", val: safeText(push.label || push.status, "—"), sub: pushReason, tone: push.push_allowed ? "ok" : "warn" },
+      { lab: "Crypto pull", val: safeText(pull.label || pull.status, "—"), sub: safeText(pull.human_reason || pull.headline, ""), tone: "" },
+      { lab: "Broker", val: br.aligned_with_broker ? "Aligned" : "Review", sub: "Broker " + safeText(br.broker_positions_count, "—") + " · runtime " + safeText(br.runtime_positions_count, "—"), tone: br.aligned_with_broker ? "ok" : "warn" }
+    ];
+    host.innerHTML = cards.map(function (c) {
+      return '<div class="mc-cmd-card mc-' + esc(c.tone) + '"><div class="mc-cmd-lab">' + esc(c.lab) + '</div><div class="mc-cmd-val">' +
+        (c.pulse ? '<span class="mc-pulse"></span>' : "") + esc(c.val) + '</div><div class="mc-cmd-sub">' + esc(c.sub) + "</div></div>";
+    }).join("");
+    var spark = document.getElementById("mcEquitySpark");
+    if (spark && d._equitySpark && d._equitySpark.length) spark.innerHTML = _mcSparkSvg(d._equitySpark);
+  }
+
+  function _mcRenderCockpitMain(d) {
+    var ac = d.account || {};
+    var pos = (d.positions && d.positions.open) || [];
+    var cp = d.capital_protection || {};
+    var alloc = cp.allocator || {};
+    var prof = cp.dynamic_profile || {};
+    var events = (d.crypto_night && d.crypto_night.latest_push_pull_events) || [];
+    var diag = d.crypto_scanner_diagnostics || {};
+    var eqEl = document.getElementById("mcEquityChartBody");
+    if (eqEl) {
+      eqEl.textContent = "Equity " + safeFmtMoney(ac.equity) + (ac.day_pnl != null ? " · day " + safeFmtMoneySigned(ac.day_pnl) : "");
     }
+    var capEl = document.getElementById("mcCapitalAllocBody");
+    if (capEl) {
+      var stockPct = Number(alloc.actual_stock_pct || prof.stock_pct || 0);
+      var cryptoPct = Number(alloc.actual_crypto_pct || prof.crypto_pct || 0);
+      var resPct = Math.max(0, 100 - stockPct - cryptoPct);
+      capEl.innerHTML = '<div class="mc-donut-bar"><span style="width:' + stockPct + '%;background:#38bdf8"></span><span style="width:' + cryptoPct + '%;background:#a78bfa"></span><span style="width:' + resPct + '%;background:#334155"></span></div>' +
+        '<div style="font-size:11px;color:var(--muted)">Stock ' + stockPct.toFixed(0) + '% · Crypto ' + cryptoPct.toFixed(0) + '% · Reserve ' + resPct.toFixed(0) + '%</div>';
+    }
+    var hold = document.getElementById("mcHoldingsMini");
+    if (hold) {
+      if (!pos.length) hold.innerHTML = '<span class="muted">No open positions</span>';
+      else {
+        hold.innerHTML = '<table class="mc-mini-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Value</th></tr></thead><tbody>' +
+          pos.slice(0, 8).map(function (p) {
+            return "<tr><td>" + esc(p.symbol) + "</td><td class=\"mono\">" + esc(fmtQty(p.net_qty || p.qty, String(p.asset_class).toLowerCase() === "crypto")) +
+              "</td><td class=\"mono\">" + esc(fmtMoney(p.market_value)) + "</td></tr>";
+          }).join("") + "</tbody></table>";
+      }
+    }
+    var pend = document.getElementById("mcPendingExits");
+    if (pend) {
+      var pe = pos.filter(function (p) {
+        var st = String(p.exit_status || p.status || "").toLowerCase();
+        return st.indexOf("pending") >= 0 || st.indexOf("exit") >= 0;
+      });
+      pend.innerHTML = pe.length ? pe.map(function (p) {
+        return "<div>" + esc(p.symbol) + " · " + esc(p.exit_status || p.status) + "</div>";
+      }).join("") : '<span class="muted">No pending exits</span>';
+    }
+    var blk = document.getElementById("mcActiveBlockers");
+    if (blk) {
+      var blockers = [].concat(diag.global_blockers || [], (d.crypto_executor_readiness || {}).blockers || []);
+      var rg = d.recovery_gate || {};
+      if (rg.block_new_buys) blockers.push(rg.block_new_buys_reason || "New buys blocked");
+      blockers = blockers.filter(function (x, i, a) { return x && a.indexOf(x) === i; }).slice(0, 6);
+      blk.innerHTML = blockers.length ? blockers.map(function (b) {
+        return "<div>• " + esc(String(b).replace(/_/g, " ")) + "</div>";
+      }).join("") : '<span class="muted">No active blockers</span>';
+    }
+    var feed = document.getElementById("mcActionFeed");
+    if (feed) {
+      var lines = events.slice(0, 5).map(function (e) {
+        return "<li><strong>" + esc(e.symbol || e.side || "cycle") + "</strong> " + esc(e.human_reason || e.reason_code || "") + "</li>";
+      });
+      if (!lines.length) lines = ["<li class=\"muted\">No recent push/pull events</li>"];
+      feed.innerHTML = lines.join("");
+    }
+    var momoC = document.getElementById("mcMomoCritical");
+    if (momoC) {
+      var note = d.top_ai_note || {};
+      if (note.finding) {
+        var sev = String(note.severity || "info").toLowerCase();
+        momoC.innerHTML = _mcBadge(sev, sev === "critical" ? "bad" : sev === "warning" ? "warn" : "ok") +
+          " <span style=\"font-size:12px\">" + esc((note.finding || "").slice(0, 180)) + "</span>" +
+          (note.suggested_action ? '<div style="font-size:11px;color:var(--muted);margin-top:4px">' + esc(note.suggested_action) + "</div>" : "") +
+          ' <a href="#" data-tab-jump="ai" style="font-size:11px">AI Console →</a>';
+      } else {
+        var att = (d.momo_summary && d.momo_summary.attention) || [];
+        momoC.innerHTML = att.length ? esc(att[0]) : '<span class="muted">No critical Momo notes</span>';
+      }
+    }
+  }
+
+  function _mcLoadEquitySpark(d) {
+    fetch("/api/account/history?range=1D", { cache: "no-store", headers: _authHeaders() })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (h) {
+        var pts = (h && h.points) || (h && h.series) || [];
+        var vals = pts.map(function (p) { return Number(p.equity != null ? p.equity : p.value); }).filter(isFiniteNum);
+        if (vals.length) {
+          d._equitySpark = vals;
+          var spark = document.getElementById("mcEquitySpark");
+          if (spark) spark.innerHTML = _mcSparkSvg(vals);
+        }
+      })
+      .catch(function () {});
+  }
+
+  function _mcTopline(d) {
+    _mcRenderCommandStrip(d);
+    _mcRenderCockpitMain(d);
+    _mcLoadEquitySpark(d);
   }
 
   function _mcProgressStart(label) {
@@ -2811,11 +2988,25 @@
         tone: "",
         render: function () {
           var push = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
-          var parts = [safeText(push.headline || push.human_reason, "Crypto push status unknown.")];
-          var t = d.trading || {};
-          if (!push.push_allowed && (t.last_no_trade_reason === "NO_SIGNAL" || t.last_no_trade_reason === "SCORE_BELOW_THRESHOLD")) {
-            var best = t.best_candidate_symbol || t.last_evaluated_symbol;
-            if (best) parts.push("Last evaluated: " + esc(String(best)) + " (not actionable).");
+          var diag = d.crypto_scanner_diagnostics || {};
+          var parts = [safeText(push.headline || push.human_reason || diag.human_reason, "Crypto push status unknown.")];
+          parts.push(formatCryptoCandidateLabel(d.trading || {}, diag));
+          var tops = diag.top_candidates || [];
+          tops.slice(0, 3).forEach(function (c) {
+            parts.push("  " + esc(c.symbol) + " score " + esc(String(c.score)) + " · " + esc(String(c.reject_reason || "").replace(/_/g, " ")));
+          });
+          if (diag.symbols_scanned_this_cycle != null || diag.universe_count) {
+            parts.push(
+              "Scanned " + esc(String(diag.symbols_scanned_this_cycle != null ? diag.symbols_scanned_this_cycle : "?")) +
+              " this cycle · broker universe " + esc(String(diag.broker_supported_count || diag.universe_count || "?")) +
+              " (" + esc(diag.broker_supported_universe_source || diag.universe_source || "") + ")."
+            );
+          }
+          if (diag.cycle_timing && diag.cycle_timing.worker_sleep_interval_seconds) {
+            parts.push(
+              "Worker sleeps ~" + esc(String(diag.cycle_timing.worker_sleep_interval_seconds)) +
+              "s between cycles — crypto_active_cycle_seconds is not the sleep interval."
+            );
           }
           return parts.join("\n");
         }
@@ -3354,6 +3545,38 @@
     var btnBundle = document.getElementById("btnCopyFullAiBundle");
     var btnDlMem = document.getElementById("btnDownloadAiMemories");
     var btnDlBundle = document.getElementById("btnDownloadFullAiBundle");
+
+    var btnMcMem = document.getElementById("btnCopyAiMemory");
+    if (btnMcMem) btnMcMem.addEventListener("click", function () {
+      _mcProgressStart("Building AI memory summary…");
+      Promise.all([
+        fetch("/api/ai/status", { cache: "no-store", headers: _authHeaders() }).then(function (r) { return r.json(); }),
+        fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store", headers: _authHeaders() }).then(function (r) { return r.json(); })
+      ]).then(function (res) {
+        var st = res[0] || {};
+        var bundle = res[1] || {};
+        var aid = bundle.ai_diagnostic_bundle || {};
+        var blockers = ((bundle.crypto_scanner_diagnostics || {}).global_blockers) || [];
+        var summary = {
+          generated_at: new Date().toISOString(),
+          notes_count: st.notes_count || aid.notes_count,
+          high_severity_notes: aid.ai_notes_high_severity_count,
+          patterns_count: st.patterns_count || aid.patterns_count,
+          skills_count: st.skills_count || aid.skills_count,
+          graph_nodes_count: aid.graph_nodes_count,
+          memory_db_path: st.ai_memory_db_path || aid.ai_memory_db_path,
+          compaction: aid.memory_compaction_status || st.memory_compaction_status,
+          top_blockers: blockers,
+          crypto_human_reason: (bundle.crypto_scanner_diagnostics || {}).human_reason,
+          top_critical_notes: (bundle.momo_latest_notes || []).slice(0, 3)
+        };
+        if (!summary.notes_count && !summary.patterns_count) {
+          throw new Error("AI memory empty — check AI_MEMORY_DB_PATH");
+        }
+        return _copyWithFallback(JSON.stringify(summary, null, 2), document.getElementById("mcStatus"), "AI memory summary copied.");
+      }).then(function () { _mcProgressDone("AI memory copied.", true); })
+        .catch(function (e) { _mcProgressDone(safeText(e && e.message, String(e)), false); });
+    });
 
     if (btnCopy) btnCopy.addEventListener("click", function () {
       _aiStatus("Fetching AI memories...");

@@ -245,6 +245,10 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "mission_control_summary": mission_summary,
         "crypto_eligibility": (mission_summary or {}).get("crypto_eligibility") or {},
         "crypto_executor_readiness": crypto_dec,
+        "crypto_scanner_diagnostics": _bundle_crypto_scanner_diagnostics(
+            mission_summary, crypto_dec, simple
+        ),
+        "crypto_strategy_viability": _bundle_crypto_strategy_viability(mission_summary),
         "service_info": {
             **deploy,
             "mode": config.MODE,
@@ -385,6 +389,52 @@ def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         f"no_ai_observer_notes_in_memory_db:{meta.get('ai_memory_db_path') or 'unknown'}"
     )
     return [], meta
+
+
+def _bundle_crypto_scanner_diagnostics(
+    mission_summary: dict[str, Any] | None,
+    crypto_dec: dict[str, Any] | None,
+    simple: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if isinstance(mission_summary, dict) and mission_summary.get("crypto_scanner_diagnostics"):
+        return dict(mission_summary["crypto_scanner_diagnostics"])
+    try:
+        from execution.crypto_scanner_diagnostics import build_crypto_scanner_diagnostics_for_api
+        from execution.trading_cycle_trace import fetch_cycle_status_from_db
+        from monitoring.cycle_brief import fetch_latest_cycle_brief
+
+        hb = fetch_cycle_status_from_db() or {}
+        brief_ev: dict[str, Any] = {}
+        rows = fetch_latest_cycle_brief(limit=1)
+        if rows and isinstance(rows[0], dict):
+            brief_ev = rows[0].get("evidence") or {}
+        if brief_ev.get("crypto_scanner_diagnostics"):
+            return dict(brief_ev["crypto_scanner_diagnostics"])
+        return build_crypto_scanner_diagnostics_for_api(
+            heartbeat=hb,
+            crypto_decision=crypto_dec if isinstance(crypto_dec, dict) else {},
+            last_cycle_evidence=brief_ev,
+        )
+    except Exception as exc:
+        return {"error": str(exc)[:160], "final_reason_code": "DIAG_UNAVAILABLE"}
+
+
+def _bundle_crypto_strategy_viability(mission_summary: dict[str, Any] | None) -> dict[str, Any]:
+    if isinstance(mission_summary, dict) and mission_summary.get("crypto_strategy_viability"):
+        return dict(mission_summary["crypto_strategy_viability"])
+    try:
+        from execution.crypto_scanner_diagnostics import build_crypto_strategy_viability
+
+        diag = (
+            mission_summary.get("crypto_scanner_diagnostics")
+            if isinstance(mission_summary, dict)
+            else {}
+        )
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        return build_crypto_strategy_viability(load_runtime_config_for_worker(), diag or {})
+    except Exception as exc:
+        return {"error": str(exc)[:120]}
 
 
 def bundle_as_text(bundle: dict[str, Any]) -> str:

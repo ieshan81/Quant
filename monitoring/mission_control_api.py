@@ -16,6 +16,7 @@ from monitoring.momo import build_momo_authority_status, build_momo_status
 def _mission_mode_human(mode: str) -> str:
     mapping = {
         "AFTER_HOURS_CRYPTO_ONLY": "After Hours: Crypto Only",
+        "OVERNIGHT_CRYPTO_ONLY": "Overnight: Crypto Only",
         "REGULAR_STOCK_SESSION": "Market Open: Stock Session",
         "MARKET_CLOSED_NO_TRADING": "Market Closed: No Stock Trading",
         "STARTUP": "Starting / Waiting for first cycle",
@@ -322,6 +323,7 @@ def _assemble_summary(
     crypto_elig: dict[str, Any] = {}
     crypto_executor: dict[str, Any] = {}
     _crypto_build_err = ""
+    _rt_mc: dict[str, Any] = {}
     try:
         from core.paper_trading_path import load_runtime_config_for_worker
         from execution.crypto_trade_decision import build_crypto_trade_decision
@@ -364,6 +366,37 @@ def _assemble_summary(
 
     crypto_block_headline = crypto_block_headline_from_readiness(crypto_elig, crypto_executor)
 
+    crypto_scanner_diagnostics: dict[str, Any] = {}
+    crypto_strategy_viability: dict[str, Any] = {}
+    try:
+        from execution.crypto_scanner_diagnostics import build_crypto_scanner_diagnostics_for_api
+        from execution.trading_cycle_trace import fetch_cycle_status_from_db
+        from monitoring.cycle_brief import fetch_latest_cycle_brief
+
+        _hb = fetch_cycle_status_from_db() or {}
+        _brief_ev: dict[str, Any] = {}
+        _brief_rows = fetch_latest_cycle_brief(limit=1)
+        if _brief_rows:
+            _brief_ev = (_brief_rows[0].get("evidence") or {}) if isinstance(_brief_rows[0], dict) else {}
+        crypto_scanner_diagnostics = build_crypto_scanner_diagnostics_for_api(
+            rt=_rt_mc,
+            heartbeat=_hb,
+            crypto_decision=crypto_executor,
+            last_cycle_evidence=_brief_ev,
+        )
+        crypto_strategy_viability = (
+            crypto_scanner_diagnostics.pop("crypto_strategy_viability", None)
+            or _brief_ev.get("crypto_strategy_viability")
+            or {}
+        )
+        if not crypto_strategy_viability and crypto_scanner_diagnostics:
+            from execution.crypto_scanner_diagnostics import build_crypto_strategy_viability
+
+            crypto_strategy_viability = build_crypto_strategy_viability(_rt_mc, crypto_scanner_diagnostics)
+    except Exception:
+        crypto_scanner_diagnostics = {}
+        crypto_strategy_viability = {}
+
     resource: dict[str, Any] = {}
     try:
         from monitoring.resource_monitor import resolve_resource_snapshot_for_api
@@ -398,6 +431,8 @@ def _assemble_summary(
         "recovery_gate": recovery_gate,
         "crypto_eligibility": crypto_elig,
         "crypto_executor_readiness": crypto_executor,
+        "crypto_scanner_diagnostics": crypto_scanner_diagnostics,
+        "crypto_strategy_viability": crypto_strategy_viability,
         "performance": {
             "gpt_bundle_loaded": False,
             "momo_ask_called": False,
@@ -443,6 +478,7 @@ def _assemble_summary(
             "crypto_block_headline": crypto_block_headline,
         },
         "momo_summary": momo_summary,
+        "top_ai_note": top_ai_note,
         "ops_health": resource,
         "momo_status": build_momo_status(),
         "momo_authority_status": build_momo_authority_status(),
@@ -635,6 +671,11 @@ def build_mission_control_summary_minimal(
             "human_reason": crypto_dec.get("human_reason", reason),
             "blockers": crypto_dec.get("blockers") or ["MC_DEGRADED"],
         },
+        "crypto_scanner_diagnostics": (
+            trading.get("crypto_scanner_summary")
+            and {"human_reason": trading.get("crypto_scanner_summary"), "api_fallback": True}
+        )
+        or {},
         "crypto_executor_readiness": {
             **crypto_dec,
             "source": "crypto_trade_decision",
