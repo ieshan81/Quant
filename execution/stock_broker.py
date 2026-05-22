@@ -457,6 +457,47 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
             raw=None,
             reason_code=reason_codes.ALPACA_ORDER_REJECTED,
         )
+
+    if s == "sell" and "/" not in sym:
+        try:
+            from core.broker_sell_authority import (
+                fetch_active_positions_for_sell_gate,
+                validate_sell_quantity_against_broker,
+            )
+
+            active = fetch_active_positions_for_sell_gate()
+            sell_val = validate_sell_quantity_against_broker(
+                sym,
+                q,
+                "stock",
+                active_positions=active,
+            )
+            if not sell_val.allowed:
+                return SimpleNamespace(
+                    ok=False,
+                    broker_order_id=None,
+                    message=f"preflight_blocked: {sell_val.reason_code}",
+                    raw=None,
+                    reason_code=sell_val.reason_code,
+                    forensics={
+                        "exact_reject_reason": sell_val.reason_code,
+                        "broker_qty": sell_val.broker_qty,
+                        "local_qty_audit": sell_val.local_qty,
+                        "source_path": "stock_broker.submit_market_order",
+                    },
+                )
+            q = float(sell_val.approved_qty)
+            if q <= 0:
+                return SimpleNamespace(
+                    ok=False,
+                    broker_order_id=None,
+                    message="preflight_blocked: SELL_BLOCKED_NO_BROKER_POSITION",
+                    raw=None,
+                    reason_code=reason_codes.SELL_BLOCKED_NO_BROKER_POSITION,
+                )
+        except Exception as _sell_gate_exc:
+            logger.warning("[sell_authority] broker submit gate failed: {}", _sell_gate_exc)
+
     try:
         tif = "gtc" if "/" in sym else "day"
         qty_payload: float | str = q
