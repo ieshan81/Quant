@@ -404,3 +404,191 @@ body.qb-app > nav.legacy-nav { display: none; }
 
 .vault-card .vault-n { font-size: 1.25rem; font-weight: 700; color: var(--accent); }
 .vault-card .vault-l { font-size: 10px; color: var(--muted); text-transform: uppercase; margin-top: 4px; }
+
+/* ── Unified Mission Control cockpit (all tabs) ── */
+.cockpit-tab .tab-panel-header {
+  margin-bottom: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.12);
+}
+
+.cockpit-tab .tab-panel-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #f1f5f9;
+}
+
+.cockpit-tab .tab-panel-header p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 640px;
+  line-height: 1.45;
+}
+
+.momo-tab-header .momo-header-brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.momo-tab-header .momo-header-logo {
+  border-radius: 10px;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.25);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  flex-shrink: 0;
+}
+
+.momo-tab .tab-panel-header h2 {
+  color: #c4b5fd;
+}
+
+.cockpit-tab .card,
+.cockpit-tab .metric,
+.cockpit-tab .section,
+.cockpit-tab .danger-zone.card,
+.cockpit-tab .bt-card,
+.cockpit-tab .vault-card {
+  background: linear-gradient(145deg, rgba(12, 20, 36, 0.95) 0%, rgba(8, 14, 24, 0.98) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+
+.cockpit-tab .card h2,
+.cockpit-tab .card h3,
+.cockpit-tab .dash-section-title {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #7dd3fc;
+  letter-spacing: 0.02em;
+}
+
+.cockpit-tab .metric {
+  padding: 10px 12px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.cockpit-tab .metric:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 8px 24px rgba(56, 189, 248, 0.08);
+}
+
+.cockpit-tab .metric .lab {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.cockpit-tab .metric .val {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.cockpit-tab .chart-wrap {
+  background: rgba(6, 12, 22, 0.85);
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  min-height: 180px;
+  padding: 4px;
+}
+
+.cockpit-tab .data th {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.15);
+}
+
+.cockpit-tab .data td {
+  border-bottom: 1px solid rgba(51, 65, 85, 0.35);
+  font-size: 12px;
+}
+
+.cockpit-tab details.section {
+  border: 1px solid rgba(56, 189, 248, 0.12);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: rgba(8, 14, 24, 0.6);
+}
+
+.cockpit-tab .filter-btn.active {
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.momo-hero-card {
+  border-color: rgba(167, 139, 250, 0.28) !important;
+  background: linear-gradient(145deg, rgba(30, 27, 75, 0.22), rgba(8, 14, 24, 0.95)) !important;
+}
+
+.momo-avatar-frame {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  padding: 3px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #4f46e5, #06b6d4);
+  border: 1px solid rgba(167, 139, 250, 0.45);
+  box-shadow: 0 0 20px rgba(79, 70, 229, 0.35);
+  flex-shrink: 0;
+}
+
+.momo-chat-result {
+  margin-top: 12px;
+  background: rgba(6, 12, 22, 0.9);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.momo-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.momo-chat-head strong {
+  color: #c4b5fd;
+}
+
+.momo-disclaimer {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--bad);
+}
+
+.momo-ask-card {
+  border-color: rgba(167, 139, 250, 0.22) !important;
+}
+
+.cockpit-tab .btn.primary,
+.cockpit-tab button.primary {
+  background: rgba(56, 189, 248, 0.18);
+  border: 1px solid var(--accent);
+  color: #e0f2fe;
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.cockpit-tab .btn.secondary,
+.cockpit-tab button.secondary {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 12px;
+}

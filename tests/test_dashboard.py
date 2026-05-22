@@ -1348,6 +1348,9 @@ def test_mission_control_equity_range_buttons(dash_app) -> None:
     assert "mcGptBundleBar" in html
     assert "momo-logo.png" in html
     assert "MoMo" in html
+    assert 'rel="icon"' in html
+    assert "MoMo Console" in html
+    assert "cockpit-tab" in html
     assert "wireMcEquityRangeButtons" in bundle
     assert "_mcRenderAllocDonut" in bundle
     assert "symbolIconHtml" in bundle

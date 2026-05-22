@@ -64,6 +64,10 @@ _PAGE = """<!DOCTYPE html>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>MoMo · MORE MONEY</title>
+  <meta name="application-name" content="MoMo"/>
+  <meta name="theme-color" content="#060a12"/>
+  <link rel="icon" type="image/png" href="/momo-logo.png"/>
+  <link rel="apple-touch-icon" href="/momo-logo.png"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="/dashboard-theme.css"/>
   <style>
@@ -862,8 +866,12 @@ _PAGE = """<!DOCTYPE html>
       width: 48px; height: 48px; border-radius: 12px; flex-shrink: 0;
       background: linear-gradient(135deg, #4f46e5, #06b6d4);
       display: flex; align-items: center; justify-content: center;
-      font-size: 22px; box-shadow: 0 0 20px rgba(79, 70, 229, 0.35);
+      overflow: hidden;
+      box-shadow: 0 0 20px rgba(79, 70, 229, 0.35);
+      border: 1px solid rgba(56, 189, 248, 0.35);
     }
+    .mc-momo-avatar .momo-avatar-img,
+    .momo-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .mc-donut-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .mc-donut-bar { flex: 1; min-width: 120px; height: 10px; background: rgba(148,163,184,0.12); border-radius: 6px; overflow: hidden; display: flex; }
     .mc-donut-bar span { height: 100%; }
@@ -980,7 +988,7 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" class="tab-btn" data-tab="positions">Positions</button>
         <button type="button" class="tab-btn" data-tab="activity">Activity</button>
         <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
-        <button type="button" class="tab-btn" data-tab="ai">AI Console / Momo</button>
+        <button type="button" class="tab-btn" data-tab="ai">MoMo Console</button>
         <button type="button" class="tab-btn" data-tab="ops">Ops Center</button>
         <button type="button" class="tab-btn" data-tab="files">Files</button>
         <button type="button" class="tab-btn" data-tab="config">Config</button>
@@ -1012,7 +1020,7 @@ _PAGE = """<!DOCTYPE html>
         </div>
       </header>
       <main class="tab-content">
-    <section id="panel-mission" class="tab-panel active">
+    <section id="panel-mission" class="tab-panel cockpit-tab active">
       <div class="mc-command-strip" id="mcCommandStrip"></div>
       <div class="mc-mock-grid" id="mcCockpitMain">
         <div class="mc-row-charts">
@@ -1057,10 +1065,10 @@ _PAGE = """<!DOCTYPE html>
           <div class="mc-panel mc-crypto-scanner glass-card" id="mcCryptoScannerPanel"><h4>Crypto Scanner</h4><div id="mcCryptoScanner"><span class="muted">Loading…</span></div></div>
           <div class="mc-panel glass-card"><h4>Last Actions</h4><ul class="mc-feed timeline-feed" id="mcActionFeed"><li>—</li></ul></div>
           <div class="mc-panel mc-momo-observer glass-card" id="mcMomoCriticalPanel">
-            <h4>Momo · AI Observer</h4>
+            <h4>MoMo · Observer</h4>
             <div class="momo-role">Observer · paper recommendations only</div>
             <div class="mc-momo-row">
-              <div class="mc-momo-avatar" aria-hidden="true">🤖</div>
+              <div class="mc-momo-avatar" aria-hidden="true"><img src="/momo-logo.png" alt="" class="momo-avatar-img"/></div>
               <div id="mcMomoCritical" style="flex:1;min-width:0;"><span class="muted">—</span></div>
             </div>
           </div>
@@ -1115,13 +1123,13 @@ _PAGE = """<!DOCTYPE html>
         <div class="mc-card" id="mcPositions"><h3>Positions</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcCrypto"><h3>Crypto Push</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcCryptoPull"><h3>Crypto Pull</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
-        <div class="mc-card" id="mcMomo"><h3>Momo Summary</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
+        <div class="mc-card" id="mcMomo"><h3>MoMo Summary</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
         <div class="mc-card" id="mcOps"><h3>Ops Health</h3><div class="mc-ts"></div><div class="mc-body">Loading…</div></div>
       </div>
       <pre id="mcDevJson" class="mono sec" style="display:none;">{}</pre>
       </details>
     </section>
-    <section id="panel-overview" class="tab-panel">
+    <section id="panel-overview" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Overview</h2><p>Executive summary — portfolio, engines, risk, and what the bot is doing.</p></div>
       <p id="overviewDataHint" class="muted" style="display:none;margin:0 0 12px;font-size:13px;"></p>
       <div class="grid-metrics">
@@ -1259,7 +1267,7 @@ _PAGE = """<!DOCTYPE html>
       </div>
     </section>
 
-    <section id="panel-positions" class="tab-panel">
+    <section id="panel-positions" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Positions</h2><p>Broker-authoritative holdings, P&amp;L, and what happens next.</p></div>
       <div class="grid-metrics" style="margin-bottom:12px;">
         <div class="metric glass-card"><div class="lab">Market value</div><div class="val mono" id="posHdrMv">—</div></div>
@@ -1278,7 +1286,7 @@ _PAGE = """<!DOCTYPE html>
       </div>
     </section>
 
-    <section id="panel-activity" class="tab-panel">
+    <section id="panel-activity" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Activity</h2><p>Readable bot timeline — decisions, scans, orders, and real errors only.</p></div>
       <div class="activity-summary glass-card" id="activitySummary">
         <div class="metric"><div class="lab">Last decision</div><div class="val mono" id="actSumDecision">—</div></div>
@@ -1346,8 +1354,8 @@ _PAGE = """<!DOCTYPE html>
       </details>
     </section>
 
-    <section id="panel-backtest" class="tab-panel">
-      <div class="tab-panel-header"><h2>Backtest</h2><p>Momo research lab — manual runs and strategy experiments (autonomous mode off unless enabled).</p></div>
+    <section id="panel-backtest" class="tab-panel cockpit-tab">
+      <div class="tab-panel-header"><h2>Backtest</h2><p>MoMo research lab — manual runs and strategy experiments (autonomous mode off unless enabled).</p></div>
       <div class="card bt-setup-card glass-card">
         <h2>Backtest Setup</h2>
         <div class="bt-grid">
@@ -1367,7 +1375,7 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" id="btCopyReportBtn" disabled>Copy Report</button>
           <button type="button" id="btDownloadReportBtn" disabled>Download Report</button>
         </div>
-        <p id="btStatus" class="bt-status-line" aria-live="polite">Momo autonomous backtesting is not enabled yet. Manual backtest remains available.</p>
+        <p id="btStatus" class="bt-status-line" aria-live="polite">MoMo autonomous backtesting is not enabled yet. Manual backtest remains available.</p>
         <div id="btRunError" class="bt-run-error" role="alert" style="display:none;"></div>
       </div>
 
@@ -1418,17 +1426,25 @@ _PAGE = """<!DOCTYPE html>
       </details>
     </section>
 
-    <section id="panel-ai" class="tab-panel">
-      <div class="tab-panel-header"><h2>AI Console / Momo</h2><p>Observer intelligence — notes, patterns, proposals. Cannot trade live.</p></div>
-      <div class="card glass-card ai-hero">
-        <div class="ai-avatar" aria-hidden="true">🤖</div>
+    <section id="panel-ai" class="tab-panel momo-tab">
+      <div class="tab-panel-header momo-tab-header">
+        <div class="momo-header-brand">
+          <img src="/momo-logo.png" alt="" width="32" height="32" class="momo-header-logo"/>
+          <div>
+            <h2>MoMo Console</h2>
+            <p>Observer intelligence — notes, patterns, proposals. Cannot trade live.</p>
+          </div>
+        </div>
+      </div>
+      <div class="card glass-card ai-hero momo-hero-card">
+        <div class="ai-avatar momo-avatar-frame" aria-hidden="true"><img src="/momo-logo.png" alt="" class="momo-avatar-img"/></div>
         <div style="flex:1;min-width:200px;">
           <div class="status-badge warn" style="margin-bottom:8px;display:inline-flex;">Live trading not authorized</div>
-          <p style="margin:0;font-size:12px;color:var(--muted);">Momo observes, recommends, and proposes paper-mode config changes only. Operator approval required.</p>
+          <p style="margin:0;font-size:12px;color:var(--muted);">MoMo observes, recommends, and proposes paper-mode config changes only. Operator approval required.</p>
         </div>
       </div>
       <div class="card glass-card">
-        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">AI Status</h2>
+        <h2 class="dash-section-title">MoMo Status</h2>
         <div class="grid-metrics" id="aiStatusMetrics">
           <div class="metric"><div class="lab">Provider</div><div class="val mono" id="aiProvider">—</div></div>
           <div class="metric"><div class="lab">Model</div><div class="val mono" id="aiModel">—</div></div>
@@ -1439,41 +1455,41 @@ _PAGE = """<!DOCTYPE html>
           <div class="metric"><div class="lab">Last run</div><div class="val mono" id="aiLastRun">—</div></div>
         </div>
         <p id="aiStatusFootnote" style="margin:10px 0 0;font-size:12px;color:var(--muted);">
-          Loading Momo status…
+          Loading MoMo status…
         </p>
       </div>
 
-      <div class="card">
-        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Ask Momo</h2>
+      <div class="card glass-card momo-ask-card">
+        <h2 class="dash-section-title">Ask MoMo</h2>
         <textarea id="aiChatInput" placeholder="e.g. Why did HAO not sell? What is the current capital allocation status?" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
-          <button type="button" class="primary" id="aiChatSend" style="padding:6px 18px;">Ask Momo</button>
+          <button type="button" class="btn primary" id="aiChatSend">Ask MoMo</button>
           <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncExport" checked> Activity export</label>
           <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncBroker"> Broker diagnostic</label>
-          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncMemory" checked> AI memory</label>
+          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncMemory" checked> MoMo memory</label>
         </div>
-        <div id="aiChatResult" style="display:none;margin-top:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;">
-          <div style="margin-bottom:8px;font-weight:600;font-size:13px;">Momo <span id="aiChatProvider" class="mono" style="font-size:11px;color:var(--muted);"></span></div>
+        <div id="aiChatResult" class="momo-chat-result" style="display:none;">
+          <div class="momo-chat-head"><img src="/momo-logo.png" alt="" width="22" height="22" class="momo-avatar-img"/><strong>MoMo</strong> <span id="aiChatProvider" class="mono" style="font-size:11px;color:var(--muted);"></span></div>
           <div id="aiChatAnswer" class="mono" style="font-size:13px;line-height:1.6;white-space:pre-wrap;"></div>
           <div id="aiChatEvidence" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
           <div id="aiChatActions" style="margin-top:8px;font-size:12px;"></div>
-          <p style="margin:8px 0 0;font-size:11px;color:var(--bad);">AI is observe-only. Cannot execute trades or change configuration.</p>
+          <p class="momo-disclaimer">MoMo is observe-only. Cannot execute trades or change configuration.</p>
         </div>
       </div>
 
-      <div class="card">
-        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">AI Memory Export</h2>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <button type="button" id="btnCopyAiMemories" style="padding:6px 14px;font-size:12px;">Copy AI Memories</button>
-          <button type="button" id="btnCopyFullAiBundle" style="padding:6px 14px;font-size:12px;">Copy Full AI Bundle</button>
-          <button type="button" id="btnDownloadAiMemories" style="padding:6px 14px;font-size:12px;">Download AI Memories</button>
-          <button type="button" id="btnDownloadFullAiBundle" style="padding:6px 14px;font-size:12px;">Download Full AI Bundle</button>
+      <div class="card glass-card">
+        <h2 class="dash-section-title">MoMo Memory Export</h2>
+        <div class="mc-action-btns" style="margin-top:8px;">
+          <button type="button" class="btn secondary" id="btnCopyAiMemories">Copy MoMo Memories</button>
+          <button type="button" class="btn secondary" id="btnCopyFullAiBundle">Copy Full MoMo Bundle</button>
+          <button type="button" class="btn secondary" id="btnDownloadAiMemories">Download MoMo Memories</button>
+          <button type="button" class="btn secondary" id="btnDownloadFullAiBundle">Download Full MoMo Bundle</button>
         </div>
         <p id="aiMemoryCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
       </div>
 
-      <div class="card">
-        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Latest AI Notes</h2>
+      <div class="card glass-card">
+        <h2 class="dash-section-title">Latest MoMo Notes</h2>
         <div class="scroll-table">
           <table class="data" id="tblAiNotes"><thead><tr>
             <th>Time</th><th>Severity</th><th>Category</th><th>Symbol</th><th>Finding</th><th>Action</th><th>Conf.</th>
@@ -1481,8 +1497,8 @@ _PAGE = """<!DOCTYPE html>
         </div>
       </div>
 
-      <div class="card">
-        <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">Patterns &amp; Skills</h2>
+      <div class="card glass-card">
+        <h2 class="dash-section-title">Patterns &amp; Skills</h2>
         <h3 style="font-size:0.85rem;font-weight:600;margin:0 0 6px;">Repeated Patterns</h3>
         <div class="scroll-table">
           <table class="data" id="tblAiPatterns"><thead><tr>
@@ -1498,7 +1514,7 @@ _PAGE = """<!DOCTYPE html>
       </div>
     </section>
 
-    <section id="panel-ops" class="tab-panel">
+    <section id="panel-ops" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Ops Center</h2><p>System health, timings, and diagnostics. Danger zone lives here only.</p></div>
       <div class="grid-metrics" style="margin-bottom:12px;">
         <div class="metric glass-card"><div class="lab">Last cycle</div><div class="val mono" id="opsHdrCycle">—</div></div>
@@ -1545,7 +1561,7 @@ _PAGE = """<!DOCTYPE html>
       </div>
     </section>
 
-    <section id="panel-files" class="tab-panel">
+    <section id="panel-files" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Files</h2><p>Logs, GPT bundles, exports, and memory — no secrets on disk view.</p></div>
       <div class="files-vault-summary" id="filesVaultSummary">
         <div class="vault-card glass-card"><div class="vault-n" id="vaultBundles">—</div><div class="vault-l">GPT bundles</div></div>
@@ -1601,8 +1617,8 @@ _PAGE = """<!DOCTYPE html>
       </div>
     </section>
 
-    <section id="panel-config" class="tab-panel">
-      <div class="tab-panel-header"><h2>Config</h2><p>Safe settings, Momo proposals, and locked dangerous controls.</p></div>
+    <section id="panel-config" class="tab-panel cockpit-tab">
+      <div class="tab-panel-header"><h2>Config</h2><p>Safe settings, MoMo proposals, and locked dangerous controls.</p></div>
       <div class="grid-metrics" style="margin-bottom:12px;">
         <div class="metric glass-card"><div class="lab">Config status</div><div class="val" id="cfgHdrStatus">—</div></div>
         <div class="metric glass-card"><div class="lab">Paper mode</div><div class="val" id="cfgHdrPaper">—</div></div>
@@ -1613,7 +1629,7 @@ _PAGE = """<!DOCTYPE html>
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">App configuration</h2>
         <p class="empty-hint" style="margin:0 0 10px;">
           Non-secret settings live in <span class="mono">bot_config</span>. Secrets stay in Railway env only.
-          Momo can recommend changes but cannot apply them — operator approval required.
+          MoMo can recommend changes but cannot apply them — operator approval required.
         </p>
         <div class="mc-actions" style="margin-bottom:10px;">
           <button type="button" id="btnConfigSave" class="btn primary">Save changes</button>

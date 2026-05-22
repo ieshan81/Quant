@@ -352,16 +352,17 @@
   }
 
   var TAB_META = {
-    mission: { title: "Mission Control", subtitle: "Your command center. Calm execution. Compounding edge." },
-    overview: { title: "Overview", subtitle: "Portfolio snapshot, engines, risk posture, and bot state." },
-    positions: { title: "Positions", subtitle: "What we hold (broker qty) and what happens next." },
-    activity: { title: "Activity", subtitle: "Readable timeline — orders, scans, blocks, and real errors." },
-    backtest: { title: "Backtest", subtitle: "Strategy research lab and manual experiments." },
-    ai: { title: "AI Console / Momo", subtitle: "Observer memory, notes, and paper-only proposals." },
-    ops: { title: "Ops Center", subtitle: "Worker health, API timings, and system diagnostics." },
-    files: { title: "Files", subtitle: "Logs, bundles, exports, and memory on the volume." },
-    config: { title: "Config", subtitle: "Safe settings, approvals, and locked dangerous controls." }
+    mission: { title: "Mission Control", subtitle: "Your command center. Calm execution. Compounding edge.", pageTitle: "MoMo · Mission Control" },
+    overview: { title: "Overview", subtitle: "Portfolio snapshot, engines, risk posture, and bot state.", pageTitle: "MoMo · Overview" },
+    positions: { title: "Positions", subtitle: "What we hold (broker qty) and what happens next.", pageTitle: "MoMo · Positions" },
+    activity: { title: "Activity", subtitle: "Readable timeline — orders, scans, blocks, and real errors.", pageTitle: "MoMo · Activity" },
+    backtest: { title: "Backtest", subtitle: "MoMo research lab and manual experiments.", pageTitle: "MoMo · Backtest" },
+    ai: { title: "MoMo Console", subtitle: "Observer memory, notes, and paper-only proposals.", pageTitle: "MoMo · Console" },
+    ops: { title: "Ops Center", subtitle: "Worker health, API timings, and system diagnostics.", pageTitle: "MoMo · Ops" },
+    files: { title: "Files", subtitle: "Logs, GPT bundles, exports, and MoMo memory on the volume.", pageTitle: "MoMo · Files" },
+    config: { title: "Config", subtitle: "Safe settings, MoMo proposals, and locked dangerous controls.", pageTitle: "MoMo · Config" }
   };
+  var PAGE_TITLE_SUFFIX = " · MORE MONEY";
 
   function updateHeaderStrip(vm, mc) {
     var eq = vm && vm.equity != null ? vm.equity : (mc && mc.account ? mc.account.equity : (mc && mc.topline ? mc.topline.equity : null));
@@ -393,6 +394,7 @@
     var s = document.getElementById("headerTabSubtitle");
     if (t) t.textContent = meta.title;
     if (s) s.textContent = meta.subtitle;
+    document.title = (meta.pageTitle || meta.title || "MoMo") + PAGE_TITLE_SUFFIX;
   }
 
   // ---------------------------------------------------------------------------
@@ -2057,7 +2059,7 @@
     } catch (e) {
       var st = document.getElementById("btStatus");
       if (st) {
-        st.textContent = "Momo autonomous backtesting is not enabled yet. Manual backtest API may be unavailable.";
+        st.textContent = "MoMo autonomous backtesting is not enabled yet. Manual backtest API may be unavailable.";
       }
       window.__btDefaultsLoaded = true;
     }
@@ -2296,7 +2298,7 @@
     host.appendChild(renderOpsRing("Memory", snap.system_memory_pct, "%", 100));
     host.appendChild(renderOpsRing("/data disk", snap.disk_used_pct, "%", 100));
     host.appendChild(renderOpsRing("Trading DB", snap.quantbot_db_mb, " MB", 1024));
-    host.appendChild(renderOpsRing("AI memory DB", snap.ai_memory_db_mb, " MB", 512));
+    host.appendChild(renderOpsRing("MoMo memory DB", snap.ai_memory_db_mb, " MB", 512));
     host.appendChild(renderOpsRing("Ops DB/logs", (Number(snap.ops_db_mb) || 0) + (Number(snap.logs_dir_mb) || 0), " MB", 512));
   }
 
@@ -2921,7 +2923,7 @@
   function loadAiStatus() {
     var el = function (id) { return document.getElementById(id); };
     var foot = document.getElementById("aiStatusFootnote");
-    if (foot) foot.textContent = "Loading Momo status from /api/ai/status…";
+    if (foot) foot.textContent = "Loading MoMo status from /api/ai/status…";
     fetch("/api/ai/status", { cache: "no-store", headers: _authHeaders() })
       .then(function (r) {
         if (!r.ok) {
@@ -2933,10 +2935,10 @@
         var momo = d.momo_status || {};
         var auth = d.momo_authority_status || {};
         var mem = d.memory_state_summary || {};
-        var assistant = safeText(d.assistant_name || momo.name, "Momo");
+        var assistant = safeText(d.assistant_name || momo.name, "MoMo");
         var provider = safeText(d.provider, "");
         if (!provider || provider === "disabled_missing_key") {
-          provider = d.enabled ? "Momo (deterministic)" : "Momo (no Gemini key)";
+          provider = d.enabled ? "MoMo (deterministic)" : "MoMo (no Gemini key)";
         }
         if (el("aiProvider")) el("aiProvider").textContent = assistant + " · " + provider;
         if (el("aiModel")) {
@@ -2981,12 +2983,12 @@
             "can_change_config: <strong style=\"color:var(--bad);\">false</strong> · " +
             "allowed_to_execute: <strong style=\"color:var(--bad);\">false</strong>";
           if (momo.can_touch_crypto_execution_loop === false) {
-            foot.innerHTML += "<br>Crypto execution: deterministic math only (Momo not in execution loop).";
+            foot.innerHTML += "<br>Crypto execution: deterministic math only (MoMo not in execution loop).";
           }
         }
       })
       .catch(function (e) {
-        if (el("aiProvider")) el("aiProvider").textContent = "Momo — status unavailable";
+        if (el("aiProvider")) el("aiProvider").textContent = "MoMo — status unavailable";
         if (el("aiModel")) el("aiModel").textContent = "—";
         if (el("aiEnabled")) el("aiEnabled").textContent = "error";
         if (foot) {
@@ -3342,9 +3344,9 @@
         var canon = canonicalNoTradeHuman(d);
         body = att.length
           ? '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(att[0]) + "</p>"
-          : (canon ? '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(canon) + "</p>" : '<span class="muted">No critical Momo notes</span>');
+          : (canon ? '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(canon) + "</p>" : '<span class="muted">No critical MoMo notes</span>');
       }
-      momoC.innerHTML = body + ' <a href="#" data-tab-jump="ai" style="font-size:11px;display:inline-block;margin-top:6px">AI Console →</a>';
+      momoC.innerHTML = body + ' <a href="#" data-tab-jump="ai" style="font-size:11px;display:inline-block;margin-top:6px">MoMo Console →</a>';
     }
   }
 
@@ -3549,7 +3551,7 @@
           if (saw) parts.push("Recently: " + saw);
           if (learned) parts.push("Learned: " + learned);
           if (att) parts.push("Attention: " + att);
-          return parts.length ? parts.join("\n") : "Momo has no new summary items this cycle.";
+          return parts.length ? parts.join("\n") : "MoMo has no new summary items this cycle.";
         }
       },
       {
@@ -4184,7 +4186,7 @@
         if (wrap) wrap.style.display = "block";
       }).finally(function () {
         btn.disabled = false;
-        btn.textContent = "Ask Momo";
+        btn.textContent = "Ask MoMo";
       });
     });
   }
@@ -4226,7 +4228,7 @@
 
     var btnMcMem = document.getElementById("btnCopyAiMemory");
     if (btnMcMem) btnMcMem.addEventListener("click", function () {
-      _mcProgressStart("Building AI memory summary…");
+      _mcProgressStart("Building MoMo memory summary…");
       Promise.all([
         fetch("/api/ai/status", { cache: "no-store", headers: _authHeaders() }).then(function (r) { return r.json(); }),
         fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store", headers: _authHeaders() }).then(function (r) { return r.json(); })
@@ -4249,31 +4251,31 @@
           top_critical_notes: (bundle.momo_latest_notes || []).slice(0, 3)
         };
         if (!summary.notes_count && !summary.patterns_count) {
-          throw new Error("AI memory empty — check AI_MEMORY_DB_PATH");
+          throw new Error("MoMo memory empty — check AI_MEMORY_DB_PATH");
         }
-        return _copyWithFallback(JSON.stringify(summary, null, 2), document.getElementById("mcStatus"), "AI memory summary copied.");
-      }).then(function () { _mcProgressDone("AI memory copied.", true); })
+        return _copyWithFallback(JSON.stringify(summary, null, 2), document.getElementById("mcStatus"), "MoMo memory summary copied.");
+      }).then(function () { _mcProgressDone("MoMo memory copied.", true); })
         .catch(function (e) { _mcProgressDone(safeText(e && e.message, String(e)), false); });
     });
 
     if (btnCopy) btnCopy.addEventListener("click", function () {
-      _aiStatus("Fetching AI memories...");
+      _aiStatus("Fetching MoMo memories...");
       fetch("/api/ai/memories/export").then(function (r) { return r.json(); }).then(function (d) {
         return navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(function () {
-          _aiStatus("AI memories copied.");
+          _aiStatus("MoMo memories copied.");
         });
       }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
     });
 
     if (btnBundle) btnBundle.addEventListener("click", function () {
-      _aiStatus("Fetching full AI bundle...");
+      _aiStatus("Fetching full MoMo bundle...");
       fetch("/api/ai/bundle/export").then(function (r) { return r.json(); }).then(function (d) {
         if (_lastMomoAnswer) {
           d.momo_last_answer = _lastMomoAnswer;
           d.jarvis_last_answer = _lastMomoAnswer;
         }
         return navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(function () {
-          _aiStatus("Full AI bundle copied.");
+          _aiStatus("Full MoMo bundle copied.");
         });
       }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
     });
