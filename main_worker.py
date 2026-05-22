@@ -443,32 +443,39 @@ class _StockExitBroker:
         meta: dict[str, Any] | None = None,
     ) -> Any:
         from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
+        from core.broker_sell_authority import fetch_active_positions_for_sell_gate
+
         rt = load_runtime_config_dict()
         dbp = _position_db_path(self._trader) or Path(config.DB_PATH)
         ok_pf, rcode, pf_meta = _routed_sell_preflight(
             asset_class="stock", symbol=symbol, broker_qty=float(qty),
             mid=float(mid), rt=rt, db_path=dbp,
         )
+        sell_qty = float(pf_meta.get("approved_qty") or qty)
+        active = list(pf_meta.get("active_positions_for_sell") or [])
         pf = run_preflight_checks(
-            symbol=symbol, asset_class="stock", side="sell", qty=qty,
-            notional=qty * mid, price=mid,
+            symbol=symbol, asset_class="stock", side="sell", qty=sell_qty,
+            notional=sell_qty * mid, price=mid,
             pdt_blocked=(rcode == reason_codes.PDT_PROTECTION if not ok_pf else False),
             pdt_reason=str(pf_meta.get("reason_detail", "")) if not ok_pf else "",
             session_state="closed" if (not ok_pf and rcode == reason_codes.MARKET_CLOSED) else "regular",
             config_snapshot={"reason_code": reason_code or "stock_exit"},
+            broker_active_positions=active,
         )
         if not ok_pf:
             pf = run_preflight_checks(
-                symbol=symbol, asset_class="stock", side="sell", qty=qty,
-                notional=qty * mid, price=mid,
+                symbol=symbol, asset_class="stock", side="sell", qty=sell_qty,
+                notional=sell_qty * mid, price=mid,
                 pdt_blocked=(rcode == reason_codes.PDT_PROTECTION),
                 pdt_reason=str(pf_meta.get("reason_detail", rcode)),
                 session_state="closed" if rcode == reason_codes.MARKET_CLOSED else "regular",
                 config_snapshot={"reason_code": reason_code or "stock_exit", "legacy_block": rcode},
+                broker_active_positions=active,
             )
+        eff_qty = float((pf.meta or {}).get("approved_qty") or pf.qty or sell_qty)
         return submit_order_with_preflight(
             preflight=pf,
-            broker_submit_fn=lambda: stock_broker.submit_market_order("sell", symbol, qty),
+            broker_submit_fn=lambda: stock_broker.submit_market_order("sell", symbol, eff_qty),
         )
 
     def place_buy_order(
@@ -541,31 +548,38 @@ class _CryptoExitBroker:
         meta: dict[str, Any] | None = None,
     ) -> Any:
         from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
+        from core.broker_sell_authority import fetch_active_positions_for_sell_gate
+
         rt = load_runtime_config_dict()
         dbp = _position_db_path(self._trader) or Path(config.DB_PATH)
         ok_pf, rcode, pf_meta = _routed_sell_preflight(
             asset_class="crypto", symbol=symbol, broker_qty=float(qty),
             mid=float(mid), rt=rt, db_path=dbp,
         )
+        sell_qty = float(pf_meta.get("approved_qty") or qty)
+        active = list(pf_meta.get("active_positions_for_sell") or [])
         pf = run_preflight_checks(
-            symbol=symbol, asset_class="crypto", side="sell", qty=qty,
-            notional=qty * mid, price=mid,
+            symbol=symbol, asset_class="crypto", side="sell", qty=sell_qty,
+            notional=sell_qty * mid, price=mid,
             pdt_blocked=False,
             session_state="crypto_24_7",
             config_snapshot={"reason_code": reason_code or "crypto_exit"},
+            broker_active_positions=active,
         )
         if not ok_pf:
             pf = run_preflight_checks(
-                symbol=symbol, asset_class="crypto", side="sell", qty=qty,
-                notional=qty * mid, price=mid,
+                symbol=symbol, asset_class="crypto", side="sell", qty=sell_qty,
+                notional=sell_qty * mid, price=mid,
                 pdt_blocked=(rcode == reason_codes.PDT_PROTECTION),
                 pdt_reason=str(pf_meta.get("reason_detail", rcode)),
                 session_state="crypto_24_7",
                 config_snapshot={"reason_code": reason_code or "crypto_exit", "legacy_block": rcode},
+                broker_active_positions=active,
             )
+        eff_qty = float((pf.meta or {}).get("approved_qty") or pf.qty or sell_qty)
         return submit_order_with_preflight(
             preflight=pf,
-            broker_submit_fn=lambda: stock_broker.submit_market_order("sell", symbol, qty),
+            broker_submit_fn=lambda: stock_broker.submit_market_order("sell", symbol, eff_qty),
         )
 
     def place_buy_order(
@@ -1284,12 +1298,13 @@ def _get_real_position_qty(symbol: str, broker: Any) -> float:
                             qty_from_alpaca_row = qv
                 if qty_from_alpaca_row is not None:
                     return float(qty_from_alpaca_row)
-            ledger = getattr(broker, "ledger", None)
-            if ledger is not None and hasattr(ledger, "position"):
-                for ac in ("stock", "crypto"):
-                    lp = ledger.position(ac, sym)
-                    if lp is not None and float(lp.quantity or 0) > 0:
-                        return float(lp.quantity)
+            if _use_local_paper_trader():
+                ledger = getattr(broker, "ledger", None)
+                if ledger is not None and hasattr(ledger, "position"):
+                    for ac in ("stock", "crypto"):
+                        lp = ledger.position(ac, sym)
+                        if lp is not None and float(lp.quantity or 0) > 0:
+                            return float(lp.quantity)
         except Exception:
             logger.debug("[exits] broker qty lookup failed for {}", sym, exc_info=True)
     return 0.0
@@ -1405,9 +1420,36 @@ def _routed_sell_preflight(
     """
     sym = str(symbol or "").strip().upper()
     meta: dict[str, Any] = {}
-    q = float(broker_qty or 0.0)
+    from core.broker_sell_authority import (
+        ensure_caller_broker_qty_in_active,
+        fetch_active_positions_for_sell_gate,
+        validate_sell_quantity_against_broker,
+    )
+
+    active = ensure_caller_broker_qty_in_active(
+        fetch_active_positions_for_sell_gate(),
+        symbol=sym,
+        asset_class=str(asset_class or "stock"),
+        broker_qty=float(broker_qty or 0.0),
+    )
+    sell_val = validate_sell_quantity_against_broker(
+        sym,
+        float(broker_qty or 0.0),
+        str(asset_class or "stock"),
+        active_positions=active,
+    )
+    meta.update(sell_val.meta)
+    meta["broker_qty"] = sell_val.broker_qty
+    meta["approved_qty"] = sell_val.approved_qty
+    meta["active_positions_for_sell"] = active
+    if not sell_val.allowed:
+        code = sell_val.reason_code or reason_codes.SELL_BLOCKED_NO_BROKER_POSITION
+        if code == reason_codes.NO_BROKER_QTY:
+            code = reason_codes.SELL_BLOCKED_NO_BROKER_POSITION
+        return False, code, meta
+    q = float(sell_val.approved_qty or 0.0)
     if q <= 1e-12:
-        return False, reason_codes.NO_BROKER_QTY, meta
+        return False, reason_codes.SELL_BLOCKED_NO_BROKER_POSITION, meta
 
     if _is_exit_blocked(sym):
         rc = str(_blocked_exit_reason.get(sym, "") or "").strip().upper()
@@ -2833,7 +2875,11 @@ def _submit_routed_order(
     session_state = "regular"
     legacy_sell_ok = False
 
+    sell_active: list[dict[str, Any]] | None = None
+    sell_qty = float(qty)
     if s_side == "sell":
+        from core.broker_sell_authority import fetch_active_positions_for_sell_gate
+
         rt_eff = rt if rt is not None else load_runtime_config_dict()
         ok_pf, rcode, pf_meta = _routed_sell_preflight(
             asset_class=asset_class,
@@ -2843,6 +2889,8 @@ def _submit_routed_order(
             rt=rt_eff,
             db_path=config.DB_PATH,
         )
+        sell_active = list(pf_meta.get("active_positions_for_sell") or [])
+        sell_qty = float(pf_meta.get("approved_qty") or qty)
         if ok_pf:
             legacy_sell_ok = True
         elif rcode == reason_codes.PDT_PROTECTION:
@@ -2853,9 +2901,15 @@ def _submit_routed_order(
         else:
             return submit_order_with_preflight(
                 preflight=run_preflight_checks(
-                    symbol=sym, asset_class=ac, side=s_side, qty=qty,
-                    notional=eff_notional, price=mid, session_state="regular",
-                    pdt_blocked=True, pdt_reason=str(rcode),
+                    symbol=sym,
+                    asset_class=ac,
+                    side=s_side,
+                    qty=sell_qty,
+                    notional=eff_notional,
+                    price=mid,
+                    session_state="regular",
+                    config_snapshot={"reason_code": rcode, "legacy_block": rcode},
+                    broker_active_positions=sell_active,
                 ),
                 broker_submit_fn=lambda: None,
             )
@@ -2872,7 +2926,7 @@ def _submit_routed_order(
         symbol=sym,
         asset_class=ac,
         side=s_side,
-        qty=qty,
+        qty=sell_qty if s_side == "sell" else qty,
         notional=eff_notional,
         price=mid,
         session_state=session_state,
@@ -2880,7 +2934,10 @@ def _submit_routed_order(
         pdt_reason=pdt_reason,
         config_snapshot={"reason_code": reason_code, "mode": str(config.MODE)},
         extra_meta=meta,
+        broker_active_positions=sell_active,
+        local_qty_audit=float((meta or {}).get("local_qty")) if (meta or {}).get("local_qty") is not None else None,
     )
+    submit_qty = float((preflight.meta or {}).get("approved_qty") or preflight.qty or qty)
 
     def _do_broker_submit() -> Any:
         if _use_local_paper_trader():
@@ -2895,7 +2952,7 @@ def _submit_routed_order(
                 )
             else:
                 fr = order_manager.paper_market_sell(
-                    trader, asset_class, symbol, qty, mid,
+                    trader, asset_class, symbol, submit_qty, mid,
                     reason_code=reason_code, meta=meta,
                 )
             return SimpleNamespace(
@@ -2921,7 +2978,8 @@ def _submit_routed_order(
                 "[order_route] mode={} broker=alpaca_blocked symbol={} side={} (endpoint={})",
                 config.MODE, symbol, side, config.ALPACA_BASE_URL,
             )
-        return stock_broker.submit_market_order(side, symbol, qty, notional=notional)
+        route_qty = submit_qty if s_side == "sell" else qty
+        return stock_broker.submit_market_order(side, symbol, route_qty, notional=notional)
 
     return submit_order_with_preflight(
         preflight=preflight,
@@ -4022,37 +4080,56 @@ def execute_cycle_results(
                         out["holds"] += 1
                 elif pos is not None and pos.quantity < -1e-8:
                     out["holds"] += 1
-                elif cs.asset_class == "crypto":
-                    if pos is not None and float(pos.quantity) > 1e-8 and live_qty <= 0.0:
-                        execution_health["stale_local_positions_count"] = int(execution_health["stale_local_positions_count"]) + 1
-                        execution_health["broker_local_mismatch_count"] = int(execution_health["broker_local_mismatch_count"]) + 1
-                        _queue_reconciliation_cleanup(cs.asset_class, cs.symbol)
-                        sell_signal_audit.append(
-                            {
-                                "symbol": cs.symbol,
-                                "asset_class": cs.asset_class,
-                                "broker_qty": 0.0,
-                                "entry_price": float(pos.avg_price) if pos is not None else mid,
-                                "mid": mid,
-                                "unrealized_pnl_pct": None,
-                                "signal_score": eff_score,
-                                "submitted": False,
-                                "blocked_reason": reason_codes.CRYPTO_PULL_BLOCKED_NO_BROKER_QTY,
-                            }
-                        )
-                        _persist_decision(
-                            cycle_id=cid,
-                            asset_class=cs.asset_class,
-                            symbol=cs.symbol,
-                            side="sell",
-                            decision="rejected",
-                            reason_code=reason_codes.CRYPTO_PULL_BLOCKED_NO_BROKER_QTY,
-                            score=eff_score,
-                            notional=0.0,
-                            quantity=float(pos.quantity),
-                            price=mid,
-                            meta={"reason_detail": "broker_qty_zero", "legacy_note": "LOCAL_POSITION_STALE"},
-                        )
+                elif (
+                    pos is not None
+                    and float(pos.quantity) > 1e-8
+                    and live_qty <= 0.0
+                ):
+                    from core.broker_sell_authority import quarantine_stale_exit_signals
+
+                    execution_health["stale_local_positions_count"] = int(
+                        execution_health["stale_local_positions_count"]
+                    ) + 1
+                    execution_health["broker_local_mismatch_count"] = int(
+                        execution_health["broker_local_mismatch_count"]
+                    ) + 1
+                    _queue_reconciliation_cleanup(cs.asset_class, cs.symbol)
+                    stale_row = {
+                        "symbol": cs.symbol,
+                        "asset_class": cs.asset_class,
+                        "broker_qty": 0.0,
+                        "local_qty": float(pos.quantity),
+                        "exit_reason": "SIGNAL_SELL",
+                        "reason_code": reason_codes.SELL_BLOCKED_STALE_LOCAL_POSITION,
+                    }
+                    quarantine_stale_exit_signals([stale_row], active_positions=[], write_event=True)
+                    sell_signal_audit.append(
+                        {
+                            "symbol": cs.symbol,
+                            "asset_class": cs.asset_class,
+                            "broker_qty": 0.0,
+                            "entry_price": float(pos.avg_price) if pos is not None else mid,
+                            "mid": mid,
+                            "unrealized_pnl_pct": None,
+                            "signal_score": eff_score,
+                            "submitted": False,
+                            "blocked_reason": reason_codes.SELL_BLOCKED_STALE_LOCAL_POSITION,
+                            "classification": reason_codes.STALE_LOCAL_EXIT_SIGNAL,
+                        }
+                    )
+                    _persist_decision(
+                        cycle_id=cid,
+                        asset_class=cs.asset_class,
+                        symbol=cs.symbol,
+                        side="sell",
+                        decision="rejected",
+                        reason_code=reason_codes.SELL_BLOCKED_STALE_LOCAL_POSITION,
+                        score=eff_score,
+                        notional=0.0,
+                        quantity=float(pos.quantity),
+                        price=mid,
+                        meta={"reason_detail": "broker_qty_zero", "scope": "signal_sell"},
+                    )
                     out["holds"] += 1
                 else:
                     logger.info(

@@ -144,6 +144,9 @@ def build_pending_exits(
         )
         if not pending:
             continue
+        bq = _f(row.get("broker_qty") or row.get("qty"))
+        if bq <= 1e-6:
+            continue
         seen.add(sym)
         mv = _f(row.get("market_value"))
         if mv <= 0:

@@ -194,6 +194,9 @@ def run_preflight_checks(
     capital_allocator_reason: str = "",
     config_snapshot: dict[str, Any] | None = None,
     extra_meta: dict[str, Any] | None = None,
+    broker_active_positions: list[dict[str, Any]] | None = None,
+    local_qty_audit: float | None = None,
+    sell_cap_oversized: bool | None = None,
 ) -> OrderPreflightResult:
     """Run all guard checks and return a preflight result. Does NOT submit."""
     sym = str(symbol or "").strip().upper()
@@ -278,6 +281,51 @@ def run_preflight_checks(
             f"{sym}: Capital allocator — {capital_allocator_reason}",
             **common,
         )
+
+    # 7. Broker-authoritative sell qty (mandatory for sells)
+    if s == "sell":
+        from core.broker_sell_authority import (
+            fetch_active_positions_for_sell_gate,
+            validate_sell_quantity_against_broker,
+        )
+
+        active = broker_active_positions
+        if active is None:
+            active = fetch_active_positions_for_sell_gate()
+        sell_val = validate_sell_quantity_against_broker(
+            sym,
+            qty,
+            ac,
+            active_positions=active,
+            local_qty=local_qty_audit,
+            cap_oversized=sell_cap_oversized,
+        )
+        common["meta"] = {
+            **dict(common.get("meta") or {}),
+            **sell_val.meta,
+            "broker_qty": sell_val.broker_qty,
+            "local_qty_audit": sell_val.local_qty,
+            "approved_qty": sell_val.approved_qty,
+            "canonical_symbol": sell_val.canonical_symbol,
+            "broker_symbol": sell_val.broker_symbol,
+            "sell_authority": "broker",
+            "sell_broker_authority": {
+                "allowed": sell_val.allowed,
+                "reason_code": sell_val.reason_code,
+                "broker_qty": sell_val.broker_qty,
+                "approved_qty": sell_val.approved_qty,
+            },
+        }
+        if not sell_val.allowed:
+            return OrderPreflightResult.blocked(
+                sell_val.reason_code,
+                f"{sym}: Sell blocked — broker qty authority ({sell_val.reason_code})",
+                **common,
+            )
+        qty = sell_val.approved_qty
+        notional = qty * price if price else notional
+        common["qty"] = qty
+        common["notional"] = notional
 
     return OrderPreflightResult.approved(
         rc.PREFLIGHT_APPROVED,

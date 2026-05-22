@@ -294,6 +294,7 @@ def build_position_state(
             "operator_visible_positions": visible,
             "audit_only_positions": quarantined,
             "operator_exit_rows": operator_exits,
+            "stale_exit_signals": list(audit.get("stale_exit_signals") or []),
             "stock_market_value": round(stock_mv, 2),
             "crypto_market_value": round(crypto_mv, 2),
             "consistency_check": {
@@ -568,7 +569,22 @@ def build_exit_state(
             "classification_reason": er.get("position_truth", {}).get("diagnostic_reason"),
         })
 
+    stale_exit_signals: list[dict[str, Any]] = list(pos.get("stale_exit_signals") or [])
+    pending_raw = ms.get("pending_exits") or []
+    active_syms = {
+        str(p.get("symbol") or p.get("canonical_symbol") or "").upper()
+        for p in (pos.get("active_positions") or [])
+        if _f(p.get("broker_qty") or p.get("qty")) > 1e-6
+    }
+    pending_exits = [
+        pe
+        for pe in pending_raw
+        if isinstance(pe, dict) and str(pe.get("symbol") or "").upper() in active_syms
+    ]
+
     human = f"{len(stock_candidates)} stock exit rows · {len(broker_rejections)} recent sell rejections"
+    if stale_exit_signals:
+        human += f" · {len(stale_exit_signals)} stale exit signals quarantined"
     if broker_rejections and not broker_rejections[0].get("exact_reject_reason"):
         human += " — rejection detail incomplete"
 
@@ -581,7 +597,8 @@ def build_exit_state(
             "crypto_exit_candidates": crypto_candidates,
             "attempted_orders": [r for r in normalized_rows if r.get("order_attempted")],
             "broker_rejections": broker_rejections,
-            "pending_exits": ms.get("pending_exits") or [],
+            "pending_exits": pending_exits,
+            "stale_exit_signals": stale_exit_signals,
             "blocked_exits": [r for r in normalized_rows if not r.get("exit_allowed")],
             "completed_exits": [],
             "exit_rows": normalized_rows,
@@ -815,6 +832,16 @@ def build_live_readiness_state(
             if isinstance(r, dict) and "missing_broker_detail" in str(r.get("exact_reject_reason") or ""):
                 arch_blockers.append("alpaca_rejection_meta_missing")
                 break
+        stale_exits = exit_state.get("stale_exit_signals") or []
+        if stale_exits:
+            arch_blockers.append("sell_preflight_broker_authority_required")
+        try:
+            from core.broker_sell_authority import recent_short_block_rejection
+
+            if recent_short_block_rejection():
+                arch_blockers.append("sell_preflight_broker_authority_required")
+        except Exception:
+            pass
     if fast_loop_state:
         if fast_loop_state.get("execution_mode") == "observe_only":
             arch_blockers.append("fast_loop_observe_only")

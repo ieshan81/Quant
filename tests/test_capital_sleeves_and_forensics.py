@@ -236,8 +236,16 @@ def test_preflight_wrapper_writes_journal_on_broker_exception(tmp_path, monkeypa
     from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
 
     pf = run_preflight_checks(
-        symbol="AMC", asset_class="stock", side="sell", qty=10, notional=200.0, price=20.0,
+        symbol="AMC",
+        asset_class="stock",
+        side="sell",
+        qty=10,
+        notional=200.0,
+        price=20.0,
         session_state="regular",
+        broker_active_positions=[
+            {"symbol": "AMC", "canonical_symbol": "AMC", "asset_class": "stock", "broker_qty": 10.0}
+        ],
     )
 
     def boom():

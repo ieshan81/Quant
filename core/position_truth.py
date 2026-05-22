@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 import config
+from execution import reason_codes as rc
 from execution.trading_constants import cfg_float
 from utils.symbols import position_key_symbol
 
@@ -250,26 +251,34 @@ def build_position_truth_audit(
         cls = classify_position_truth(None, syn, config_rt=config_rt)
         synthetic.append({**syn, "position_truth": cls})
 
-    operator_exit_rows: list[dict[str, Any]] = []
-    for er in exit_rows or []:
-        if not isinstance(er, dict):
-            continue
-        ac = str(er.get("asset_class") or "stock").lower()
+    from core.broker_sell_authority import build_operator_exit_rows_from_active
+
+    operator_exit_rows, stale_exit_signals = build_operator_exit_rows_from_active(
+        active, exit_rows
+    )
+    for tagged in operator_exit_rows:
+        ac = str(tagged.get("asset_class") or "stock").lower()
         br_stub = {
-            "symbol": er.get("symbol"),
+            "symbol": tagged.get("symbol"),
             "asset_class": ac,
-            "broker_qty": er.get("broker_qty") or er.get("qty"),
-            "current_price": er.get("current_price"),
-            "market_value": er.get("market_value"),
+            "broker_qty": tagged.get("broker_qty"),
+            "current_price": tagged.get("current_price"),
+            "market_value": tagged.get("market_value"),
         }
-        cls = classify_position_truth(br_stub, er, config_rt=config_rt)
-        tagged = {**er, "position_truth": cls, "qty": cls["operator_qty"]}
-        if cls["is_operator_visible"]:
-            operator_exit_rows.append(tagged)
-        elif cls["is_dust"]:
-            dust.append(tagged)
-        elif cls["position_class"] == STALE_LOCAL_ROW:
-            stale_local.append(tagged)
+        cls = classify_position_truth(br_stub, tagged, config_rt=config_rt)
+        tagged["position_truth"] = cls
+        tagged["qty"] = cls["operator_qty"]
+    for s in stale_exit_signals:
+        stale_local.append(
+            {
+                **s,
+                "position_truth": {
+                    "position_class": STALE_LOCAL_ROW,
+                    "diagnostic_reason": rc.STALE_LOCAL_EXIT_SIGNAL,
+                    "is_operator_visible": False,
+                },
+            }
+        )
 
     return {
         "classification_thresholds": th,
@@ -280,6 +289,7 @@ def build_position_truth_audit(
         "active_mismatches": active_mismatches,
         "historical_mismatches": historical,
         "operator_exit_rows": operator_exit_rows,
+        "stale_exit_signals": stale_exit_signals,
         "counts": {
             "active": len(active),
             "dust": len(dust),

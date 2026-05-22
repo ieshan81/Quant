@@ -147,7 +147,22 @@ def test_apply_stops_take_profit_fires(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert t.market_buy("stock", "TPZ", 1.0, 100.0).ok
     monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
     monkeypatch.setattr(mw, "_us_stock_market_open_for_routed_sell", lambda: True)
-    monkeypatch.setattr(mw, "_routed_sell_preflight", lambda **kwargs: (True, None, {}))
+    def _ok_routed_sell(**kwargs):
+        bq = float(kwargs.get("broker_qty") or 0.0)
+        sym = str(kwargs.get("symbol") or "")
+        ac = str(kwargs.get("asset_class") or "stock")
+        return (
+            True,
+            None,
+            {
+                "approved_qty": bq,
+                "active_positions_for_sell": [
+                    {"symbol": sym, "canonical_symbol": sym, "asset_class": ac, "broker_qty": bq}
+                ],
+            },
+        )
+
+    monkeypatch.setattr(mw, "_routed_sell_preflight", _ok_routed_sell)
     monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
     monkeypatch.setattr(mw, "_exit_mark_price", lambda ex, pos: 106.0)
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda symbol, trader: 1.0)
@@ -480,7 +495,22 @@ def test_pdt_blocked_symbol_not_retried_every_cycle(monkeypatch: pytest.MonkeyPa
     cb.get_open_positions = lambda: []
     monkeypatch.setattr(mw.portfolio_limiter, "us_stock_market_open", lambda *_: True)
     monkeypatch.setattr(mw, "_us_stock_market_open_for_routed_sell", lambda: True)
-    monkeypatch.setattr(mw, "_routed_sell_preflight", lambda **kwargs: (True, None, {}))
+    def _ok_routed_sell(**kwargs):
+        bq = float(kwargs.get("broker_qty") or 0.0)
+        sym = str(kwargs.get("symbol") or "")
+        ac = str(kwargs.get("asset_class") or "stock")
+        return (
+            True,
+            None,
+            {
+                "approved_qty": bq,
+                "active_positions_for_sell": [
+                    {"symbol": sym, "canonical_symbol": sym, "asset_class": ac, "broker_qty": bq}
+                ],
+            },
+        )
+
+    monkeypatch.setattr(mw, "_routed_sell_preflight", _ok_routed_sell)
     monkeypatch.setattr(mw, "_exit_mark_price", lambda *_: 106.0)
     monkeypatch.setattr(mw, "position_exit_update_peak", lambda _db, _ac, _sym, mid: float(mid))
     monkeypatch.setattr(mw, "_get_real_position_qty", lambda *_: 1.0)
