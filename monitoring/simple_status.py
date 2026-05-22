@@ -177,6 +177,10 @@ def build_simple_worker_status() -> dict[str, Any]:
             "db_lock_wait_count_recent": hb.get("db_lock_wait_count_recent"),
             "external_api_wait_ms": hb.get("external_api_wait_ms"),
             "blocking_section": hb.get("blocking_section"),
+            "within_scheduled_wait": worker.get("within_scheduled_wait"),
+            "expected_cycle_interval_seconds": worker.get("expected_cycle_interval_seconds"),
+            "stale_threshold_seconds": worker.get("stale_threshold_seconds"),
+            "stall_blocking_category": worker.get("stall_blocking_category"),
         },
         "trading": {
             "selected_engine": hb.get("selected_engine") or "none",
