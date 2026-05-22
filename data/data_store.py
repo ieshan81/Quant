@@ -222,6 +222,7 @@ _BOT_KEY_DESCRIPTIONS: dict[str, str] = {
     "crypto_fast_loop_reserve_cash_pct": "Cash reserve pct applied in fast loop preflight",
     "crypto_fast_loop_execute_orders": "1=submit paper orders from fast loop (0=observe only)",
     "crypto_fast_loop_max_scan_symbols": "Max symbols scanned per fast loop iteration",
+    "crypto_fast_loop_batch_size": "Symbols scored per fast-loop tick (rotates through universe)",
     "pdt_exit_block_seconds": "Cooldown seconds after PDT-blocked exit retry",
     "dashboard_exit_positions_limit": "Max rows in dashboard exit eligibility table",
     "rotation_enabled": "1=capital rotation planner may mark rotation_ready when math passes",

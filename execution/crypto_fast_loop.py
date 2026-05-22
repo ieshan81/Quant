@@ -14,16 +14,32 @@ from loguru import logger
 
 import config
 from execution.crypto_engine import evaluate_crypto_pull
+from execution.crypto_execution_readiness import (
+    apply_effective_crypto_rt,
+    build_crypto_executor_readiness,
+)
 from execution.crypto_push_preflight import resolve_crypto_push_preflight
+from execution import reason_codes
 from execution.trading_constants import cfg_float, cfg_is_enabled
 from monitoring.live_readiness import build_live_readiness
 from utils.symbols import filter_tradeable_crypto_pairs, position_key_symbol
 
 _STATUS_LOCK = threading.Lock()
+_BATCH_LOCK = threading.Lock()
+_BATCH_INDEX = 0
 _LAST_STATUS: dict[str, Any] = {
     "enabled": False,
     "live_ready": False,
     "note": "Fast loop not started",
+}
+
+_DISABLING_TO_BLOCKER: dict[str, str] = {
+    "crypto_push_enabled": "CRYPTO_PUSH_DISABLED_BY_CONFIG",
+    "crypto_enabled": "CRYPTO_DISABLED",
+    "crypto_night_mode_enabled": "CRYPTO_NIGHT_MODE_DISABLED",
+    "recovery_block_new_buys": "RECOVERY_BLOCK_NEW_BUYS",
+    "reconciliation_not_clean": "RECONCILIATION_NOT_CLEAN",
+    "live_trading_or_paper_unsafe": "LIVE_TRADING_CRYPTO_PUSH_OFF",
 }
 
 
@@ -86,6 +102,127 @@ def _log_fast(event_type: str, *, loop_id: str, evidence: dict[str, Any]) -> Non
         logger.debug("[crypto_fast_loop] ops log skipped: {}", event_type, exc_info=True)
 
 
+def _load_safety_gates() -> tuple[bool, bool]:
+    """Match main worker: effective recon clean + recovery block from latest execution health."""
+    try:
+        from data.data_store import get_connection
+        from monitoring.dashboard_data import fetch_latest_execution_health
+
+        with get_connection(config.DB_PATH, timeout_sec=2.0) as conn:
+            eh = fetch_latest_execution_health(conn) or {}
+        recon = eh.get("reconciliation_health") or {}
+        clean = bool(recon.get("clean", True))
+        recovery = eh.get("startup_recovery_status") or {}
+        recovery_block = bool(recovery.get("block_new_buys") or recovery.get("active"))
+        effective_clean = clean or not recovery_block
+        return effective_clean, recovery_block
+    except Exception:
+        return True, False
+
+
+def _resolve_fast_loop_universe(crypto_symbols: list[str] | None, rt: dict[str, Any]) -> tuple[list[str], str]:
+    """Broker/snapshot universe with Alpaca fallback when snapshot is thin."""
+    snap = list(crypto_symbols or [])
+    merged: list[str] = []
+    seen: set[str] = set()
+    for s in snap:
+        if s and s not in seen:
+            seen.add(s)
+            merged.append(s)
+    if len(merged) < 8:
+        try:
+            from training.universe_scanner import alpaca_supported_crypto_pairs
+
+            for s in alpaca_supported_crypto_pairs():
+                if s not in seen:
+                    seen.add(s)
+                    merged.append(s)
+        except Exception:
+            pass
+    if len(merged) < 3:
+        try:
+            from training.universe_scanner import FALLBACK_CRYPTO
+
+            for s in FALLBACK_CRYPTO:
+                if s not in seen:
+                    seen.add(s)
+                    merged.append(s)
+        except Exception:
+            pass
+    allow_stable = cfg_is_enabled(rt.get("stablecoin_arbitrage_enabled"), default=False)
+    out = filter_tradeable_crypto_pairs(merged, allow_stablecoin_arbitrage=allow_stable)
+    source = "snapshot"
+    if len(snap) < 3 and len(out) > len(snap):
+        source = "fallback" if len(snap) == 0 else "snapshot+alpaca"
+    return out, source
+
+
+def _select_scan_batch(universe: list[str], rt: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+    """Rotate batches so each tick scans >1 symbol when universe is large."""
+    max_per_tick = int(cfg_float(rt, "crypto_fast_loop_max_scan_symbols", 40))
+    batch_size = int(cfg_float(rt, "crypto_fast_loop_batch_size", min(15, max_per_tick)))
+    batch_size = max(2, min(batch_size, max_per_tick))
+    n = len(universe)
+    if n <= batch_size:
+        return universe, {
+            "scan_strategy": "full",
+            "batch_index": 0,
+            "batch_count": 1,
+            "batch_size": n,
+        }
+    batch_count = max(1, (n + batch_size - 1) // batch_size)
+    global _BATCH_INDEX
+    with _BATCH_LOCK:
+        idx = _BATCH_INDEX % batch_count
+        _BATCH_INDEX = (idx + 1) % batch_count
+    start = idx * batch_size
+    batch = universe[start : start + batch_size]
+    return batch, {
+        "scan_strategy": "batch",
+        "batch_index": idx,
+        "batch_count": batch_count,
+        "batch_size": len(batch),
+    }
+
+
+def _blocker_from_flags(flags: dict[str, Any], readiness: dict[str, Any]) -> str | None:
+    """Config-level blocker — never CRYPTO_PUSH_DISABLED when effective push is on."""
+    if readiness.get("push_allowed"):
+        return None
+    if flags.get("crypto_push_enabled_effective") and flags.get("crypto_enabled_effective"):
+        br = str(readiness.get("push_blocked_reason") or "")
+        if br and br not in ("CRYPTO_DISABLED", "CRYPTO_PUSH_DISABLED"):
+            return br
+        return None
+    key = str(flags.get("disabling_config_key") or "")
+    if key == "crypto_push_enabled" and flags.get("paper_auto_enabled"):
+        return None
+    return _DISABLING_TO_BLOCKER.get(key) or "CRYPTO_PUSH_DISABLED_BY_CONFIG"
+
+
+def _normalize_push_blocker(
+    code: str | None,
+    *,
+    flags: dict[str, Any],
+    readiness: dict[str, Any],
+) -> str:
+    """Avoid broad CRYPTO_PUSH_DISABLED when main worker path would allow push."""
+    if readiness.get("push_allowed"):
+        return reason_codes.CRYPTO_PUSH_ALLOWED
+    cfg_block = _blocker_from_flags(flags, readiness)
+    if cfg_block:
+        return cfg_block
+    c = str(code or "")
+    if c in ("CRYPTO_PUSH_DISABLED", "CRYPTO_DISABLED") and flags.get("crypto_push_enabled_effective"):
+        br = str(readiness.get("push_blocked_reason") or "")
+        if br:
+            return br
+    if c in ("", "CRYPTO_PUSH_BLOCKED_PREFLIGHT"):
+        br = str(readiness.get("push_blocked_reason") or "")
+        return br or reason_codes.CRYPTO_PUSH_BLOCKED_PREFLIGHT
+    return c or "NO_SIGNAL"
+
+
 def run_crypto_fast_loop_once(
     *,
     trader: Any,
@@ -95,11 +232,19 @@ def run_crypto_fast_loop_once(
 ) -> dict[str, Any]:
     """One fast-loop iteration: scan, score, preflight, pull checks (paper execution optional)."""
     lid = loop_id or str(uuid.uuid4())[:12]
-    cycle_sec = cfg_float(rt, "crypto_fast_loop_cycle_seconds", 20.0)
-    min_score = cfg_float(rt, "crypto_fast_loop_min_score", cfg_float(rt, "crypto_buy_threshold", 0.04))
-    max_spread = cfg_float(rt, "crypto_fast_loop_max_spread_pct", 0.5)
-    enabled = cfg_is_enabled(rt.get("crypto_fast_loop_enabled"), default=False)
-    execute = cfg_is_enabled(rt.get("crypto_fast_loop_execute_orders"), default=False)
+    recon_clean, recovery_block = _load_safety_gates()
+    rt_eff, flags = apply_effective_crypto_rt(
+        rt,
+        reconciliation_clean=recon_clean,
+        recovery_block=recovery_block,
+    )
+    cycle_sec = cfg_float(rt_eff, "crypto_fast_loop_cycle_seconds", 20.0)
+    min_score = cfg_float(
+        rt_eff, "crypto_fast_loop_min_score", cfg_float(rt_eff, "crypto_buy_threshold", 0.04)
+    )
+    max_spread = cfg_float(rt_eff, "crypto_fast_loop_max_spread_pct", 0.5)
+    enabled = cfg_is_enabled(rt_eff.get("crypto_fast_loop_enabled"), default=False)
+    execute = cfg_is_enabled(rt_eff.get("crypto_fast_loop_execute_orders"), default=False)
     live_ready = False
     try:
         lr = build_live_readiness(account={"mode": config.MODE, "live_enabled": config.trading_is_live()})
@@ -118,18 +263,17 @@ def run_crypto_fast_loop_once(
             "exact_push_blocker": "CRYPTO_FAST_LOOP_DISABLED",
             "next_action": "Enable crypto_fast_loop_enabled in config",
             "live_ready": live_ready,
+            "crypto_push_enabled_effective": flags.get("crypto_push_enabled_effective"),
         }
         _set_status(st)
         return st
 
     _log_fast("CRYPTO_FAST_LOOP_STARTED", loop_id=lid, evidence={"cycle_seconds": cycle_sec})
 
-    syms = filter_tradeable_crypto_pairs(
-        list(crypto_symbols or [])[: int(cfg_float(rt, "crypto_fast_loop_max_scan_symbols", 40))],
-        allow_stablecoin_arbitrage=cfg_is_enabled(rt.get("stablecoin_arbitrage_enabled"), default=False),
-    )
+    universe, universe_source = _resolve_fast_loop_universe(crypto_symbols, rt_eff)
+    scan_syms, batch_meta = _select_scan_batch(universe, rt_eff)
     scored: list[tuple[str, float]] = []
-    for sym in syms:
+    for sym in scan_syms:
         try:
             from training.backtester import load_yfinance_history
             from training.paper_trading_loop import discrete_signal_bundle
@@ -157,9 +301,12 @@ def run_crypto_fast_loop_once(
         "CRYPTO_FAST_SCAN_SUMMARY",
         loop_id=lid,
         evidence={
-            "symbols_scanned": len(syms),
+            "universe_count": len(universe),
+            "symbols_scanned": len(scan_syms),
             "scored_count": len(scored),
             "top_candidates": top_candidates[:5],
+            **batch_meta,
+            "universe_source": universe_source,
         },
     )
 
@@ -185,7 +332,7 @@ def run_crypto_fast_loop_once(
             entry = float(getattr(p, "avg_entry_price", 0) or getattr(p, "entry_price", 0) or 0)
             cur = float(getattr(p, "current_price", 0) or getattr(p, "mark_price", 0) or 0)
             ev = evaluate_crypto_pull(
-                symbol=sym, qty=qty, entry_price=entry, current_price=cur, rt=rt,
+                symbol=sym, qty=qty, entry_price=entry, current_price=cur, rt=rt_eff,
             )
             _log_fast(
                 "CRYPTO_FAST_PULL_CHECK",
@@ -200,59 +347,88 @@ def run_crypto_fast_loop_once(
             if ev.action == "PULL":
                 pull_status = "exit_signal"
                 pull_blocker = ev.reason_code
-                if execute and config.MODE == "paper" and not config.trading_is_live():
-                    _log_fast(
-                        "CRYPTO_FAST_EXIT_TRIGGERED",
-                        loop_id=lid,
-                        evidence={"symbol": sym, "exact_reason": ev.reason_code},
-                    )
+            elif held:
+                pull_status = "monitoring"
+
+    cash = 0.0
+    bp = 0.0
+    equity = 0.0
+    try:
+        bp = float(trader.buying_power())
+        equity = float(trader.equity_total())
+        cash = float(getattr(trader, "cash", lambda: bp)() if callable(getattr(trader, "cash", None)) else bp)
+    except Exception:
+        pass
+
+    score_map = {s: sc for s, sc in scored}
+    readiness = build_crypto_executor_readiness(
+        rt=rt_eff,
+        cash_available=cash,
+        buying_power=bp,
+        crypto_positions=[
+            {"symbol": s, "asset_class": "crypto", "quantity": 1.0} for s in held
+        ],
+        crypto_scores=score_map or None,
+        reconciliation_clean=recon_clean,
+        recovery_block=recovery_block,
+    )
 
     best_sym = scored[0][0] if scored else None
     best_score = scored[0][1] if scored else 0.0
     ready: dict[str, Any] = {
-        "usable_buying_power": float(getattr(trader, "buying_power", lambda: 0)() if callable(getattr(trader, "buying_power", None)) else 0),
+        "usable_buying_power": bp,
+        "buying_power": bp,
+        "equity": equity,
+        "config_flags": flags,
+        "push_allowed": readiness.get("push_allowed"),
+        "push_blocked_reason": readiness.get("push_blocked_reason"),
     }
-    try:
-        ready["usable_buying_power"] = float(trader.buying_power())
-        ready["equity"] = float(trader.equity_total())
-    except Exception:
-        pass
 
     pf = resolve_crypto_push_preflight(
-        rt=rt,
+        rt=rt_eff,
         chosen_symbol=str(best_sym or ""),
         chosen_score=float(best_score or 0),
         crypto_buy_threshold=min_score,
         executor_readiness=ready,
         open_crypto_positions=open_crypto,
         held_crypto_symbols=held,
+        push_subreason=readiness.get("push_blocked_reason"),
     )
-    push_blocker = pf.get("exact_final_blocker")
-    push_status = "ready" if push_blocker in ("CRYPTO_PUSH_ALLOWED", "OK") else "blocked"
+    push_blocker = _normalize_push_blocker(
+        pf.get("exact_final_blocker"),
+        flags=flags,
+        readiness=readiness,
+    )
+    if readiness.get("push_allowed") and best_sym and best_score >= min_score:
+        push_blocker = reason_codes.CRYPTO_PUSH_ALLOWED
+    push_status = "ready" if push_blocker in (reason_codes.CRYPTO_PUSH_ALLOWED, "OK") else "blocked"
 
     if best_sym and best_score >= min_score:
         _log_fast(
             "CRYPTO_FAST_ENTRY_PREFLIGHT",
             loop_id=lid,
-            evidence={**pf, "symbol": best_sym, "score": best_score, "threshold": min_score},
+            evidence={**pf, "symbol": best_sym, "score": best_score, "threshold": min_score, "exact_reason": push_blocker},
         )
         if push_status == "blocked":
             _log_fast(
                 "CRYPTO_FAST_ENTRY_BLOCKED",
                 loop_id=lid,
-                evidence={**pf, "final_action": "blocked"},
+                evidence={**pf, "final_action": "blocked", "exact_reason": push_blocker},
             )
         elif execute and config.MODE == "paper" and not config.trading_is_live():
             _log_fast(
                 "CRYPTO_FAST_ORDER_SUBMITTED",
                 loop_id=lid,
-                evidence={"symbol": best_sym, "note": "execute_orders flag on — wire to trader.market_buy in worker lock"},
+                evidence={"symbol": best_sym, "note": "execute_orders flag on"},
             )
     else:
+        reason = push_blocker or "SCORE_BELOW_THRESHOLD"
+        if not scored:
+            reason = "NO_SIGNAL"
         _log_fast(
             "CRYPTO_FAST_NO_ACTION",
             loop_id=lid,
-            evidence={"exact_reason": push_blocker or "SCORE_BELOW_THRESHOLD"},
+            evidence={"exact_reason": reason, "scored_count": len(scored)},
         )
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -261,18 +437,26 @@ def run_crypto_fast_loop_once(
         "cycle_seconds": cycle_sec,
         "last_loop_at": now,
         "loop_age_seconds": 0,
-        "symbols_scanned": len(syms),
+        "universe_count": len(universe),
+        "universe_source": universe_source,
+        "symbols_scanned": len(scan_syms),
+        "scored_count": len(scored),
+        "batch_index": batch_meta.get("batch_index"),
+        "batch_count": batch_meta.get("batch_count"),
+        "scan_strategy": batch_meta.get("scan_strategy"),
         "top_candidates": top_candidates[:5],
         "open_crypto_positions": held,
         "push_status": push_status,
-        "pull_status": pull_status,
+        "pull_status": pull_status if held else pull_status,
         "exact_push_blocker": push_blocker,
         "exact_pull_blocker": pull_blocker,
-        "last_entry_order": None,
-        "last_exit_order": None,
+        "crypto_push_enabled_raw": flags.get("crypto_push_enabled_raw"),
+        "crypto_push_enabled_effective": flags.get("crypto_push_enabled_effective"),
+        "crypto_enabled_effective": flags.get("crypto_enabled_effective"),
+        "paper_auto_enabled": flags.get("paper_auto_enabled"),
         "next_action": (
             f"Monitor {held[0]} pull"
-            if held
+            if held and pull_status == "monitoring"
             else (f"Push blocked: {push_blocker}" if push_status == "blocked" else "Scanning")
         ),
         "live_ready": live_ready,

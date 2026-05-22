@@ -49,10 +49,38 @@ def resolve_crypto_push_preflight(
     already = any(crypto_symbols_equivalent(h, sym) for h in held) if sym else False
     broker_rejected = bool(ready.get("broker_rejected"))
 
-    sub = str(push_subreason or ready.get("push_blocked_reason") or "").strip().upper()
-    vague = sub in ("", "PREFLIGHT", "OK", "NO_CRYPTO_CANDIDATES", "NO_SIGNAL", "HOLD")
+    flags = ready.get("config_flags") or {}
+    if flags and ready.get("push_allowed"):
+        sub = "OK"
+    elif flags and not flags.get("crypto_push_enabled_effective"):
+        sub = str(flags.get("disabling_config_key") or "CRYPTO_PUSH_DISABLED").upper()
+    elif flags and not flags.get("crypto_enabled_effective"):
+        sub = "CRYPTO_DISABLED"
+    else:
+        sub = str(push_subreason or ready.get("push_blocked_reason") or "").strip().upper()
+    if sub == "OK":
+        return {
+            "chosen_candidate": sym,
+            "exact_final_blocker": reason_codes.CRYPTO_PUSH_ALLOWED,
+            "push_subreason": "OK",
+            "required_notional": _f(ready.get("required_notional")) or min_n,
+            "available_after_reserve": avail,
+            "min_order_notional": min_n,
+            "max_crypto_allocation_remaining": max_alloc,
+            "already_holding": already,
+            "broker_rejected": broker_rejected,
+            "buying_power_ok": True,
+            "usable_buying_power": usable,
+            "reserve_required": _f(ready.get("reserve_required")),
+        }
+
+    vague = sub in ("", "PREFLIGHT", "NO_CRYPTO_CANDIDATES", "NO_SIGNAL", "HOLD")
     if vague:
-        if not bool(int(rt.get("crypto_push_enabled", 0)) == 1):
+        if flags and not flags.get("crypto_push_enabled_effective"):
+            sub = str(flags.get("disabling_config_key") or "CRYPTO_PUSH_DISABLED").upper()
+        elif flags and not flags.get("crypto_enabled_effective"):
+            sub = "CRYPTO_DISABLED"
+        elif not bool(int(rt.get("crypto_push_enabled", 0)) == 1):
             sub = "CRYPTO_PUSH_DISABLED"
         elif score < th:
             sub = "SCORE_TOO_LOW"

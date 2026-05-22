@@ -295,6 +295,7 @@ BOT_CONFIG_DEFAULTS = {
     "crypto_fast_loop_reserve_cash_pct": 5.0,
     "crypto_fast_loop_execute_orders": 0.0,
     "crypto_fast_loop_max_scan_symbols": 40.0,
+    "crypto_fast_loop_batch_size": 15.0,
     "pdt_exit_block_seconds": 600.0,
     "dashboard_exit_positions_limit": 50.0,
     # Capital rotation planner (paper analysis only; no orders from these flags alone)
