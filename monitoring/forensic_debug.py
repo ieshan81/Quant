@@ -99,6 +99,12 @@ def _crypto_push_forensics(
     reserve = dec.get("reserve_required")
     avail = dec.get("available_after_reserve")
     min_n = dec.get("min_order_notional")
+    if (usable is None or float(usable or 0) <= 0) and isinstance(fast_forensics, dict):
+        pf = fast_forensics.get("preflight_forensics") or fast_forensics
+        usable = pf.get("usable_buying_power") or usable
+        avail = pf.get("available_after_reserve") or avail
+        reserve = pf.get("reserve_required") or reserve
+        min_n = pf.get("min_order_notional") or min_n
     if usable is not None and min_n is not None:
         try:
             preflight["buying_power_ok"] = float(usable) >= float(min_n)

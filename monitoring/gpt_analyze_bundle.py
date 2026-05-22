@@ -268,6 +268,10 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     except Exception:
         forensic_debug = {"error": "forensic_debug_build_failed"}
 
+    _cfl_status = _bundle_crypto_fast_loop_status()
+    if isinstance(crypto_dec, dict):
+        crypto_dec = _enrich_push_execution_truth(crypto_dec, _cfl_status)
+
     bundle = {
         "generated_at": generated,
         "forensic_debug": forensic_debug,
@@ -294,7 +298,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         "strategy_weights_audit": strategy_weights_audit,
         "live_readiness_checklist": _build_live_readiness_checklist(mission_summary, account, strategy_weights_audit),
         "live_readiness": _bundle_live_readiness(mission_summary, account, strategy_weights_audit),
-        "crypto_fast_loop_status": _bundle_crypto_fast_loop_status(),
+        "crypto_fast_loop_status": _cfl_status,
         "engine_schedule": _build_engine_schedule(mission_summary, simple),
         "service_info": {
             **deploy,
@@ -541,6 +545,49 @@ def _build_live_readiness_checklist(
             "this gate — operator must run the checklist and explicitly approve live."
         ),
     }
+
+
+def _enrich_push_execution_truth(
+    crypto_dec: dict[str, Any],
+    fast_loop: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Single clear push state for GPT: allowed+attempted, observe-only, or blocked."""
+    dec = dict(crypto_dec or {})
+    cfl = dict(fast_loop or {})
+    pex = dict(cfl.get("push_execution_state") or {})
+    if dec.get("push_allowed"):
+        if not pex:
+            if cfl.get("execution_mode") == "observe_only" or not cfl.get("execution_enabled"):
+                pex = {
+                    "mode": "observe_only",
+                    "order_attempted": False,
+                    "order_submitted": False,
+                    "reason": "MAIN_WORKER_CYCLE_ONLY",
+                    "human": (
+                        "Push preflight passed on main worker. Fast loop is observe-only; "
+                        "new entries use the main ~300s cycle unless crypto_fast_loop_execute_orders=1."
+                    ),
+                }
+            else:
+                pex = {
+                    "mode": "main_worker_cycle",
+                    "order_attempted": False,
+                    "order_submitted": False,
+                    "reason": "MAIN_WORKER_CYCLE",
+                    "human": "Push allowed; order submission on main worker cycle when gates pass.",
+                }
+        dec["push_execution_state"] = pex
+        dec["order_attempted"] = bool(pex.get("order_submitted"))
+    else:
+        dec["push_execution_state"] = {
+            "mode": "blocked",
+            "order_attempted": False,
+            "order_submitted": False,
+            "reason": dec.get("reason_code"),
+            "human": dec.get("human_reason") or f"Push blocked: {dec.get('reason_code')}",
+        }
+        dec["order_attempted"] = False
+    return dec
 
 
 def _bundle_crypto_fast_loop_status() -> dict[str, Any]:

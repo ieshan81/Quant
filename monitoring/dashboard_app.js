@@ -3410,12 +3410,24 @@
     var cryptoCand = formatCryptoCandidateLabel(tr, diag);
     var pushReason = canonicalNT.human_reason || push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
     var cfl = d.crypto_fast_loop_status || {};
-    var fastLab = cfl.enabled
-      ? "Fast loop " + (cfl.loop_age_seconds != null ? cfl.loop_age_seconds + "s ago" : "active")
-      : "Fast loop off";
-    var fastSub = cfl.exact_push_blocker
-      ? "Push: " + String(cfl.exact_push_blocker).replace(/_/g, " ")
-      : (cfl.next_action || "");
+    var fastCycle = Number(cfl.cycle_seconds || 20);
+    var fastAge = cfl.loop_age_seconds != null ? Number(cfl.loop_age_seconds) : null;
+    var fastStale = fastAge != null && fastAge > fastCycle * 3;
+    var fastLab = "Fast loop off";
+    if (cfl.ui_label) {
+      fastLab = String(cfl.ui_label);
+    } else if (cfl.enabled && !fastStale) {
+      fastLab = cfl.execution_enabled ? "Running" : "Observe Only";
+    } else if (cfl.enabled && fastStale) {
+      fastLab = "Stale";
+    }
+    var fastSubParts = [];
+    if (cfl.note) fastSubParts.push(String(cfl.note));
+    else if (cfl.execution_mode === "observe_only") fastSubParts.push("Scan active · orders observe-only");
+    if (fastAge != null && cfl.enabled) fastSubParts.push("Last tick " + fastAge + "s ago");
+    if (cfl.exact_push_blocker) fastSubParts.push("Push: " + String(cfl.exact_push_blocker).replace(/_/g, " "));
+    if (cfl.pull_status && cfl.pull_status !== "no_position") fastSubParts.push("Pull: " + String(cfl.pull_status));
+    var fastSub = fastSubParts.join(" · ") || (cfl.next_action || "");
     var dayPct = ac.day_pnl_pct != null ? Number(ac.day_pnl_pct) : (ac.equity && ac.day_pnl ? (Number(ac.day_pnl) / Number(ac.equity)) * 100 : null);
     var eqSub = ac.day_pnl != null
       ? "Day P&L " + safeFmtMoneySigned(ac.day_pnl) + (dayPct != null && isFinite(dayPct) ? " (" + (dayPct >= 0 ? "+" : "") + dayPct.toFixed(2) + "%)" : "")
@@ -3440,7 +3452,7 @@
         lab: "Fast crypto loop",
         val: fastLab,
         sub: fastSub || safeText(cfl.pull_status, ""),
-        tone: cfl.enabled ? "ok" : ""
+        tone: cfl.enabled && !fastStale ? (cfl.execution_enabled ? "ok" : "warn") : ""
       },
       {
         lab: "Crypto push",
