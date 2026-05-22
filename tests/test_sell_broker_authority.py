@@ -147,7 +147,7 @@ def test_live_readiness_blocks_on_stale_exit_signals():
         },
     )
     blockers = lr.get("architecture_blockers") or []
-    assert "sell_preflight_broker_authority_required" in blockers
+    assert "stale_exit_signals_quarantined" in blockers
 
 
 def test_broker_rejection_forensics_still_captures_alpaca_error():
@@ -172,6 +172,9 @@ def test_broker_rejection_forensics_still_captures_alpaca_error():
     with patch("execution.stock_broker.get_rest_client", return_value=mock_client), patch(
         "config.alpaca_paper_trading_allowed",
         return_value=True,
+    ), patch(
+        "core.broker_sell_authority.fetch_active_positions_for_sell_gate",
+        return_value=[{"symbol": "APLD", "canonical_symbol": "APLD", "broker_qty": 1.0, "asset_class": "stock"}],
     ), patch("data_providers.alpaca_provider.parse_broker_exception", return_value=parsed):
         result = submit_market_order("sell", "APLD", 1.0)
     assert result.ok is False

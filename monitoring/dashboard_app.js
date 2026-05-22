@@ -1665,9 +1665,23 @@
   var _actFilter = "all";
 
   function _activityItemClass(kind) {
-    if (kind === "error") return "tl-err";
+    if (kind === "safety-block") return "tl-warn";
+    if (kind === "error" || kind === "broker-reject") return "tl-err";
     if (kind === "warn") return "tl-warn";
     return "tl-ok";
+  }
+
+  function _decisionActivityKind(r) {
+    var rc = String(r.reason_code || "").toUpperCase();
+    if (r.ui_event_class === "safety-block" || rc.indexOf("SELL_BLOCKED_") === 0 || rc.indexOf("BUY_BLOCKED_") === 0 || rc.indexOf("PREFLIGHT_BLOCKED_") === 0) {
+      return "safety-block";
+    }
+    if (r.ui_event_class === "broker-reject" || rc.indexOf("ALPACA_") === 0 || rc === "BROKER_EXCEPTION") {
+      return "broker-reject";
+    }
+    if (rc.indexOf("ERROR") >= 0 || rc.indexOf("KILL") >= 0) return "error";
+    if (rc.indexOf("BLOCK") >= 0 || rc.indexOf("SKIP") >= 0 || rc.indexOf("MAX_") >= 0) return "warn";
+    return "ok";
   }
 
   function _renderActivityTimeline(trades, decisions, signals) {
@@ -1686,15 +1700,20 @@
     decisions.slice(0, 20).forEach(function (r) {
       var rc = String(r.reason_code || "");
       if (rc.indexOf("GHOST") >= 0 || rc.indexOf("SYNTHETIC") >= 0) return;
-      var isErr = rc.indexOf("ERROR") >= 0 || rc.indexOf("KILL") >= 0;
-      var isWarn = !isErr && (rc.indexOf("BLOCK") >= 0 || rc.indexOf("SKIP") >= 0 || rc.indexOf("MAX_") >= 0);
+      var kind = _decisionActivityKind(r);
       var ac = String(r.asset_class || "").toLowerCase();
+      var label = r.human_reason || rc.replace(/_/g, " ");
+      if (kind === "safety-block") {
+        label = r.human_reason || ("Blocked before broker: " + rc.replace(/_/g, " ").toLowerCase());
+      } else if (kind === "broker-reject") {
+        label = r.human_reason || ("Broker rejected: " + rc.replace(/_/g, " "));
+      }
       items.push({
         evKey: "dc|" + String(r.created_at || "") + "|" + String(r.symbol || "cycle") + "|" + rc + "|" + String(r.side || ""),
         ts: r.created_at || "",
-        kind: isErr ? "error" : isWarn ? "warn" : "ok",
+        kind: kind,
         cat: ac === "crypto" ? "crypto" : ac === "stock" ? "stocks" : "orders",
-        html: "<strong>" + esc(r.symbol || "cycle") + "</strong> " + esc(r.side) + " · " + esc(rc.replace(/_/g, " "))
+        html: "<strong>" + esc(r.symbol || "cycle") + "</strong> " + esc(r.side) + " · " + esc(label)
       });
     });
     items.sort(function (a, b) { return String(b.ts).localeCompare(String(a.ts)); });

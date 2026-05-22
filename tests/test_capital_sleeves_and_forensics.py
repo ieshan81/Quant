@@ -186,6 +186,10 @@ def test_alpaca_submit_market_order_attaches_forensics(monkeypatch):
     monkeypatch.setattr(stock_broker.config, "trading_is_live", lambda: False)
     monkeypatch.setattr(stock_broker.config, "alpaca_is_live_endpoint", lambda: False)
     monkeypatch.setattr(stock_broker.config, "alpaca_is_paper_endpoint", lambda: True)
+    monkeypatch.setattr(
+        "core.broker_sell_authority.fetch_active_positions_for_sell_gate",
+        lambda: [{"symbol": "AMC", "canonical_symbol": "AMC", "broker_qty": 10.0, "asset_class": "stock"}],
+    )
 
     result = stock_broker.submit_market_order("sell", "AMC", 10, notional=200.0)
     assert result.ok is False
@@ -203,13 +207,18 @@ def test_forensics_journal_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr("config.PERSIST_DIR", tmp_path, raising=False)
     from monitoring import order_forensics_journal as journal
 
-    monkeypatch.setattr(journal, "_journal_path", lambda: tmp_path / "broker_rejections.jsonl")
+    monkeypatch.setattr(
+        journal,
+        "_journal_paths",
+        lambda: [tmp_path / "logs" / "broker_order_rejections.jsonl"],
+    )
 
     result = SimpleNamespace(
         ok=False,
         broker_order_id=None,
         message="boom",
         reason_code="ALPACA_PAPER_ORDER_REJECTED",
+        broker_submit_attempted=True,
         forensics={"exact_reject_reason": "missing_buying_power", "broker_error_code": "INSUFFICIENT_BUYING_POWER"},
     )
     row = journal.record_broker_rejection(
@@ -228,10 +237,10 @@ def test_forensics_journal_roundtrip(tmp_path, monkeypatch):
 
 def test_preflight_wrapper_writes_journal_on_broker_exception(tmp_path, monkeypatch):
     monkeypatch.setattr("config.PERSIST_DIR", tmp_path, raising=False)
-    journal_path = tmp_path / "logs" / "broker_rejections.jsonl"
+    journal_path = tmp_path / "logs" / "broker_order_rejections.jsonl"
     from monitoring import order_forensics_journal as journal
 
-    monkeypatch.setattr(journal, "_journal_path", lambda: journal_path)
+    monkeypatch.setattr(journal, "_journal_paths", lambda: [journal_path])
 
     from execution.order_preflight import run_preflight_checks, submit_order_with_preflight
 
@@ -263,13 +272,14 @@ def test_canonical_exit_state_includes_journal_rejections(tmp_path, monkeypatch)
     from monitoring import order_forensics_journal as journal
 
     journal_path = tmp_path / "logs" / "broker_rejections.jsonl"
-    monkeypatch.setattr(journal, "_journal_path", lambda: journal_path)
+    monkeypatch.setattr(journal, "_journal_paths", lambda: [journal_path])
     journal.record_broker_rejection(
         result=SimpleNamespace(
             ok=False,
             broker_order_id=None,
             message="rejected",
             reason_code="ALPACA_PAPER_ORDER_REJECTED",
+            broker_submit_attempted=True,
             forensics={
                 "exact_reject_reason": "insufficient buying power",
                 "broker_error_code": "INSUFFICIENT_BUYING_POWER",
@@ -288,12 +298,15 @@ def test_canonical_exit_state_includes_journal_rejections(tmp_path, monkeypatch)
     with patch("data.data_store.get_connection") as mock_conn:
         mock_conn.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_conn.return_value.__exit__ = MagicMock(return_value=False)
-        with patch("monitoring.dashboard_data.fetch_recent_execution_decisions", return_value=[]):
+        with patch(
+            "monitoring.order_preflight_blocks_journal.fetch_recent_preflight_blocks",
+            return_value=[],
+        ), patch("monitoring.dashboard_data.fetch_recent_execution_decisions", return_value=[]):
             es = build_exit_state(position_state={"operator_exit_rows": []})
 
     rejections = es.get("broker_rejections") or []
-    assert any(r.get("source") == "broker_rejections_journal" for r in rejections)
-    journal_row = [r for r in rejections if r.get("source") == "broker_rejections_journal"][0]
+    assert any(r.get("source") == "broker_order_rejections_journal" for r in rejections)
+    journal_row = [r for r in rejections if r.get("source") == "broker_order_rejections_journal"][0]
     assert journal_row.get("exact_reject_reason")
     assert journal_row.get("broker_error_code") == "INSUFFICIENT_BUYING_POWER"
 

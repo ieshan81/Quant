@@ -60,11 +60,59 @@ def build_forensic_debug(
     return {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "position_truth_audit": truth_audit,
+        "order_flow": _order_flow_forensics(),
         "crypto_push_forensics": _crypto_push_forensics(diag, dec, canon, rt),
         "crypto_pull_forensics": _crypto_pull_forensics(crypto_session, truth_audit, dec),
         "crypto_fast_loop_forensics": fast_forensics,
         "momo_forensics": _momo_forensics(ms),
         "ui_data_sources": _ui_data_sources(ms, ss),
+    }
+
+
+def _order_flow_forensics() -> dict[str, Any]:
+    local_blocks: list[dict[str, Any]] = []
+    broker_rej: list[dict[str, Any]] = []
+    try:
+        from monitoring.order_preflight_blocks_journal import fetch_recent_preflight_blocks
+
+        local_blocks = fetch_recent_preflight_blocks(limit=25)
+    except Exception:
+        pass
+    try:
+        from monitoring.order_forensics_journal import fetch_recent_rejections
+
+        broker_rej = fetch_recent_rejections(limit=25)
+    except Exception:
+        pass
+    last_attempts = []
+    for row in (local_blocks + broker_rej)[:30]:
+        last_attempts.append(
+            {
+                "ts": row.get("created_at") or row.get("ts"),
+                "symbol": row.get("symbol"),
+                "side": row.get("side"),
+                "outcome": (
+                    "blocked_before_submit"
+                    if row.get("broker_submit_attempted") is False
+                    else "broker_rejected_after_submit"
+                ),
+                "reason": row.get("block_reason_code") or row.get("broker_error_code") or row.get("reason_code"),
+                "human_reason": row.get("human_reason"),
+            }
+        )
+    last_attempts.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+    return {
+        "local_preflight_blocks": local_blocks,
+        "broker_rejections": broker_rej,
+        "last_order_attempts": last_attempts[:20],
+        "blocked_vs_rejected_summary": {
+            "local_preflight_blocks_count": len(local_blocks),
+            "broker_rejections_count": len(broker_rej),
+            "note": (
+                "Local preflight blocks never reached Alpaca. "
+                "Broker rejections are post-submit responses only."
+            ),
+        },
     }
 
 

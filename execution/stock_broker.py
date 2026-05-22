@@ -473,27 +473,67 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
                 active_positions=active,
             )
             if not sell_val.allowed:
+                block_rc = sell_val.reason_code
+                try:
+                    from monitoring.order_flow_labels import format_blocked_before_submit_human
+                    from monitoring.order_preflight_blocks_journal import record_preflight_block
+
+                    record_preflight_block(
+                        symbol=sym,
+                        asset_class="stock",
+                        side="sell",
+                        requested_qty=float(q),
+                        requested_notional=float(notional or q * 0),
+                        block_reason_code=block_rc,
+                        human_reason=format_blocked_before_submit_human(sym, block_rc, asset_class="stock"),
+                        source_module="execution.stock_broker",
+                        preflight_step="submit_market_order_sell_gate",
+                        evidence=dict(sell_val.meta),
+                    )
+                except Exception:
+                    pass
                 return SimpleNamespace(
                     ok=False,
                     broker_order_id=None,
-                    message=f"preflight_blocked: {sell_val.reason_code}",
+                    message=f"preflight_blocked: {block_rc}",
                     raw=None,
-                    reason_code=sell_val.reason_code,
+                    reason_code=block_rc,
+                    broker_submit_attempted=False,
                     forensics={
-                        "exact_reject_reason": sell_val.reason_code,
+                        "exact_reject_reason": block_rc,
                         "broker_qty": sell_val.broker_qty,
                         "local_qty_audit": sell_val.local_qty,
                         "source_path": "stock_broker.submit_market_order",
+                        "broker_submit_attempted": False,
                     },
                 )
             q = float(sell_val.approved_qty)
             if q <= 0:
+                block_rc = reason_codes.SELL_BLOCKED_NO_BROKER_POSITION
+                try:
+                    from monitoring.order_flow_labels import format_blocked_before_submit_human
+                    from monitoring.order_preflight_blocks_journal import record_preflight_block
+
+                    record_preflight_block(
+                        symbol=sym,
+                        asset_class="stock",
+                        side="sell",
+                        requested_qty=float(q),
+                        requested_notional=float(notional or 0),
+                        block_reason_code=block_rc,
+                        human_reason=format_blocked_before_submit_human(sym, block_rc, asset_class="stock"),
+                        source_module="execution.stock_broker",
+                        preflight_step="submit_market_order_sell_gate",
+                    )
+                except Exception:
+                    pass
                 return SimpleNamespace(
                     ok=False,
                     broker_order_id=None,
                     message="preflight_blocked: SELL_BLOCKED_NO_BROKER_POSITION",
                     raw=None,
-                    reason_code=reason_codes.SELL_BLOCKED_NO_BROKER_POSITION,
+                    reason_code=block_rc,
+                    broker_submit_attempted=False,
                 )
         except Exception as _sell_gate_exc:
             logger.warning("[sell_authority] broker submit gate failed: {}", _sell_gate_exc)
@@ -571,6 +611,7 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
             message=str(e),
             raw=None,
             forensics=forensics,
+            broker_submit_attempted=True,
             reason_code=(
                 reason_codes.PDT_PROTECTION
                 if pdt

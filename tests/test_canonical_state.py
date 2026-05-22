@@ -178,7 +178,10 @@ def test_exit_rejection_requires_detail_or_bug_flag():
     with patch("data.data_store.get_connection") as mock_conn:
         mock_conn.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_conn.return_value.__exit__ = MagicMock(return_value=False)
-        with patch(
+        with patch("monitoring.order_forensics_journal.fetch_recent_rejections", return_value=[]), patch(
+            "monitoring.order_preflight_blocks_journal.fetch_recent_preflight_blocks",
+            return_value=[],
+        ), patch(
             "monitoring.dashboard_data.fetch_recent_execution_decisions",
             return_value=[
                 {

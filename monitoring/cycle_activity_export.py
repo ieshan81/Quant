@@ -133,9 +133,21 @@ def _scrub(obj: Any, depth: int = 0) -> Any:
 
 
 def _human_blocked(symbol: str, asset_class: str, blocked: str | None, final_action: str) -> str:
+    from monitoring.order_flow_labels import (
+        format_blocked_before_submit_human,
+        format_broker_rejected_human,
+        is_preflight_block_reason,
+    )
+
     sym = str(symbol or "").strip().upper()
     ac = str(asset_class or "").strip().lower()
     b = str(blocked or "").strip().upper()
+    if final_action == "BLOCKED_BEFORE_SUBMIT" or (
+        final_action == "SELL_BLOCKED" and is_preflight_block_reason(b)
+    ):
+        return format_blocked_before_submit_human(sym, b, asset_class=ac)
+    if final_action == "BROKER_REJECTED":
+        return format_broker_rejected_human(sym, broker_error_code=b, exact_reject_reason=b)
     if final_action == "BROKER_QTY_ZERO":
         return (
             f"{sym}: Broker reports zero quantity; capital rotation cannot proceed until positions reconcile."
@@ -182,6 +194,8 @@ def merge_execution_decisions_into_exit_decisions(
     When ``session_open_for_stock_sells`` is true, rejected sells with ``MARKET_CLOSED`` from
     ``execution_decisions`` are ignored so stale pre-open rejects do not override live export.
     """
+    from monitoring.order_flow_labels import is_preflight_block_reason
+
     if not execution_decisions:
         return list(exit_rows)
 
@@ -264,10 +278,18 @@ def merge_execution_decisions_into_exit_decisions(
             rec["final_action"] = "PDT_BLOCKED"
             rec["exit_condition_hit"] = bool(rec.get("exit_condition_hit", True))
             rec["human_reason"] = _human_blocked(sym_disp, ac, rc.PDT_PROTECTION, "PDT_BLOCKED")
+        elif is_preflight_block_reason(rcv):
+            rec["blocked_reason"] = rcv
+            rec["final_action"] = "BLOCKED_BEFORE_SUBMIT"
+            rec["ui_event_class"] = "safety-block"
+            rec["broker_submit_attempted"] = False
+            rec["human_reason"] = _human_blocked(sym_disp, ac, rcv, "BLOCKED_BEFORE_SUBMIT")
         else:
             rec["blocked_reason"] = rcv or "ALPACA_ORDER_REJECTED"
-            rec["final_action"] = "SELL_BLOCKED"
-            rec["human_reason"] = _human_blocked(sym_disp, ac, rec["blocked_reason"], "SELL_BLOCKED")
+            rec["final_action"] = "BROKER_REJECTED"
+            rec["ui_event_class"] = "broker-reject"
+            rec["broker_submit_attempted"] = True
+            rec["human_reason"] = _human_blocked(sym_disp, ac, rec["blocked_reason"], "BROKER_REJECTED")
 
     seen: set[tuple[str, str]] = set()
     ordered: list[tuple[str, str]] = []

@@ -383,6 +383,29 @@ def submit_order_with_preflight(
             preflight.side, preflight.asset_class, preflight.symbol,
             preflight.reason_code,
         )
+        try:
+            from monitoring.order_flow_labels import format_blocked_before_submit_human
+            from monitoring.order_preflight_blocks_journal import record_preflight_block
+
+            record_preflight_block(
+                symbol=preflight.symbol,
+                asset_class=preflight.asset_class,
+                side=preflight.side,
+                requested_qty=float(preflight.qty or 0.0),
+                requested_notional=float(preflight.notional or 0.0),
+                block_reason_code=preflight.reason_code,
+                human_reason=format_blocked_before_submit_human(
+                    preflight.symbol,
+                    preflight.reason_code,
+                    asset_class=preflight.asset_class,
+                ),
+                source_module="execution.order_preflight",
+                preflight_step=str((preflight.meta or {}).get("sell_authority") or "run_preflight_checks"),
+                evidence={"preflight": pf_dict},
+                cycle_id=cycle_id,
+            )
+        except Exception:
+            logger.debug("[preflight_blocks_journal] write failed", exc_info=True)
         return SimpleNamespace(
             ok=False,
             broker_order_id=None,
@@ -390,6 +413,7 @@ def submit_order_with_preflight(
             raw=None,
             reason_code=preflight.reason_code,
             preflight=pf_dict,
+            broker_submit_attempted=False,
         )
 
     logger.info(
@@ -418,6 +442,7 @@ def submit_order_with_preflight(
             reason_code="BROKER_EXCEPTION",
             preflight=pf_dict,
             forensics=forensics,
+            broker_submit_attempted=True,
         )
         try:
             from monitoring.order_forensics_journal import record_broker_rejection
@@ -431,6 +456,7 @@ def submit_order_with_preflight(
                 notional=preflight.notional,
                 cycle_id=cycle_id,
                 extra={"preflight": pf_dict},
+                source_module="execution.order_preflight.submit_order_with_preflight",
             )
         except Exception:
             logger.debug("[forensics_journal] broker-exception write failed", exc_info=True)
@@ -443,19 +469,46 @@ def submit_order_with_preflight(
 
     try:
         if not bool(getattr(result, "ok", True)):
-            from monitoring.order_forensics_journal import record_broker_rejection
+            if getattr(result, "broker_submit_attempted", True):
+                from monitoring.order_flow_labels import broker_submit_attempted_from_result
+                from monitoring.order_forensics_journal import record_broker_rejection
 
-            record_broker_rejection(
-                result=result,
-                symbol=preflight.symbol,
-                side=preflight.side,
-                asset_class=preflight.asset_class,
-                qty=preflight.qty,
-                notional=preflight.notional,
-                cycle_id=cycle_id,
-                extra={"preflight": pf_dict},
-            )
+                if broker_submit_attempted_from_result(result):
+                    if not hasattr(result, "broker_submit_attempted"):
+                        result.broker_submit_attempted = True
+                    record_broker_rejection(
+                        result=result,
+                        symbol=preflight.symbol,
+                        side=preflight.side,
+                        asset_class=preflight.asset_class,
+                        qty=preflight.qty,
+                        notional=preflight.notional,
+                        cycle_id=cycle_id,
+                        extra={"preflight": pf_dict},
+                        source_module="execution.order_preflight.submit_order_with_preflight",
+                    )
+                else:
+                    from monitoring.order_flow_labels import format_blocked_before_submit_human
+                    from monitoring.order_preflight_blocks_journal import record_preflight_block
+
+                    record_preflight_block(
+                        symbol=preflight.symbol,
+                        asset_class=preflight.asset_class,
+                        side=preflight.side,
+                        requested_qty=float(preflight.qty or 0.0),
+                        requested_notional=float(preflight.notional or 0.0),
+                        block_reason_code=str(getattr(result, "reason_code", "") or "PREFLIGHT_BLOCKED"),
+                        human_reason=format_blocked_before_submit_human(
+                            preflight.symbol,
+                            getattr(result, "reason_code", None),
+                            asset_class=preflight.asset_class,
+                        ),
+                        source_module="execution.order_preflight",
+                        preflight_step="post_submit_local_gate",
+                        evidence={"preflight": pf_dict, "result_message": getattr(result, "message", None)},
+                        cycle_id=cycle_id,
+                    )
     except Exception:
-        logger.debug("[forensics_journal] write failed", exc_info=True)
+        logger.debug("[order_flow_journal] write failed", exc_info=True)
 
     return result

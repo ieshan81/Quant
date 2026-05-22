@@ -400,15 +400,18 @@ def fetch_active_positions_for_sell_gate() -> list[dict[str, Any]]:
 
 
 def recent_short_block_rejection() -> bool:
-    """True if journal shows Alpaca short-block after broker-authority deploy window."""
+    """True if broker_order_rejections journal has a real Alpaca short-block (post-submit)."""
     try:
         from monitoring.order_forensics_journal import fetch_recent_rejections
 
         for row in fetch_recent_rejections(limit=20):
-            forensics = row.get("forensics") or {}
-            code = str(forensics.get("broker_error_code") or "")
-            msg = str(forensics.get("exact_reject_reason") or "").lower()
-            if code == SHORT_BLOCK_BROKER_CODE or "not allowed to short" in msg:
+            if row.get("broker_submit_attempted") is False:
+                continue
+            code = str(row.get("broker_error_code") or (row.get("forensics") or {}).get("broker_error_code") or "")
+            msg = str(row.get("exact_reject_reason") or "").lower()
+            if code == SHORT_BLOCK_BROKER_CODE or (
+                "not allowed to short" in msg and row.get("broker_response_body")
+            ):
                 if str(row.get("side") or "").lower() == "sell":
                     return True
     except Exception:

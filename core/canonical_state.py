@@ -467,41 +467,85 @@ def build_exit_state(
     stock_candidates = [e for e in exit_rows if str(e.get("asset_class") or "stock").lower() != "crypto"]
     crypto_candidates = [e for e in exit_rows if str(e.get("asset_class") or "").lower() == "crypto"]
 
+    from monitoring.order_flow_labels import (
+        format_blocked_before_submit_human,
+        format_broker_rejected_human,
+        is_preflight_block_reason,
+    )
+
+    blocked_before_submit: list[dict[str, Any]] = []
     broker_rejections: list[dict[str, Any]] = []
-    journal_rows: list[dict[str, Any]] = []
+    accepted_orders: list[dict[str, Any]] = []
+
+    try:
+        from monitoring.order_preflight_blocks_journal import fetch_recent_preflight_blocks
+
+        for pb in fetch_recent_preflight_blocks(limit=30):
+            blocked_before_submit.append(
+                {
+                    "symbol": pb.get("symbol"),
+                    "asset_class": pb.get("asset_class"),
+                    "side": pb.get("side"),
+                    "qty": pb.get("requested_qty"),
+                    "notional": pb.get("requested_notional"),
+                    "block_reason_code": pb.get("block_reason_code"),
+                    "human_reason": pb.get("human_reason"),
+                    "broker_submit_attempted": False,
+                    "order_attempted": True,
+                    "order_submitted": False,
+                    "ui_event_class": "safety-block",
+                    "source": "order_preflight_blocks_journal",
+                    "source_module": pb.get("source_module"),
+                    "preflight_step": pb.get("preflight_step"),
+                    "evidence_json": pb.get("evidence_json"),
+                    "ts": pb.get("created_at"),
+                }
+            )
+    except Exception:
+        pass
+
     try:
         from monitoring.order_forensics_journal import fetch_recent_rejections
 
-        journal_rows = fetch_recent_rejections(limit=30)
+        for jr in fetch_recent_rejections(limit=30):
+            forensics = jr.get("forensics") if isinstance(jr.get("forensics"), dict) else {}
+            sym = str(jr.get("symbol") or "")
+            broker_rejections.append(
+                {
+                    "symbol": sym,
+                    "asset_class": jr.get("asset_class"),
+                    "side": jr.get("side"),
+                    "qty": jr.get("qty"),
+                    "notional": jr.get("notional"),
+                    "order_attempted": True,
+                    "order_submitted": True,
+                    "broker_submit_attempted": True,
+                    "broker_response": jr.get("broker_response_body") or forensics.get("response_body"),
+                    "exact_reject_reason": jr.get("exact_reject_reason")
+                    or forensics.get("exact_reject_reason"),
+                    "broker_error_code": jr.get("broker_error_code")
+                    or forensics.get("broker_error_code"),
+                    "http_status": jr.get("broker_response_status") or forensics.get("http_status"),
+                    "human_reason": jr.get("human_reason")
+                    or format_broker_rejected_human(
+                        sym,
+                        broker_error_code=jr.get("broker_error_code"),
+                        exact_reject_reason=jr.get("exact_reject_reason"),
+                    ),
+                    "reason_code": jr.get("reason_code"),
+                    "order_payload": jr.get("order_payload"),
+                    "ui_event_class": "broker-reject",
+                    "next_action": "review_broker_response",
+                    "retry_allowed": bool(str(jr.get("reason_code") or "").startswith("PDT")),
+                    "risk_severity": "medium",
+                    "ts": jr.get("created_at") or jr.get("ts"),
+                    "source": "broker_order_rejections_journal",
+                    "source_module": jr.get("source_module"),
+                    "evidence_json": jr.get("evidence_json"),
+                }
+            )
     except Exception:
-        journal_rows = []
-    for jr in journal_rows:
-        forensics = jr.get("forensics") or {}
-        broker_rejections.append(
-            {
-                "symbol": jr.get("symbol"),
-                "asset_class": jr.get("asset_class"),
-                "side": jr.get("side"),
-                "qty": jr.get("qty"),
-                "notional": jr.get("notional"),
-                "order_attempted": True,
-                "order_submitted": False,
-                "broker_response": forensics.get("response_body"),
-                "exact_reject_reason": forensics.get("exact_reject_reason"),
-                "broker_error_code": forensics.get("broker_error_code"),
-                "http_status": forensics.get("http_status"),
-                "reason_code": jr.get("reason_code"),
-                "next_action": "review_broker_preflight",
-                "retry_allowed": bool(str(jr.get("reason_code") or "").startswith("PDT")),
-                "risk_severity": (
-                    "high"
-                    if not forensics.get("broker_error_code") and not forensics.get("response_body")
-                    else "medium"
-                ),
-                "ts": jr.get("ts"),
-                "source": "broker_rejections_journal",
-            }
-        )
+        pass
 
     try:
         from data.data_store import get_connection
@@ -510,37 +554,82 @@ def build_exit_state(
         with get_connection(config.DB_PATH, timeout_sec=2.0) as conn:
             decs = fetch_recent_execution_decisions(conn, limit=40)
         for d in decs:
-            if str(d.get("decision") or "").lower() != "rejected":
-                continue
-            if str(d.get("side") or "").lower() != "sell":
-                continue
+            side = str(d.get("side") or "").lower()
+            decision = str(d.get("decision") or "").lower()
             meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
             rc = str(d.get("reason_code") or "UNKNOWN")
-            enriched = {
-                "symbol": d.get("symbol"),
+            sym = str(d.get("symbol") or "")
+            if decision == "taken" and side in ("buy", "sell"):
+                accepted_orders.append(
+                    {
+                        "symbol": sym,
+                        "asset_class": d.get("asset_class"),
+                        "side": side,
+                        "qty": d.get("quantity"),
+                        "notional": d.get("notional"),
+                        "reason_code": rc,
+                        "broker_submit_attempted": True,
+                        "order_submitted": True,
+                        "ts": d.get("created_at"),
+                        "source": "execution_decisions",
+                    }
+                )
+                continue
+            if decision != "rejected" or side != "sell":
+                continue
+            base = {
+                "symbol": sym,
                 "asset_class": d.get("asset_class"),
                 "qty": d.get("quantity"),
                 "rule_triggered": meta.get("rule") or meta.get("exit_rule"),
                 "rule_name": meta.get("rule_name") or meta.get("automated_rule"),
                 "exit_allowed": meta.get("exit_allowed"),
                 "order_attempted": True,
-                "order_submitted": False,
-                "broker_response": meta.get("broker_response") or meta.get("alpaca_error"),
-                "exact_reject_reason": meta.get("exact_reject_reason")
-                or meta.get("reject_detail")
-                or meta.get("message"),
-                "http_status": meta.get("http_status") or meta.get("status_code"),
                 "reason_code": rc,
-                "next_action": meta.get("next_action") or "review_broker_preflight",
-                "retry_allowed": bool(meta.get("retry_allowed", rc.startswith("PDT"))),
-                "risk_severity": "high" if rc == "ALPACA_PAPER_ORDER_REJECTED" else "medium",
+                "ts": d.get("created_at"),
+                "source": "execution_decisions",
             }
-            if rc == "ALPACA_PAPER_ORDER_REJECTED" and not enriched["exact_reject_reason"]:
-                enriched["exact_reject_reason"] = (
-                    "missing_broker_detail_in_meta — log Alpaca exception body on reject"
+            if is_preflight_block_reason(rc) or meta.get("preflight"):
+                blocked_before_submit.append(
+                    {
+                        **base,
+                        "block_reason_code": rc,
+                        "broker_submit_attempted": False,
+                        "order_submitted": False,
+                        "human_reason": format_blocked_before_submit_human(
+                            sym, rc, asset_class=str(d.get("asset_class") or "stock")
+                        ),
+                        "ui_event_class": "safety-block",
+                    }
                 )
-                enriched["risk_severity"] = "high"
-            broker_rejections.append(enriched)
+            elif rc in ("ALPACA_PAPER_ORDER_REJECTED", "ALPACA_ORDER_REJECTED", "BROKER_EXCEPTION"):
+                exact = (
+                    meta.get("exact_reject_reason")
+                    or meta.get("reject_detail")
+                    or meta.get("message")
+                )
+                enriched = {
+                    **base,
+                    "broker_submit_attempted": True,
+                    "order_submitted": True,
+                    "broker_response": meta.get("broker_response") or meta.get("alpaca_error"),
+                    "exact_reject_reason": exact,
+                    "broker_error_code": meta.get("broker_error_code"),
+                    "http_status": meta.get("http_status") or meta.get("status_code"),
+                    "human_reason": format_broker_rejected_human(
+                        sym,
+                        broker_error_code=meta.get("broker_error_code"),
+                        exact_reject_reason=exact,
+                    ),
+                    "ui_event_class": "broker-reject",
+                    "risk_severity": "high" if not exact else "medium",
+                }
+                if rc == "ALPACA_PAPER_ORDER_REJECTED" and not enriched.get("exact_reject_reason"):
+                    enriched["exact_reject_reason"] = (
+                        "missing_broker_detail_in_meta — log Alpaca exception body on reject"
+                    )
+                    enriched["risk_severity"] = "high"
+                broker_rejections.append(enriched)
     except Exception:
         pass
 
@@ -582,26 +671,37 @@ def build_exit_state(
         if isinstance(pe, dict) and str(pe.get("symbol") or "").upper() in active_syms
     ]
 
-    human = f"{len(stock_candidates)} stock exit rows · {len(broker_rejections)} recent sell rejections"
+    human = (
+        f"{len(stock_candidates)} stock exit rows · "
+        f"{len(blocked_before_submit)} blocked before submit · "
+        f"{len(broker_rejections)} broker rejections"
+    )
     if stale_exit_signals:
         human += f" · {len(stale_exit_signals)} stale exit signals quarantined"
     if broker_rejections and not broker_rejections[0].get("exact_reject_reason"):
-        human += " — rejection detail incomplete"
+        human += " — broker rejection detail incomplete"
 
     return _envelope(
-        source="execution_health.position_exit_rows + execution_decisions",
+        source="execution_health.position_exit_rows + order_flow_journals",
         human_summary=human,
         reason_code="EXIT_STATE_OK",
         extra={
             "stock_exit_candidates": stock_candidates,
             "crypto_exit_candidates": crypto_candidates,
             "attempted_orders": [r for r in normalized_rows if r.get("order_attempted")],
+            "blocked_before_submit": blocked_before_submit,
             "broker_rejections": broker_rejections,
+            "accepted_orders": accepted_orders,
             "pending_exits": pending_exits,
             "stale_exit_signals": stale_exit_signals,
             "blocked_exits": [r for r in normalized_rows if not r.get("exit_allowed")],
             "completed_exits": [],
             "exit_rows": normalized_rows,
+            "blocked_vs_rejected_summary": {
+                "blocked_before_submit_count": len(blocked_before_submit),
+                "broker_rejections_count": len(broker_rejections),
+                "accepted_orders_count": len(accepted_orders),
+            },
         },
     )
 
@@ -817,6 +917,7 @@ def build_live_readiness_state(
         crypto_fast_loop_status=fast_loop_state or {},
     )
     arch_blockers: list[str] = []
+    live_evidence: dict[str, Any] = {}
     if position_state and (position_state.get("consistency_check") or {}).get("status") == "failed":
         arch_blockers.append("position_exit_row_mismatch")
     if weights_audit and (weights_audit.get("unwired_count") or 0) > 0:
@@ -832,16 +933,25 @@ def build_live_readiness_state(
             if isinstance(r, dict) and "missing_broker_detail" in str(r.get("exact_reject_reason") or ""):
                 arch_blockers.append("alpaca_rejection_meta_missing")
                 break
-        stale_exits = exit_state.get("stale_exit_signals") or []
-        if stale_exits:
-            arch_blockers.append("sell_preflight_broker_authority_required")
         try:
             from core.broker_sell_authority import recent_short_block_rejection
 
             if recent_short_block_rejection():
-                arch_blockers.append("sell_preflight_broker_authority_required")
+                arch_blockers.append("unresolved_broker_rejection")
         except Exception:
             pass
+        blocked = exit_state.get("blocked_before_submit") or []
+        sell_blocks = [
+            b
+            for b in blocked
+            if str(b.get("block_reason_code") or b.get("reason_code") or "").startswith("SELL_BLOCKED_")
+        ]
+        if sell_blocks:
+            live_evidence["sell_authority_gate_working"] = True
+        stale_exits = exit_state.get("stale_exit_signals") or []
+        if stale_exits:
+            arch_blockers.append("stale_exit_signals_quarantined")
+            live_evidence["stale_exit_signals_quarantined"] = len(stale_exits)
     if fast_loop_state:
         if fast_loop_state.get("execution_mode") == "observe_only":
             arch_blockers.append("fast_loop_observe_only")
@@ -861,11 +971,12 @@ def build_live_readiness_state(
         source="monitoring.live_readiness.build_live_readiness",
         human_summary=str(lr.get("note") or "")[:300],
         reason_code=str(lr.get("status") or "blocked"),
-        extra={**lr, "architecture_blockers": arch_blockers},
+        extra={**lr, "architecture_blockers": arch_blockers, "live_evidence": live_evidence},
         machine_evidence={
             "automated_checks": lr.get("failed_checks") or [],
             "architecture_blockers": arch_blockers,
             "live_allowed": lr.get("live_allowed"),
+            **live_evidence,
         },
     )
 
