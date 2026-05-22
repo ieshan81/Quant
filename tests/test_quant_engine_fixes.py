@@ -61,6 +61,24 @@ def test_canonical_no_trade_reason_low_coverage() -> None:
     assert reason["reason_code"] == "CRYPTO_SCAN_COVERAGE_LOW"
 
 
+def test_canonical_no_trade_reason_api_fallback_defers_to_dec() -> None:
+    from monitoring.mission_control_api import _canonical_no_trade_reason
+
+    reason = _canonical_no_trade_reason(
+        crypto_diag={
+            "api_fallback": True,
+            "symbols_scanned_this_cycle": 1,
+            "universe_count": 36,
+            "top_candidates": [{"symbol": "BTC/USD", "score": 0.5}],
+        },
+        crypto_dec={"reason_code": "RECOVERY_BLOCK_NEW_BUYS", "human_reason": "Recovery gate active"},
+        recon_clean=True,
+        recovery_block=False,
+    )
+    assert reason["reason_code"] == "RECOVERY_BLOCK_NEW_BUYS"
+    assert reason["api_fallback"] is True
+
+
 def test_canonical_no_trade_reason_no_symbols() -> None:
     from monitoring.mission_control_api import _canonical_no_trade_reason
 

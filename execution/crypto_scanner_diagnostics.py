@@ -100,8 +100,11 @@ def build_crypto_scanner_diagnostics_from_cycle(
     best_score = float(sorted_crypto_scores[0][1]) if sorted_crypto_scores else None
 
     if gate.get("heavy_scan_skipped"):
+        # Worker-side scan gate already explains why scanning was skipped — use that
+        # reason verbatim so MC/simple-status do not report misleading coverage-low.
         final_code = str(gate.get("skip_reason_code") or "SCANNER_SKIPPED")
         human = str(gate.get("saved_cpu_reason") or "Crypto scanner skipped this cycle.")
+        symbols_scanned = 0
     elif not sorted_crypto_scores:
         final_code = "NO_CRYPTO_CANDIDATES"
         human = "No crypto symbols were scored this cycle (empty scan or all errors)."

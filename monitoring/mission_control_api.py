@@ -151,6 +151,7 @@ def _canonical_no_trade_reason(
     """Single, current-cycle no-trade reason. Stale mismatch must NOT override."""
     diag = crypto_diag or {}
     dec = crypto_dec or {}
+    api_fallback = bool(diag.get("api_fallback"))
     scanned = int(diag.get("symbols_scanned_this_cycle") or 0)
     scored = int(diag.get("scored_count") or 0)
     universe = int(diag.get("universe_count") or 0)
@@ -159,6 +160,24 @@ def _canonical_no_trade_reason(
     best = top[0] if top else None
     code = "NO_SIGNAL"
     human = "Awaiting fresh worker cycle."
+    if api_fallback:
+        # API fallback path's scanned/universe numbers reflect the heartbeat's
+        # last-evaluated symbol, NOT real scan coverage. Defer to the upstream
+        # reason code so we never claim coverage-low based on synthetic data.
+        rc = str(dec.get("reason_code") or diag.get("final_reason_code") or "NO_SIGNAL")
+        hr = str(dec.get("human_reason") or diag.get("human_reason") or "Awaiting fresh worker cycle for full scanner breakdown.")
+        return {
+            "reason_code": rc,
+            "human_reason": hr[:240],
+            "scanned": scanned,
+            "scored": scored,
+            "universe": universe,
+            "best_symbol": (best or {}).get("symbol") if best else None,
+            "best_score": (best or {}).get("score") if best else None,
+            "threshold": float(th),
+            "api_fallback": True,
+            "note": "API fallback reason — real coverage will appear after next worker cycle writes diagnostics.",
+        }
     if recovery_block:
         code = "RECOVERY_BLOCK_NEW_BUYS"
         human = "Recovery gate blocks new buys."
