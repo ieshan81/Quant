@@ -10,6 +10,50 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def build_operator_momo_headline(
+    canonical_truth: dict[str, Any],
+    *,
+    fast_loop_status: dict[str, Any] | None = None,
+) -> str:
+    """Current-state Momo top note — no stale crypto-disabled warnings when positions are open."""
+    ct = canonical_truth or {}
+    cfl = fast_loop_status or ct.get("fast_loop_state") or {}
+    pos = ct.get("position_state") or {}
+    crypto = ct.get("crypto_state") or {}
+    rows = pos.get("operator_visible_positions") or pos.get("open_positions") or []
+    crypto_pos = [
+        p
+        for p in rows
+        if isinstance(p, dict) and str(p.get("asset_class") or "").lower() in ("crypto", "digital")
+    ]
+    lines: list[str] = []
+    if crypto_pos:
+        syms = ", ".join(
+            sorted({str(p.get("symbol") or "").upper() for p in crypto_pos if p.get("symbol")})[:5]
+        )
+        lines.append(f"Crypto positions are open and monitored ({syms}).")
+    if cfl.get("execution_mode") == "observe_only" or not cfl.get("execute_orders", True):
+        lines.append("Fast loop execution is observe-only.")
+    blocker = (
+        cfl.get("ui_push_blocker")
+        or (cfl.get("push_execution_state") or {}).get("reason")
+        or cfl.get("exact_push_blocker")
+        or (crypto.get("push") or {}).get("reason_code")
+    )
+    blocker_s = str(blocker or "").strip().upper()
+    if blocker_s and blocker_s not in ("CRYPTO_PUSH_ALLOWED", "OK", ""):
+        lines.append(f"New crypto push blocked: {blocker_s.replace('_', ' ').lower()}.")
+    pull = crypto.get("pull") or {}
+    if pull.get("status") in ("can_sell", "ready") or pull.get("can_sell"):
+        sym = pull.get("symbol") or (crypto_pos[0].get("symbol") if crypto_pos else "")
+        if sym:
+            lines.append(f"Pull can sell {sym} when exit signal triggers.")
+    if lines:
+        return " ".join(lines)[:320]
+    acct = ct.get("account_state") or {}
+    return str(acct.get("human_summary") or "Paper runtime nominal — no critical blockers.")[:320]
+
+
 def build_quant_risk_memo(canonical_truth: dict[str, Any]) -> dict[str, Any]:
     """
     Operator-facing quant risk memo derived only from canonical_truth.

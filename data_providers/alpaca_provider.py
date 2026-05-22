@@ -89,7 +89,13 @@ def parse_broker_exception(exc: Exception) -> dict[str, Any]:
         except Exception:
             pass
     msg = out["message"].lower()
-    if "insufficient" in msg and "buying power" in msg:
+    if "insufficient balance for usd" in msg or (
+        "insufficient" in msg and "balance" in msg and "usd" in msg
+    ):
+        out["broker_error_code"] = out["broker_error_code"] or "BROKER_REJECT_INSUFFICIENT_USD_BALANCE"
+    elif "not allowed to short" in msg:
+        out["broker_error_code"] = out["broker_error_code"] or "BROKER_REJECT_SHORT_NOT_ALLOWED"
+    elif "insufficient" in msg and "buying power" in msg:
         out["broker_error_code"] = out["broker_error_code"] or "INSUFFICIENT_BUYING_POWER"
     elif "market is closed" in msg or "market_closed" in msg:
         out["broker_error_code"] = out["broker_error_code"] or "MARKET_CLOSED"
