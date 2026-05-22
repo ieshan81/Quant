@@ -2114,15 +2114,18 @@
   // Tabs — URL hash is source of truth; default Overview (no persistence).
   // ---------------------------------------------------------------------------
 
+  var VALID_TAB_NAMES = ["mission", "overview", "positions", "activity", "backtest", "ai", "ops", "files", "config"];
+
   function tabNameFromHash() {
     var raw = (typeof location !== "undefined" && location.hash) ? String(location.hash) : "";
     var h = raw.replace(/^#/, "").trim().toLowerCase();
-    var valid = ["mission", "overview", "positions", "activity", "backtest", "ai", "ops", "files", "config"];
-    if (valid.indexOf(h) >= 0) return h;
-    return "mission";
+    if (!h || h === "null" || h === "undefined") return "overview";
+    if (VALID_TAB_NAMES.indexOf(h) >= 0) return h;
+    return "overview";
   }
 
   function syncHashToTab(name) {
+    if (!name || VALID_TAB_NAMES.indexOf(name) < 0) return;
     try {
       if (typeof history !== "undefined" && history.replaceState) {
         var base = location.pathname + (location.search || "");
@@ -2138,9 +2141,10 @@
   }
 
   function bindTabs() {
-    var tabs = document.querySelectorAll(".tab-btn");
+    var tabs = document.querySelectorAll(".sidebar-nav .tab-btn[data-tab]");
     var panels = document.querySelectorAll(".tab-panel");
     function show(name) {
+      if (!name || VALID_TAB_NAMES.indexOf(name) < 0) return;
       var i;
       setActiveTabHeader(name);
       for (i = 0; i < tabs.length; i++) {
@@ -4634,8 +4638,8 @@
     var b3 = document.getElementById("btnMcResetRuntimeLogs");
     var b4 = document.getElementById("btnMcResetMomoMemory");
     if (b1) b1.addEventListener("click", backup);
-    if (b2) b2.addEventListener("click", function () { postReset(false); });
-    if (b3) b3.addEventListener("click", function () { postReset(true); });
+    if (b2) b2.addEventListener("click", function (ev) { if (ev) ev.stopPropagation(); postReset(false); });
+    if (b3) b3.addEventListener("click", function (ev) { if (ev) ev.stopPropagation(); postReset(true); });
     if (b4) b4.addEventListener("click", function () {
       if (!window.confirm("Delete ALL Momo memory? Type RESET MOMO MEMORY in next prompt.")) return;
       var c = window.prompt("Type RESET MOMO MEMORY:");
@@ -4652,8 +4656,11 @@
     ["btnOpsBackup", "btnOpsResetRuntime", "btnFilesBackup", "btnFilesResetRuntime"].forEach(function (id) {
       var btn = document.getElementById(id);
       if (!btn) return;
-      if (id.indexOf("Backup") >= 0) btn.addEventListener("click", backup);
-      else btn.addEventListener("click", function () { postReset(false); });
+      if (id.indexOf("Backup") >= 0) {
+        btn.addEventListener("click", function (ev) { if (ev) ev.stopPropagation(); backup(); });
+      } else {
+        btn.addEventListener("click", function (ev) { if (ev) ev.stopPropagation(); postReset(false); });
+      }
     });
   }
 
