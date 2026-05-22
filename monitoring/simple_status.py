@@ -170,6 +170,41 @@ def build_simple_worker_status() -> dict[str, Any]:
     except Exception:
         pass
 
+    canonical_truth_summary: dict[str, Any] = {}
+    try:
+        from core.canonical_state import build_account_state, build_fast_loop_state
+
+        _as = build_account_state(live_broker=False)
+        _fl = build_fast_loop_state()
+        canonical_truth_summary = {
+            "generated_at": _now_iso(),
+            "account_state": {
+                "equity": _as.get("equity"),
+                "cash": _as.get("cash"),
+                "buying_power": _as.get("buying_power"),
+                "source": _as.get("primary_source"),
+                "human_summary": _as.get("human_summary"),
+            },
+            "fast_loop_state": {
+                "execution_mode": _fl.get("execution_mode"),
+                "ui_label": _fl.get("ui_label"),
+                "scan_enabled": _fl.get("scan_enabled"),
+                "execution_enabled": _fl.get("execution_enabled"),
+                "human_summary": _fl.get("human_summary"),
+            },
+            "note": (
+                "Full canonical_truth on Mission Control and GPT bundle; "
+                "capital/position consistency requires full build_canonical_state()."
+            ),
+        }
+        if bp < 1.0:
+            canonical_truth_summary["capital_alert"] = (
+                "Buying power near zero — open GPT bundle canonical_truth.capital_state "
+                "for stock/crypto sleeve and deployment breakdown."
+            )
+    except Exception:
+        canonical_truth_summary = {}
+
     return {
         "ok": True,
         "fallback": True,
@@ -252,4 +287,5 @@ def build_simple_worker_status() -> dict[str, Any]:
             if crypto_scanner_summary
             else {}
         ),
+        "canonical_truth_summary": canonical_truth_summary,
     }

@@ -1,0 +1,916 @@
+"""
+Canonical domain state — single truth layer for worker, MC, bundle, fast loop, Momo.
+
+Reporting-only consolidation: does not submit orders or change risk gates.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any
+
+import config
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _envelope(
+    *,
+    source: str,
+    human_summary: str,
+    reason_code: str = "OK",
+    freshness: str = "fresh",
+    degraded: bool = False,
+    fallback: bool = False,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "generated_at": _now(),
+        "source": source,
+        "freshness": freshness,
+        "degraded": degraded,
+        "fallback": fallback,
+        "human_summary": human_summary[:400],
+        "reason_code": reason_code,
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+def _f(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def build_account_state(*, live_broker: bool = False) -> dict[str, Any]:
+    from monitoring.canonical_account import resolve_canonical_account_metrics
+
+    acct = resolve_canonical_account_metrics(live_broker=live_broker)
+    src = str(acct.get("primary_source") or "none")
+    bp = _f(acct.get("buying_power"))
+    return _envelope(
+        source="monitoring.canonical_account.resolve_canonical_account_metrics",
+        human_summary=(
+            f"Equity ${_f(acct.get('equity')):,.2f} · Cash ${_f(acct.get('cash')):,.2f} · "
+            f"BP ${bp:,.2f} ({src})"
+        ),
+        reason_code="OK" if bp >= 0 else "ACCOUNT_UNKNOWN",
+        freshness="fresh" if src != "none" else "degraded",
+        degraded=src == "none",
+        extra={
+            "equity": round(_f(acct.get("equity")), 2),
+            "cash": round(_f(acct.get("cash")), 2),
+            "buying_power": round(bp, 2),
+            "account_mode": str(config.MODE),
+            "broker_timestamp": _now() if live_broker else None,
+            "sources": acct.get("sources") or [],
+            "primary_source": src,
+        },
+    )
+
+
+def build_capital_state(
+    account_state: dict[str, Any],
+    position_state: dict[str, Any],
+    *,
+    mission_summary: dict[str, Any] | None = None,
+    fast_loop_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ms = mission_summary or {}
+    eq = _f(account_state.get("equity"))
+    cash = _f(account_state.get("cash"))
+    bp = _f(account_state.get("buying_power"))
+    stock_mv = _f(position_state.get("stock_market_value"))
+    crypto_mv = _f(position_state.get("crypto_market_value"))
+    deployed = max(0.0, eq - cash) if eq > 0 else stock_mv + crypto_mv
+    deployment_pct = round((deployed / eq * 100.0), 2) if eq > 1e-6 else 0.0
+
+    emergency_reserve = 0.0
+    crypto_sleeve_target = 0.0
+    stock_sleeve_target = 0.0
+    fast_loop_reserve = 0.0
+    why_unavailable: list[str] = []
+    capital_lock_reason: str | None = None
+
+    cp = ms.get("capital_protection") or {}
+    alloc = cp.get("allocator") or {}
+    if alloc:
+        stock_sleeve_target = _f(alloc.get("target_stock_pct") or alloc.get("stock_target_pct"))
+        crypto_sleeve_target = _f(alloc.get("target_crypto_pct") or alloc.get("target_crypto_pct"))
+
+    rt: dict[str, Any] = {}
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+        from execution.crypto_night_session import compute_crypto_night_reserve
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
+        night = compute_crypto_night_reserve(
+            equity=eq,
+            cash=cash,
+            rt=rt,
+        )
+        if hasattr(night, "target_reserve_usd"):
+            emergency_reserve = _f(night.target_reserve_usd)
+        elif hasattr(night, "to_dict"):
+            nd = night.to_dict()
+            emergency_reserve = _f(nd.get("target_reserve_usd") or nd.get("reserve_required"))
+        else:
+            emergency_reserve = _f(getattr(night, "reserve_required", 0))
+    except Exception:
+        emergency_reserve = max(0.0, eq * 0.15) if eq > 0 else 0.0
+
+    try:
+        from execution.trading_constants import cfg_float
+
+        fast_loop_reserve = cfg_float(rt, "crypto_fast_loop_min_reserve_usd", 5.0)
+    except Exception:
+        fast_loop_reserve = 5.0
+
+    fl = fast_loop_state or {}
+    fl_enabled = bool(fl.get("enabled"))
+    fl_execute = bool(fl.get("execution_enabled"))
+
+    available_after_reserve = max(0.0, bp - emergency_reserve)
+    stock_available = max(0.0, cash - crypto_mv * 0.0)  # cash already net of positions in Alpaca
+    crypto_available = max(0.0, available_after_reserve - fast_loop_reserve) if fl_enabled else available_after_reserve
+
+    if bp < 1.0:
+        if stock_mv > eq * 0.5:
+            why_unavailable.append("stock_positions_consumed_buying_power")
+        if crypto_mv > 0 and crypto_available < 1.0:
+            why_unavailable.append("crypto_sleeve_unavailable_after_stock_deployment")
+        if emergency_reserve >= bp:
+            why_unavailable.append("emergency_reserve_consumes_remaining_bp")
+        if deployment_pct > 95:
+            why_unavailable.append("capital_fully_deployed_into_positions")
+        if fl_enabled and not fl_execute:
+            why_unavailable.append("fast_loop_observe_only_no_execution_budget")
+        if not why_unavailable:
+            why_unavailable.append("buying_power_near_zero_check_broker_and_positions")
+
+    if bp < 1.0 and stock_mv > crypto_mv:
+        capital_lock_reason = "STOCK_DEPLOYMENT_PRIORITY"
+    elif bp < 1.0 and fl_enabled:
+        capital_lock_reason = "FAST_LOOP_RESERVE_AND_OBSERVE_ONLY"
+
+    human = (
+        f"Deployed {deployment_pct:.1f}% · BP ${bp:,.2f} · reserve ${emergency_reserve:,.2f} · "
+        f"after reserve ${available_after_reserve:,.2f}"
+    )
+    if why_unavailable:
+        human += f" — {'; '.join(why_unavailable[:3])}"
+
+    return _envelope(
+        source="core.canonical_state.build_capital_state",
+        human_summary=human,
+        reason_code=capital_lock_reason or ("CAPITAL_OK" if bp >= 1.0 else "CAPITAL_DEPLOYED"),
+        extra={
+            "total_equity": round(eq, 2),
+            "total_cash": round(cash, 2),
+            "buying_power": round(bp, 2),
+            "stock_market_value": round(stock_mv, 2),
+            "crypto_market_value": round(crypto_mv, 2),
+            "emergency_reserve": round(emergency_reserve, 2),
+            "stock_sleeve_target": stock_sleeve_target,
+            "crypto_sleeve_target": crypto_sleeve_target,
+            "fast_loop_reserve": round(fast_loop_reserve, 2),
+            "stock_available_cash": round(stock_available, 2),
+            "crypto_available_cash": round(crypto_available, 2),
+            "fast_loop_available_cash": round(crypto_available if fl_enabled else 0.0, 2),
+            "available_after_reserve": round(available_after_reserve, 2),
+            "why_cash_unavailable": why_unavailable,
+            "capital_deployment_pct": deployment_pct,
+            "capital_lock_reason": capital_lock_reason,
+            "fast_loop_enabled": fl_enabled,
+            "fast_loop_execution_enabled": fl_execute,
+        },
+    )
+
+
+def _load_positions_bundle() -> dict[str, Any]:
+    try:
+        from core.canonical_positions import fetch_positions_bundle
+        from data.data_store import get_connection
+        from execution import stock_broker
+
+        cli = stock_broker.get_rest_client()
+        with get_connection(config.DB_PATH, timeout_sec=2.5) as conn:
+            return fetch_positions_bundle(rest_client=cli, conn=conn, timeout_sec=2.5)
+    except Exception as exc:
+        return {"error": str(exc)[:120], "open_positions": [], "local_stale_rows": []}
+
+
+def build_position_state(
+    *,
+    mission_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ms = mission_summary or {}
+    bundle = _load_positions_bundle()
+    open_raw = list(bundle.get("open_positions") or [])
+    stale = list(bundle.get("local_stale_rows") or [])
+    synthetic = list(bundle.get("synthetic_double_count_rows") or [])
+
+    exit_rows: list[dict[str, Any]] = []
+    try:
+        from data.data_store import get_connection
+        from monitoring.dashboard_data import fetch_latest_execution_health
+
+        with get_connection(config.DB_PATH, timeout_sec=2.0) as conn:
+            eh = fetch_latest_execution_health(conn) or {}
+            exit_rows = list(eh.get("position_exit_rows") or [])
+    except Exception:
+        exit_rows = list(ms.get("position_exit_rows") or [])
+
+    rt = None
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt = load_runtime_config_for_worker(config.DB_PATH)
+    except Exception:
+        pass
+
+    from core.position_truth import apply_operator_position_filter, build_position_truth_audit
+
+    visible, quarantined = apply_operator_position_filter(open_raw, config_rt=rt)
+    audit = build_position_truth_audit(
+        broker_positions=visible,
+        local_stale_rows=stale,
+        synthetic_rows=synthetic,
+        exit_rows=exit_rows,
+        config_rt=rt,
+    )
+    operator_exits = list(audit.get("operator_exit_rows") or [])
+    active = list(audit.get("active_positions") or visible)
+
+    stock_pos = [p for p in active if str(p.get("asset_class") or "").lower() != "crypto"]
+    crypto_pos = [p for p in active if str(p.get("asset_class") or "").lower() == "crypto"]
+
+    stock_mv = sum(_f(p.get("market_value")) for p in stock_pos)
+    crypto_mv = sum(_f(p.get("market_value")) for p in crypto_pos)
+
+    active_syms = {
+        str(p.get("canonical_symbol") or p.get("symbol") or "").upper()
+        for p in active
+        if str(p.get("canonical_symbol") or p.get("symbol"))
+    }
+    exit_syms = {
+        str(e.get("canonical_symbol") or e.get("symbol") or "").upper()
+        for e in operator_exits
+        if str(e.get("canonical_symbol") or e.get("symbol"))
+    }
+    orphan_exits = sorted(exit_syms - active_syms)
+    consistency_ok = len(orphan_exits) == 0
+    consistency_reason = (
+        "operator_exit_rows align with active_positions"
+        if consistency_ok
+        else f"exit rows without active position: {', '.join(orphan_exits[:5])}"
+    )
+
+    return _envelope(
+        source="core.canonical_positions + core.position_truth",
+        human_summary=(
+            f"{len(active)} active ({len(stock_pos)} stock, {len(crypto_pos)} crypto) · "
+            f"{len(stale)} stale quarantined · consistency {'ok' if consistency_ok else 'FAILED'}"
+        ),
+        reason_code="POSITION_CONSISTENT" if consistency_ok else "POSITION_EXIT_MISMATCH",
+        extra={
+            "broker_authoritative": True,
+            "active_positions": active,
+            "stock_positions": stock_pos,
+            "crypto_positions": crypto_pos,
+            "dust_positions": audit.get("dust_positions") or [],
+            "stale_local_rows": stale,
+            "synthetic_rows": synthetic,
+            "active_mismatches": audit.get("active_mismatches") or [],
+            "historical_mismatches": audit.get("historical_mismatches") or [],
+            "operator_visible_positions": visible,
+            "audit_only_positions": quarantined,
+            "operator_exit_rows": operator_exits,
+            "stock_market_value": round(stock_mv, 2),
+            "crypto_market_value": round(crypto_mv, 2),
+            "consistency_check": {
+                "status": "ok" if consistency_ok else "failed",
+                "orphan_exit_symbols": orphan_exits,
+                "reason": consistency_reason,
+            },
+            "counts": audit.get("counts") or {},
+        },
+    )
+
+
+def build_fast_loop_state() -> dict[str, Any]:
+    try:
+        from execution.crypto_fast_loop import _finalize_status_readout, get_crypto_fast_loop_status
+
+        raw = _finalize_status_readout(get_crypto_fast_loop_status())
+    except Exception as exc:
+        return _envelope(
+            source="execution.crypto_fast_loop",
+            human_summary=f"Fast loop unavailable: {exc}"[:200],
+            reason_code="FAST_LOOP_ERROR",
+            degraded=True,
+            extra={"enabled": False},
+        )
+    scored = int(raw.get("scored_count") or 0)
+    scanned = int(raw.get("symbols_scanned") or 0)
+    why_zero = []
+    if scanned > 0 and scored == 0:
+        why_zero.append("batch_scores_below_threshold_or_no_signal")
+        if not raw.get("top_candidates"):
+            why_zero.append("no_candidates_in_current_batch")
+    mode = str(raw.get("execution_mode") or "off")
+    return _envelope(
+        source="execution.crypto_fast_loop.get_crypto_fast_loop_status",
+        human_summary=str(raw.get("note") or raw.get("ui_label") or "Fast loop"),
+        reason_code=str(raw.get("exact_push_blocker") or "OK"),
+        extra={
+            **raw,
+            "why_scored_count_zero": why_zero,
+            "current_truth_source": "persist/crypto_fast_loop_status.json",
+        },
+    )
+
+
+def build_crypto_state(
+    *,
+    mission_summary: dict[str, Any] | None = None,
+    crypto_decision: dict[str, Any] | None = None,
+    position_state: dict[str, Any] | None = None,
+    fast_loop_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ms = mission_summary or {}
+    dec = crypto_decision or {}
+    pos = position_state or {}
+    fl = fast_loop_state or {}
+
+    crypto_positions = pos.get("crypto_positions") or []
+    open_crypto = [
+        str(p.get("canonical_symbol") or p.get("symbol"))
+        for p in crypto_positions
+        if str(p.get("canonical_symbol") or p.get("symbol"))
+    ]
+
+    session = ms.get("crypto_push_pull_session") or {}
+    if not session and dec:
+        session = dec.get("crypto_session") or {}
+    if not session:
+        try:
+            from core.position_truth import push_decision_from_canonical
+            from execution.crypto_push_pull_status import build_crypto_session_status
+
+            canon = ms.get("canonical_no_trade_reason") or {}
+            push_dec = push_decision_from_canonical(canon, executor=dec)
+            session = build_crypto_session_status(
+                push_dec,
+                positions=crypto_positions or pos.get("active_positions"),
+                canonical_reason=canon,
+            )
+        except Exception:
+            session = {}
+
+    push = dict(session.get("crypto_push") or {})
+    pull = dict(session.get("crypto_pull") or {})
+
+    fl_execute = bool(fl.get("execution_enabled"))
+    fl_scan = bool(fl.get("scan_enabled"))
+    push_allowed = bool(dec.get("push_allowed") or push.get("push_allowed"))
+    main_status = "ready" if push_allowed else str(push.get("status") or "blocked")
+    if push_allowed and not fl_execute and bool(fl.get("enabled")):
+        main_status = "observe_only"
+        push = {
+            **push,
+            "status": "observe_only",
+            "execution_enabled": False,
+            "human_reason": (
+                "Main/crypto signal may be allowed; fast-loop execution disabled "
+                "(crypto_fast_loop_execute_orders=0)."
+            ),
+        }
+
+    diag = ms.get("crypto_scanner_diagnostics") or {}
+    main_scanner = {
+        "symbols_scanned": int(diag.get("symbols_scanned_this_cycle") or 0),
+        "scored_count": int(diag.get("scored_count") or 0),
+        "universe_count": int(diag.get("universe_count") or 0),
+        "top_candidates": diag.get("top_candidates") or [],
+        "source": "execution.crypto_scanner_diagnostics",
+        "api_fallback": bool(diag.get("api_fallback")),
+    }
+
+    canon = ms.get("canonical_no_trade_reason") or {}
+    return _envelope(
+        source="core.canonical_state.build_crypto_state",
+        human_summary=str(push.get("headline") or pull.get("headline") or dec.get("human_reason") or "Crypto state"),
+        reason_code=str(push.get("reason_code") or dec.get("reason_code") or "NO_SIGNAL"),
+        extra={
+            "current_truth_source": "canonical_state.crypto_state",
+            "main_scanner": main_scanner,
+            "fast_loop": {
+                "scan_enabled": fl_scan,
+                "execution_enabled": fl_execute,
+                "execution_mode": fl.get("execution_mode"),
+                "symbols_scanned": fl.get("symbols_scanned"),
+                "scored_count": fl.get("scored_count"),
+                "why_scored_count_zero": fl.get("why_scored_count_zero") or [],
+                "batch_index": fl.get("batch_index"),
+                "batch_count": fl.get("batch_count"),
+            },
+            "push": {
+                "status": main_status,
+                "candidate_symbol": push.get("candidate_symbol") or dec.get("best_candidate_symbol"),
+                "candidate_score": canon.get("best_score") or dec.get("best_candidate_score"),
+                "threshold": canon.get("threshold"),
+                "candidates_above_threshold": diag.get("candidates_above_threshold"),
+                "exact_blocker": push.get("reason_code") or dec.get("reason_code"),
+                "order_attempted": bool(dec.get("order_attempted")),
+                "order_submitted": bool(dec.get("order_submitted")),
+                "execution_enabled": fl_execute,
+                "human_reason": push.get("human_reason") or dec.get("human_reason"),
+            },
+            "pull": {
+                "status": pull.get("status") or ("no_position" if not open_crypto else "monitoring"),
+                "open_crypto_positions": open_crypto,
+                "exact_blocker": pull.get("reason_code"),
+                "human_reason": pull.get("human_reason"),
+            },
+            "active_crypto_positions": open_crypto,
+            "candidate_state": canon,
+            "execution_state": {
+                "main_worker_orders": bool(dec.get("order_submitted")),
+                "fast_loop_orders": fl_execute,
+                "mode": fl.get("execution_mode") or "off",
+            },
+            "blockers": list(dec.get("blockers") or []),
+            "exact_reason": str(canon.get("reason_code") or dec.get("reason_code") or ""),
+        },
+    )
+
+
+def build_exit_state(
+    *,
+    mission_summary: dict[str, Any] | None = None,
+    position_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ms = mission_summary or {}
+    pos = position_state or {}
+    exit_rows = list(pos.get("operator_exit_rows") or ms.get("position_exit_rows") or [])
+
+    stock_candidates = [e for e in exit_rows if str(e.get("asset_class") or "stock").lower() != "crypto"]
+    crypto_candidates = [e for e in exit_rows if str(e.get("asset_class") or "").lower() == "crypto"]
+
+    broker_rejections: list[dict[str, Any]] = []
+    try:
+        from data.data_store import get_connection
+        from monitoring.dashboard_data import fetch_recent_execution_decisions
+
+        with get_connection(config.DB_PATH, timeout_sec=2.0) as conn:
+            decs = fetch_recent_execution_decisions(conn, limit=40)
+        for d in decs:
+            if str(d.get("decision") or "").lower() != "rejected":
+                continue
+            if str(d.get("side") or "").lower() != "sell":
+                continue
+            meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+            rc = str(d.get("reason_code") or "UNKNOWN")
+            enriched = {
+                "symbol": d.get("symbol"),
+                "asset_class": d.get("asset_class"),
+                "qty": d.get("quantity"),
+                "rule_triggered": meta.get("rule") or meta.get("exit_rule"),
+                "rule_name": meta.get("rule_name") or meta.get("automated_rule"),
+                "exit_allowed": meta.get("exit_allowed"),
+                "order_attempted": True,
+                "order_submitted": False,
+                "broker_response": meta.get("broker_response") or meta.get("alpaca_error"),
+                "exact_reject_reason": meta.get("exact_reject_reason")
+                or meta.get("reject_detail")
+                or meta.get("message"),
+                "http_status": meta.get("http_status") or meta.get("status_code"),
+                "reason_code": rc,
+                "next_action": meta.get("next_action") or "review_broker_preflight",
+                "retry_allowed": bool(meta.get("retry_allowed", rc.startswith("PDT"))),
+                "risk_severity": "high" if rc == "ALPACA_PAPER_ORDER_REJECTED" else "medium",
+            }
+            if rc == "ALPACA_PAPER_ORDER_REJECTED" and not enriched["exact_reject_reason"]:
+                enriched["exact_reject_reason"] = (
+                    "missing_broker_detail_in_meta — log Alpaca exception body on reject"
+                )
+                enriched["risk_severity"] = "high"
+            broker_rejections.append(enriched)
+    except Exception:
+        pass
+
+    normalized_rows: list[dict[str, Any]] = []
+    for er in exit_rows:
+        if not isinstance(er, dict):
+            continue
+        sym = str(er.get("symbol") or "")
+        rc = str(er.get("reason_code") or er.get("exit_reason") or "")
+        normalized_rows.append({
+            "symbol": sym,
+            "asset_class": er.get("asset_class"),
+            "qty": er.get("qty") or er.get("broker_qty"),
+            "rule_triggered": er.get("automated_rule") or er.get("exit_reason"),
+            "rule_name": er.get("rotation_eval", {}).get("automated_rule")
+            if isinstance(er.get("rotation_eval"), dict)
+            else None,
+            "exit_allowed": er.get("exit_allowed", True),
+            "order_attempted": bool(er.get("order_attempted") or er.get("sell_submitted")),
+            "order_submitted": bool(er.get("order_submitted") or er.get("sell_filled")),
+            "broker_response": er.get("broker_response"),
+            "exact_reject_reason": er.get("reject_reason") or rc,
+            "next_action": er.get("next_action") or "monitor",
+            "retry_allowed": bool(er.get("retry_allowed", False)),
+            "risk_severity": er.get("risk_severity") or "info",
+            "classification_reason": er.get("position_truth", {}).get("diagnostic_reason"),
+        })
+
+    human = f"{len(stock_candidates)} stock exit rows · {len(broker_rejections)} recent sell rejections"
+    if broker_rejections and not broker_rejections[0].get("exact_reject_reason"):
+        human += " — rejection detail incomplete"
+
+    return _envelope(
+        source="execution_health.position_exit_rows + execution_decisions",
+        human_summary=human,
+        reason_code="EXIT_STATE_OK",
+        extra={
+            "stock_exit_candidates": stock_candidates,
+            "crypto_exit_candidates": crypto_candidates,
+            "attempted_orders": [r for r in normalized_rows if r.get("order_attempted")],
+            "broker_rejections": broker_rejections,
+            "pending_exits": ms.get("pending_exits") or [],
+            "blocked_exits": [r for r in normalized_rows if not r.get("exit_allowed")],
+            "completed_exits": [],
+            "exit_rows": normalized_rows,
+        },
+    )
+
+
+def build_engine_state(
+    *,
+    mission_summary: dict[str, Any] | None = None,
+    simple_status: dict[str, Any] | None = None,
+    fast_loop_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ms = mission_summary or {}
+    ss = simple_status or {}
+    fl = fast_loop_state or {}
+    mission = str((ms.get("mission") or {}).get("mission_mode") or ss.get("mission_mode") or "")
+    sched = ms.get("engine_schedule") or {}
+    stock_open = bool((ss.get("market") or {}).get("us_stock_market_open"))
+    fl_enabled = bool(fl.get("enabled"))
+    fl_exec = bool(fl.get("execution_enabled"))
+
+    if "OVERNIGHT" in mission.upper() or "AFTER_HOURS" in mission.upper():
+        session = "overnight_crypto"
+    elif stock_open:
+        session = "regular_stock_and_crypto"
+    else:
+        session = "market_closed"
+
+    return _envelope(
+        source="core.canonical_state.build_engine_state",
+        human_summary=sched.get("human_reason") or mission or session,
+        reason_code="ENGINE_SCHEDULE_OK",
+        extra={
+            "current_session": session,
+            "stock_engine_enabled": stock_open or "STOCK" in mission.upper(),
+            "crypto_engine_enabled": bool(ms.get("crypto_eligibility", {}).get("can_trade_crypto"))
+            or "CRYPTO" in mission.upper(),
+            "fast_loop_enabled": fl_enabled,
+            "fast_loop_execution_enabled": fl_exec,
+            "selected_engine": sched.get("engine_mode") or mission,
+            "engine_priority": "stocks_during_regular_session" if stock_open else "crypto_when_overnight",
+            "next_allowed_actions": sched.get("selected_engines") or {},
+            "fast_loop_wording": {
+                "observing": fl_enabled and not fl_exec,
+                "can_submit_paper": fl_exec,
+                "disabled": not fl_enabled,
+            },
+        },
+    )
+
+
+def build_stock_state(
+    *,
+    position_state: dict[str, Any] | None = None,
+    exit_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    pos = position_state or {}
+    ex = exit_state or {}
+    return _envelope(
+        source="core.canonical_state.build_stock_state",
+        human_summary=f"{len(pos.get('stock_positions') or [])} stock positions",
+        reason_code="STOCK_STATE_OK",
+        extra={
+            "open_stock_positions": pos.get("stock_positions") or [],
+            "exit_candidates": ex.get("stock_exit_candidates") or [],
+        },
+    )
+
+
+def _validate_momo_note(
+    note: dict[str, Any],
+    *,
+    recovery_gate: dict[str, Any],
+    worker: dict[str, Any],
+    position_state: dict[str, Any],
+    crypto_state: dict[str, Any],
+) -> tuple[bool, str]:
+    finding = str(note.get("finding") or note.get("message") or "").lower()
+    if "recovery" in finding and not recovery_gate.get("recovery_active"):
+        if worker.get("trading_loop_fresh") and str(worker.get("worker_health") or "").lower() == "ok":
+            return False, "recovery_resolved"
+    if "crypto disabled" in finding or "crypto_push_disabled" in finding:
+        push = (crypto_state.get("push") or {}) if isinstance(crypto_state.get("push"), dict) else {}
+        if push.get("status") in ("ready", "observe_only"):
+            return False, "crypto_now_enabled_or_allowed"
+    if "mismatch" in finding or "reconcile" in finding:
+        if not (position_state.get("active_mismatches") or []):
+            return False, "mismatches_cleared"
+    if "insufficient_data" in finding or "no bundle" in finding:
+        return False, "insufficient_data_stale"
+    return True, "current"
+
+
+def build_momo_state(
+    *,
+    mission_summary: dict[str, Any] | None = None,
+    position_state: dict[str, Any] | None = None,
+    crypto_state: dict[str, Any] | None = None,
+    capital_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ms = mission_summary or {}
+    rg = ms.get("recovery_gate") or {}
+    worker = ms.get("worker") or ms.get("ops_health") or {}
+
+    current_notes: list[dict[str, Any]] = []
+    stale_resolved: list[dict[str, Any]] = []
+    try:
+        from monitoring.ai_observer import fetch_latest_notes
+        from monitoring.mission_control_api import _ai_note_is_stale_or_resolved
+
+        for n in fetch_latest_notes(limit=25):
+            if not isinstance(n, dict):
+                continue
+            if _ai_note_is_stale_or_resolved(n, recovery_gate=rg, worker=worker):
+                stale_resolved.append({**n, "resolved": True})
+                continue
+            ok, why = _validate_momo_note(
+                n,
+                recovery_gate=rg,
+                worker=worker,
+                position_state=position_state or {},
+                crypto_state=crypto_state or {},
+            )
+            if ok:
+                current_notes.append({**n, "validation": why})
+            else:
+                stale_resolved.append({**n, "resolved": True, "resolve_reason": why})
+    except Exception:
+        pass
+
+    top_note: dict[str, Any] | None = None
+    why_top = "none"
+    if current_notes:
+        ranked = sorted(
+            current_notes,
+            key=lambda x: (
+                {"critical": 0, "high": 1, "warning": 2, "info": 3}.get(
+                    str(x.get("severity") or "info").lower(), 9
+                ),
+                -float(x.get("id") or 0),
+            ),
+        )
+        top_note = ranked[0]
+        why_top = top_note.get("validation") or "severity_rank"
+    elif capital_state and _f(capital_state.get("buying_power")) < 1.0:
+        top_note = {
+            "severity": "warning",
+            "finding": capital_state.get("human_summary"),
+            "synthetic": True,
+            "source": "canonical_capital_state",
+        }
+        why_top = "synthetic_capital_deployment"
+    elif crypto_state:
+        fl = crypto_state.get("fast_loop") or {}
+        if fl.get("execution_mode") == "observe_only":
+            top_note = {
+                "severity": "info",
+                "finding": "Fast loop observing — scans active, paper orders disabled.",
+                "synthetic": True,
+            }
+            why_top = "synthetic_fast_loop_observe"
+
+    return _envelope(
+        source="monitoring.ai_observer + canonical_state validation",
+        human_summary=str((top_note or {}).get("finding") or "No current Momo notes")[:200],
+        reason_code="MOMO_OK",
+        extra={
+            "current_active_notes": current_notes[:10],
+            "stale_resolved_notes": stale_resolved[:10],
+            "ignored_historical_notes": [],
+            "recommendations_pending_review": [],
+            "top_note": top_note,
+            "why_top_note_selected": why_top,
+            "current_state_validation": {
+                "notes_validated": len(current_notes),
+                "notes_stale_filtered": len(stale_resolved),
+            },
+        },
+    )
+
+
+def build_live_readiness_state(
+    *,
+    mission_summary: dict[str, Any] | None = None,
+    account_state: dict[str, Any] | None = None,
+    position_state: dict[str, Any] | None = None,
+    fast_loop_state: dict[str, Any] | None = None,
+    weights_audit: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from monitoring.live_readiness import build_live_readiness
+
+    ms = dict(mission_summary or {})
+    if position_state:
+        cc = position_state.get("consistency_check") or {}
+        rh = ms.setdefault("execution_health", {}).setdefault("reconciliation_health", {})
+        if cc.get("status") == "failed":
+            rh["clean"] = False
+            rh["current_broker_position_mismatches"] = len(cc.get("orphan_exit_symbols") or [])
+        ms["positions"] = {
+            "open": position_state.get("operator_visible_positions") or [],
+            "stale_local_count": len(position_state.get("stale_local_rows") or []),
+        }
+    lr = build_live_readiness(
+        mission_summary=ms,
+        account={
+            **(account_state or {}),
+            "mode": config.MODE,
+            "live_enabled": config.trading_is_live(),
+        },
+        weights_audit=weights_audit,
+        crypto_fast_loop_status=fast_loop_state or {},
+    )
+    arch_blockers: list[str] = []
+    if position_state and (position_state.get("consistency_check") or {}).get("status") == "failed":
+        arch_blockers.append("position_exit_row_mismatch")
+    if weights_audit and (weights_audit.get("unwired_count") or 0) > 0:
+        arch_blockers.append("unwired_strategy_weights")
+    return _envelope(
+        source="monitoring.live_readiness.build_live_readiness",
+        human_summary=str(lr.get("note") or "")[:300],
+        reason_code=str(lr.get("status") or "blocked"),
+        extra={**lr, "architecture_blockers": arch_blockers},
+    )
+
+
+def build_diagnostics_state(
+    *,
+    position_state: dict[str, Any] | None = None,
+    capital_state: dict[str, Any] | None = None,
+    crypto_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    issues: list[str] = []
+    if (position_state or {}).get("consistency_check", {}).get("status") == "failed":
+        issues.append("position_exit_mismatch")
+    if _f((capital_state or {}).get("buying_power")) < 1.0:
+        issues.append("capital_fully_deployed")
+    ms = (crypto_state or {}).get("main_scanner") or {}
+    fl = (crypto_state or {}).get("fast_loop") or {}
+    if int(fl.get("symbols_scanned") or 0) > 0 and int(ms.get("symbols_scanned") or 0) == 0:
+        issues.append("scanner_main_vs_fast_loop_divergence")
+    return _envelope(
+        source="core.canonical_state.build_diagnostics_state",
+        human_summary=f"{len(issues)} architecture signals" if issues else "No architecture drift flags",
+        reason_code="DIAG_OK" if not issues else "DIAG_DRIFT",
+        extra={"architecture_issues": issues},
+    )
+
+
+def build_strategy_weights_state() -> dict[str, Any]:
+    try:
+        from monitoring.strategy_weights import build_strategy_weights_audit
+
+        audit = build_strategy_weights_audit()
+    except Exception as exc:
+        return _envelope(
+            source="monitoring.strategy_weights",
+            human_summary=str(exc)[:120],
+            reason_code="WEIGHTS_ERROR",
+            degraded=True,
+            extra={},
+        )
+    wired: list[str] = []
+    unwired: list[str] = []
+    for grp, items in (audit.get("current_weights") or {}).items():
+        if not isinstance(items, dict):
+            continue
+        for k, meta in items.items():
+            if not isinstance(meta, dict):
+                continue
+            key = f"{grp}.{k}"
+            if meta.get("wired"):
+                wired.append(key)
+            else:
+                unwired.append(key)
+    human = f"{len(wired)} wired · {len(unwired)} unwired (unwired do not affect scoring)"
+    return _envelope(
+        source="monitoring.strategy_weights.build_strategy_weights_audit",
+        human_summary=human,
+        reason_code="WEIGHTS_OK",
+        extra={
+            "wired_weights": wired,
+            "unwired_weights": unwired,
+            "audit": audit,
+            "unwired_count": len(unwired),
+            "wired_count": len(wired),
+            "live_safe_status": audit.get("live_safe_status"),
+            "dead_config_keys": audit.get("dead_config_keys") or [],
+            "duplicate_config_keys": audit.get("duplicate_config_keys") or [],
+        },
+    )
+
+
+def build_canonical_state(
+    *,
+    mission_summary: dict[str, Any] | None = None,
+    simple_status: dict[str, Any] | None = None,
+    crypto_decision: dict[str, Any] | None = None,
+    weights_audit: dict[str, Any] | None = None,
+    live_broker_account: bool = False,
+) -> dict[str, Any]:
+    """
+    Single domain truth for APIs and GPT bundle.
+
+    Optional inputs avoid duplicate fetches when the caller already built MC/bundle sections.
+    """
+    account_state = build_account_state(live_broker=live_broker_account)
+    position_state = build_position_state(mission_summary=mission_summary)
+    fast_loop_state = build_fast_loop_state()
+    capital_state = build_capital_state(
+        account_state,
+        position_state,
+        mission_summary=mission_summary,
+        fast_loop_state=fast_loop_state,
+    )
+    crypto_state = build_crypto_state(
+        mission_summary=mission_summary,
+        crypto_decision=crypto_decision,
+        position_state=position_state,
+        fast_loop_state=fast_loop_state,
+    )
+    exit_state = build_exit_state(mission_summary=mission_summary, position_state=position_state)
+    engine_state = build_engine_state(
+        mission_summary=mission_summary,
+        simple_status=simple_status,
+        fast_loop_state=fast_loop_state,
+    )
+    stock_state = build_stock_state(position_state=position_state, exit_state=exit_state)
+    sw = weights_audit or build_strategy_weights_state().get("audit")
+    momo_state = build_momo_state(
+        mission_summary=mission_summary,
+        position_state=position_state,
+        crypto_state=crypto_state,
+        capital_state=capital_state,
+    )
+    live_readiness_state = build_live_readiness_state(
+        mission_summary=mission_summary,
+        account_state=account_state,
+        position_state=position_state,
+        fast_loop_state=fast_loop_state,
+        weights_audit=sw if isinstance(sw, dict) else None,
+    )
+    diagnostics_state = build_diagnostics_state(
+        position_state=position_state,
+        capital_state=capital_state,
+        crypto_state=crypto_state,
+    )
+
+    return {
+        "generated_at": _now(),
+        "account_state": account_state,
+        "capital_state": capital_state,
+        "position_state": position_state,
+        "engine_state": engine_state,
+        "crypto_state": crypto_state,
+        "stock_state": stock_state,
+        "exit_state": exit_state,
+        "fast_loop_state": fast_loop_state,
+        "momo_state": momo_state,
+        "live_readiness_state": live_readiness_state,
+        "diagnostics_state": diagnostics_state,
+        "strategy_weights_state": build_strategy_weights_state()
+        if weights_audit is None
+        else _envelope(
+            source="monitoring.strategy_weights",
+            human_summary=f"{weights_audit.get('unwired_count', 0)} unwired weights",
+            extra={"audit": weights_audit, **weights_audit},
+        ),
+    }

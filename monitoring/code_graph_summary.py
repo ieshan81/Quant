@@ -27,7 +27,8 @@ _FRAGILE_AREAS = [
 ]
 
 _RECOMMENDED_FIXES = [
-    "Source-of-truth unification (account, positions, crypto push, no-trade reason)",
+    "Worker cycle writes: log Alpaca reject meta.exact_reject_reason on stock sells",
+    "Capital sleeve enforcement in allocator (not only canonical_state reporting)",
     "Capital sleeve / hard reserve alignment with crypto night reserve",
     "Exit rejection forensics in bundle and activity export",
     "Fast-loop execution readiness gate before enabling execute_orders",
@@ -36,6 +37,7 @@ _RECOMMENDED_FIXES = [
 ]
 
 _TOP_ARCH_NODES = [
+    "core/canonical_state.py / build_canonical_state",
     "main_worker.py / run_trading_cycle_once",
     "monitoring/mission_control_api.py / build_mission_control_summary",
     "execution/crypto_fast_loop.py / get_crypto_fast_loop_status",

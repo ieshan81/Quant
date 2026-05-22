@@ -1,21 +1,31 @@
 # QuantBot Code Graph Audit
 
-Generated from **Graphify** (`graphifyy` 0.8.15) AST graph at commit `98f28e58` (cluster-only on existing extraction).
+Generated from **Graphify** (`graphifyy` 0.8.15) AST graph (cluster-only on AST extraction).
 
-| Metric | Value |
-|--------|-------|
-| Nodes | 3660 |
-| Edges | 7794 |
-| Communities | 209 |
-| Artifacts | `graphify-out/graph.html`, `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md` |
+## Graphify before / after canonical_state cleanup
 
-**God nodes (highest connectivity):** `get_connection()`, `create_app()`, `init_schema()`, `build_activity_export_payload()`, `run_trading_cycle_once()`, `cfg_float()`, `create_paper_trader()`, `_assemble_summary()`, `build_dynamic_capital_plan()`.
+| Metric | Before cleanup | After cleanup |
+|--------|----------------|---------------|
+| Nodes | 3660 | **3745** (+85) |
+| Edges | 7794 | **7987** (+193) |
+| Communities | 209 | **207** |
+| New hub module | — | `core/canonical_state.py` → `build_canonical_state()` |
 
-This document is a **code-understanding pass only** — no trading behavior changes.
+**God nodes (after):** see `graphify-out/GRAPH_REPORT.md` — still dominated by `get_connection()`, `create_app()`, `init_schema()`, `build_activity_export_payload()`, `run_trading_cycle_once()`, `cfg_float()`, `create_paper_trader()`, `build_dynamic_capital_plan()`.
+
+**Architecture change (this pass):** `build_canonical_state()` is the single domain truth facade; GPT bundle, Mission Control minimal, and simple_status summary delegate to it. Duplicate builders remain for worker cycle paths but are **wrapped** at API boundaries.
+
+Artifacts: `graphify-out/graph.html`, `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`
 
 ---
 
 ## A. Main architecture
+
+### Canonical domain state (new hub)
+
+- **Hub:** `core/canonical_state.py` → `build_canonical_state()`
+- **Consumers:** `monitoring/gpt_analyze_bundle` (`canonical_truth`), `monitoring/mission_control_api` (minimal summary), `monitoring/simple_status` (`canonical_truth_summary`)
+- **Sub-states:** `account_state`, `capital_state`, `position_state`, `crypto_state`, `exit_state`, `engine_state`, `fast_loop_state`, `momo_state`, `live_readiness_state`, `diagnostics_state`, `strategy_weights_state`
 
 ### Main worker flow
 
@@ -165,12 +175,23 @@ This document is a **code-understanding pass only** — no trading behavior chan
 
 ## E. Suggested next fixes (prioritized)
 
-1. **Source-of-truth unification** — One resolver chain for account BP, positions, crypto push/pull, and `canonical_no_trade_reason`; bundle reads only those facades.
-2. **Capital sleeve / reserve fix** — Align paper crypto sleeve, night reserve, and post-profit dynamic reserve so usable BP matches operator expectation.
-3. **Exit rejection forensics** — When Alpaca rejects, surface `preflight.reason` on exit rows and GPT bundle `why_no_sell`.
-4. **Fast-loop execution readiness** — Explicit gate checklist before `crypto_fast_loop_execute_orders=1`; never imply main-worker push from fast loop alone.
-5. **Momo current-state note validation** — Stamp notes with `git_commit` + `recovery_gate` hash; auto-resolve on gate clear.
-6. **UI operator truth mode** — Single chip per subsystem: scan vs execution vs blocked; remove duplicate legacy strings.
+1. ~~**Source-of-truth unification**~~ — **Done (reporting layer):** `core/canonical_state.build_canonical_state()`; wire worker cycle writes next.
+2. **Capital sleeve / reserve fix** — `capital_state.why_cash_unavailable` explains BP≈0; still need allocator enforcement so stocks cannot consume crypto sleeve when fast loop enabled.
+3. **Exit rejection forensics** — Bundle flags `missing_broker_detail_in_meta` when Alpaca reject lacks body; worker should log `meta.exact_reject_reason` on reject.
+4. **Fast-loop execution readiness** — `crypto_state.push.status=observe_only` when execute_orders=0; do not enable execution until live_readiness + operator toggle.
+5. **Momo current-state note validation** — `momo_state` filters stale recovery/crypto/mismatch notes; synthetic top note from capital/fast loop when DB empty.
+6. **UI operator truth mode** — Dashboard should read `canonical_truth` from MC (partial); full card pass still recommended.
+
+## F. Post-cleanup fragile area status
+
+| Area | Status after cleanup |
+|------|----------------------|
+| active_positions vs operator_exit_rows | `position_state.consistency_check` — failed if orphan exit symbols |
+| scanner vs fast loop scan counts | `diagnostics_state.architecture_issues` flags divergence |
+| observe-only wording | `fast_loop_state.execution_mode` + `crypto_state.push.status` |
+| Momo stale notes | `momo_state` validation + synthetic capital/observe notes |
+| capital reserve stacking | `capital_state.why_cash_unavailable[]` explicit reasons |
+| stock exit rejection | `exit_state.broker_rejections[].exact_reject_reason` or missing-meta flag |
 
 ---
 

@@ -994,11 +994,47 @@ def build_mission_control_summary_minimal(
     except Exception:
         _session_label = _mission_mode_human(mission_mode)
 
+    _canonical_truth: dict[str, Any] = {}
+    try:
+        from core.canonical_state import build_canonical_state
+
+        _mc_payload = {
+            "ok": True,
+            "mission": {"mission_mode": mission_mode},
+            "positions": {"open": _positions, "stale_local_rows": _stale_rows},
+            "position_exit_rows": _pe_rows,
+            "crypto_push_pull_session": crypto_session,
+            "crypto_push": crypto_session.get("crypto_push"),
+            "crypto_pull": crypto_session.get("crypto_pull"),
+            "canonical_no_trade_reason": _mc_canonical_reason,
+            "crypto_scanner_diagnostics": _mc_crypto_diag,
+            "recovery_gate": recovery_gate,
+            "worker": worker,
+            "capital_protection": _capital_protection,
+            "engine_schedule": _mc_engine_sched,
+        }
+        _canonical_truth = build_canonical_state(
+            mission_summary=_mc_payload,
+            simple_status=base,
+            crypto_decision=crypto_dec,
+            weights_audit=_mc_weights_audit if isinstance(_mc_weights_audit, dict) else None,
+        )
+        crypto_session = {
+            "crypto_push": (_canonical_truth.get("crypto_state") or {}).get("push")
+            or crypto_session.get("crypto_push"),
+            "crypto_pull": (_canonical_truth.get("crypto_state") or {}).get("pull")
+            or crypto_session.get("crypto_pull"),
+            "canonical_source": "canonical_truth.crypto_state",
+        }
+    except Exception:
+        _canonical_truth = {}
+
     return {
         "ok": True,
         "simple_fallback": True,
         "fallback": degraded,
         "generated_at": base.get("generated_at"),
+        "canonical_truth": _canonical_truth,
         "degraded": degraded,
         "degraded_reason": reason or None,
         "topline": {

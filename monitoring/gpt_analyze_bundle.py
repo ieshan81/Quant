@@ -272,6 +272,42 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
     if isinstance(crypto_dec, dict):
         crypto_dec = _enrich_push_execution_truth(crypto_dec, _cfl_status)
 
+    canonical_truth: dict[str, Any] = {}
+    try:
+        from core.canonical_state import build_canonical_state
+
+        canonical_truth = build_canonical_state(
+            mission_summary=mission_summary if isinstance(mission_summary, dict) else None,
+            simple_status=simple if isinstance(simple, dict) else None,
+            crypto_decision=crypto_dec if isinstance(crypto_dec, dict) else None,
+            weights_audit=strategy_weights_audit if isinstance(strategy_weights_audit, dict) else None,
+        )
+        if isinstance(crypto_dec, dict) and canonical_truth.get("crypto_state"):
+            cs = canonical_truth["crypto_state"]
+            push = cs.get("push") or {}
+            pes = crypto_dec.get("push_execution_state")
+            if not isinstance(pes, dict):
+                pes = {}
+            pes.update(
+                {
+                    "mode": push.get("status") or pes.get("mode"),
+                    "human": push.get("human_reason") or pes.get("human"),
+                }
+            )
+            crypto_dec["push_execution_state"] = pes
+        if isinstance(mission_summary, dict) and canonical_truth.get("crypto_state"):
+            cs = canonical_truth["crypto_state"]
+            mission_summary["crypto_push_pull_session"] = {
+                "crypto_push": cs.get("push") or mission_summary.get("crypto_push"),
+                "crypto_pull": cs.get("pull") or mission_summary.get("crypto_pull"),
+                "canonical_source": "canonical_truth.crypto_state",
+            }
+    except Exception as exc:
+        canonical_truth = {
+            "error": str(exc)[:200],
+            "generated_at": generated,
+        }
+
     bundle = {
         "generated_at": generated,
         "forensic_debug": forensic_debug,
@@ -346,6 +382,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
             "Is crypto night mode blocked?",
         ],
         "code_graph_summary": _bundle_code_graph_summary(),
+        "canonical_truth": canonical_truth,
     }
     scrubbed = scrub_evidence(bundle)
     try:
