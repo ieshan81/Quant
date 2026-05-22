@@ -133,6 +133,27 @@ body.qb-app {
   box-shadow: 0 0 20px rgba(56, 189, 248, 0.08);
 }
 
+.dash-action-btn {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.85);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.dash-action-btn:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+}
+
+.dash-action-primary {
+  border-color: rgba(56, 189, 248, 0.5);
+  background: rgba(56, 189, 248, 0.12);
+  font-weight: 600;
+}
+
 .sidebar-footer {
   margin-top: auto;
   padding: 10px;

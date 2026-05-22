@@ -1606,25 +1606,26 @@ _PAGE = """<!DOCTYPE html>
           <strong>Confirmation phrase:</strong> <span class="mono" id="btConfirmPhrase">—</span>
         </div>
         <div id="btPreviewSummary">
-          <div class="bt-section"><h4>Preserved</h4><ul class="bt-list" id="btPreservedList"></ul></div>
-          <div class="bt-section"><h4>Would clear / archive</h4><ul class="bt-list" id="btClearList"></ul></div>
-          <div class="bt-section"><h4>Broker snapshot</h4><ul class="bt-list" id="btBrokerSnapList"></ul></div>
+          <div class="bt-section"><h4>Preserved (not deleted)</h4><ul class="bt-list" id="btPreservedList"></ul></div>
+          <div class="bt-section"><h4>Will clear on Apply</h4><ul class="bt-list" id="btClearList"></ul></div>
+          <div class="bt-section"><h4>Stale local symbols (ghost — broker has none)</h4><ul class="bt-list" id="btStaleSymbolsList"></ul></div>
+          <div class="bt-section"><h4>Broker snapshot (live Alpaca)</h4><ul class="bt-list" id="btBrokerSnapList"></ul></div>
         </div>
         <details class="bt-raw"><summary>Diagnostics (raw JSON)</summary><pre id="btPreviewRaw" class="sec" style="max-height:140px;font-size:10px;margin:8px 0 0;"></pre></details>
         <p class="mono" id="btMachineType" style="font-size:10px;color:var(--muted);margin:6px 0 0;"></p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
-          <button type="button" id="btnBtPreview" class="tab-btn" style="font-size:12px;">Preview Transition</button>
-          <button type="button" id="btnBtBackup" class="tab-btn" style="font-size:12px;">Download Backup</button>
-          <button type="button" id="btnBtApply" class="tab-btn" style="font-size:12px;">Apply Runtime Sync</button>
-          <button type="button" id="btnBtAudit" class="tab-btn" style="font-size:12px;">Run Acceptance Audit</button>
-          <button type="button" id="btnBtHistory" class="tab-btn" style="font-size:12px;">View Transition History</button>
+          <button type="button" id="btnBtPreview" class="dash-action-btn">Refresh preview</button>
+          <button type="button" id="btnBtApply" class="dash-action-btn dash-action-primary">Apply reset &amp; sync (auto-backup)</button>
+          <button type="button" id="btnBtBackup" class="dash-action-btn">Backup only (optional)</button>
+          <button type="button" id="btnBtAudit" class="dash-action-btn">Run acceptance audit</button>
+          <button type="button" id="btnBtHistory" class="dash-action-btn">History</button>
         </div>
         <p id="btActionStatus" style="font-size:12px;color:var(--muted);margin:0;"></p>
       </div>
       <div class="danger-zone card">
         <h3>Danger zone</h3>
-        <button type="button" id="btnOpsBackup" class="tab-btn" style="font-size:12px;">Backup DBs</button>
-        <button type="button" id="btnOpsResetRuntime" class="tab-btn" style="font-size:12px;">Reset Runtime</button>
+        <button type="button" id="btnOpsBackup" class="dash-action-btn">Backup DBs</button>
+        <button type="button" id="btnOpsResetRuntime" class="dash-action-btn">Reset Runtime (legacy)</button>
       </div>
       <div class="card">
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Recent ops logs</h2>
@@ -1686,8 +1687,8 @@ _PAGE = """<!DOCTYPE html>
         </div>
         <div class="danger-zone" style="margin-top:12px;">
           <h3>Danger zone</h3>
-          <button type="button" id="btnFilesBackup" class="tab-btn" style="font-size:12px;">Backup DBs</button>
-          <button type="button" id="btnFilesResetRuntime" class="tab-btn" style="font-size:12px;">Reset Runtime</button>
+          <button type="button" id="btnFilesBackup" class="dash-action-btn">Backup DBs</button>
+          <button type="button" id="btnFilesResetRuntime" class="dash-action-btn">Reset Runtime (legacy)</button>
         </div>
       </div>
     </section>

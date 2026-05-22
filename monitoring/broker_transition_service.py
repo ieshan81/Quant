@@ -42,9 +42,10 @@ from core.broker_account_fingerprint import (
 WIZARD_FIRST_RUN_BASELINE = "FIRST_RUN_BASELINE_REQUIRED"
 
 _FIRST_RUN_MESSAGE = (
-    "This is the first time this broker account has been fingerprinted. "
-    "Preview the broker account, download a backup, then apply runtime sync to store "
-    "the baseline and reconcile runtime state. Apply creates the first broker account epoch."
+    "New Alpaca paper account detected (no fingerprint on file). "
+    "Click Apply — it auto-backs up SQLite first (safety copy only; does not keep old stock positions), "
+    "clears stale local runtime rows, and stores the broker baseline. "
+    "You do not need a separate backup step unless you want a manual copy."
 )
 
 _HUMAN_PRESERVE = [
@@ -118,29 +119,20 @@ def _config_display() -> dict[str, Any]:
     }
 
 
+def _human_clear_with_counts(rows_to_clear: dict[str, int]) -> list[str]:
+    lines = list(_HUMAN_CLEAR)
+    for table, n in (rows_to_clear or {}).items():
+        if int(n or 0) > 0:
+            lines.append(f"{table}: {int(n)} row(s) queued for delete")
+    return lines
+
+
 def _local_runtime_snapshot() -> dict[str, Any]:
-    local_positions: list[dict[str, Any]] = []
-    stale_rows: list[dict[str, Any]] = []
-    pending_exits: list[dict[str, Any]] = []
-    stale_exit_signals: list[dict[str, Any]] = []
-    try:
-        from core.position_truth import build_position_truth_bundle
-
-        bundle = build_position_truth_bundle()
-        local_positions = list(bundle.get("active_positions") or [])[:40]
-        stale_rows = list(bundle.get("stale_local_rows") or [])[:40]
-        stale_exit_signals = list(bundle.get("stale_exit_signals") or [])[:40]
-    except Exception as exc:
-        stale_rows.append({"error": str(exc)[:120]})
-
-    try:
-        from execution.deferred_exit_plans import fetch_deferred_exit_plans
-
-        pending_exits = fetch_deferred_exit_plans(None, include_terminal=False, limit=40)
-    except Exception:
-        pass
-
     broker_positions: list[dict[str, Any]] = []
+    open_orders: list[dict[str, Any]] = []
+    reconciliation_health: dict[str, Any] = {}
+    pending_exits: list[dict[str, Any]] = []
+
     try:
         from execution.stock_broker import fetch_alpaca_open_positions
 
@@ -148,7 +140,6 @@ def _local_runtime_snapshot() -> dict[str, Any]:
     except Exception:
         pass
 
-    open_orders: list[dict[str, Any]] = []
     try:
         from execution import stock_broker
 
@@ -165,10 +156,70 @@ def _local_runtime_snapshot() -> dict[str, Any]:
     except Exception:
         pass
 
+    try:
+        from execution.deferred_exit_plans import fetch_deferred_exit_plans
+
+        pending_exits = fetch_deferred_exit_plans(None, include_terminal=False, limit=40)
+    except Exception:
+        pass
+
+    stale_local_input: list[dict[str, Any]] = []
+    try:
+        from execution import stock_broker
+        from execution.position_reconciliation import build_reconciliation_health
+
+        with get_connection(config.DB_PATH) as conn:
+            cli = stock_broker.get_rest_client()
+            reconciliation_health = build_reconciliation_health(conn, cli) or {}
+        for m in reconciliation_health.get("stale_only_mismatches") or []:
+            if not isinstance(m, dict):
+                continue
+            stale_local_input.append(
+                {
+                    "symbol": m.get("symbol"),
+                    "asset_class": m.get("asset_class") or "stock",
+                    "net_qty": m.get("local_qty"),
+                    "broker_qty": m.get("broker_qty"),
+                    "classification": m.get("classification"),
+                }
+            )
+    except Exception as exc:
+        stale_local_input.append({"error": str(exc)[:120]})
+
+    local_positions: list[dict[str, Any]] = []
+    stale_rows: list[dict[str, Any]] = []
+    stale_exit_signals: list[dict[str, Any]] = []
+    try:
+        from core.position_truth import build_position_truth_audit
+
+        audit = build_position_truth_audit(
+            broker_positions=broker_positions,
+            local_stale_rows=stale_local_input,
+            reconciliation_health=reconciliation_health,
+        )
+        local_positions = list(audit.get("active_positions") or [])[:40]
+        stale_rows = list(audit.get("stale_local_rows") or [])[:40]
+        stale_exit_signals = list(audit.get("stale_exit_signals") or [])[:40]
+    except Exception as exc:
+        if not any(isinstance(r, dict) and r.get("error") for r in stale_local_input):
+            stale_rows.append({"error": str(exc)[:120]})
+        else:
+            stale_rows = stale_local_input[:40]
+
+    ghost_symbols = list(reconciliation_health.get("ghost_positions") or [])[:20]
+    stale_symbols = [
+        str(r.get("symbol") or "")
+        for r in stale_rows
+        if isinstance(r, dict) and r.get("symbol") and not r.get("error")
+    ][:20]
+
     return {
         "broker_positions": broker_positions,
         "local_positions": local_positions,
         "stale_rows": stale_rows,
+        "stale_symbols": stale_symbols,
+        "ghost_symbols": ghost_symbols,
+        "reconciliation_health": reconciliation_health,
         "pending_exits": pending_exits,
         "stale_exit_signals": stale_exit_signals,
         "open_orders": open_orders,
@@ -392,7 +443,9 @@ def preview_broker_transition() -> dict[str, Any]:
         "transition_type": ttype,
         "risk_level": risk_level,
         "preserved_human": list(_HUMAN_PRESERVE),
-        "would_clear_human": list(_HUMAN_CLEAR),
+        "would_clear_human": _human_clear_with_counts(cleanup.get("rows_to_clear") or {}),
+        "stale_symbols": snap.get("stale_symbols") or [],
+        "ghost_symbols": snap.get("ghost_symbols") or [],
         "broker_snapshot": {
             "mode": fp.get("mode"),
             "base_url": fp.get("base_url"),

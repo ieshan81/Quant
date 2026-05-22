@@ -649,7 +649,7 @@ def test_first_run_maps_to_first_run_baseline_ui_state(bt_db, monkeypatch):
     assert out["first_run_baseline_required"] is True
     assert out["wizard_state"] == "FIRST_RUN_BASELINE_REQUIRED"
     assert out["operator_label"] == "First baseline required"
-    assert "first time" in (out.get("operator_message") or "").lower()
+    assert "fingerprint" in (out.get("operator_message") or "").lower()
 
 
 def test_first_run_not_primary_unknown_label(bt_db, monkeypatch):

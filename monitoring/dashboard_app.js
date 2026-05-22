@@ -3218,7 +3218,7 @@
     }
     if (st) {
       st.textContent = firstRun
-        ? (data.operator_message || "No previous fingerprint stored. Preview, backup, then apply sync to establish baseline and reconcile runtime.")
+        ? (data.operator_message || "New paper account — click Apply reset & sync (auto-backup). Clears stale local rows; does not restore old stocks.")
         : ("State: " + safeText(data.wizard_state, "—"));
     }
     if (op) op.textContent = opLabel;
@@ -3243,6 +3243,17 @@
     }
     _fillBtList("btPreservedList", data.preserved_human || data.preserved || []);
     _fillBtList("btClearList", data.would_clear_human || []);
+    var staleSyms = data.stale_symbols || data.ghost_symbols || [];
+    var staleItems = staleSyms.map(function (s) {
+      return String(s) + " (local ghost — broker qty 0)";
+    });
+    (data.stale_rows || []).forEach(function (r) {
+      if (r && r.error) staleItems.push("Preview error: " + r.error);
+    });
+    if (!staleItems.length && (data.warnings || []).indexOf("local_stale_rows_exist") >= 0) {
+      staleItems.push("Stale rows detected — refresh preview after deploy");
+    }
+    _fillBtList("btStaleSymbolsList", staleItems.length ? staleItems : ["None — broker and runtime aligned"]);
     var snap = data.broker_snapshot || {};
     _fillBtList("btBrokerSnapList", [
       "Mode: " + safeText(snap.mode, fp.mode),
@@ -3314,7 +3325,12 @@
       if (el) el.textContent = msg;
     }
 
-    btnPreview.addEventListener("click", function () {
+    function stopNav(ev) {
+      if (ev) ev.stopPropagation();
+    }
+
+    btnPreview.addEventListener("click", function (ev) {
+      stopNav(ev);
       fetch("/api/ops/broker-transition/preview", { cache: "no-store", headers: _authHeaders() })
         .then(function (r) { return r.json(); })
         .then(function (d) {
@@ -3324,14 +3340,16 @@
         .catch(function (e) { setStatus(String(e && e.message ? e.message : e)); });
     });
 
-    btnBackup.addEventListener("click", function () {
+    btnBackup.addEventListener("click", function (ev) {
+      stopNav(ev);
       fetch("/api/ops/backup-dbs", { method: "POST", headers: volHeaders(true) })
         .then(function (r) { return r.json(); })
-        .then(function (d) { setStatus("Backup: " + (d.backup_path || JSON.stringify(d))); })
+        .then(function (d) { setStatus("Optional backup: " + (d.backup_path || JSON.stringify(d))); })
         .catch(function (e) { setStatus(String(e && e.message ? e.message : e)); });
     });
 
-    btnAudit.addEventListener("click", function () {
+    btnAudit.addEventListener("click", function (ev) {
+      stopNav(ev);
       setStatus("Running acceptance audit (local)…");
       fetch("/api/ops/broker-transition/audit", {
         method: "POST",
@@ -3343,7 +3361,8 @@
       }).catch(function (e) { setStatus(String(e && e.message ? e.message : e)); });
     });
 
-    btnHist.addEventListener("click", function () {
+    btnHist.addEventListener("click", function (ev) {
+      stopNav(ev);
       fetch("/api/ops/broker-transition/history", { cache: "no-store", headers: _authHeaders() })
         .then(function (r) { return r.json(); })
         .then(function (d) {
@@ -3353,16 +3372,20 @@
         });
     });
 
-    btnApply.addEventListener("click", function () {
+    btnApply.addEventListener("click", function (ev) {
+      stopNav(ev);
       var pv = _btPreviewCache || {};
       if (!_btPreviewLoaded) {
-        setStatus("Load preview first (Preview Transition).");
+        setStatus("Load preview first (Refresh preview).");
         return;
       }
       var req = pv.required_confirmation || "RESET PAPER RUNTIME";
       var conf = window.prompt("Type exactly:\n" + req);
       if (!conf) return;
-      if (!window.confirm("This will backup, sync runtime to broker truth, and may clear stale runtime rows. Continue?")) return;
+      if (!window.confirm(
+        "Apply will auto-backup SQLite, clear stale runtime tables, and store the new broker fingerprint. "
+        + "Old stock ghosts (AMPX etc.) are removed from runtime — not restored. Continue?"
+      )) return;
       var ackOrders = false;
       var ackPos = false;
       if ((pv.open_orders || []).length > 0) {
