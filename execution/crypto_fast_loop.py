@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from loguru import logger
@@ -25,14 +27,48 @@ _LAST_STATUS: dict[str, Any] = {
 }
 
 
+def _status_file() -> Path:
+    root = Path(getattr(config, "PERSIST_DIR", ".") or ".")
+    return root / "crypto_fast_loop_status.json"
+
+
 def get_crypto_fast_loop_status() -> dict[str, Any]:
+    """Worker writes status file; dashboard/GPT bundle reads cross-process truth."""
+    out: dict[str, Any] = {}
+    try:
+        path = _status_file()
+        if path.is_file():
+            out = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
     with _STATUS_LOCK:
-        return dict(_LAST_STATUS)
+        if _LAST_STATUS.get("last_loop_at"):
+            out = {**out, **_LAST_STATUS}
+        elif not out:
+            out = dict(_LAST_STATUS)
+    if out.get("last_loop_at") and out.get("loop_age_seconds") is None:
+        try:
+            from datetime import datetime as _dt
+
+            ts = str(out["last_loop_at"]).replace(" UTC", "+00:00")
+            age = (_dt.now(timezone.utc) - _dt.fromisoformat(ts)).total_seconds()
+            out["loop_age_seconds"] = max(0, int(age))
+        except Exception:
+            pass
+    return out
 
 
 def _set_status(patch: dict[str, Any]) -> None:
     with _STATUS_LOCK:
         _LAST_STATUS.update(patch)
+        payload = dict(_LAST_STATUS)
+    try:
+        path = _status_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        path.write_text(json.dumps(payload, default=str), encoding="utf-8")
+    except Exception:
+        logger.debug("[crypto_fast_loop] status file write skipped", exc_info=True)
 
 
 def _log_fast(event_type: str, *, loop_id: str, evidence: dict[str, Any]) -> None:

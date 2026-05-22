@@ -143,6 +143,12 @@ def _human_for_push_block(
         return f"Open crypto positions ({open_crypto}) at max — new entry blocked."
     if code == reason_codes.CRYPTO_PUSH_BLOCKED_COOLDOWN:
         return f"Re-entry cooldown active for {best_sym or 'symbol'}."
+    if code in (reason_codes.CRYPTO_PUSH_ALLOWED, "OK"):
+        return (
+            f"Best {best_sym or 'candidate'} scored {best_score:.4f} — push preflight passed."
+            if best_score is not None
+            else "Crypto push preflight passed."
+        ) + bp_tail
     if best_sym and best_score is not None:
         detail = sub or code.replace("CRYPTO_PUSH_BLOCKED_", "").replace("_", " ").lower()
         return (

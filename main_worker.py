@@ -5705,7 +5705,7 @@ def run_worker_forever() -> None:
                     stop_event=_stop,
                     trader_lock=_trader_lock,
                     get_trader=lambda: trader,
-                    get_crypto_symbols=lambda: list(getattr(universe, "crypto_symbols", None) or [])[:50],
+                    get_crypto_symbols=lambda u=universe: list((u.snapshot()[1] if u else [])[:50]),
                 )
                 logger.info("[crypto_fast_loop] background thread started (paper-only until live readiness)")
             except Exception:
