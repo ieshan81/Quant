@@ -35,6 +35,10 @@ data/
 *.db-shm
 *.log
 
+# Graphify cache (regenerate via graphify update / cluster-only)
+graphify-out/cache/
+graphify-out/.graphify_*
+
 # Nested duplicate workspace (~1GB .venv if present)
 quantbot/
 

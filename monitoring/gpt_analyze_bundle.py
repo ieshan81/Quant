@@ -345,6 +345,7 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
             "Why is buying power low?",
             "Is crypto night mode blocked?",
         ],
+        "code_graph_summary": _bundle_code_graph_summary(),
     }
     scrubbed = scrub_evidence(bundle)
     try:
@@ -683,6 +684,19 @@ def _bundle_momo_quant_recommendations(
             "paper_only": True,
         })
     return recs
+
+
+def _bundle_code_graph_summary() -> dict[str, Any]:
+    try:
+        from monitoring.code_graph_summary import build_code_graph_summary
+
+        return build_code_graph_summary()
+    except Exception as exc:
+        return {
+            "error": str(exc)[:120],
+            "graph_report_exists": False,
+            "audit_doc_exists": False,
+        }
 
 
 def _build_engine_schedule(

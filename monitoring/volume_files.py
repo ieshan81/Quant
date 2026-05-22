@@ -34,6 +34,12 @@ def volume_roots() -> dict[str, Path]:
     dbp = Path(config.DB_PATH).resolve()
     if dbp.parent not in (persist, dd):
         roots["database"] = dbp.parent
+    graphify_out = (config.ROOT_DIR / "graphify-out").resolve()
+    if graphify_out.is_dir():
+        roots["code_graph"] = graphify_out
+    docs_dir = (config.ROOT_DIR / "docs").resolve()
+    if docs_dir.is_dir():
+        roots["docs"] = docs_dir
     for label, p in (
         ("ops_db", ops_db_path().parent),
         ("ops_logs", ops_log_dir()),

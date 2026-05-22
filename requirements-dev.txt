@@ -3,5 +3,8 @@
 
 pytest>=7.4.0
 
+# Code knowledge graph (AST + report; optional for CI)
+graphifyy>=0.8.15
+
 # Optional HuggingFace sentiment (not installed on Railway deploy)
 -r requirements-ml.txt
