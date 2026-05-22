@@ -2509,36 +2509,33 @@
       if (st) st.textContent = msg || "";
     }
     copyBtn.addEventListener("click", async function () {
+      _bundleLoadStart("Loading activity bundle…", st);
       try {
         var r = await fetch("/api/activity/export", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         var j = await r.json();
         var text = JSON.stringify(j, null, 2);
         await navigator.clipboard.writeText(text);
-        stamp("Copied activity JSON");
+        _bundleLoadDone("Copied activity JSON", true, st);
       } catch (e) {
-        stamp(String(e && e.message ? e.message : e));
+        _bundleLoadDone(String(e && e.message ? e.message : e), false, st);
       }
     });
     dlBtn.addEventListener("click", async function () {
+      _bundleLoadStart("Downloading activity bundle…", st);
       try {
         var r = await fetch("/api/activity/export", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         var j = await r.json();
         var text = JSON.stringify(j, null, 2);
         var blob = new Blob([text], { type: "application/json;charset=utf-8" });
-        var u = URL.createObjectURL(blob);
-        var a = document.createElement("a");
-        a.href = u;
         var d = new Date();
         var pad = function (n) { return String(n).padStart(2, "0"); };
         var fname = "activity-export-" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "-" + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + ".json";
-        a.download = fname;
-        a.click();
-        URL.revokeObjectURL(u);
-        stamp("Download started");
+        _downloadBlob(blob, fname);
+        _bundleLoadDone("Activity JSON downloaded", true, st);
       } catch (e) {
-        stamp(String(e && e.message ? e.message : e));
+        _bundleLoadDone(String(e && e.message ? e.message : e), false, st);
       }
     });
   }
@@ -3465,27 +3462,54 @@
     });
 
     btnCrit.addEventListener("click", async function () {
+      _bundleLoadStart("Loading critical ops bundle…", null);
       try {
         var r = await fetch("/api/ops/critical-bundle", { cache: "no-store" });
         if (!r.ok) throw new Error("HTTP " + r.status);
         var j = await r.json();
         await navigator.clipboard.writeText(JSON.stringify(j, null, 2));
+        _bundleLoadDone("Copied critical ops bundle JSON", true, null);
         _opsStamp("Copied critical ops bundle JSON");
       } catch (e) {
+        _bundleLoadDone(String(e && e.message ? e.message : e), false, null);
         _opsStamp(String(e && e.message ? e.message : e));
       }
     });
 
     btnCsv.addEventListener("click", function () {
-      _opsStamp("Starting CSV download…");
-      window.location.href = "/api/ops/logs/export.csv?limit=500";
-      setTimeout(function () { _opsStamp("CSV download started"); }, 300);
+      _bundleLoadStart("Downloading ops logs CSV…", null);
+      fetch("/api/ops/logs/export.csv?limit=500", { headers: _authHeaders(), cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("CSV HTTP " + r.status);
+          return r.blob();
+        })
+        .then(function (blob) {
+          _downloadBlob(blob, "ops_logs_" + _timestamp() + ".csv");
+          _bundleLoadDone("Ops logs CSV downloaded", true, null);
+          _opsStamp("CSV downloaded");
+        })
+        .catch(function (e) {
+          _bundleLoadDone(safeText(e && e.message, String(e)), false, null);
+          _opsStamp(safeText(e && e.message, String(e)));
+        });
     });
 
     btnXlsx.addEventListener("click", function () {
-      _opsStamp("Starting daily report download…");
-      window.location.href = "/api/ops/daily-report.xlsx";
-      setTimeout(function () { _opsStamp("XLSX download started"); }, 300);
+      _bundleLoadStart("Downloading daily report XLSX…", null);
+      fetch("/api/ops/daily-report.xlsx", { headers: _authHeaders(), cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("XLSX HTTP " + r.status);
+          return r.blob();
+        })
+        .then(function (blob) {
+          _downloadBlob(blob, "daily_report_" + _timestamp() + ".xlsx");
+          _bundleLoadDone("Daily report downloaded", true, null);
+          _opsStamp("XLSX downloaded");
+        })
+        .catch(function (e) {
+          _bundleLoadDone(safeText(e && e.message, String(e)), false, null);
+          _opsStamp(safeText(e && e.message, String(e)));
+        });
     });
   }
 
@@ -4028,29 +4052,105 @@
     }
   }
 
-  function _mcProgressStart(label) {
-    var wrap = document.getElementById("mcProgress");
-    var bar = document.getElementById("mcProgressBar");
+  var _BUNDLE_PROGRESS_SLOTS = [
+    ["mcProgress", "mcProgressBar"],
+    ["mcGptBundleProgress", "mcGptBundleProgressBar"],
+    ["actExportProgress", "actExportProgressBar"],
+    ["aiBundleProgress", "aiBundleProgressBar"],
+    ["opsExportProgress", "opsExportProgressBar"]
+  ];
+  var _bundleLoadTimer = null;
+  var _bundleLoadBusy = false;
+  var _mcProgressT0 = 0;
+
+  function _bundleProgressNodes(extraWrapId) {
+    var out = [];
+    _BUNDLE_PROGRESS_SLOTS.forEach(function (pair) {
+      var wrap = document.getElementById(pair[0]);
+      var bar = document.getElementById(pair[1]);
+      if (wrap && bar) out.push({ wrap: wrap, bar: bar });
+    });
+    if (extraWrapId) {
+      var ew = document.getElementById(extraWrapId);
+      var eb = document.getElementById(extraWrapId + "Bar");
+      if (ew && eb) out.push({ wrap: ew, bar: eb });
+    }
+    return out;
+  }
+
+  function _bundleButtonsBusy(busy) {
+    var sel =
+      "#mcGptBundleBar button, #btnDownloadGPTAnalyzeBundle, #btnDownloadGPTAnalyzeBundleTxt, " +
+      "#btnCopyGPTAnalyzeBundle, #btnGPTAnalyzeLogs, #btnSendGPTAnalyzeBundleTelegram, " +
+      "#btnCopyActivityExport, #btnDownloadActivityExport, #btnCopyAiMemories, #btnCopyFullAiBundle, " +
+      "#btnDownloadAiMemories, #btnDownloadFullAiBundle, #btnCopyAiMemory, #btnCopyLogsBundle, " +
+      "#btnDownloadLogsJson, #btnDownloadLogsTxt, #btnDownloadLogsCsv, #btnCopyCriticalOpsBundle, " +
+      "#btnDownloadOpsLogsCsv, #btnDownloadDailyReportXlsx";
+    document.querySelectorAll(sel).forEach(function (btn) {
+      btn.disabled = !!busy;
+      if (busy) btn.setAttribute("aria-busy", "true");
+      else btn.removeAttribute("aria-busy");
+    });
+  }
+
+  function _bundleLoadStart(label, statusEl) {
+    if (_bundleLoadTimer) clearInterval(_bundleLoadTimer);
+    _bundleLoadBusy = true;
+    _bundleButtonsBusy(true);
+    _bundleProgressNodes().forEach(function (n) {
+      n.wrap.style.display = "block";
+      n.bar.classList.add("indeterminate");
+      n.bar.style.width = "35%";
+    });
     var st = document.getElementById("mcStatus");
-    if (wrap) wrap.style.display = "block";
-    if (bar) bar.style.width = "15%";
-    if (st) st.textContent = label || "Working…";
+    if (st && label) st.textContent = label;
+    if (statusEl && label) statusEl.textContent = label;
+    var gptSt = document.getElementById("mcGptBundleStatus");
+    if (gptSt && label) gptSt.textContent = label;
     _mcProgressT0 = Date.now();
+    var tick = 0;
+    _bundleLoadTimer = setInterval(function () {
+      tick += 1;
+      var w = String(18 + (tick % 7) * 11) + "%";
+      _bundleProgressNodes().forEach(function (n) {
+        if (!n.bar.classList.contains("indeterminate")) n.bar.classList.add("indeterminate");
+        n.bar.style.width = w;
+      });
+    }, 320);
+  }
+
+  function _bundleLoadDone(msg, ok, statusEl) {
+    if (_bundleLoadTimer) {
+      clearInterval(_bundleLoadTimer);
+      _bundleLoadTimer = null;
+    }
+    _bundleLoadBusy = false;
+    _bundleButtonsBusy(false);
+    _bundleProgressNodes().forEach(function (n) {
+      n.bar.classList.remove("indeterminate");
+      n.bar.style.width = "100%";
+    });
+    var st = document.getElementById("mcStatus");
+    if (st && msg) st.textContent = msg;
+    if (statusEl && msg) statusEl.textContent = msg;
+    var gptSt = document.getElementById("mcGptBundleStatus");
+    if (gptSt && msg) gptSt.textContent = msg;
+    setTimeout(function () {
+      _bundleProgressNodes().forEach(function (n) {
+        n.wrap.style.display = "none";
+        n.bar.style.width = "0%";
+        n.bar.classList.remove("indeterminate");
+      });
+    }, ok === false ? 4000 : 1400);
+  }
+
+  function _mcProgressStart(label) {
+    _bundleLoadStart(label || "Working…", null);
   }
 
   function _mcProgressDone(msg, ok) {
-    var wrap = document.getElementById("mcProgress");
-    var bar = document.getElementById("mcProgressBar");
-    var st = document.getElementById("mcStatus");
-    if (bar) bar.style.width = ok === false ? "100%" : "100%";
-    if (st) st.textContent = msg || "Done.";
-    setTimeout(function () {
-      if (wrap) wrap.style.display = "none";
-      if (bar) bar.style.width = "0%";
-    }, ok === false ? 4000 : 1200);
+    _bundleLoadDone(msg || "Done.", ok, null);
   }
-
-  var _mcProgressT0 = 0;
 
   function renderMissionControl(d) {
     _mcCache = d;
@@ -4765,13 +4865,13 @@
     });
     var dlTxt = document.getElementById("btnDownloadGPTAnalyzeBundleTxt");
     if (dlTxt) dlTxt.addEventListener("click", function () {
-      var st = document.getElementById("mcStatus");
-      if (st) st.textContent = "Downloading GPT bundle TXT…";
+      var gptSt = document.getElementById("mcGptBundleStatus");
+      _bundleLoadStart("Downloading GPT bundle TXT…", gptSt);
       fetchBundleText().then(function (t) {
         _downloadBlob(new Blob([t], { type: "text/plain" }), "gpt_analyze_" + _timestamp() + ".txt");
-        if (st) st.textContent = "GPT bundle TXT downloaded.";
+        _bundleLoadDone("GPT bundle TXT downloaded.", true, gptSt);
       }).catch(function (e) {
-        if (st) st.textContent = safeText(e && e.message, String(e));
+        _bundleLoadDone(safeText(e && e.message, String(e)), false, gptSt);
       });
     });
     var btnCopyLogs = document.getElementById("btnCopyLogsBundle");
@@ -4779,34 +4879,39 @@
     var btnDlTxt = document.getElementById("btnDownloadLogsTxt");
     var btnDlCsv = document.getElementById("btnDownloadLogsCsv");
     if (btnCopyLogs) btnCopyLogs.addEventListener("click", function () {
-      var st = document.getElementById("mcStatus");
-      if (st) st.textContent = "Loading ops logs…";
+      _bundleLoadStart("Loading ops logs bundle…", document.getElementById("mcStatus"));
       fetch("/api/ops/logs/export.json?limit=500", { headers: _authHeaders(), cache: "no-store" })
         .then(function (r) {
           if (!r.ok) throw new Error("logs export.json HTTP " + r.status);
           return r.json();
         })
         .then(function (d) {
-          return _copyWithFallback(JSON.stringify(d, null, 2), st, "Ops logs JSON copied.");
+          return _copyWithFallback(JSON.stringify(d, null, 2), document.getElementById("mcStatus"), "Ops logs JSON copied.");
         })
-        .catch(function (e) {
-          if (st) st.textContent = safeText(e && e.message, String(e));
-        });
+        .then(function () { _bundleLoadDone("Ops logs JSON copied.", true, null); })
+        .catch(function (e) { _bundleLoadDone(safeText(e && e.message, String(e)), false, null); });
     });
-    function _dlLogsUrl(path, label) {
+    function _dlLogsFetch(path, label, ext) {
       return function () {
-        var st = document.getElementById("mcStatus");
-        if (st) st.textContent = "Starting " + label + "…";
-        window.location.href = path + "?limit=500";
-        setTimeout(function () { if (st) st.textContent = label + " download started."; }, 400);
+        _bundleLoadStart("Downloading " + label + "…", document.getElementById("mcStatus"));
+        fetch(path + "?limit=500", { headers: _authHeaders(), cache: "no-store" })
+          .then(function (r) {
+            if (!r.ok) throw new Error(label + " HTTP " + r.status);
+            return r.blob();
+          })
+          .then(function (blob) {
+            _downloadBlob(blob, "ops_logs_" + _timestamp() + ext);
+            _bundleLoadDone(label + " downloaded.", true, null);
+          })
+          .catch(function (e) { _bundleLoadDone(safeText(e && e.message, String(e)), false, null); });
       };
     }
-    if (btnDlJson) btnDlJson.addEventListener("click", _dlLogsUrl("/api/ops/logs/export.json", "Logs JSON"));
-    if (btnDlTxt) btnDlTxt.addEventListener("click", _dlLogsUrl("/api/ops/logs/export.txt", "Logs TXT"));
-    if (btnDlCsv) btnDlCsv.addEventListener("click", _dlLogsUrl("/api/ops/logs/export.csv", "Logs CSV"));
+    if (btnDlJson) btnDlJson.addEventListener("click", _dlLogsFetch("/api/ops/logs/export.json", "Logs JSON", ".json"));
+    if (btnDlTxt) btnDlTxt.addEventListener("click", _dlLogsFetch("/api/ops/logs/export.txt", "Logs TXT", ".txt"));
+    if (btnDlCsv) btnDlCsv.addEventListener("click", _dlLogsFetch("/api/ops/logs/export.csv", "Logs CSV", ".csv"));
     if (tg) tg.addEventListener("click", function () {
-      var st = document.getElementById("mcStatus");
-      if (st) st.textContent = "Sending bundle to Telegram…";
+      var gptSt = document.getElementById("mcGptBundleStatus");
+      _bundleLoadStart("Building & sending bundle to Telegram…", gptSt);
       fetch("/api/ops/gpt-analyze-bundle/send-telegram", {
         method: "POST",
         headers: volHeaders(true)
@@ -4814,16 +4919,17 @@
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (!d.ok && d.errors) {
-            if (st) st.textContent = d.errors.join("; ");
+            _bundleLoadDone(d.errors.join("; "), false, gptSt);
             return;
           }
-          if (st) {
-          if (d.sent) st.textContent = "Sent to Telegram (" + (d.chunks_sent || 0) + " chunks" + (d.truncated ? ", truncated" : "") + ").";
-          else st.textContent = d.reason || (d.errors && d.errors.join("; ")) || "Telegram send failed.";
-        }
+          if (d.sent) {
+            _bundleLoadDone("Sent to Telegram (" + (d.chunks_sent || 0) + " chunks" + (d.truncated ? ", truncated" : "") + ").", true, gptSt);
+          } else {
+            _bundleLoadDone(d.reason || (d.errors && d.errors.join("; ")) || "Telegram send failed.", false, gptSt);
+          }
         })
         .catch(function (e) {
-          if (st) st.textContent = safeText(e && e.message, String(e));
+          _bundleLoadDone(safeText(e && e.message, String(e)), false, gptSt);
         });
     });
     var tgTest = document.getElementById("btnTelegramTestSend");
@@ -4968,45 +5074,65 @@
     });
 
     if (btnCopy) btnCopy.addEventListener("click", function () {
-      _aiStatus("Fetching MoMo memories...");
+      var aiSt = document.getElementById("aiMemoryCopyStatus");
+      _bundleLoadStart("Loading MoMo memories bundle…", aiSt);
       fetch("/api/ai/memories/export").then(function (r) { return r.json(); }).then(function (d) {
         return navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(function () {
+          _bundleLoadDone("MoMo memories copied.", true, aiSt);
           _aiStatus("MoMo memories copied.");
         });
-      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+      }).catch(function (e) {
+        _bundleLoadDone("Copy failed: " + (e.message || e), false, aiSt);
+        _aiStatus("Copy failed: " + (e.message || e));
+      });
     });
 
     if (btnBundle) btnBundle.addEventListener("click", function () {
-      _aiStatus("Fetching full MoMo bundle...");
+      var aiSt = document.getElementById("aiMemoryCopyStatus");
+      _bundleLoadStart("Loading full MoMo bundle…", aiSt);
       fetch("/api/ai/bundle/export").then(function (r) { return r.json(); }).then(function (d) {
         if (_lastMomoAnswer) {
           d.momo_last_answer = _lastMomoAnswer;
           d.jarvis_last_answer = _lastMomoAnswer;
         }
         return navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(function () {
+          _bundleLoadDone("Full MoMo bundle copied.", true, aiSt);
           _aiStatus("Full MoMo bundle copied.");
         });
-      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+      }).catch(function (e) {
+        _bundleLoadDone("Copy failed: " + (e.message || e), false, aiSt);
+        _aiStatus("Copy failed: " + (e.message || e));
+      });
     });
 
     if (btnDlMem) btnDlMem.addEventListener("click", function () {
-      _aiStatus("Preparing download...");
+      var aiSt = document.getElementById("aiMemoryCopyStatus");
+      _bundleLoadStart("Downloading MoMo memories…", aiSt);
       fetch("/api/ai/memories/export").then(function (r) { return r.json(); }).then(function (d) {
         _downloadJson(d, "ai_memories_" + _timestamp() + ".json");
+        _bundleLoadDone("MoMo memories downloaded.", true, aiSt);
         _aiStatus("Download ready.");
-      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+      }).catch(function (e) {
+        _bundleLoadDone("Download failed: " + (e.message || e), false, aiSt);
+        _aiStatus("Copy failed: " + (e.message || e));
+      });
     });
 
     if (btnDlBundle) btnDlBundle.addEventListener("click", function () {
-      _aiStatus("Preparing download...");
+      var aiSt = document.getElementById("aiMemoryCopyStatus");
+      _bundleLoadStart("Downloading full MoMo bundle…", aiSt);
       fetch("/api/ai/bundle/export").then(function (r) { return r.json(); }).then(function (d) {
         if (_lastMomoAnswer) {
           d.momo_last_answer = _lastMomoAnswer;
           d.jarvis_last_answer = _lastMomoAnswer;
         }
         _downloadJson(d, "quantbot_ai_bundle_" + _timestamp() + ".json");
+        _bundleLoadDone("Full MoMo bundle downloaded.", true, aiSt);
         _aiStatus("Download ready.");
-      }).catch(function (e) { _aiStatus("Copy failed: " + (e.message || e)); });
+      }).catch(function (e) {
+        _bundleLoadDone("Download failed: " + (e.message || e), false, aiSt);
+        _aiStatus("Copy failed: " + (e.message || e));
+      });
     });
   }
 

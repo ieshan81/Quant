@@ -929,8 +929,16 @@ _PAGE = """<!DOCTYPE html>
     .mc-action-group { margin: 0.35rem 0; }
     .mc-action-group summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); padding: 4px 0; }
     .mc-action-group .mc-action-btns { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 6px; }
-    .mc-progress { height: 4px; background: rgba(148,163,184,0.15); border-radius: 4px; overflow: hidden; margin: 6px 0; display: none; }
-    .mc-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #34d399, #22d3ee); transition: width 0.2s; }
+    .mc-progress { height: 5px; background: rgba(148,163,184,0.15); border-radius: 4px; overflow: hidden; margin: 6px 0; display: none; }
+    .mc-progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #34d399, #22d3ee); transition: width 0.15s ease-out; }
+    .mc-progress-bar.indeterminate {
+      width: 40% !important;
+      animation: dash-progress-slide 1.1s ease-in-out infinite;
+    }
+    @keyframes dash-progress-slide {
+      0% { transform: translateX(-120%); }
+      100% { transform: translateX(320%); }
+    }
     .mc-momo-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
     .config-cat { margin: 14px 0 8px; font-size: 13px; font-weight: 600; color: var(--accent); }
     .config-row { display: grid; grid-template-columns: 1fr 140px 90px; gap: 8px; align-items: start; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
@@ -1119,6 +1127,7 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" id="btnCopyAiMemory" class="btn secondary">AI memory copy</button>
           <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Telegram summary</button>
         </div>
+        <div id="mcGptBundleProgress" class="mc-progress"><div id="mcGptBundleProgressBar" class="mc-progress-bar"></div></div>
         <p id="mcGptBundleStatus" class="empty-hint" style="margin:8px 0 0;font-size:11px;">GPT bundle: not loaded — click Build bundle or Copy/Download.</p>
         <pre id="mcGptPreview" class="mono sec" style="display:none;max-height:100px;margin-top:8px;font-size:10px;"></pre>
       </div>
@@ -1351,6 +1360,7 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" id="btnCopyActivityExport" class="tab-btn" style="font-size:12px;">Copy Activity JSON</button>
         <button type="button" id="btnDownloadActivityExport" class="tab-btn" style="font-size:12px;">Download Activity JSON</button>
         <button type="button" id="btnCopyBrokerDiagnostic" class="tab-btn" style="font-size:12px;">Copy Broker Diagnostic JSON</button>
+        <div id="actExportProgress" class="mc-progress" style="margin-top:8px;"><div id="actExportProgressBar" class="mc-progress-bar"></div></div>
         <span class="updated-stamp" id="actExportStatus"></span>
         <span class="updated-stamp" id="brokerDiagExportStatus"></span>
       </div>
@@ -1529,6 +1539,7 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" class="btn secondary" id="btnCopyFullAiBundle">Copy Full MoMo Bundle</button>
           <button type="button" class="btn secondary" id="btnDownloadAiMemories">Download MoMo Memories</button>
           <button type="button" class="btn secondary" id="btnDownloadFullAiBundle">Download Full MoMo Bundle</button>
+        <div id="aiBundleProgress" class="mc-progress"><div id="aiBundleProgressBar" class="mc-progress-bar"></div></div>
         </div>
         <p id="aiMemoryCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
       </div>
@@ -1588,6 +1599,7 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" id="btnCopyCriticalOpsBundle" class="tab-btn" style="font-size:12px;">Copy Critical Ops Bundle</button>
           <button type="button" id="btnDownloadOpsLogsCsv" class="tab-btn" style="font-size:12px;">Download Ops Logs CSV</button>
           <button type="button" id="btnDownloadDailyReportXlsx" class="tab-btn" style="font-size:12px;">Download Daily Report XLSX</button>
+        <div id="opsExportProgress" class="mc-progress"><div id="opsExportProgressBar" class="mc-progress-bar"></div></div>
         </div>
         <p id="opsCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
       </div>
