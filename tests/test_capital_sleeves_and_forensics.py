@@ -304,9 +304,14 @@ def test_canonical_exit_state_includes_journal_rejections(tmp_path, monkeypatch)
         ), patch("monitoring.dashboard_data.fetch_recent_execution_decisions", return_value=[]):
             es = build_exit_state(position_state={"operator_exit_rows": []})
 
-    rejections = es.get("broker_rejections") or []
-    assert any(r.get("source") == "broker_order_rejections_journal" for r in rejections)
-    journal_row = [r for r in rejections if r.get("source") == "broker_order_rejections_journal"][0]
+    br = es.get("broker_rejections") or {}
+    classified = br.get("classified") if isinstance(br, dict) else br
+    events = es.get("broker_rejection_events") or []
+    assert events or classified
+    if isinstance(br, dict) and br.get("classified"):
+        journal_row = br["classified"][0]
+    else:
+        journal_row = events[0]
     assert journal_row.get("exact_reject_reason")
     assert journal_row.get("broker_error_code") == "INSUFFICIENT_BUYING_POWER"
 
@@ -322,9 +327,15 @@ def test_live_readiness_blocks_when_rejection_missing_detail(tmp_path, monkeypat
         weights_audit={"current_weights": {}, "live_safe_status": "paper_only", "unwired_count": 0},
         capital_state={"buying_power": 100, "capital_lock_reason": None},
         exit_state={
-            "broker_rejections": [
-                {"exact_reject_reason": "missing_broker_detail_in_meta — log Alpaca exception body on reject"}
-            ]
+            "broker_rejections": {
+                "active_unresolved": [
+                    {
+                        "exact_reject_reason": "missing_broker_detail_in_meta — log Alpaca exception body on reject",
+                        "is_live_readiness_blocking": True,
+                    }
+                ],
+                "broker_rejection_resolution_summary": {},
+            }
         },
         crypto_state={"main_scanner": {"api_fallback": False}},
         provider_health={},

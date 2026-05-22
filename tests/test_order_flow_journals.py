@@ -135,14 +135,25 @@ def test_canonical_exit_state_separates_blocked_and_broker(tmp_path, monkeypatch
         ):
             ex = build_exit_state(position_state={"active_positions": [], "stale_exit_signals": []})
     blocked = ex.get("blocked_before_submit") or []
-    broker = ex.get("broker_rejections") or []
+    br_obj = ex.get("broker_rejections") or {}
+    broker_events = ex.get("broker_rejection_events") or []
+    if isinstance(br_obj, dict):
+        broker_active = list(br_obj.get("active_unresolved") or [])
+        broker_resolved = list(br_obj.get("resolved_historical") or [])
+        broker_all = broker_events or broker_active + broker_resolved
+    else:
+        broker_all = list(br_obj)
     assert any(b.get("symbol") == "APLD" for b in blocked)
     assert any(
         "blocked before submit" in str(b.get("human_reason") or "").lower()
         for b in blocked
     )
-    assert any(r.get("symbol") == "AMC" for r in broker)
-    assert all(r.get("broker_submit_attempted") for r in broker if r.get("symbol") == "AMC")
+    assert any(r.get("symbol") == "AMC" for r in broker_all)
+    assert all(
+        r.get("broker_submit_attempted")
+        for r in broker_all
+        if r.get("symbol") == "AMC"
+    )
     assert not any(b.get("symbol") == "AMC" for b in blocked)
 
 
@@ -178,11 +189,15 @@ def test_live_readiness_sell_block_not_unresolved_broker(tmp_path, monkeypatch):
                     "block_reason_code": rc.SELL_BLOCKED_NO_BROKER_POSITION,
                 }
             ],
-            "broker_rejections": [],
+            "broker_rejections": {
+                "active_unresolved": [],
+                "broker_rejection_resolution_summary": {"sell_authority_gate_working": True},
+            },
             "stale_exit_signals": [],
         },
     )
     blockers = lr.get("architecture_blockers") or []
+    assert "active_broker_rejection_unresolved" not in blockers
     assert "unresolved_broker_rejection" not in blockers
     assert lr.get("live_evidence", {}).get("sell_authority_gate_working") is True
 
@@ -197,13 +212,17 @@ def test_live_readiness_blocks_on_real_40310000(tmp_path, monkeypatch):
     lr = build_live_readiness_state(
         exit_state={
             "blocked_before_submit": [],
-            "broker_rejections": [
-                {
-                    "symbol": "APLD",
-                    "broker_submit_attempted": True,
-                    "broker_error_code": "40310000",
-                }
-            ],
+            "broker_rejections": {
+                "active_unresolved": [
+                    {
+                        "symbol": "APLD",
+                        "broker_submit_attempted": True,
+                        "broker_error_code": "40310000",
+                        "is_live_readiness_blocking": True,
+                    }
+                ],
+                "broker_rejection_resolution_summary": {},
+            },
         },
     )
-    assert "unresolved_broker_rejection" in (lr.get("architecture_blockers") or [])
+    assert "active_broker_rejection_unresolved" in (lr.get("architecture_blockers") or [])

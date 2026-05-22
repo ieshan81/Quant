@@ -195,9 +195,14 @@ def test_exit_rejection_requires_detail_or_bug_flag():
             ],
         ):
             ex = build_exit_state()
-    rej = (ex.get("broker_rejections") or [])[0]
+    events = ex.get("broker_rejection_events") or []
+    assert events
+    rej = events[0]
     assert rej.get("reason_code") == "ALPACA_PAPER_ORDER_REJECTED"
     assert "missing_broker_detail" in str(rej.get("exact_reject_reason") or "")
+    br = ex.get("broker_rejections")
+    assert isinstance(br, dict)
+    assert "active_unresolved" in br
 
 
 def test_strategy_weights_unwired_list():

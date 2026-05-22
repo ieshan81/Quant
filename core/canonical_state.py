@@ -671,15 +671,35 @@ def build_exit_state(
         if isinstance(pe, dict) and str(pe.get("symbol") or "").upper() in active_syms
     ]
 
+    broker_rejection_resolution: dict[str, Any] = {}
+    try:
+        from monitoring.broker_rejection_resolution import build_broker_rejection_resolution
+
+        broker_rejection_resolution = build_broker_rejection_resolution(
+            preflight_blocks=blocked_before_submit,
+            active_position_symbols=active_syms,
+        )
+    except Exception:
+        broker_rejection_resolution = {
+            "active_unresolved": [],
+            "resolved_historical": [],
+            "classified": [],
+        }
+
+    active_unresolved = list(broker_rejection_resolution.get("active_unresolved") or [])
+    resolved_historical = list(broker_rejection_resolution.get("resolved_historical") or [])
+    res_summary = broker_rejection_resolution.get("broker_rejection_resolution_summary") or {}
+
     human = (
         f"{len(stock_candidates)} stock exit rows · "
         f"{len(blocked_before_submit)} blocked before submit · "
-        f"{len(broker_rejections)} broker rejections"
+        f"{len(active_unresolved)} active broker rejections · "
+        f"{len(resolved_historical)} resolved/historical"
     )
     if stale_exit_signals:
         human += f" · {len(stale_exit_signals)} stale exit signals quarantined"
-    if broker_rejections and not broker_rejections[0].get("exact_reject_reason"):
-        human += " — broker rejection detail incomplete"
+    if res_summary.get("sell_authority_gate_working"):
+        human += " · sell-authority gate working"
 
     return _envelope(
         source="execution_health.position_exit_rows + order_flow_journals",
@@ -690,7 +710,25 @@ def build_exit_state(
             "crypto_exit_candidates": crypto_candidates,
             "attempted_orders": [r for r in normalized_rows if r.get("order_attempted")],
             "blocked_before_submit": blocked_before_submit,
-            "broker_rejections": broker_rejections,
+            "broker_rejections": {
+                "active_unresolved": active_unresolved,
+                "resolved_historical": resolved_historical,
+                "resolved_by_preflight_gate": list(
+                    broker_rejection_resolution.get("resolved_by_preflight_gate") or []
+                ),
+                "classified": list(broker_rejection_resolution.get("classified") or []),
+                "last_real_broker_rejection_at": broker_rejection_resolution.get(
+                    "last_real_broker_rejection_at"
+                ),
+                "last_blocked_before_submit_at": broker_rejection_resolution.get(
+                    "last_blocked_before_submit_at"
+                ),
+                "newest_40310000_after_gate": bool(
+                    broker_rejection_resolution.get("newest_40310000_after_gate")
+                ),
+                "broker_rejection_resolution_summary": res_summary,
+            },
+            "broker_rejection_events": broker_rejections,
             "accepted_orders": accepted_orders,
             "pending_exits": pending_exits,
             "stale_exit_signals": stale_exit_signals,
@@ -700,6 +738,8 @@ def build_exit_state(
             "blocked_vs_rejected_summary": {
                 "blocked_before_submit_count": len(blocked_before_submit),
                 "broker_rejections_count": len(broker_rejections),
+                "active_unresolved_count": len(active_unresolved),
+                "resolved_historical_count": len(resolved_historical),
                 "accepted_orders_count": len(accepted_orders),
             },
         },
@@ -928,26 +968,32 @@ def build_live_readiness_state(
         if (capital_state.get("capital_lock_reason") or "") == "STOCK_DEPLOYMENT_PRIORITY":
             arch_blockers.append("capital_sleeve_unenforced")
     if exit_state:
-        rej = exit_state.get("broker_rejections") or []
-        for r in rej:
+        rej_obj = exit_state.get("broker_rejections")
+        if isinstance(rej_obj, dict):
+            active_rej = list(rej_obj.get("active_unresolved") or [])
+            res_summary = rej_obj.get("broker_rejection_resolution_summary") or {}
+        else:
+            active_rej = list(rej_obj or []) if isinstance(rej_obj, list) else []
+            res_summary = {}
+        for r in active_rej:
             if isinstance(r, dict) and "missing_broker_detail" in str(r.get("exact_reject_reason") or ""):
                 arch_blockers.append("alpaca_rejection_meta_missing")
                 break
-        try:
-            from core.broker_sell_authority import recent_short_block_rejection
-
-            if recent_short_block_rejection():
-                arch_blockers.append("unresolved_broker_rejection")
-        except Exception:
-            pass
-        blocked = exit_state.get("blocked_before_submit") or []
-        sell_blocks = [
-            b
-            for b in blocked
-            if str(b.get("block_reason_code") or b.get("reason_code") or "").startswith("SELL_BLOCKED_")
-        ]
-        if sell_blocks:
+        if any(bool(r.get("is_live_readiness_blocking")) for r in active_rej if isinstance(r, dict)):
+            arch_blockers.append("active_broker_rejection_unresolved")
+        if res_summary.get("sell_authority_gate_working"):
             live_evidence["sell_authority_gate_working"] = True
+        if res_summary.get("resolved_by_preflight_gate_count", 0) > 0:
+            live_evidence["historical_broker_rejection_resolved"] = int(
+                res_summary.get("resolved_by_preflight_gate_count") or 0
+            )
+        blocked = exit_state.get("blocked_before_submit") or []
+        if blocked and not live_evidence.get("sell_authority_gate_working"):
+            live_evidence["sell_authority_gate_working"] = any(
+                str(b.get("block_reason_code") or "").startswith("SELL_BLOCKED_")
+                for b in blocked
+                if isinstance(b, dict)
+            )
         stale_exits = exit_state.get("stale_exit_signals") or []
         if stale_exits:
             arch_blockers.append("stale_exit_signals_quarantined")
@@ -967,14 +1013,50 @@ def build_live_readiness_state(
         for pname, p in provider_health.items():
             if isinstance(p, dict) and p.get("enabled") and float(p.get("data_quality_score") or 1.0) < 0.5:
                 arch_blockers.append(f"provider_degraded:{pname}")
+
+    try:
+        from monitoring.reason_human import human_architecture_blocker
+    except Exception:
+        human_architecture_blocker = lambda c: str(c or "")  # noqa: E731
+
+    blocker_labels = {b: human_architecture_blocker(b) for b in arch_blockers}
+    human_lines: list[str] = []
+    if live_evidence.get("historical_broker_rejection_resolved"):
+        human_lines.append(
+            "Historical broker short rejection resolved by sell-authority gate."
+        )
+    if "active_broker_rejection_unresolved" in arch_blockers:
+        human_lines.append(blocker_labels.get("active_broker_rejection_unresolved", ""))
+    elif live_evidence.get("sell_authority_gate_working") and not any(
+        b == "active_broker_rejection_unresolved" for b in arch_blockers
+    ):
+        human_lines.append(
+            blocker_labels.get(
+                "sell_authority_gate_working",
+                "Sell-authority gate is blocking stale sells before broker submit.",
+            )
+        )
+    if not human_lines:
+        human_lines.append(str(lr.get("note") or "")[:300])
+    else:
+        note = str(lr.get("note") or "")[:200]
+        if note:
+            human_lines.append(note)
+
     return _envelope(
         source="monitoring.live_readiness.build_live_readiness",
-        human_summary=str(lr.get("note") or "")[:300],
+        human_summary=" ".join(h for h in human_lines if h)[:400],
         reason_code=str(lr.get("status") or "blocked"),
-        extra={**lr, "architecture_blockers": arch_blockers, "live_evidence": live_evidence},
+        extra={
+            **lr,
+            "architecture_blockers": arch_blockers,
+            "architecture_blocker_labels": blocker_labels,
+            "live_evidence": live_evidence,
+        },
         machine_evidence={
             "automated_checks": lr.get("failed_checks") or [],
             "architecture_blockers": arch_blockers,
+            "architecture_blocker_labels": blocker_labels,
             "live_allowed": lr.get("live_allowed"),
             **live_evidence,
         },

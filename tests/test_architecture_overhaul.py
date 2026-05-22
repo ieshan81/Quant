@@ -119,9 +119,16 @@ def test_momo_quant_memo_uses_canonical_truth():
             "main_scanner": {"scored_count": 0},
         },
         "exit_state": {
-            "broker_rejections": [
-                {"reason_code": "ALPACA_PAPER_ORDER_REJECTED", "exact_reject_reason": "missing_broker_detail_in_meta"}
-            ]
+            "broker_rejections": {
+                "active_unresolved": [
+                    {
+                        "reason_code": "ALPACA_PAPER_ORDER_REJECTED",
+                        "exact_reject_reason": "missing_broker_detail_in_meta",
+                        "is_live_readiness_blocking": True,
+                    }
+                ],
+                "broker_rejection_resolution_summary": {},
+            }
         },
         "fast_loop_state": {"execution_mode": "observe_only"},
         "live_readiness_state": {"live_allowed": False, "blockers": []},
@@ -154,9 +161,15 @@ def test_live_readiness_blocks_on_capital_and_fast_loop():
         weights_audit={"current_weights": {}, "live_safe_status": "paper_only", "unwired_count": 5},
         capital_state={"buying_power": 0.01, "capital_lock_reason": "STOCK_DEPLOYMENT_PRIORITY"},
         exit_state={
-            "broker_rejections": [
-                {"exact_reject_reason": "missing_broker_detail_in_meta — log Alpaca exception body on reject"}
-            ]
+            "broker_rejections": {
+                "active_unresolved": [
+                    {
+                        "exact_reject_reason": "missing_broker_detail_in_meta — log Alpaca exception body on reject",
+                        "is_live_readiness_blocking": True,
+                    }
+                ],
+                "broker_rejection_resolution_summary": {},
+            }
         },
         crypto_state={"main_scanner": {"api_fallback": True}},
         provider_health={

@@ -16,6 +16,39 @@ _REASON_MAP: dict[str, str] = {
     "CRYPTO_PUSH_READY_EXECUTION_DISABLED": "Crypto push planner ready but execution is disabled in config.",
 }
 
+_ARCHITECTURE_BLOCKER_MAP: dict[str, str] = {
+    "active_broker_rejection_unresolved": (
+        "Unresolved broker rejection after sell-authority gate — blocks live readiness."
+    ),
+    "unresolved_broker_rejection": (
+        "Unresolved broker rejection (legacy code — use active_broker_rejection_unresolved)."
+    ),
+    "historical_broker_rejection_resolved": (
+        "Historical broker short rejection resolved by sell-authority gate."
+    ),
+    "sell_authority_gate_working": "Sell-authority gate is blocking stale sells before broker submit.",
+    "alpaca_rejection_meta_missing": "Broker rejection missing Alpaca exception body in forensics.",
+    "stale_exit_signals_quarantined": "Stale exit signals quarantined — review operator exit rows.",
+    "position_exit_row_mismatch": "Position exit rows do not match broker positions.",
+    "buying_power_near_zero": "Buying power near zero — capital fully deployed.",
+    "capital_sleeve_unenforced": "Capital sleeve policy not enforced on deployment.",
+    "fast_loop_observe_only": "Fast loop is observe-only — no fast-loop paper submits.",
+    "fast_loop_scored_count_zero": "Fast loop scanned symbols but scored_count is zero.",
+    "crypto_scanner_api_fallback": "Crypto scanner used API fallback — data quality risk.",
+    "unwired_strategy_weights": "Strategy weights exposed in UI but not wired to scoring.",
+}
+
+
+def human_architecture_blocker(code: str | None) -> str:
+    c = str(code or "").strip()
+    if not c:
+        return ""
+    if c in _ARCHITECTURE_BLOCKER_MAP:
+        return _ARCHITECTURE_BLOCKER_MAP[c]
+    if c.startswith("provider_degraded:"):
+        return f"Market data provider degraded: {c.split(':', 1)[-1]}."
+    return c.replace("_", " ").strip().capitalize() + "."
+
 
 def human_reason_code(code: str | None) -> str:
     c = str(code or "").strip()

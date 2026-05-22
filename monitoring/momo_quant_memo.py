@@ -77,10 +77,30 @@ def build_quant_risk_memo(canonical_truth: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    rejections = exit_st.get("broker_rejections") or []
+    rej_obj = exit_st.get("broker_rejections") or {}
+    if isinstance(rej_obj, dict):
+        rejections = list(rej_obj.get("active_unresolved") or [])
+        resolved_hist = list(rej_obj.get("resolved_historical") or [])
+        res_note = (rej_obj.get("broker_rejection_resolution_summary") or {}).get("note")
+        if res_note:
+            quality_notes.append(str(res_note)[:200])
+        if rej_obj.get("resolved_by_preflight_gate") or any(
+            r.get("status") == "resolved_by_preflight_gate" for r in resolved_hist
+        ):
+            quality_notes.append(
+                "Historical broker short rejection resolved by sell-authority gate."
+            )
+        rejections.extend(resolved_hist[:5])
+    else:
+        rejections = list(rej_obj) if isinstance(rej_obj, list) else []
     if rejections:
+        active_only = (
+            list(rej_obj.get("active_unresolved") or [])
+            if isinstance(rej_obj, dict)
+            else rejections
+        )
         without_detail = [
-            r for r in rejections
+            r for r in active_only
             if "missing_broker_detail" in str(r.get("exact_reject_reason") or "")
         ]
         rejected_trade_analysis.extend(rejections[:5])

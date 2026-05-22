@@ -101,16 +101,39 @@ def _order_flow_forensics() -> dict[str, Any]:
             }
         )
     last_attempts.sort(key=lambda x: str(x.get("ts") or ""), reverse=True)
+    resolution: dict[str, Any] = {}
+    try:
+        from monitoring.broker_rejection_resolution import build_broker_rejection_resolution
+
+        resolution = build_broker_rejection_resolution(
+            broker_rows=broker_rej,
+            preflight_blocks=local_blocks,
+        )
+    except Exception as exc:
+        resolution = {"error": str(exc)[:120]}
+
     return {
         "local_preflight_blocks": local_blocks,
         "broker_rejections": broker_rej,
         "last_order_attempts": last_attempts[:20],
+        "broker_rejection_resolution_summary": resolution.get(
+            "broker_rejection_resolution_summary"
+        )
+        or {},
+        "resolved_by_preflight_gate": resolution.get("resolved_by_preflight_gate") or [],
+        "active_unresolved_broker_rejections": resolution.get("active_unresolved") or [],
+        "newest_40310000_after_gate": resolution.get("newest_40310000_after_gate"),
         "blocked_vs_rejected_summary": {
             "local_preflight_blocks_count": len(local_blocks),
             "broker_rejections_count": len(broker_rej),
+            "active_unresolved_count": len(resolution.get("active_unresolved") or []),
+            "resolved_by_preflight_gate_count": len(
+                resolution.get("resolved_by_preflight_gate") or []
+            ),
             "note": (
                 "Local preflight blocks never reached Alpaca. "
-                "Broker rejections are post-submit responses only."
+                "Broker rejections are post-submit responses only. "
+                "Historical 40310000 short errors may show resolved_by_preflight_gate."
             ),
         },
     }
