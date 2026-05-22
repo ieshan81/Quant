@@ -4764,9 +4764,16 @@ def run_trading_cycle_once(
         }
     except Exception:
         logger.debug("dynamic_capital_plan skipped", exc_info=True)
+    def _crypto_score_sort_key(pair: tuple[str, Any]) -> float:
+        try:
+            v = pair[1]
+            return float(v) if v is not None else float("-inf")
+        except (TypeError, ValueError):
+            return float("-inf")
+
     sorted_crypto_scores = sorted(
         ((r.symbol, r.score) for r in results if r.asset_class == "crypto" and not r.error),
-        key=lambda x: x[1],
+        key=_crypto_score_sort_key,
         reverse=True,
     )
     logger.info(f"Top crypto scores: {sorted_crypto_scores[:4]}")
@@ -4869,6 +4876,19 @@ def run_trading_cycle_once(
             type(_scan_diag_exc).__name__,
         )
         logger.debug("crypto_scanner_diagnostics skipped", exc_info=True)
+        try:
+            from monitoring.ops_log_store import write_ops_event
+
+            write_ops_event(
+                level="warning",
+                source="worker",
+                event_type="crypto_scan_diagnostics_failed",
+                cycle_id=str(summary.get("cycle_id") or cid),
+                message=f"DIAGNOSTICS_BUILD_FAILED {type(_scan_diag_exc).__name__}",
+                evidence={"error": str(_scan_diag_exc)[:400], "symbols_in_universe": len(cr or [])},
+            )
+        except Exception:
+            pass
     logger.info(
         "Cycle complete | analyzed={} buys={} sells={} holds={} errs={}",
         summary["analyzed"],

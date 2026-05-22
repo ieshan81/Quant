@@ -58,6 +58,19 @@ def test_diagnostics_gate_skipped() -> None:
     assert "CRYPTO_DISABLED" in out["global_blockers"]
 
 
+def test_diagnostics_none_score_does_not_crash() -> None:
+    rt = {"crypto_enabled": 1.0, "crypto_push_enabled": 1.0, "crypto_buy_threshold": 0.05}
+    results = [_R("SOL/USD", None)]
+    out = build_crypto_scanner_diagnostics_from_cycle(
+        rt=rt,
+        results=results,
+        sorted_crypto_scores=[("SOL/USD", None)],
+        universe_symbols=["SOL/USD"],
+    )
+    assert out.get("api_fallback") is False
+    assert out["symbols_scanned_this_cycle"] == 1
+
+
 def test_viability_recommendations() -> None:
     rt = {"crypto_buy_threshold": 0.05}
     diag = {"universe_count": 10, "top_candidates": [{"symbol": "SOL/USD", "score": 0}]}

@@ -7,6 +7,15 @@ from typing import Any
 from execution.trading_constants import cfg_float, cfg_is_enabled
 
 
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
 def _reject_reason(
     *,
     score: float | None,
@@ -68,15 +77,16 @@ def build_crypto_scanner_diagnostics_from_cycle(
         match = next((r for r in crypto_results if getattr(r, "symbol", "") == sym), None)
         action = getattr(match, "action", "HOLD") if match else "HOLD"
         err = getattr(match, "error", None) if match else None
+        sc = _safe_float(score, 0.0)
         top_candidates.append(
             {
                 "symbol": sym,
-                "score": round(float(score), 4),
+                "score": round(sc, 4),
                 "threshold": round(crypto_buy_th, 4),
                 "min_score": round(crypto_min_score, 4),
                 "action": action,
                 "reject_reason": _reject_reason(
-                    score=float(score),
+                    score=sc if score is not None else None,
                     action=str(action),
                     error=str(err) if err else None,
                     crypto_buy_threshold=crypto_buy_th,
@@ -97,7 +107,7 @@ def build_crypto_scanner_diagnostics_from_cycle(
         global_blockers.append("CRYPTO_PUSH_DISABLED")
 
     best_sym = sorted_crypto_scores[0][0] if sorted_crypto_scores else None
-    best_score = float(sorted_crypto_scores[0][1]) if sorted_crypto_scores else None
+    best_score = _safe_float(sorted_crypto_scores[0][1], 0.0) if sorted_crypto_scores else None
 
     if gate.get("heavy_scan_skipped"):
         # Worker-side scan gate already explains why scanning was skipped — use that
@@ -135,6 +145,7 @@ def build_crypto_scanner_diagnostics_from_cycle(
         worker_sleep_sec = 300.0
 
     return {
+        "api_fallback": False,
         "universe_source": universe_source or "cycle_scan",
         "universe_count": _broker_n,
         "symbols_scanned_this_cycle": symbols_scanned,
