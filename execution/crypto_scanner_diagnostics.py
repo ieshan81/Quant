@@ -241,7 +241,8 @@ def _resolve_universe_symbols() -> tuple[list[str], str, int]:
         if not syms:
             syms = list(FALLBACK_CRYPTO)
         src = "alpaca_supported" if syms and syms != list(FALLBACK_CRYPTO) else "fallback_crypto"
-        return syms[:25], src, len(syms)
+        # Return the full supported list so worker fallback can scan every pair.
+        return list(syms), src, len(syms)
     except Exception:
         from training.universe_scanner import FALLBACK_CRYPTO
 

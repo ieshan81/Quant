@@ -4274,21 +4274,29 @@ def run_trading_cycle_once(
     _crypto_universe_source = "universe_snapshot"
     if crypto_override is not None:
         _crypto_universe_source = "override"
-    elif not crypto_symbols:
-        # Universe-refresh thread may not have populated yet — fall back to Alpaca-supported pairs
-        # so overnight crypto-only mode never silently scans 0 symbols.
+    else:
+        # Overnight crypto-only mode needs meaningful coverage; the dynamic
+        # universe refresh only ships trending coins. Merge in Alpaca-supported
+        # pairs whenever the snapshot is empty OR clearly under-covered
+        # (less than 10 symbols).
         try:
             from execution.crypto_scanner_diagnostics import _resolve_universe_symbols
 
-            _fb_syms, _fb_src, _fb_n = _resolve_universe_symbols()
-            if _fb_syms:
-                crypto_symbols = list(_fb_syms)
-                _crypto_universe_source = f"fallback:{_fb_src}"
-                logger.info(
-                    "[crypto_scan] universe empty; using {} Alpaca-supported pairs from {}",
-                    len(crypto_symbols),
-                    _fb_src,
-                )
+            _need_fallback = (not crypto_symbols) or (not _mkt_open and len(crypto_symbols) < 10)
+            if _need_fallback:
+                _fb_syms, _fb_src, _fb_n = _resolve_universe_symbols()
+                if _fb_syms:
+                    merged = list(dict.fromkeys(list(crypto_symbols) + list(_fb_syms)))
+                    crypto_symbols = merged
+                    _crypto_universe_source = (
+                        f"merged_snapshot+{_fb_src}" if crypto_symbols and len(crypto_symbols) > len(_fb_syms)
+                        else f"fallback:{_fb_src}"
+                    )
+                    logger.info(
+                        "[crypto_scan] expanded universe to {} symbols via {}",
+                        len(crypto_symbols),
+                        _crypto_universe_source,
+                    )
         except Exception:
             logger.debug("[crypto_scan] supported-universe fallback failed", exc_info=True)
     rt["_crypto_universe_source"] = _crypto_universe_source
