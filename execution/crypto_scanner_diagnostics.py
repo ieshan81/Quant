@@ -654,8 +654,9 @@ def build_crypto_scanner_diagnostics_for_api(
             or blocker
         ),
     }
-    if out.get("api_fallback") and not int(out.get("symbols_scanned_this_cycle") or 0):
-        out["scanner_panel_message"] = "Waiting for first post-reset scan."
+    if not int(out.get("symbols_scanned_this_cycle") or 0):
+        if out.get("api_fallback") or not int(out.get("scored_count") or 0):
+            out["scanner_panel_message"] = "Waiting for first post-reset scan."
     out["crypto_strategy_viability"] = build_crypto_strategy_viability(rt, out)
     try:
         passing = _candidates_above_threshold(out.get("top_candidates") or [], crypto_buy_th)

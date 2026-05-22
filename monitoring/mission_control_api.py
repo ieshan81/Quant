@@ -913,8 +913,18 @@ def build_mission_control_summary_minimal(
             recon_clean=True,
             recovery_block=False,
         )
-    except Exception:
-        _mc_crypto_diag = {}
+    except Exception as exc:
+        _mc_crypto_diag = {
+            "universe_count": 0,
+            "symbols_scanned_this_cycle": 0,
+            "scored_count": 0,
+            "top_candidates": [],
+            "provider_status": "unavailable",
+            "scanner_panel_message": "Waiting for first post-reset scan.",
+            "human_reason": f"Scanner diagnostics unavailable ({str(exc)[:80]}).",
+            "api_fallback": True,
+            "top_rejected_reason": "SCANNER_DIAG_UNAVAILABLE",
+        }
         _mc_crypto_viability = {}
         _mc_canonical_reason = {}
 
