@@ -4860,7 +4860,14 @@ def run_trading_cycle_once(
                     )
             except Exception:
                 pass
-    except Exception:
+    except Exception as _scan_diag_exc:
+        # PROMOTE to warning so the production deploy log surfaces silent failures
+        # (was previously logger.debug which is suppressed under INFO).
+        logger.warning(
+            "[crypto_scan] DIAGNOSTICS_BUILD_FAILED err={} type={}",
+            str(_scan_diag_exc)[:200],
+            type(_scan_diag_exc).__name__,
+        )
         logger.debug("crypto_scanner_diagnostics skipped", exc_info=True)
     logger.info(
         "Cycle complete | analyzed={} buys={} sells={} holds={} errs={}",
