@@ -186,4 +186,28 @@ def evaluate_crypto_scan_gate(
             next_check_seconds=120.0,
             details={"note": "pull/sell still evaluated on open positions"},
         )
+    sleeve = max(equity, 1e-9) if equity > 0 else 1e-9
+    max_pct = cfg_float(rt, "max_position_pct", 0.005)
+    cap_notional = sleeve * max_pct
+    ref = float(getattr(config, "EQUITY_SCALE_REF_USD", 0.0) or 0.0)
+    boost_max = float(getattr(config, "SMALL_ACCOUNT_POSITION_BOOST_MAX", 2.5) or 2.5)
+    if ref > 0.0 and sleeve < ref:
+        cap_notional *= min(boost_max, max(1.0, ref / sleeve))
+    eff_pct = (cap_notional / sleeve) if sleeve > 0 else max_pct
+    if cap_notional + 1e-9 < min_order:
+        return _gate(
+            skipped=True,
+            reason_code="CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL",
+            saved_cpu_reason=(
+                f"Position cap below minimum order size "
+                f"(cap ${cap_notional:.2f} < min ${min_order:.2f})."
+            ),
+            next_check_seconds=_f(rt.get("crypto_idle_cycle_seconds"), 180.0),
+            details={
+                "max_single_asset_notional": round(cap_notional, 2),
+                "crypto_min_order_notional": min_order,
+                "sizing_equity": round(sleeve, 2),
+                "effective_max_position_pct": round(eff_pct, 6),
+            },
+        )
     return _gate(skipped=False, reason_code=None, next_check_seconds=_f(rt.get("crypto_active_cycle_seconds"), 30.0))

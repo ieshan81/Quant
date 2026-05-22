@@ -278,6 +278,40 @@ def position_key_symbol(asset_class: str | None, symbol: str | None) -> str:
     return normalize_symbol_for_db(asset_class, symbol)
 
 
+# USD-quoted stablecoins — not momentum targets; excluded from scan unless arbitrage mode.
+_STABLECOIN_USD_BASES: frozenset[str] = frozenset(
+    {"USDT", "USDC", "DAI", "BUSD", "TUSD", "USDP", "PYUSD", "FDUSD"}
+)
+
+
+def is_stablecoin_usd_pair(symbol: str | None) -> bool:
+    """True for pairs like ``USDT/USD`` or ``USDC/USD`` (near-zero alpha for signal buys)."""
+    pair = normalize_crypto_pair(symbol)
+    if "/" not in pair:
+        return False
+    base, quote = pair.split("/", 1)
+    return quote == "USD" and base in _STABLECOIN_USD_BASES
+
+
+def filter_tradeable_crypto_pairs(
+    symbols: Iterable[str],
+    *,
+    allow_stablecoin_arbitrage: bool = False,
+) -> list[str]:
+    """Drop stablecoin/USD pairs unless ``allow_stablecoin_arbitrage`` is enabled."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        pair = normalize_crypto_pair(raw)
+        if not pair or pair in seen:
+            continue
+        if not allow_stablecoin_arbitrage and is_stablecoin_usd_pair(pair):
+            continue
+        seen.add(pair)
+        out.append(pair)
+    return out
+
+
 def dedupe_symbol_set(symbols: Iterable[str], asset_class: str | None = None) -> list[str]:
     """De-duplicate a list while preserving the *db* canonical form.
 

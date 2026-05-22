@@ -490,7 +490,9 @@ def alpaca_supported_crypto_pairs(
             seen.add(sym)
             out.append(sym)
         if out:
-            return out
+            from utils.symbols import filter_tradeable_crypto_pairs
+
+            return filter_tradeable_crypto_pairs(out)
     except Exception as exc:
         logger.debug("[universe] alpaca_supported_crypto_pairs failed: {}", exc)
     return list(FALLBACK_CRYPTO)

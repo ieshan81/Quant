@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from execution import reason_codes
 from execution.trading_constants import cfg_float, cfg_is_enabled
 
 
@@ -101,6 +102,8 @@ def build_crypto_scanner_diagnostics_from_cycle(
         global_blockers.append(str(gate.get("skip_reason_code") or "CRYPTO_SCAN_SKIPPED"))
     if crypto_buys_disabled_cycle:
         global_blockers.append("CRYPTO_BUYS_DISABLED_INSUFFICIENT_BUYING_POWER")
+    if bg.get("crypto_cap_blocks_all"):
+        global_blockers.append(reason_codes.CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL)
     if not cfg_is_enabled(rt.get("crypto_enabled"), default=False):
         global_blockers.append("CRYPTO_DISABLED")
     if not cfg_is_enabled(rt.get("crypto_push_enabled"), default=False):
@@ -118,6 +121,9 @@ def build_crypto_scanner_diagnostics_from_cycle(
     elif not sorted_crypto_scores:
         final_code = "NO_CRYPTO_CANDIDATES"
         human = "No crypto symbols were scored this cycle (empty scan or all errors)."
+    elif bg.get("crypto_cap_blocks_all"):
+        final_code = reason_codes.CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL
+        human = "Position cap below minimum order size."
     elif crypto_buys_disabled_cycle:
         final_code = "CRYPTO_BUYS_DISABLED"
         human = (
@@ -254,6 +260,9 @@ def _resolve_universe_symbols() -> tuple[list[str], str, int]:
             syms = alpaca_supported_crypto_pairs()
         if not syms:
             syms = list(FALLBACK_CRYPTO)
+        from utils.symbols import filter_tradeable_crypto_pairs
+
+        syms = filter_tradeable_crypto_pairs(syms)
         src = "alpaca_supported" if syms and syms != list(FALLBACK_CRYPTO) else "fallback_crypto"
         # Return the full supported list so worker fallback can scan every pair.
         return list(syms), src, len(syms)

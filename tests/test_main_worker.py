@@ -74,6 +74,23 @@ def test_dynamic_risk_params_clamps_low() -> None:
     assert p["stop_loss_pct"] == pytest.approx(0.015)
 
 
+def test_can_buy_crypto_uses_alpaca_equity_for_single_asset_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Crypto cap check must not use near-zero paper crypto sleeve when Alpaca equity is ~$200."""
+    t = create_paper_trader(persist_sqlite=False)
+    t.cash_stocks = 180.0
+    t.cash_crypto = 0.0
+    rt = _rt()
+    rt["max_position_pct"] = 0.005
+    acct = MagicMock(equity=206.0)
+    cli = MagicMock()
+    cli.get_account.return_value = acct
+    monkeypatch.setattr(mw.stock_broker, "get_rest_client", lambda: cli)
+    n, _ = mw._buy_notional_breakdown(t, "crypto", rt)
+    ok, reason = mw._can_buy(t, "crypto", "BTC/USD", 50_000.0, n, rt)
+    assert reason != "single_asset_cap"
+    assert ok is True or reason not in ("single_asset_cap",)
+
+
 def test_can_buy_rejects_notional_below_min_usd() -> None:
     t = create_paper_trader(persist_sqlite=False)
     with patch("main_worker.portfolio_limiter.us_stock_market_open", return_value=True):

@@ -928,13 +928,29 @@ def dynamic_risk_params(equity: float) -> dict[str, float]:
     }
 
 
+def _alpaca_account_equity(acct: Any) -> float | None:
+    """Parse Alpaca account equity; return ``None`` when missing or not numeric."""
+    raw = getattr(acct, "equity", None)
+    if raw is None:
+        return None
+    if not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        eq = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return eq if eq > 0.0 else None
+
+
 def _latest_portfolio_equity_for_cycle(trader: PaperTrader) -> float:
     """Use Alpaca account equity as source of truth; fallback to trader mark-to-market."""
     try:
         cli = stock_broker.get_rest_client()
         if cli is not None:
             acct = cli.get_account()
-            return max(0.0, float(getattr(acct, "equity", 0) or 0))
+            eq = _alpaca_account_equity(acct)
+            if eq is not None:
+                return eq
     except Exception:
         logger.debug("latest alpaca equity read failed", exc_info=True)
     return max(0.0, float(trader.equity_total()))
@@ -953,17 +969,23 @@ def _effective_max_position_pct_for_sizing(sleeve: float, rt_max_pct: float) -> 
     return min(1.0, max(float(rt_max_pct), need))
 
 
-def _buy_notional_breakdown(
-    trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]
-) -> tuple[float, dict[str, float]]:
+def _buy_sizing_sleeve(trader: PaperTrader, asset_class: AssetClass) -> float:
+    """Sleeve for position-cap sizing — Alpaca account equity when connected, else paper sleeve."""
     sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
     try:
         cli = stock_broker.get_rest_client()
         if cli is not None:
             acct = cli.get_account()
-            sleeve = max(0.0, float(getattr(acct, "equity", 0) or 0))
+            alpaca_eq = _alpaca_account_equity(acct)
+            if alpaca_eq is not None:
+                sleeve = alpaca_eq
     except Exception:
         logger.debug("alpaca equity sizing fallback to trader sleeve", exc_info=True)
+    return sleeve
+
+
+def _effective_buy_cap_pct(sleeve: float, rt: dict[str, float]) -> tuple[float, dict[str, float]]:
+    """Effective max-position fraction (includes small-account equity boost)."""
     rt_max_pct = float(rt["max_position_pct"])
     eff_pct = _effective_max_position_pct_for_sizing(sleeve, rt_max_pct)
     ref = float(getattr(config, "EQUITY_SCALE_REF_USD", 0.0) or 0.0)
@@ -972,6 +994,18 @@ def _buy_notional_breakdown(
     if ref > 0.0 and sleeve > 0.0 and sleeve < ref:
         equity_boost = min(boost_max, max(1.0, ref / sleeve))
     eff_pct = min(1.0, eff_pct * equity_boost)
+    return eff_pct, {
+        "rt_max_position_pct": rt_max_pct,
+        "effective_max_position_pct": eff_pct,
+        "equity_scale_boost": equity_boost,
+    }
+
+
+def _buy_notional_breakdown(
+    trader: PaperTrader, asset_class: AssetClass, rt: dict[str, float]
+) -> tuple[float, dict[str, float]]:
+    sleeve = _buy_sizing_sleeve(trader, asset_class)
+    eff_pct, cap_meta = _effective_buy_cap_pct(sleeve, rt)
     kelly_frac = float(rt["kelly_fraction"])
     cap10 = max(0.0, sleeve * eff_pct)
     k_notional = max(0.0, sleeve * kelly_frac)
@@ -985,11 +1019,9 @@ def _buy_notional_breakdown(
     n = max(0.0, min(*candidates))
     detail = {
         "sleeve": sleeve,
-        "rt_max_position_pct": rt_max_pct,
-        "effective_max_position_pct": eff_pct,
-        "equity_scale_boost": equity_boost,
         "cap_notional": cap10,
         "kelly_notional": k_notional,
+        **cap_meta,
     }
     return n, detail
 
@@ -1021,8 +1053,8 @@ def _can_buy(
         return False, "max_stock_positions"
     if asset_class == "crypto" and n_cr >= _max_crypto_positions(rt):
         return False, "max_crypto_positions"
-    sleeve = trader.equity_stocks() if asset_class == "stock" else trader.equity_crypto()
-    eff_pct = _effective_max_position_pct_for_sizing(sleeve, float(rt["max_position_pct"]))
+    sleeve = _buy_sizing_sleeve(trader, asset_class)
+    eff_pct, _ = _effective_buy_cap_pct(sleeve, rt)
     if not portfolio_limiter.within_single_asset_cap(
         notional, sleeve, max_single_pct=eff_pct
     ):
@@ -3201,7 +3233,73 @@ def execute_cycle_results(
                     )
         except Exception:
             logger.debug("[cpu_gate] stock cap precheck skipped", exc_info=True)
+    _crypto_cap_blocks_all = False
+    if not crypto_buys_disabled_cycle:
+        try:
+            _eq_crypto_sz = _latest_portfolio_equity_for_cycle(trader)
+            _rt_pct_c = float(rt.get("max_position_pct", 0.005))
+            _cap_not_c = _eq_crypto_sz * _rt_pct_c
+            _ref_c = float(getattr(config, "EQUITY_SCALE_REF_USD", 0.0) or 0.0)
+            _boost_max_c = float(getattr(config, "SMALL_ACCOUNT_POSITION_BOOST_MAX", 2.5) or 2.5)
+            if _ref_c > 0.0 and _eq_crypto_sz > 0.0 and _eq_crypto_sz < _ref_c:
+                _cap_not_c *= min(_boost_max_c, max(1.0, _ref_c / _eq_crypto_sz))
+            _cap_pct_c = (_cap_not_c / _eq_crypto_sz) if _eq_crypto_sz > 0 else _rt_pct_c
+            if _cap_not_c + 1e-9 < crypto_min_notional:
+                _crypto_cap_blocks_all = True
+                from execution.block_registry import should_log_block
+
+                _cap_meta = {
+                    "min_order_notional": crypto_min_notional,
+                    "max_single_asset_notional": round(_cap_not_c, 2),
+                    "sizing_equity": round(_eq_crypto_sz, 2),
+                    "max_position_pct": float(rt.get("max_position_pct", 0.005)),
+                    "effective_max_position_pct": round(_cap_pct_c, 6),
+                    "max_single_asset_pct_config": float(config.MAX_SINGLE_ASSET_PCT),
+                    "scope": "cycle",
+                }
+                if should_log_block(
+                    reason_codes.CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL,
+                    subsystem="crypto_buy",
+                ):
+                    logger.warning(
+                        "[buy_gate] Position cap below minimum order size. "
+                        "cap=${:.2f} min_crypto=${:.2f} equity=${:.2f} eff_pct={:.4f} "
+                        "reason={}",
+                        _cap_not_c,
+                        crypto_min_notional,
+                        _eq_crypto_sz,
+                        _cap_pct_c,
+                        reason_codes.CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL,
+                    )
+                    try:
+                        from monitoring.ops_log_store import write_ops_event
+
+                        write_ops_event(
+                            level="info",
+                            source="worker",
+                            event_type=reason_codes.CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL,
+                            message="Position cap below minimum order size.",
+                            meta=_cap_meta,
+                        )
+                    except Exception:
+                        logger.debug("[buy_gate] ops log for crypto cap skip failed", exc_info=True)
+                _persist_decision(
+                    cycle_id=cid,
+                    asset_class="crypto",
+                    symbol="-",
+                    side="buy",
+                    decision="rejected",
+                    reason_code=reason_codes.CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL,
+                    score=None,
+                    notional=round(_cap_not_c, 2),
+                    quantity=0.0,
+                    price=None,
+                    meta=_cap_meta,
+                )
+        except Exception:
+            logger.debug("[cpu_gate] crypto cap precheck skipped", exc_info=True)
     _stock_gate_skip = bool((rt.get("_stock_scan_gate") or {}).get("heavy_scan_skipped"))
+    _crypto_gate_skip = bool((rt.get("_crypto_scan_gate") or {}).get("heavy_scan_skipped"))
 
     for cs in sorted(results, key=lambda x: (x.asset_class, x.symbol)):
         if cs.error:
@@ -3301,7 +3399,11 @@ def execute_cycle_results(
                         buy_gate_skipped_count += 1
                     out["holds"] += 1
                     continue
-                if cs.asset_class == "crypto" and crypto_buys_disabled_cycle:
+                if cs.asset_class == "crypto" and (
+                    crypto_buys_disabled_cycle or _crypto_cap_blocks_all or _crypto_gate_skip
+                ):
+                    if _crypto_cap_blocks_all or _crypto_gate_skip:
+                        buy_gate_skipped_count += 1
                     out["holds"] += 1
                     continue
                 _unresolved_str = str(rt.get("_unresolved_profit_exit_symbols", "")).strip()
@@ -3664,7 +3766,7 @@ def execute_cycle_results(
                     if not cap_ok:
                         ok, reason = False, cap_rc or reason_codes.BUY_BLOCKED_CAPITAL_CONSTITUTION
                 if not ok or qty <= 0:
-                    if cs.asset_class == "stock" and str(reason) in (
+                    if str(reason) in (
                         "single_asset_cap",
                         reason_codes.MAX_SINGLE_ASSET,
                     ):
@@ -3940,6 +4042,8 @@ def execute_cycle_results(
         "max_usable_for_new_buys_stock": max_usable_for_new_buys_stock,
         "max_usable_for_new_buys_crypto": max_usable_for_new_buys_crypto,
         "crypto_buys_disabled_cycle": bool(crypto_buys_disabled_cycle),
+        "crypto_cap_blocks_all": bool(_crypto_cap_blocks_all),
+        "crypto_scan_skip_reason": (rt.get("_crypto_scan_gate") or {}).get("skip_reason_code"),
         "reserved_stock_notional": reserved_stock_notional,
         "reserved_crypto_notional": reserved_crypto_notional,
         "stock_buy_attempts": stock_buy_attempts,
@@ -4272,6 +4376,13 @@ def run_trading_cycle_once(
 
     stock_symbols = stocks_override if stocks_override is not None else universe.snapshot()[0]
     crypto_symbols = crypto_override if crypto_override is not None else universe.snapshot()[1]
+    try:
+        from utils.symbols import filter_tradeable_crypto_pairs
+
+        _arb = bool(int(rt.get("crypto_stablecoin_arbitrage_enabled", 0)) == 1)
+        crypto_symbols = filter_tradeable_crypto_pairs(crypto_symbols, allow_stablecoin_arbitrage=_arb)
+    except Exception:
+        logger.debug("[crypto_scan] stablecoin pair filter skipped", exc_info=True)
     _mkt_open = bool(portfolio_limiter.us_stock_market_open())
     _crypto_universe_source = "universe_snapshot"
     if crypto_override is not None:

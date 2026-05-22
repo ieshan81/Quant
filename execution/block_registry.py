@@ -66,6 +66,14 @@ _REGISTRY: dict[str, dict[str, Any]] = {
         retryable=True,
         cpu_skip=True,
     ),
+    "CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL": _entry(
+        reason_code="CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL",
+        severity="info",
+        subsystem="crypto_buy",
+        human_reason="Position cap below minimum order size.",
+        retryable=True,
+        cpu_skip=True,
+    ),
     "BUY_BLOCKED_HARD_CASH_RESERVE": _entry(
         reason_code="BUY_BLOCKED_HARD_CASH_RESERVE",
         severity="info",

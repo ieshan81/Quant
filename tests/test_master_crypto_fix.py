@@ -52,6 +52,23 @@ def test_stock_gate_skips_on_hard_cash_reserve() -> None:
     assert g["skip_reason_code"] == "BUY_BLOCKED_HARD_CASH_RESERVE"
 
 
+def test_crypto_gate_skips_position_cap_below_min() -> None:
+    rt = {"crypto_min_order_notional": 5.0, "max_position_pct": 0.005, "crypto_idle_cycle_seconds": 180.0}
+    g = evaluate_crypto_scan_gate(
+        rt,
+        crypto_enabled=True,
+        worker_fresh=True,
+        reconcile_clean=True,
+        cash_for_crypto=100.0,
+        equity=200.0,
+        open_crypto_positions=0,
+        max_crypto_positions=5,
+        recovery_block=False,
+    )
+    assert g["heavy_scan_skipped"] is True
+    assert g["skip_reason_code"] == "CRYPTO_BUY_BLOCKED_POSITION_CAP_BELOW_MIN_NOTIONAL"
+
+
 def test_crypto_gate_skips_low_cash() -> None:
     rt = {"crypto_min_order_notional": 5.0, "crypto_idle_cycle_seconds": 180.0}
     g = evaluate_crypto_scan_gate(
