@@ -2,14 +2,16 @@
 
 Generated from **Graphify** (`graphifyy` 0.8.15) AST graph (cluster-only on AST extraction).
 
-## Graphify before / after canonical_state cleanup
+## Graphify across cleanup phases
 
-| Metric | Before cleanup | After cleanup |
-|--------|----------------|---------------|
-| Nodes | 3660 | **3745** (+85) |
-| Edges | 7794 | **7987** (+193) |
-| Communities | 209 | **207** |
-| New hub module | — | `core/canonical_state.py` → `build_canonical_state()` |
+| Metric | Phase 0 baseline | Canonical-state cleanup | Architecture overhaul (current) |
+|--------|------------------|--------------------------|---------------------------------|
+| Nodes | 3660 | 3745 | **3854** (+194 vs baseline) |
+| Edges | 7794 | 7987 | **8211** (+417 vs baseline) |
+| Communities | 209 | 207 | **226** |
+| New hubs | — | `core/canonical_state.py` | + `data_providers/`, `runtime_config/`, `core/universe_state.py`, `monitoring/momo_quant_memo.py`, `execution/order_forensics.py` |
+
+The architecture overhaul deliberately adds nodes/edges by introducing reusable provider scaffolds (`data_providers/`), a runtime config schema, a universe truth module, and a Momo quant memo. **Goal is fewer duplicate truth paths, not fewer files** — `build_canonical_state()` now owns 15 sub-states and downstream API endpoints consume that single facade.
 
 **God nodes (after):** see `graphify-out/GRAPH_REPORT.md` — still dominated by `get_connection()`, `create_app()`, `init_schema()`, `build_activity_export_payload()`, `run_trading_cycle_once()`, `cfg_float()`, `create_paper_trader()`, `build_dynamic_capital_plan()`.
 
@@ -191,7 +193,26 @@ Artifacts: `graphify-out/graph.html`, `graphify-out/graph.json`, `graphify-out/G
 | observe-only wording | `fast_loop_state.execution_mode` + `crypto_state.push.status` |
 | Momo stale notes | `momo_state` validation + synthetic capital/observe notes |
 | capital reserve stacking | `capital_state.why_cash_unavailable[]` explicit reasons |
-| stock exit rejection | `exit_state.broker_rejections[].exact_reject_reason` or missing-meta flag |
+| stock exit rejection | `exit_state.broker_rejections[].exact_reject_reason`; `execution/order_forensics.py` extracts Alpaca body |
+| provider degradation | `provider_health` snapshot per provider + live readiness blocker |
+| universe truth | `universe_state` (Alpaca + CCXT + Alpha Vantage), stablecoin filter, exclusions tracked |
+| Momo authority | `momo_state.quant_memo` (deterministic), `authority_level=paper_config_proposer`, explicit refusals |
+| env vs bot_config | `runtime_config/runtime_config_schema.py` + `config_migration.py` (dry-run safe) |
+
+## G. Phase coverage (this overhaul)
+
+| Phase | Module(s) | Tests |
+|-------|-----------|-------|
+| 1 — canonical truth + machine_evidence | `core/canonical_state.py` | `test_canonical_state.py`, `test_architecture_overhaul.py` |
+| 2 — capital sleeves | `core/canonical_state.build_capital_state`, `runtime_config/defaults.CAPITAL_DEFAULTS` | capital tests |
+| 4 — execution forensics | `execution/order_forensics.py`, `data_providers/alpaca_provider.parse_broker_exception` | `test_order_forensics_captures_missing_body`, `test_alpaca_provider_parse_exception` |
+| 5 — fast loop config | `runtime_config/defaults.FAST_LOOP_DEFAULTS` | existing fast loop tests |
+| 6 — providers | `data_providers/` (alpaca, ccxt, alpha_vantage, sentiment, cache, health) | `provider_*` tests |
+| 7 — universe | `core/universe_state.py` | `test_universe_state_excludes_stablecoins` |
+| 8 — Momo quant memo | `monitoring/momo_quant_memo.py` | `test_momo_quant_memo_uses_canonical_truth` |
+| 9 — strategy weights | `core/canonical_state.build_strategy_weights_state` (wired vs unwired lists) | existing weight tests |
+| 10 — config layer | `runtime_config/` package, `.env.example` | `test_runtime_config_schema_*`, `test_config_migration_dry_run_safe` |
+| 12 — live readiness | `core/canonical_state.build_live_readiness_state` (expanded blockers) | `test_live_readiness_blocks_on_capital_and_fast_loop` |
 
 ---
 

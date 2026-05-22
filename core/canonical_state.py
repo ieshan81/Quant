@@ -26,6 +26,7 @@ def _envelope(
     degraded: bool = False,
     fallback: bool = False,
     extra: dict[str, Any] | None = None,
+    machine_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     base: dict[str, Any] = {
         "generated_at": _now(),
@@ -35,6 +36,7 @@ def _envelope(
         "fallback": fallback,
         "human_summary": human_summary[:400],
         "reason_code": reason_code,
+        "machine_evidence": machine_evidence or {},
     }
     if extra:
         base.update(extra)
@@ -734,6 +736,10 @@ def build_live_readiness_state(
     position_state: dict[str, Any] | None = None,
     fast_loop_state: dict[str, Any] | None = None,
     weights_audit: dict[str, Any] | None = None,
+    capital_state: dict[str, Any] | None = None,
+    exit_state: dict[str, Any] | None = None,
+    crypto_state: dict[str, Any] | None = None,
+    provider_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from monitoring.live_readiness import build_live_readiness
 
@@ -763,11 +769,42 @@ def build_live_readiness_state(
         arch_blockers.append("position_exit_row_mismatch")
     if weights_audit and (weights_audit.get("unwired_count") or 0) > 0:
         arch_blockers.append("unwired_strategy_weights")
+    if capital_state:
+        if _f(capital_state.get("buying_power")) < 1.0:
+            arch_blockers.append("buying_power_near_zero")
+        if (capital_state.get("capital_lock_reason") or "") == "STOCK_DEPLOYMENT_PRIORITY":
+            arch_blockers.append("capital_sleeve_unenforced")
+    if exit_state:
+        rej = exit_state.get("broker_rejections") or []
+        for r in rej:
+            if isinstance(r, dict) and "missing_broker_detail" in str(r.get("exact_reject_reason") or ""):
+                arch_blockers.append("alpaca_rejection_meta_missing")
+                break
+    if fast_loop_state:
+        if fast_loop_state.get("execution_mode") == "observe_only":
+            arch_blockers.append("fast_loop_observe_only")
+        if int(fast_loop_state.get("scored_count") or 0) == 0 and int(
+            fast_loop_state.get("symbols_scanned") or 0
+        ) > 0:
+            arch_blockers.append("fast_loop_scored_count_zero")
+    if crypto_state:
+        main_sc = crypto_state.get("main_scanner") or {}
+        if main_sc.get("api_fallback"):
+            arch_blockers.append("crypto_scanner_api_fallback")
+    if provider_health:
+        for pname, p in provider_health.items():
+            if isinstance(p, dict) and p.get("enabled") and float(p.get("data_quality_score") or 1.0) < 0.5:
+                arch_blockers.append(f"provider_degraded:{pname}")
     return _envelope(
         source="monitoring.live_readiness.build_live_readiness",
         human_summary=str(lr.get("note") or "")[:300],
         reason_code=str(lr.get("status") or "blocked"),
         extra={**lr, "architecture_blockers": arch_blockers},
+        machine_evidence={
+            "automated_checks": lr.get("failed_checks") or [],
+            "architecture_blockers": arch_blockers,
+            "live_allowed": lr.get("live_allowed"),
+        },
     )
 
 
@@ -880,18 +917,48 @@ def build_canonical_state(
         crypto_state=crypto_state,
         capital_state=capital_state,
     )
+    diagnostics_state = build_diagnostics_state(
+        position_state=position_state,
+        capital_state=capital_state,
+        crypto_state=crypto_state,
+    )
+    universe_state = build_universe_state()
+    provider_health = _build_provider_health()
+    strategy_weights_state = (
+        build_strategy_weights_state()
+        if weights_audit is None
+        else _envelope(
+            source="monitoring.strategy_weights",
+            human_summary=f"{weights_audit.get('unwired_count', 0)} unwired weights",
+            extra={"audit": weights_audit, **weights_audit},
+            machine_evidence={"unwired_count": weights_audit.get("unwired_count", 0)},
+        )
+    )
+
     live_readiness_state = build_live_readiness_state(
         mission_summary=mission_summary,
         account_state=account_state,
         position_state=position_state,
         fast_loop_state=fast_loop_state,
         weights_audit=sw if isinstance(sw, dict) else None,
-    )
-    diagnostics_state = build_diagnostics_state(
-        position_state=position_state,
         capital_state=capital_state,
+        exit_state=exit_state,
         crypto_state=crypto_state,
+        provider_health=provider_health,
     )
+
+    momo_state["quant_memo"] = _build_quant_memo({
+        "account_state": account_state,
+        "capital_state": capital_state,
+        "position_state": position_state,
+        "crypto_state": crypto_state,
+        "exit_state": exit_state,
+        "fast_loop_state": fast_loop_state,
+        "live_readiness_state": live_readiness_state,
+        "strategy_weights_state": strategy_weights_state,
+        "diagnostics_state": diagnostics_state,
+        "momo_state": momo_state,
+    })
 
     return {
         "generated_at": _now(),
@@ -906,11 +973,47 @@ def build_canonical_state(
         "momo_state": momo_state,
         "live_readiness_state": live_readiness_state,
         "diagnostics_state": diagnostics_state,
-        "strategy_weights_state": build_strategy_weights_state()
-        if weights_audit is None
-        else _envelope(
-            source="monitoring.strategy_weights",
-            human_summary=f"{weights_audit.get('unwired_count', 0)} unwired weights",
-            extra={"audit": weights_audit, **weights_audit},
-        ),
+        "universe_state": universe_state,
+        "provider_health": provider_health,
+        "strategy_weights_state": strategy_weights_state,
     }
+
+
+def build_universe_state() -> dict[str, Any]:
+    try:
+        from core.universe_state import build_universe_state as _build_us
+
+        us = _build_us()
+        return _envelope(
+            source="core.universe_state.build_universe_state",
+            human_summary=f"Crypto {us['size']['crypto']} · Stock {us['size']['stock']}",
+            reason_code="UNIVERSE_OK",
+            extra=us,
+            machine_evidence={"size": us.get("size") or {}},
+        )
+    except Exception as exc:
+        return _envelope(
+            source="core.universe_state",
+            human_summary=f"universe build failed: {exc}"[:200],
+            reason_code="UNIVERSE_ERROR",
+            degraded=True,
+            extra={},
+        )
+
+
+def _build_provider_health() -> dict[str, Any]:
+    try:
+        from data_providers import snapshot
+
+        return snapshot()
+    except Exception:
+        return {}
+
+
+def _build_quant_memo(ct: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from monitoring.momo_quant_memo import build_quant_risk_memo
+
+        return build_quant_risk_memo(ct)
+    except Exception as exc:
+        return {"error": str(exc)[:160]}

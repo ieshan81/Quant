@@ -383,6 +383,12 @@ def build_gpt_analyze_bundle() -> dict[str, Any]:
         ],
         "code_graph_summary": _bundle_code_graph_summary(),
         "canonical_truth": canonical_truth,
+        "universe_state": canonical_truth.get("universe_state") if isinstance(canonical_truth, dict) else None,
+        "provider_health": canonical_truth.get("provider_health") if isinstance(canonical_truth, dict) else None,
+        "momo_quant_memo": (canonical_truth.get("momo_state") or {}).get("quant_memo")
+        if isinstance(canonical_truth, dict)
+        else None,
+        "runtime_config_schema": _bundle_runtime_config_schema(),
     }
     scrubbed = scrub_evidence(bundle)
     try:
@@ -721,6 +727,23 @@ def _bundle_momo_quant_recommendations(
             "paper_only": True,
         })
     return recs
+
+
+def _bundle_runtime_config_schema() -> dict[str, Any]:
+    try:
+        from runtime_config.runtime_config_schema import build_runtime_config_schema
+
+        s = build_runtime_config_schema()
+        return {
+            "secrets_present_count": sum(1 for v in s["secrets"].values() if v.get("present")),
+            "env_operational_overrides": [
+                k for k, v in s["env_operational"].items() if v.get("source") == "env"
+            ],
+            "deprecated_env_keys_present": s.get("deprecated_env_keys_present") or [],
+            "bot_config_default_groups": list(s["bot_config_defaults"].keys()),
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:160]}
 
 
 def _bundle_code_graph_summary() -> dict[str, Any]:
