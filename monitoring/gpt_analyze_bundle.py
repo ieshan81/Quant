@@ -357,6 +357,13 @@ def _fetch_ai_notes_light() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         meta["patterns_count"] = int(st.get("patterns_count") or 0)
         meta["skills_count"] = int(st.get("skills_count") or 0)
         meta["last_run_at"] = st.get("last_run_at")
+        meta["graph_nodes_total_count"] = int(
+            st.get("graph_nodes_total_count") or st.get("graph_nodes_count") or 0
+        )
+        meta["graph_edges_total_count"] = int(
+            st.get("graph_edges_total_count") or st.get("graph_edges_count") or 0
+        )
+        meta["observer_health"] = st.get("observer_health")
 
         with get_ai_memory_connection() as conn:
             rows = conn.execute(
