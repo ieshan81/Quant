@@ -108,6 +108,10 @@ def test_default_tab_mission_active_in_html(dash_app) -> None:
     assert 'class="tab-btn active" data-tab="backtest"' not in body
     assert '<section id="panel-mission" class="tab-panel active"' in body
     assert '<section id="panel-overview" class="tab-panel">' in body
+    assert 'class="app-shell"' in body
+    assert 'id="headerTabTitle"' in body
+    assert 'id="mcCryptoScanner"' in body
+    assert "/dashboard-theme.css" in body
 
 
 def test_dashboard_tab_hash_routing_in_js(dash_app) -> None:

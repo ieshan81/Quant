@@ -328,6 +328,51 @@
     var when = "Updated " + fmtTimeShort(new Date());
     var stamp = document.getElementById("dashUpdatedAt");
     if (stamp) stamp.textContent = when;
+    updateHeaderStrip(vm, null);
+  }
+
+  var TAB_META = {
+    mission: { title: "Mission Control", subtitle: "Your command center. Calm execution. Compounding edge." },
+    overview: { title: "Overview", subtitle: "Portfolio snapshot, engines, risk posture, and bot state." },
+    positions: { title: "Positions", subtitle: "What we hold (broker qty) and what happens next." },
+    activity: { title: "Activity", subtitle: "Readable timeline — orders, scans, blocks, and real errors." },
+    backtest: { title: "Backtest", subtitle: "Strategy research lab and manual experiments." },
+    ai: { title: "AI Console / Momo", subtitle: "Observer memory, notes, and paper-only proposals." },
+    ops: { title: "Ops Center", subtitle: "Worker health, API timings, and system diagnostics." },
+    files: { title: "Files", subtitle: "Logs, bundles, exports, and memory on the volume." },
+    config: { title: "Config", subtitle: "Safe settings, approvals, and locked dangerous controls." }
+  };
+
+  function updateHeaderStrip(vm, mc) {
+    var eq = vm && vm.equity != null ? vm.equity : (mc && mc.account ? mc.account.equity : (mc && mc.topline ? mc.topline.equity : null));
+    var cash = vm && vm.cash != null ? vm.cash : (mc && mc.topline ? mc.topline.cash : (mc && mc.account ? mc.account.cash : null));
+    var bp = vm && vm.buyingPower != null ? vm.buyingPower : (mc && mc.topline ? mc.topline.buying_power : (mc && mc.account ? mc.account.buying_power : null));
+    var mode = (mc && mc.mission && (mc.mission.mission_mode_human || mc.mission.mission_mode)) ||
+      (vm && vm.simpleStatus && vm.simpleStatus.mission_mode) || (vm && vm.mode) || "—";
+    var he = document.getElementById("hdrEquity");
+    var hc = document.getElementById("hdrCashBp");
+    var hm = document.getElementById("hdrMode");
+    var hs = document.getElementById("hdrSync");
+    var hd = document.getElementById("hdrHealthDot");
+    if (he) he.textContent = safeFmtMoney(eq);
+    if (hc) hc.textContent = safeFmtMoney(cash) + (bp != null ? " / " + safeFmtMoney(bp) : "");
+    if (hm) hm.textContent = safeText(mode, "—").replace(/_/g, " ");
+    if (hs) hs.textContent = fmtTimeShort(new Date());
+    if (hd) hd.className = "health-dot " + (vm || mc ? "ok" : "warn");
+    var sb = document.getElementById("sidebarSystemText");
+    var sh = document.getElementById("sidebarHealthDot");
+    if (sb) sb.textContent = vm && vm.payloadDegraded ? "Degraded data path" : "All systems operational";
+    if (sh) sh.className = "health-dot " + (vm && vm.payloadDegraded ? "warn" : "ok");
+    var sal = document.getElementById("sidebarAccountLine");
+    if (sal && vm && vm.mode) sal.textContent = String(vm.mode).toUpperCase() + " · Alpaca";
+  }
+
+  function setActiveTabHeader(name) {
+    var meta = TAB_META[name] || TAB_META.overview;
+    var t = document.getElementById("headerTabTitle");
+    var s = document.getElementById("headerTabSubtitle");
+    if (t) t.textContent = meta.title;
+    if (s) s.textContent = meta.subtitle;
   }
 
   // ---------------------------------------------------------------------------
@@ -1125,6 +1170,26 @@
 
   function renderPositionsTab(vm) {
     var rows = vm.positions || [];
+    var mv = 0;
+    var pnl = 0;
+    var pending = 0;
+    rows.forEach(function (r) {
+      var q = num(r.net_qty, 0) || 0;
+      var px = num(r.current_price, num(r.avg_entry_price, 0)) || 0;
+      mv += Math.abs(q * px);
+      if (r.unrealized_pnl != null && isFiniteNum(r.unrealized_pnl)) pnl += Number(r.unrealized_pnl);
+      var st = exitStateFor(r, vm);
+      if (st.status === "pending_exit" || st.status === "deferred") pending += 1;
+    });
+    var pe = document.getElementById("posHdrMv");
+    var pp = document.getElementById("posHdrPnl");
+    var pd = document.getElementById("posHdrPending");
+    var pa = document.getElementById("posHdrAlign");
+    if (pe) pe.textContent = fmtMoney(mv);
+    if (pp) { pp.textContent = fmtMoneySigned(pnl); pp.className = "val mono " + pnlClass(pnl); }
+    if (pd) pd.textContent = String(pending);
+    var eh = vm.executionHealth || {};
+    if (pa) pa.textContent = eh.broker_local_mismatch_count > 0 ? "Review" : "Aligned";
     document.getElementById("posAllEmpty").style.display = rows.length ? "none" : "block";
     var pb = document.querySelector("#tblPositionsFull tbody");
     if (!pb) return;
@@ -1229,6 +1294,7 @@
     });
     if (decCount) decCount.textContent = String(deduped.length);
     document.getElementById("actDecEmpty").style.display = deduped.length ? "none" : "block";
+    window.__lastActivityDecisions = deduped;
     document.querySelector("#tblActivityDecisions tbody").innerHTML = deduped.map(function (r) {
       var meta = r.meta && typeof r.meta === "object" ? r.meta : {};
       var reason = meta.reason != null ? String(meta.reason) : String(r.reason_code || "—");
@@ -1259,10 +1325,119 @@
       return "<tr><td>" + esc(leg) + "</td><td>" + esc(String(row.total != null ? row.total : "")) + "</td><td>" + esc(accStr) + "</td><td>" + esc(String(row.weight_suggestion != null ? row.weight_suggestion : "")) + "</td></tr>";
     }).join("");
 
-    document.getElementById("actSectionStatus").textContent = JSON.stringify(vm.sectionStatus || {}, null, 2);
+    var actSec = document.getElementById("actSectionStatus");
+    if (actSec) actSec.textContent = JSON.stringify(vm.sectionStatus || {}, null, 2);
+    var ss = vm.simpleStatus || {};
+    var td = document.getElementById("actSumDecision");
+    var tc = document.getElementById("actSumCrypto");
+    var tt = document.getElementById("actSumTrades");
+    if (td) td.textContent = safeText(ss.canonical_no_trade_reason && (ss.canonical_no_trade_reason.human_reason || ss.canonical_no_trade_reason.reason), deduped[0] ? (deduped[0].reason_code || "—") : "—");
+    if (tc) {
+      var cd = ss.crypto_scanner_diagnostics || {};
+      tc.textContent = (cd.symbols_scanned_this_cycle != null ? cd.symbols_scanned_this_cycle + " scanned" : "—") +
+        (cd.final_reason_code ? " · " + String(cd.final_reason_code).replace(/_/g, " ") : "");
+    }
+    if (tt) tt.textContent = String(tr.length);
+    _renderActivityTimeline(tr, deduped, sig);
+  }
+
+  var _actFilter = "all";
+
+  function _activityItemClass(kind) {
+    if (kind === "error") return "tl-err";
+    if (kind === "warn") return "tl-warn";
+    return "tl-ok";
+  }
+
+  function _renderActivityTimeline(trades, decisions, signals) {
+    var host = document.getElementById("activityTimeline");
+    if (!host) return;
+    var items = [];
+    trades.slice(0, 15).forEach(function (t) {
+      items.push({
+        ts: t.created_at || "",
+        kind: String(t.status || "").toLowerCase().indexOf("fail") >= 0 ? "error" : "ok",
+        cat: "orders",
+        html: "<strong>" + esc(t.symbol) + "</strong> " + esc(t.side) + " " + esc(tradeStatusBadge(t.status)) + " · " + esc(fmtQty(t.quantity, String(t.asset_class).toLowerCase() === "crypto"))
+      });
+    });
+    decisions.slice(0, 20).forEach(function (r) {
+      var rc = String(r.reason_code || "");
+      if (rc.indexOf("GHOST") >= 0 || rc.indexOf("SYNTHETIC") >= 0) return;
+      var isErr = rc.indexOf("ERROR") >= 0 || rc.indexOf("KILL") >= 0;
+      var isWarn = !isErr && (rc.indexOf("BLOCK") >= 0 || rc.indexOf("SKIP") >= 0 || rc.indexOf("MAX_") >= 0);
+      var ac = String(r.asset_class || "").toLowerCase();
+      items.push({
+        ts: r.created_at || "",
+        kind: isErr ? "error" : isWarn ? "warn" : "ok",
+        cat: ac === "crypto" ? "crypto" : ac === "stock" ? "stocks" : "orders",
+        html: "<strong>" + esc(r.symbol || "cycle") + "</strong> " + esc(r.side) + " · " + esc(rc.replace(/_/g, " "))
+      });
+    });
+    items.sort(function (a, b) { return String(b.ts).localeCompare(String(a.ts)); });
+    if (!items.length) {
+      host.style.display = "none";
+      return;
+    }
+    host.style.display = "block";
+    host.innerHTML = items.slice(0, 18).map(function (it) {
+      if (_actFilter !== "all" && _actFilter !== it.cat && !(_actFilter === "warnings" && it.kind === "warn") && !(_actFilter === "errors" && it.kind === "error")) {
+        return "";
+      }
+      return '<li class="' + _activityItemClass(it.kind) + '"><span class="mono" style="color:var(--muted);margin-right:6px">' +
+        esc(fmtTimestamp(it.ts)) + "</span> " + it.html + "</li>";
+    }).join("") || '<li class="muted">No items for this filter.</li>';
+  }
+
+  function wireActivityFilters() {
+    document.querySelectorAll("#activityFilters .filter-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        _actFilter = btn.getAttribute("data-act-filter") || "all";
+        document.querySelectorAll("#activityFilters .filter-btn").forEach(function (b) {
+          b.classList.toggle("active", b === btn);
+        });
+        var show = function (id, on) {
+          var el = document.getElementById(id);
+          if (el) el.style.display = on ? "" : "none";
+        };
+        if (_actFilter === "all") {
+          show("actTradesSec", true);
+          show("actSigSec", true);
+          show("actDecSec", true);
+          show("actPerfSec", true);
+        } else if (_actFilter === "orders") {
+          show("actTradesSec", true);
+          show("actSigSec", false);
+          show("actDecSec", false);
+          show("actPerfSec", false);
+        } else if (_actFilter === "crypto") {
+          show("actTradesSec", true);
+          show("actSigSec", true);
+          show("actDecSec", true);
+          show("actPerfSec", false);
+        } else if (_actFilter === "stocks") {
+          show("actTradesSec", true);
+          show("actSigSec", true);
+          show("actDecSec", true);
+          show("actPerfSec", false);
+        } else if (_actFilter === "warnings") {
+          show("actTradesSec", false);
+          show("actSigSec", false);
+          show("actDecSec", true);
+          show("actPerfSec", false);
+        } else if (_actFilter === "errors") {
+          show("actTradesSec", true);
+          show("actSigSec", false);
+          show("actDecSec", true);
+          show("actPerfSec", false);
+        }
+        if (window.__lastVm) _renderActivityTimeline(window.__lastVm.recentTrades || [], window.__lastActivityDecisions || [], window.__lastVm.recentSignals || []);
+      });
+    });
   }
 
   function paintViewModel(vm) {
+    window.__lastVm = vm;
     renderOverview(vm);
     renderPositionsTab(vm);
     renderActivity(vm);
@@ -1502,10 +1677,11 @@
   }
 
   function bindTabs() {
-    var tabs = document.querySelectorAll("nav .tab-btn");
+    var tabs = document.querySelectorAll(".tab-btn");
     var panels = document.querySelectorAll(".tab-panel");
     function show(name) {
       var i;
+      setActiveTabHeader(name);
       for (i = 0; i < tabs.length; i++) {
         tabs[i].classList.toggle("active", tabs[i].getAttribute("data-tab") === name);
       }
@@ -2031,6 +2207,18 @@
 
       var snap = resource.created_at ? resource : (status.resource_snapshot || {});
       renderOpsRings(snap);
+      var oh = document.getElementById("opsHdrCycle");
+      var on = document.getElementById("opsHdrNext");
+      var ohealth = document.getElementById("opsHdrHealth");
+      var oerr = document.getElementById("opsHdrErrors");
+      var w = status.worker || {};
+      if (oh) oh.textContent = w.last_cycle_duration_ms != null ? (Number(w.last_cycle_duration_ms) / 1000).toFixed(1) + "s" : "—";
+      if (on) on.textContent = w.expected_cycle_interval_seconds != null ? "~" + String(w.expected_cycle_interval_seconds) + "s" : "—";
+      if (ohealth) ohealth.textContent = w.worker_health === "ok" ? "Good" : safeText(w.worker_health, "—");
+      var crit = (_opsLogsCache || []).filter(function (l) {
+        return String(l.level || "").toLowerCase() === "error" || String(l.level || "").toLowerCase() === "critical";
+      }).length;
+      if (oerr) oerr.textContent = String(crit);
 
       var railway = status.railway || {};
       var rs = document.getElementById("opsRailwayStatus");
@@ -2163,7 +2351,28 @@
       });
       tree.appendChild(up);
     }
-    (data.entries || []).forEach(function (ent) {
+    var ents = data.entries || [];
+    var bundles = 0;
+    var logs = 0;
+    var exportsN = 0;
+    var bytes = 0;
+    ents.forEach(function (ent) {
+      var n = String(ent.name || "").toLowerCase();
+      if (n.indexOf("gpt") >= 0 && n.endsWith(".json")) bundles += 1;
+      if (n.endsWith(".log")) logs += 1;
+      if (n.endsWith(".csv") || n.endsWith(".xlsx") || n.indexOf("export") >= 0) exportsN += 1;
+      if (ent.size != null) bytes += Number(ent.size) || 0;
+    });
+    var vb = document.getElementById("vaultBundles");
+    var vl = document.getElementById("vaultLogs");
+    var ve = document.getElementById("vaultExports");
+    var vs = document.getElementById("vaultSize");
+    if (vb && bundles) vb.textContent = String(bundles);
+    if (vl && logs) vl.textContent = String(logs);
+    if (ve && exportsN) ve.textContent = String(exportsN);
+    if (vs && bytes > 0) vs.textContent = (bytes / (1024 * 1024)).toFixed(2) + " MB";
+
+    ents.forEach(function (ent) {
       var btn = document.createElement("button");
       btn.type = "button";
       var icon = ent.type === "dir" ? "📁 " : "📄 ";
@@ -2735,6 +2944,48 @@
     return '<svg viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none"><polyline fill="none" stroke="#38bdf8" stroke-width="1.5" points="' + pts + '"/></svg>';
   }
 
+  function _mcRenderCryptoScanner(d) {
+    var el = document.getElementById("mcCryptoScanner");
+    var panel = document.getElementById("mcCryptoScannerPanel");
+    if (!el) return;
+    var diag = d.crypto_scanner_diagnostics || {};
+    var push = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
+    var scanned = diag.symbols_scanned_this_cycle;
+    var universe = diag.broker_supported_count != null ? diag.broker_supported_count : diag.universe_count;
+    var th = num(diag.crypto_buy_threshold, num(diag.threshold, null));
+    var tops = diag.top_candidates || [];
+    var code = diag.final_reason_code || push.reason_code || "";
+    var human = diag.human_reason || push.human_reason || canonicalNoTradeHuman(d) || "—";
+    var scanning = push.push_allowed === true || (tops.length && tops[0].score >= (th || 0));
+    if (panel) {
+      panel.classList.remove("mc-scan-ok", "mc-scan-warn");
+      panel.classList.add(scanning ? "mc-scan-ok" : "mc-scan-warn");
+    }
+    var stats =
+      '<div class="mc-scanner-stats">' +
+      "<span>Universe <strong>" + esc(String(universe != null ? universe : "—")) + "</strong></span>" +
+      "<span>Scanned <strong>" + esc(String(scanned != null ? scanned : "—")) + "</strong></span>" +
+      (th != null ? "<span>Threshold <strong>" + esc(String(th)) + "</strong></span>" : "") +
+      "</div>";
+    var statusLab = code ? String(code).replace(/_/g, " ") : (push.push_allowed ? "Signal OK" : "No signal");
+    var rows = tops.slice(0, 6).map(function (c) {
+      return "<tr><td>" + esc(c.symbol) + '</td><td class="mono">' + esc(String(c.score != null ? Number(c.score).toFixed(3) : "—")) +
+        "</td><td>" + esc(String(c.reject_reason || c.action || "").replace(/_/g, " ")) + "</td></tr>";
+    }).join("");
+    el.innerHTML =
+      stats +
+      '<div style="margin-bottom:6px">' + _mcBadge(scanning ? "ok" : "warn", statusLab) +
+      ' <span style="font-size:11px;color:var(--muted)">' + esc(human) + "</span></div>" +
+      (rows
+        ? '<table class="mc-mini-table"><thead><tr><th>Symbol</th><th>Score</th><th>Reason</th></tr></thead><tbody>' + rows + "</tbody></table>"
+        : '<span class="muted">No scored candidates this cycle.</span>');
+  }
+
+  function canonicalNoTradeHuman(d) {
+    var c = d.canonical_no_trade_reason || {};
+    return c.human_reason || c.reason || "";
+  }
+
   function _mcRenderCommandStrip(d) {
     var host = document.getElementById("mcCommandStrip");
     if (!host) return;
@@ -2856,16 +3107,7 @@
         }).join("")
         : '<span class="muted">No pending exits</span>';
     }
-    var strat = document.getElementById("mcCryptoStrategyNote");
-    if (strat) {
-      var via = d.crypto_strategy_viability || diag.crypto_strategy_viability || {};
-      var note = via.mode_label || via.worker_sleep_note || "";
-      if (note) {
-        strat.innerHTML = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + esc(String(note).slice(0, 220)) + "</div>";
-      } else {
-        strat.innerHTML = '<span class="muted">Slow overnight crypto scanner — not active scalping.</span>';
-      }
-    }
+    _mcRenderCryptoScanner(d);
     var blk = document.getElementById("mcActiveBlockers");
     if (blk) {
       var blockers = [].concat(diag.global_blockers || [], (d.crypto_executor_readiness || {}).blockers || []);
@@ -2956,6 +3198,7 @@
   function renderMissionControl(d) {
     _mcCache = d;
     var ts = new Date().toLocaleString();
+    updateHeaderStrip(null, d);
     _mcTopline(d);
     var cards = [
       {
@@ -3884,6 +4127,14 @@
           });
         });
         if (status) status.textContent = "Config loaded. Edit values and Save. Secrets are not shown here.";
+        var cs = document.getElementById("cfgHdrStatus");
+        var cp = document.getElementById("cfgHdrPaper");
+        var cpend = document.getElementById("cfgHdrPending");
+        var clr = document.getElementById("cfgHdrLiveReady");
+        if (cs) cs.textContent = "OK";
+        if (cp) cp.textContent = "Paper";
+        if (cpend) cpend.textContent = "0";
+        if (clr) clr.textContent = "Not ready";
       })
       .catch(function (e) {
         var msg = safeText(e && e.message, String(e));
@@ -3965,6 +4216,7 @@
     wireOpsCenter();
     wireVolumeFiles();
     wireManualSell();
+    wireActivityFilters();
     wireAiChat();
     wireAiMemoryButtons();
     wireEquityRangeButtons();

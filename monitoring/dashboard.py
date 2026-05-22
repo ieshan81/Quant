@@ -31,6 +31,7 @@ _CLIENT_DEBUG_LOCK = threading.Lock()
 _CLIENT_DEBUG_EVENTS: list[dict[str, Any]] = []
 
 _DASHBOARD_APP_JS_PATH = Path(__file__).resolve().parent / "dashboard_app.js"
+_DASHBOARD_THEME_PATH = Path(__file__).resolve().parent / "dashboard_theme.css"
 
 
 def _debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
@@ -61,8 +62,9 @@ _PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>QuantBot Dashboard</title>
+  <title>QuantBot / Momo</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/dashboard-theme.css"/>
   <style>
     :root {
       --bg: #0a0e14;
@@ -889,34 +891,61 @@ _PAGE = """<!DOCTYPE html>
     }
   </style>
 </head>
+<body class="qb-app">
   <input type="hidden" id="dash-secret-holder" value="{{ dashboard_secret|e }}"/>
-  <header>
-    <h1 class="mono">QuantBot</h1>
-    <div class="header-meta">
-      <span id="dashUpdatedAt" class="updated-stamp">Updated —</span>
-      <div class="chip-row" id="statusChips">
-        <span class="chip" id="chipMode" data-state="info"><span class="dot"></span><span class="chip-text">— mode</span></span>
-        <span class="chip" id="chipLive" data-state="info"><span class="dot"></span><span class="chip-text">Live —</span></span>
-        <span class="chip" id="chipApi" data-state="info"><span class="dot"></span><span class="chip-text">API connecting…</span></span>
-        <span class="chip info" id="chipPoll"><span class="dot"></span><span class="chip-text">Poll 30s</span></span>
-      </div>
-    </div>
-  </header>
-  <div id="dashError" role="alert"></div>
+  <div id="dashError" role="alert" style="max-width:none;margin:0;border-radius:0;"></div>
   <div id="dashToast" role="status" aria-live="polite"></div>
-  <nav aria-label="Tabs">
-    <button type="button" class="tab-btn active" data-tab="mission">Mission Control</button>
-    <button type="button" class="tab-btn" data-tab="overview">Overview</button>
-    <button type="button" class="tab-btn" data-tab="positions">Positions</button>
-    <button type="button" class="tab-btn" data-tab="activity">Activity</button>
-    <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
-    <button type="button" class="tab-btn" data-tab="ai">AI Console</button>
-    <button type="button" class="tab-btn" data-tab="ops">Ops Center</button>
-    <button type="button" class="tab-btn" data-tab="files">Files</button>
-    <button type="button" class="tab-btn" data-tab="config">Config</button>
-  </nav>
-
-  <main>
+  <div class="app-shell">
+    <aside class="app-sidebar" aria-label="Primary navigation">
+      <div class="sidebar-brand">
+        <div class="brand-mark" aria-hidden="true">QB</div>
+        <div>
+          <div class="brand-title">QuantBot</div>
+          <div class="brand-sub">Momo</div>
+        </div>
+      </div>
+      <div class="sidebar-badges">
+        <span class="status-badge ok" id="sidebarBadgePaper">Paper Trading</span>
+        <span class="status-badge warn" id="sidebarBadgeLive">Live Disabled</span>
+      </div>
+      <nav class="sidebar-nav" aria-label="Tabs">
+        <button type="button" class="tab-btn active" data-tab="mission">Mission Control</button>
+        <button type="button" class="tab-btn" data-tab="overview">Overview</button>
+        <button type="button" class="tab-btn" data-tab="positions">Positions</button>
+        <button type="button" class="tab-btn" data-tab="activity">Activity</button>
+        <button type="button" class="tab-btn" data-tab="backtest">Backtest</button>
+        <button type="button" class="tab-btn" data-tab="ai">AI Console / Momo</button>
+        <button type="button" class="tab-btn" data-tab="ops">Ops Center</button>
+        <button type="button" class="tab-btn" data-tab="files">Files</button>
+        <button type="button" class="tab-btn" data-tab="config">Config</button>
+      </nav>
+      <div class="sidebar-footer glass-card">
+        <div class="sidebar-account-lab">Paper account</div>
+        <div class="mono" id="sidebarAccountLine">Alpaca paper</div>
+        <div class="sidebar-system" id="sidebarSystemLine"><span class="health-dot ok" id="sidebarHealthDot"></span><span id="sidebarSystemText">Connecting…</span></div>
+      </div>
+    </aside>
+    <div class="app-main">
+      <header class="header-strip">
+        <div class="header-strip-left">
+          <h1 id="headerTabTitle" class="header-title">Mission Control</h1>
+          <p class="header-subtitle" id="headerTabSubtitle">Your command center. Calm execution. Compounding edge.</p>
+          <span id="dashUpdatedAt" class="updated-stamp" style="display:block;margin-top:6px;">Updated —</span>
+        </div>
+        <div class="header-strip-metrics">
+          <div class="header-metric"><span class="hm-lab">Equity</span><span class="hm-val mono" id="hdrEquity">—</span></div>
+          <div class="header-metric"><span class="hm-lab">Cash / BP</span><span class="hm-val mono" id="hdrCashBp">—</span></div>
+          <div class="header-metric"><span class="hm-lab">Mode</span><span class="hm-val" id="hdrMode">—</span></div>
+          <div class="header-metric"><span class="hm-lab">Last sync</span><span class="hm-val mono" id="hdrSync">—</span><span class="health-dot ok" id="hdrHealthDot" title="API health"></span></div>
+        </div>
+        <div class="header-strip-chips chip-row" id="statusChips">
+          <span class="chip" id="chipMode" data-state="info"><span class="dot"></span><span class="chip-text">— mode</span></span>
+          <span class="chip" id="chipLive" data-state="info"><span class="dot"></span><span class="chip-text">Live —</span></span>
+          <span class="chip" id="chipApi" data-state="info"><span class="dot"></span><span class="chip-text">API connecting…</span></span>
+          <span class="chip info" id="chipPoll"><span class="dot"></span><span class="chip-text">Poll 30s</span></span>
+        </div>
+      </header>
+      <main class="tab-content">
     <section id="panel-mission" class="tab-panel active">
       <div class="mc-command-strip" id="mcCommandStrip"></div>
       <div class="mc-cockpit-main" id="mcCockpitMain">
@@ -927,14 +956,16 @@ _PAGE = """<!DOCTYPE html>
         <div class="mc-cockpit-right">
           <div class="mc-panel"><h4>Holdings</h4><div id="mcHoldingsMini"><span class="muted">Loading…</span></div></div>
           <div class="mc-panel"><h4>Pending exits</h4><div id="mcPendingExits"><span class="muted">None</span></div></div>
-          <div class="mc-panel"><h4>Crypto strategy</h4><div id="mcCryptoStrategyNote"><span class="muted">—</span></div></div>
+          <div class="mc-panel mc-crypto-scanner glass-card" id="mcCryptoScannerPanel"><h4>Crypto scanner</h4><div id="mcCryptoScanner"><span class="muted">Loading…</span></div></div>
           <div class="mc-panel"><h4>Active blockers</h4><div id="mcActiveBlockers"><span class="muted">None</span></div></div>
-          <div class="mc-panel"><h4>Last actions</h4><ul class="mc-feed" id="mcActionFeed"><li>—</li></ul></div>
-          <div class="mc-panel" id="mcMomoCriticalPanel"><h4>Momo critical</h4><div id="mcMomoCritical"><span class="muted">—</span></div></div>
+          <div class="mc-panel"><h4>Last actions</h4><ul class="mc-feed timeline-feed" id="mcActionFeed"><li>—</li></ul></div>
+          <div class="mc-panel mc-momo-observer glass-card" id="mcMomoCriticalPanel"><h4>Momo AI Observer</h4><div class="momo-role">Observer · paper recommendations only</div><div id="mcMomoCritical"><span class="muted">—</span></div></div>
         </div>
       </div>
+      <details class="diag-drawer mc-diagnostics-zone" id="mcDiagnosticsZone">
+        <summary>Advanced diagnostics &amp; exports (operator)</summary>
       <div class="mc-action-center">
-        <details class="mc-action-group" open>
+        <details class="mc-action-group">
           <summary>Analyze Logs</summary>
           <div class="mc-action-btns">
             <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">GPT Analyze Logs</button>
@@ -973,13 +1004,16 @@ _PAGE = """<!DOCTYPE html>
           <button type="button" class="btn secondary mc-quick" data-q="Why no stock sell?">Why no stock sell?</button>
           <button type="button" class="btn secondary mc-quick" data-q="Summarize risk">Summarize risk</button>
           <button type="button" class="btn secondary mc-quick" data-q="What changed?">What changed?</button>
+          <button type="button" class="btn secondary mc-quick" data-q="Can it trade tonight?">Can it trade tonight?</button>
         </div>
         <button type="button" id="btnMcAskMomo" class="btn primary">Ask Momo</button>
         <div id="mcMomoAnswer" class="mc-body" style="margin-top:6px;min-height:1.5rem;max-height:120px;overflow:auto;font-size:12px;">—</div>
       </div>
       <pre id="mcDevJson" class="mono sec" style="display:none;">{}</pre>
+      </details>
     </section>
     <section id="panel-overview" class="tab-panel">
+      <div class="tab-panel-header"><h2>Overview</h2><p>Executive summary — portfolio, engines, risk, and what the bot is doing.</p></div>
       <p id="overviewDataHint" class="muted" style="display:none;margin:0 0 12px;font-size:13px;"></p>
       <div class="grid-metrics">
         <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mMode">—</div></div>
@@ -1117,7 +1151,14 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-positions" class="tab-panel">
-      <div class="card">
+      <div class="tab-panel-header"><h2>Positions</h2><p>Broker-authoritative holdings, P&amp;L, and what happens next.</p></div>
+      <div class="grid-metrics" style="margin-bottom:12px;">
+        <div class="metric glass-card"><div class="lab">Market value</div><div class="val mono" id="posHdrMv">—</div></div>
+        <div class="metric glass-card"><div class="lab">Open P&amp;L</div><div class="val mono" id="posHdrPnl">—</div></div>
+        <div class="metric glass-card"><div class="lab">Pending exits</div><div class="val mono" id="posHdrPending">—</div></div>
+        <div class="metric glass-card"><div class="lab">Broker alignment</div><div class="val" id="posHdrAlign">—</div></div>
+      </div>
+      <div class="card glass-card">
         <h2>All open positions</h2>
         <p class="empty-hint" id="posAllEmpty" style="display:none;">No positions returned.</p>
         <div class="scroll-table">
@@ -1129,6 +1170,21 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-activity" class="tab-panel">
+      <div class="tab-panel-header"><h2>Activity</h2><p>Readable bot timeline — decisions, scans, orders, and real errors only.</p></div>
+      <div class="activity-summary glass-card" id="activitySummary">
+        <div class="metric"><div class="lab">Last decision</div><div class="val mono" id="actSumDecision">—</div></div>
+        <div class="metric"><div class="lab">Crypto scan</div><div class="val mono" id="actSumCrypto">—</div></div>
+        <div class="metric"><div class="lab">Recent trades</div><div class="val mono" id="actSumTrades">—</div></div>
+      </div>
+      <div class="activity-filters" id="activityFilters" role="group" aria-label="Activity filters">
+        <button type="button" class="filter-btn active" data-act-filter="all">All</button>
+        <button type="button" class="filter-btn" data-act-filter="orders">Orders</button>
+        <button type="button" class="filter-btn" data-act-filter="crypto">Crypto</button>
+        <button type="button" class="filter-btn" data-act-filter="stocks">Stocks</button>
+        <button type="button" class="filter-btn" data-act-filter="warnings">Warnings</button>
+        <button type="button" class="filter-btn" data-act-filter="errors">Errors</button>
+      </div>
+      <ul class="timeline-feed glass-card" id="activityTimeline" style="padding:10px 12px;margin-bottom:14px;display:none;"></ul>
       <div class="chip-row" style="margin-bottom:10px;">
         <button type="button" id="btnCopyActivityExport" class="tab-btn" style="font-size:12px;">Copy Activity JSON</button>
         <button type="button" id="btnDownloadActivityExport" class="tab-btn" style="font-size:12px;">Download Activity JSON</button>
@@ -1173,8 +1229,8 @@ _PAGE = """<!DOCTYPE html>
           </tr></thead><tbody></tbody></table>
         </div>
       </details>
-      <details class="section" id="actStatusSec">
-        <summary>Section status (raw)</summary>
+      <details class="section" id="actStatusSec" hidden>
+        <summary>Advanced — section status (raw)</summary>
         <div class="section-body">
           <pre class="sec mono" id="actSectionStatus">—</pre>
         </div>
@@ -1182,7 +1238,8 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-backtest" class="tab-panel">
-      <div class="card bt-setup-card">
+      <div class="tab-panel-header"><h2>Backtest</h2><p>Momo research lab — manual runs and strategy experiments (autonomous mode off unless enabled).</p></div>
+      <div class="card bt-setup-card glass-card">
         <h2>Backtest Setup</h2>
         <div class="bt-grid">
           <div><label for="btStrategy">Strategy</label><select id="btStrategy"></select></div>
@@ -1253,7 +1310,15 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-ai" class="tab-panel">
-      <div class="card">
+      <div class="tab-panel-header"><h2>AI Console / Momo</h2><p>Observer intelligence — notes, patterns, proposals. Cannot trade live.</p></div>
+      <div class="card glass-card ai-hero">
+        <div class="ai-avatar" aria-hidden="true">🤖</div>
+        <div style="flex:1;min-width:200px;">
+          <div class="status-badge warn" style="margin-bottom:8px;display:inline-flex;">Live trading not authorized</div>
+          <p style="margin:0;font-size:12px;color:var(--muted);">Momo observes, recommends, and proposes paper-mode config changes only. Operator approval required.</p>
+        </div>
+      </div>
+      <div class="card glass-card">
         <h2 style="margin:0 0 12px 0;font-size:1rem;font-weight:600;">AI Status</h2>
         <div class="grid-metrics" id="aiStatusMetrics">
           <div class="metric"><div class="lab">Provider</div><div class="val mono" id="aiProvider">—</div></div>
@@ -1325,7 +1390,14 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-ops" class="tab-panel">
-      <div class="card">
+      <div class="tab-panel-header"><h2>Ops Center</h2><p>System health, timings, and diagnostics. Danger zone lives here only.</p></div>
+      <div class="grid-metrics" style="margin-bottom:12px;">
+        <div class="metric glass-card"><div class="lab">Last cycle</div><div class="val mono" id="opsHdrCycle">—</div></div>
+        <div class="metric glass-card"><div class="lab">Next cycle</div><div class="val mono" id="opsHdrNext">—</div></div>
+        <div class="metric glass-card"><div class="lab">System</div><div class="val" id="opsHdrHealth">—</div></div>
+        <div class="metric glass-card"><div class="lab">Errors (24h)</div><div class="val mono" id="opsHdrErrors">—</div></div>
+      </div>
+      <div class="card glass-card">
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Resource monitor</h2>
         <p class="empty-hint" id="opsRailwayStatus" style="margin:0 0 10px;">Railway API: checking…</p>
         <p class="mono" id="opsSnapshotTime" style="font-size:12px;color:var(--muted);margin:0 0 8px;">Last snapshot: —</p>
@@ -1365,7 +1437,14 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-files" class="tab-panel">
-      <div class="card">
+      <div class="tab-panel-header"><h2>Files</h2><p>Logs, GPT bundles, exports, and memory — no secrets on disk view.</p></div>
+      <div class="files-vault-summary" id="filesVaultSummary">
+        <div class="vault-card glass-card"><div class="vault-n" id="vaultBundles">—</div><div class="vault-l">GPT bundles</div></div>
+        <div class="vault-card glass-card"><div class="vault-n" id="vaultLogs">—</div><div class="vault-l">Log files</div></div>
+        <div class="vault-card glass-card"><div class="vault-n" id="vaultExports">—</div><div class="vault-l">Exports</div></div>
+        <div class="vault-card glass-card"><div class="vault-n" id="vaultSize">—</div><div class="vault-l">Storage</div></div>
+      </div>
+      <div class="card glass-card">
         <h2 style="margin:0 0 6px;font-size:1rem;font-weight:600;">Volume files</h2>
         <p class="empty-hint" style="margin:0 0 10px;">
           Browse and edit bot storage (SQLite DBs, logs, exports). Paths stay inside the Railway persist volume.
@@ -1414,7 +1493,14 @@ _PAGE = """<!DOCTYPE html>
     </section>
 
     <section id="panel-config" class="tab-panel">
-      <div class="card">
+      <div class="tab-panel-header"><h2>Config</h2><p>Safe settings, Momo proposals, and locked dangerous controls.</p></div>
+      <div class="grid-metrics" style="margin-bottom:12px;">
+        <div class="metric glass-card"><div class="lab">Config status</div><div class="val" id="cfgHdrStatus">—</div></div>
+        <div class="metric glass-card"><div class="lab">Paper mode</div><div class="val" id="cfgHdrPaper">—</div></div>
+        <div class="metric glass-card"><div class="lab">Pending changes</div><div class="val mono" id="cfgHdrPending">—</div></div>
+        <div class="metric glass-card"><div class="lab">Live readiness</div><div class="val" id="cfgHdrLiveReady">—</div></div>
+      </div>
+      <div class="card glass-card">
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">App configuration</h2>
         <p class="empty-hint" style="margin:0 0 10px;">
           Non-secret settings live in <span class="mono">bot_config</span>. Secrets stay in Railway env only.
@@ -1448,7 +1534,9 @@ _PAGE = """<!DOCTYPE html>
         </div>
       </div>
     </div>
-  </main>
+      </main>
+    </div>
+  </div>
 
 <script src="/dashboard-app.js" defer></script>
 </body>
@@ -3536,6 +3624,16 @@ def create_app() -> Flask:
                 "type": "stock",
                 "description": "Stock — live data unavailable",
             }
+        )
+
+    @app.get("/dashboard-theme.css")
+    def dashboard_theme_css() -> Response:
+        if not _DASHBOARD_THEME_PATH.is_file():
+            return Response("/* theme missing */", status=404, mimetype="text/css")
+        return Response(
+            _DASHBOARD_THEME_PATH.read_text(encoding="utf-8"),
+            mimetype="text/css",
+            headers={"Cache-Control": "no-store"},
         )
 
     @app.get("/dashboard-app.js")
