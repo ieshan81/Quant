@@ -51,9 +51,7 @@ def get_mission_control_cached(
             and _CACHE.get("payload") is not None
             and age < ttl_sec
         ):
-            from monitoring.mission_control_api import _finalize_mission_control_payload
-
-            out = _finalize_mission_control_payload(dict(_CACHE["payload"]))
+            out = dict(_CACHE["payload"])
             out["cache_age_seconds"] = round(age, 2)
             out["stale"] = False
             out["cache_hit"] = True
@@ -75,9 +73,6 @@ def get_mission_control_cached(
 
     with _LOCK:
         if fresh and fresh.get("ok") is not False:
-            from monitoring.mission_control_api import _finalize_mission_control_payload
-
-            fresh = _finalize_mission_control_payload(fresh)
             _CACHE["payload"] = fresh
             _CACHE["cached_at"] = now
             _CACHE["duration_ms"] = duration_ms
@@ -95,9 +90,7 @@ def get_mission_control_cached(
             return _minimal_fallback(err)
 
         if _CACHE.get("payload"):
-            from monitoring.mission_control_api import _finalize_mission_control_payload
-
-            out = _finalize_mission_control_payload(dict(_CACHE["payload"]))
+            out = dict(_CACHE["payload"])
             out["cache_age_seconds"] = round(now - float(_CACHE.get("cached_at") or now), 2)
             out["stale"] = True
             out["degraded"] = True

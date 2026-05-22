@@ -647,7 +647,15 @@ def build_crypto_scanner_diagnostics_for_api(
         "final_reason_code": blocker,
         "human_reason": human[:320] or "Awaiting fresh worker cycle for full scanner breakdown.",
         "api_fallback": not bool(stored),
+        "provider_status": src or "unknown",
+        "last_scan_at": hb.get("last_cycle_at") or hb.get("generated_at"),
+        "top_rejected_reason": (
+            (top_candidates[0].get("reject_reason") if top_candidates else None)
+            or blocker
+        ),
     }
+    if out.get("api_fallback") and not int(out.get("symbols_scanned_this_cycle") or 0):
+        out["scanner_panel_message"] = "Waiting for first post-reset scan."
     out["crypto_strategy_viability"] = build_crypto_strategy_viability(rt, out)
     try:
         passing = _candidates_above_threshold(out.get("top_candidates") or [], crypto_buy_th)

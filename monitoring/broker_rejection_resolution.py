@@ -54,6 +54,8 @@ def _parse_ts_epoch(row: dict[str, Any]) -> float:
 
 
 def _is_short_block_row(row: dict[str, Any]) -> bool:
+    from monitoring.order_flow_labels import classify_broker_rejection_reason
+
     code = str(
         row.get("broker_error_code")
         or (row.get("forensics") or {}).get("broker_error_code")
@@ -65,8 +67,13 @@ def _is_short_block_row(row: dict[str, Any]) -> bool:
             str(row.get("message") or ""),
             str((row.get("forensics") or {}).get("exact_reject_reason") or ""),
         ]
-    ).lower()
-    return code == SHORT_BLOCK_BROKER_CODE or "not allowed to short" in msg
+    )
+    reason_class = classify_broker_rejection_reason(
+        broker_error_code=code,
+        exact_reject_reason=msg,
+        message=msg,
+    )
+    return reason_class == "BROKER_REJECT_SHORT_NOT_ALLOWED"
 
 
 def _rejection_group_key(row: dict[str, Any]) -> str:

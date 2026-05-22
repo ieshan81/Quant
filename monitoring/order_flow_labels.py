@@ -107,27 +107,29 @@ def format_blocked_before_submit_human(
     return f"{sym} {str(asset_class).lower()} order blocked before broker: {code or 'safety gate'}."
 
 
-def classify_broker_rejection_code(
+def classify_broker_rejection_reason(
     *,
     broker_error_code: str | None = None,
     exact_reject_reason: str | None = None,
+    message: str | None = None,
 ) -> str:
-    """Map Alpaca body/message to stable rejection codes (no short vs USD balance confusion)."""
-    detail = str(exact_reject_reason or "").strip().lower()
-    code = str(broker_error_code or "").strip().upper()
-    if "insufficient balance for usd" in detail or (
-        "insufficient" in detail and "balance" in detail and "usd" in detail
-    ):
+    """Map Alpaca body text to stable rejection reason codes."""
+    detail = " ".join(
+        [
+            str(exact_reject_reason or ""),
+            str(message or ""),
+        ]
+    ).lower()
+    code = str(broker_error_code or "").strip()
+    if "insufficient balance for usd" in detail:
         return "BROKER_REJECT_INSUFFICIENT_USD_BALANCE"
     if code == "40310000" or "not allowed to short" in detail:
         return "BROKER_REJECT_SHORT_NOT_ALLOWED"
-    if "insufficient" in detail and "buying power" in detail:
+    if "insufficient buying power" in detail or "buying power" in detail:
         return "BROKER_REJECT_INSUFFICIENT_BUYING_POWER"
-    if code:
-        return f"BROKER_REJECT_{code}"
-    if detail:
-        return "BROKER_REJECT_UNKNOWN"
-    return "BROKER_REJECT_DETAIL_MISSING"
+    if "insufficient balance" in detail:
+        return "BROKER_REJECT_INSUFFICIENT_BALANCE"
+    return "BROKER_REJECT_UNKNOWN"
 
 
 def format_broker_rejected_human(
@@ -137,18 +139,18 @@ def format_broker_rejected_human(
     exact_reject_reason: str | None = None,
 ) -> str:
     sym = str(symbol or "").strip().upper() or "symbol"
-    detail = str(exact_reject_reason or "").strip()
-    classified = classify_broker_rejection_code(
-        broker_error_code=broker_error_code,
-        exact_reject_reason=exact_reject_reason,
-    )
-    if classified == "BROKER_REJECT_INSUFFICIENT_USD_BALANCE":
-        return f"{sym} broker rejected: insufficient USD balance for this buy."
-    if classified == "BROKER_REJECT_SHORT_NOT_ALLOWED":
-        return f"{sym} broker rejected: account is not allowed to short."
-    if classified == "BROKER_REJECT_INSUFFICIENT_BUYING_POWER":
-        return f"{sym} broker rejected: insufficient buying power."
     code = str(broker_error_code or "").strip()
+    detail = str(exact_reject_reason or "").strip()
+    reason_class = classify_broker_rejection_reason(
+        broker_error_code=code,
+        exact_reject_reason=detail,
+    )
+    if reason_class == "BROKER_REJECT_INSUFFICIENT_USD_BALANCE":
+        return f"{sym} broker rejected: insufficient USD balance for this order."
+    if reason_class == "BROKER_REJECT_SHORT_NOT_ALLOWED":
+        return f"{sym} broker rejected: Alpaca {code or '40310000'} account is not allowed to short."
+    if reason_class == "BROKER_REJECT_INSUFFICIENT_BUYING_POWER":
+        return f"{sym} broker rejected: insufficient buying power."
     if code and detail and detail != code:
         return f"{sym} broker rejected: Alpaca {code} {detail[:120]}."
     if code:

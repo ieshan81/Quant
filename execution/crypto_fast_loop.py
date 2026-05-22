@@ -64,7 +64,12 @@ def get_crypto_fast_loop_status() -> dict[str, Any]:
             out = dict(_LAST_STATUS)
         else:
             out = dict(_LAST_STATUS)
-    return _finalize_status_readout(out)
+    try:
+        from monitoring.ui_truth_helpers import attach_fast_loop_display_fields
+
+        return attach_fast_loop_display_fields(_finalize_status_readout(out))
+    except Exception:
+        return _finalize_status_readout(out)
 
 
 def _finalize_status_readout(out: dict[str, Any]) -> dict[str, Any]:
@@ -102,17 +107,6 @@ def _finalize_status_readout(out: dict[str, Any]) -> dict[str, Any]:
         st["execution_mode"] = "observe_only"
         st["ui_label"] = "Observe Only"
         st["note"] = "Fast loop observe-only — scanning; fast-loop orders disabled"
-    pes = st.get("push_execution_state") or {}
-    if st.get("execution_mode") == "observe_only" or pes.get("mode") == "observe_only":
-        st["ui_push_blocker"] = "OBSERVE_ONLY"
-    elif pes.get("reason") and str(pes.get("reason")) not in (
-        reason_codes.CRYPTO_PUSH_ALLOWED,
-        "OK",
-        "",
-    ):
-        st["ui_push_blocker"] = str(pes["reason"])
-    else:
-        st["ui_push_blocker"] = str(st.get("exact_push_blocker") or "NO_CANDIDATE")
     return st
 
 
@@ -612,6 +606,12 @@ def run_crypto_fast_loop_once(
         "execution_mode": "observe_only" if not execute else "submit_paper",
     }
     st = _finalize_status_readout(st)
+    try:
+        from monitoring.ui_truth_helpers import attach_fast_loop_display_fields
+
+        st = attach_fast_loop_display_fields(st)
+    except Exception:
+        pass
     _set_status(st)
     return st
 

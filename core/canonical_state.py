@@ -934,25 +934,6 @@ def _validate_momo_note(
         push = (crypto_state.get("push") or {}) if isinstance(crypto_state.get("push"), dict) else {}
         if push.get("status") in ("ready", "observe_only"):
             return False, "crypto_now_enabled_or_allowed"
-    if any(
-        x in finding
-        for x in (
-            "cannot trade crypto",
-            "inability to trade crypto",
-            "executor reports inability",
-            "executor reports",
-        )
-    ):
-        pos = position_state or {}
-        rows = pos.get("operator_visible_positions") or pos.get("open_positions") or []
-        if any(
-            isinstance(p, dict) and str(p.get("asset_class") or "").lower() in ("crypto", "digital")
-            for p in rows
-        ):
-            return False, "crypto_positions_open"
-        pull = (crypto_state.get("pull") or {}) if isinstance(crypto_state.get("pull"), dict) else {}
-        if pull.get("status") in ("can_sell", "ready") or pull.get("can_sell"):
-            return False, "crypto_pull_active"
     if "mismatch" in finding or "reconcile" in finding:
         if not (position_state.get("active_mismatches") or []):
             return False, "mismatches_cleared"

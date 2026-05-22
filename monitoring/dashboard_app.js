@@ -385,35 +385,38 @@
   };
   var PAGE_TITLE_SUFFIX = " · MORE MONEY";
 
-  function _mcCanonicalAccount(d) {
-    if (!d) return {};
-    var ca = d.canonical_account || {};
-    if (ca.equity != null || ca.cash != null) return ca;
-    var ct = d.canonical_truth || {};
-    var acct = ct.account_state || {};
-    if (acct.equity != null || acct.cash != null) {
-      return {
-        equity: acct.equity,
-        cash: acct.cash,
-        buying_power: acct.buying_power,
-        primary_source: acct.primary_source || "canonical_truth.account_state"
-      };
+  function pickCanonicalAccount(mc) {
+    if (!mc) return { equity: null, cash: null, buying_power: null, source: null };
+    var ct = mc.canonical_truth && mc.canonical_truth.account_state;
+    var ca = mc.canonical_account;
+    var ac = mc.account || {};
+    var tl = mc.topline || {};
+    var src = (ct && (ct.primary_source || ct.source)) || (ca && ca.primary_source) || ac.account_source || tl.account_source;
+    function pick(field) {
+      if (ct && ct[field] != null) return ct[field];
+      if (ca && ca[field] != null) return ca[field];
+      if (ac[field] != null) return ac[field];
+      return tl[field] != null ? tl[field] : null;
     }
-    var top = d.topline || {};
-    var base = d.account || {};
     return {
-      equity: top.equity != null ? top.equity : base.equity,
-      cash: top.cash != null ? top.cash : base.cash,
-      buying_power: top.buying_power != null ? top.buying_power : base.buying_power,
-      primary_source: base.account_source || top.account_source
+      equity: pick("equity"),
+      cash: pick("cash"),
+      buying_power: pick("buying_power"),
+      source: src
     };
   }
 
+  function _isFetchAbortError(e) {
+    var msg = String((e && e.message) || e || "").toLowerCase();
+    var name = String((e && e.name) || "").toLowerCase();
+    return name === "aborterror" || msg.indexOf("abort") >= 0 || msg.indexOf("aborted") >= 0;
+  }
+
   function updateHeaderStrip(vm, mc) {
-    var canon = mc ? _mcCanonicalAccount(mc) : {};
-    var eq = vm && vm.equity != null ? vm.equity : (canon.equity != null ? canon.equity : (mc && mc.account ? mc.account.equity : (mc && mc.topline ? mc.topline.equity : null)));
-    var cash = vm && vm.cash != null ? vm.cash : (canon.cash != null ? canon.cash : (mc && mc.topline ? mc.topline.cash : (mc && mc.account ? mc.account.cash : null)));
-    var bp = vm && vm.buyingPower != null ? vm.buyingPower : (canon.buying_power != null ? canon.buying_power : (mc && mc.topline ? mc.topline.buying_power : (mc && mc.account ? mc.account.buying_power : null)));
+    var canon = pickCanonicalAccount(mc);
+    var eq = vm && vm.equity != null ? vm.equity : (mc ? canon.equity : null);
+    var cash = vm && vm.cash != null ? vm.cash : (mc ? canon.cash : null);
+    var bp = vm && vm.buyingPower != null ? vm.buyingPower : (mc ? canon.buying_power : null);
     var mode = (mc && mc.mission && (mc.mission.mission_mode_human || mc.mission.mission_mode)) ||
       (vm && vm.simpleStatus && vm.simpleStatus.mission_mode) || (vm && vm.mode) || "—";
     var he = document.getElementById("hdrEquity");
@@ -1277,8 +1280,8 @@
         } else if (eqHint) {
           eqHint.style.display = "none";
         }
-        var liveEq = (_mcCache && _mcCache.account && _mcCache.account.equity != null)
-          ? _mcCache.account.equity
+        var liveEq = _mcCache
+          ? pickCanonicalAccount(_mcCache).equity
           : (window.__dashVm && window.__dashVm.equity != null ? window.__dashVm.equity : null);
         series = _mergeLiveEquityIntoSeries(series, liveEq);
         renderEquityChart({ equitySeries: series });
@@ -3705,13 +3708,14 @@
     var panel = document.getElementById("mcCryptoScannerPanel");
     if (!el) return;
     var diag = d.crypto_scanner_diagnostics || {};
-    var cfl = d.crypto_fast_loop_status || {};
     var push = d.crypto_push || (d.crypto_night || {}).crypto_push || {};
-    var scanned = diag.symbols_scanned_this_cycle != null ? diag.symbols_scanned_this_cycle : cfl.symbols_scanned;
-    var universe = diag.universe_count != null ? diag.universe_count : (diag.broker_supported_count != null ? diag.broker_supported_count : cfl.universe_count);
-    var scoredN = diag.scored_count != null ? diag.scored_count : cfl.scored_count;
-    var topReject = diag.top_rejected_reason || (cfl.fast_loop_scoring_diagnostics || {}).top_rejected_reason;
-    var scanTs = diag.last_scan_at || cfl.last_loop_at;
+    var scanned = diag.symbols_scanned_this_cycle != null ? diag.symbols_scanned_this_cycle : diag.symbols_scanned;
+    var universe = diag.universe_count != null ? diag.universe_count : (diag.broker_supported_count != null ? diag.broker_supported_count : null);
+    var scoredN = diag.scored_count;
+    var panelMsg = diag.scanner_panel_message || "";
+    var provider = diag.provider_status || diag.universe_source || "—";
+    var lastScan = diag.last_scan_at || diag.last_cycle_at || "";
+    var topRej = diag.top_rejected_reason || "";
     var th = num(diag.crypto_buy_threshold, num(diag.threshold, null));
     var tops = diag.top_candidates || [];
     var code = diag.final_reason_code || push.reason_code || "";
@@ -3721,19 +3725,19 @@
       panel.classList.remove("mc-scan-ok", "mc-scan-warn");
       panel.classList.add(scanning ? "mc-scan-ok" : "mc-scan-warn");
     }
-    var pending = diag.post_reset_scan_pending === true;
+    if (!topRej && tops.length && tops[0].reject_reason) topRej = tops[0].reject_reason;
     var stats =
       '<div class="mc-scanner-stats">' +
       "<span>Universe <strong>" + esc(String(universe != null ? universe : "—")) + "</strong></span>" +
       "<span>Scanned <strong>" + esc(String(scanned != null ? scanned : "—")) + "</strong></span>" +
-      (scoredN != null ? "<span>Scored <strong>" + esc(String(scoredN)) + "</strong></span>" : "") +
+      "<span>Scored <strong>" + esc(String(scoredN != null ? scoredN : "—")) + "</strong></span>" +
       (th != null ? "<span>Threshold <strong>" + esc(String(th)) + "</strong></span>" : "") +
-      (diag.provider_status ? "<span>Provider <strong>" + esc(String(diag.provider_status)) + "</strong></span>" : "") +
+      "</div>" +
+      '<div class="mc-scanner-meta muted" style="font-size:11px;margin:4px 0">' +
+      "Provider <strong>" + esc(String(provider)) + "</strong>" +
+      (lastScan ? " · Last scan " + esc(fmtTimeShort(lastScan)) : "") +
+      (topRej ? " · Top reject " + esc(String(topRej).replace(/_/g, " ")) : "") +
       "</div>";
-    if (pending) {
-      human = "Waiting for first post-reset scan.";
-      code = "POST_RESET_SCAN_PENDING";
-    }
     var statusLab = code ? String(code).replace(/_/g, " ") : (push.push_allowed ? "Signal OK" : "No signal");
     var thDisp = th != null ? String(th) : "70";
     var rows = tops.slice(0, 6).map(function (c) {
@@ -3741,17 +3745,13 @@
         '</td><td class="mono muted">' + esc(thDisp) + "</td><td>" + esc(String(c.reject_reason || c.action || "").replace(/_/g, " ")) + "</td></tr>";
     }).join("");
     var scanSig = P.stableJson ? P.stableJson({ stats: stats, statusLab: statusLab, human: human, rows: tops.slice(0, 6) }) : "";
-    var metaLine = "";
-    if (topReject) metaLine += "Top reject: " + esc(String(topReject).replace(/_/g, " ")) + ". ";
-    if (scanTs) metaLine += "Last scan: " + esc(String(scanTs).slice(0, 19)) + ".";
     var scanHtml =
       stats +
       '<div style="margin-bottom:6px">' + _mcBadge(scanning ? "ok" : "warn", statusLab) +
       ' <span style="font-size:11px;color:var(--muted)">' + esc(human) + "</span></div>" +
-      (metaLine ? '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">' + metaLine + "</div>" : "") +
       (rows
         ? '<table class="mc-mini-table"><thead><tr><th>Coin</th><th>Score</th><th>Threshold</th><th>Reason</th></tr></thead><tbody>' + rows + "</tbody></table>"
-        : '<span class="muted">' + (pending ? "Waiting for first post-reset scan." : "No scored candidates this cycle.") + "</span>");
+        : '<span class="muted">' + esc(panelMsg || "No scored candidates this cycle.") + "</span>");
     if (P.patchHtmlIfChanged) P.patchHtmlIfChanged(el, scanSig, scanHtml);
     else el.innerHTML = scanHtml;
   }
@@ -3764,9 +3764,13 @@
   function _mcRenderCommandStrip(d) {
     var host = document.getElementById("mcCommandStrip");
     if (!host) return;
-    var canonAc = _mcCanonicalAccount(d);
     var t = d.topline || {};
     var ac = d.account || {};
+    var canonAcct = pickCanonicalAccount(d);
+    if (canonAcct.equity != null) {
+      ac = { equity: canonAcct.equity, cash: canonAcct.cash, buying_power: canonAcct.buying_power, account_source: canonAcct.source };
+      t = { equity: canonAcct.equity, cash: canonAcct.cash, buying_power: canonAcct.buying_power };
+    }
     var mi = d.mission || {};
     var cp = d.capital_protection || {};
     var alloc = cp.allocator || {};
@@ -3777,14 +3781,12 @@
     var pull = d.crypto_pull || (d.crypto_night || {}).crypto_pull || {};
     var br = d.broker_account_transition_status || {};
     var diag = d.crypto_scanner_diagnostics || {};
-    var eq = canonAc.equity != null ? canonAc.equity : (t.equity != null ? t.equity : ac.equity);
-    var cashVal = canonAc.cash != null ? canonAc.cash : (t.cash != null ? t.cash : ac.cash);
-    var bpVal = canonAc.buying_power != null ? canonAc.buying_power : (t.buying_power != null ? t.buying_power : ac.buying_power);
+    var eq = t.equity != null ? t.equity : ac.equity;
     var fresh = w.trading_loop_fresh || w.worker_health === "ok";
     var waitMsg = d.worker_stale_display || w.status_message || "";
     var withinWait = w.within_scheduled_wait === true || String(w.health || "").indexOf("waiting") >= 0;
     var workerTone = fresh ? "ok" : withinWait ? "warn" : "bad";
-    var workerLab = w.display_label || (fresh ? "Fresh" : withinWait ? "Waiting" : "Check");
+    var workerLab = fresh ? "Fresh" : withinWait ? "Waiting" : "Check";
     var cycleAgeSec = w.last_cycle_age_seconds != null ? Number(w.last_cycle_age_seconds) : null;
     var cycleDur = w.last_cycle_duration_ms != null ? (Number(w.last_cycle_duration_ms) / 1000).toFixed(1) + "s" : "—";
     var waitSec = w.expected_cycle_interval_seconds != null ? Number(w.expected_cycle_interval_seconds) : 300;
@@ -3795,8 +3797,12 @@
     } else if (cycleAgeSec != null) {
       workerSub += " · " + cycleAgeSec + "s ago";
     }
-    if (w.display_hint) workerSub = w.display_hint + (workerSub ? " · " + workerSub : "");
-    else if (withinWait && waitMsg) workerSub = "Waiting for next cycle · " + workerSub;
+    if (w.worker_first_cycle_pending) {
+      workerLab = "Fresh";
+      workerSub = w.status_message || "Fresh — waiting for first successful worker cycle";
+    } else if (w.status_message && fresh) {
+      workerSub = String(w.status_message);
+    } else if (withinWait && waitMsg) workerSub = "Waiting for next cycle · " + workerSub;
     var canonicalNT = d.canonical_no_trade_reason || {};
     var cryptoCand = formatCryptoCandidateLabel(tr, diag);
     var pushReason = canonicalNT.human_reason || push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
@@ -3816,7 +3822,7 @@
     if (cfl.note) fastSubParts.push(String(cfl.note));
     else if (cfl.execution_mode === "observe_only") fastSubParts.push("Scan active · orders observe-only");
     if (fastAge != null && cfl.enabled) fastSubParts.push("Last tick " + fastAge + "s ago");
-    var pushBlock = cfl.ui_push_blocker || cfl.exact_push_blocker;
+    var pushBlock = cfl.fast_loop_display_blocker || cfl.exact_push_blocker;
     if (pushBlock) fastSubParts.push("Push: " + String(pushBlock).replace(/_/g, " "));
     if (cfl.pull_status && cfl.pull_status !== "no_position") fastSubParts.push("Pull: " + String(cfl.pull_status));
     var fastSub = fastSubParts.join(" · ") || (cfl.next_action || "");
@@ -3826,7 +3832,7 @@
       : "Paper account";
     var cards = [
       { lab: "Equity", val: safeFmtMoney(eq), sub: eqSub, tone: "", equityCard: true },
-      { lab: "Cash / BP", val: safeFmtMoney(cashVal), sub: "BP " + safeFmtMoney(bpVal) + (prof.reserve_cash != null ? " · reserve " + safeFmtMoney(prof.reserve_cash) : ""), tone: "" },
+      { lab: "Cash / BP", val: safeFmtMoney(t.cash != null ? t.cash : ac.cash), sub: "BP " + safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power) + (prof.reserve_cash != null ? " · reserve " + safeFmtMoney(prof.reserve_cash) : ""), tone: "" },
       {
         lab: "Usable capital",
         val: prof.available_for_stock != null ? safeFmtMoney(prof.available_for_stock) : "—",
@@ -3934,9 +3940,15 @@
   }
 
   function _mcRenderCockpitMain(d) {
-    var canonAc = _mcCanonicalAccount(d);
+    var canonAcct = pickCanonicalAccount(d);
     var ac = d.account || {};
-    if (canonAc.equity != null) ac = Object.assign({}, ac, canonAc);
+    if (canonAcct.equity != null) {
+      ac = Object.assign({}, ac, {
+        equity: canonAcct.equity,
+        cash: canonAcct.cash,
+        buying_power: canonAcct.buying_power
+      });
+    }
     var pos = (d.positions && d.positions.open) || [];
     var cp = d.capital_protection || {};
     var alloc = cp.cockpit_allocation || cp.allocator || {};
@@ -4056,11 +4068,8 @@
     if (momoC) {
       var note = d.top_ai_note || {};
       var ms = d.momo_summary || {};
-      var headline = d.operator_momo_headline || "";
       var body = "";
-      if (headline) {
-        body = '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(headline.slice(0, 320)) + "</p>";
-      } else if (note.finding && note.note_status !== "historical") {
+      if (note.finding) {
         var sev = String(note.severity || "info").toLowerCase();
         body = _mcBadge(sev, sev === "critical" ? "bad" : sev === "warning" ? "warn" : "ok") +
           " <span style=\"font-size:12px;line-height:1.45\">" + esc((note.finding || "").slice(0, 280)) + "</span>" +
@@ -4097,7 +4106,7 @@
     _mcRenderCommandStrip(d);
     _mcRenderCockpitMain(d);
     if (_mcEquitySeriesCache && mcEquityChart) {
-      var liveEq = d.account ? (d.account.equity != null ? d.account.equity : (d.topline || {}).equity) : null;
+      var liveEq = pickCanonicalAccount(d).equity;
       renderMcEquityChart(_mergeLiveEquityIntoSeries(_mcEquitySeriesCache, liveEq));
     }
   }
@@ -4237,8 +4246,12 @@
           if (staleDisp) {
             return String(staleDisp);
           }
+          var w = d.worker || d.ops_health || {};
           var mode = safeText(mi.mission_mode_human || mi.mission_mode, "normal");
           var sess = safeText(mi.session_mode_label || mi.session_mode, "—");
+          if (w.worker_first_cycle_pending) {
+            return (w.status_message || "Fresh — waiting for first successful worker cycle") + " Session: " + sess + ".";
+          }
           var lines = ["Mission mode is " + mode + ". Session: " + sess + "."];
           if (rg.recovery_active) {
             lines.push("Recovery is active: " + safeText(rg.recovery_reason, "see logs"));
@@ -4659,7 +4672,7 @@
       .then(function (d) {
         if (gen !== _mcEqFetchGen) return;
         var series = _parseEquityHistoryJson(d);
-        var liveEq = _mcCache && _mcCache.account ? (_mcCache.account.equity != null ? _mcCache.account.equity : (_mcCache.topline || {}).equity) : null;
+        var liveEq = _mcCache ? pickCanonicalAccount(_mcCache).equity : null;
         series = _mergeLiveEquityIntoSeries(series, liveEq);
         if (d.insufficient_history && series.length < 3 && hint) {
           hint.textContent = d.message || "Not enough history for this range yet.";
@@ -4670,17 +4683,16 @@
       })
       .catch(function (e) {
         if (gen !== _mcEqFetchGen) return;
-        var msg = safeText(e && e.message, String(e));
-        if ((e && e.name === "AbortError") || /abort/i.test(msg)) {
+        if (_isFetchAbortError(e)) {
           if (hint) {
             hint.style.display = "block";
             hint.textContent = "Equity chart loading…";
           }
           return;
         }
+        var errMsg = safeText(e && e.message, String(e));
         if (hint) {
-          hint.style.display = "block";
-          hint.textContent = "Equity chart unavailable: /api/account/history — " + msg;
+          hint.textContent = "Equity chart unavailable: /api/account/history — " + errMsg;
         }
       });
   }

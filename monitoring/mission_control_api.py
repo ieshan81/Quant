@@ -37,170 +37,6 @@ def _mission_mode_human(mode: str) -> str:
     return mapping.get(m, m.replace("_", " ").title())
 
 
-def _mission_worker_display_labels(
-    *,
-    mission_mode: str,
-    worker: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    """Align Mission card wording with Worker heartbeat (no Fresh + waiting for first cycle)."""
-    w = worker or {}
-    fresh = bool(w.get("trading_loop_fresh"))
-    within_wait = bool(w.get("within_scheduled_wait"))
-    has_cycle = bool(w.get("last_successful_cycle_at"))
-    mode = str(mission_mode or "STARTUP").strip().upper()
-
-    if fresh and has_cycle and mode in ("STARTUP", "WAITING_FOR_FIRST_CYCLE"):
-        mode = _latest_mission_mode_fallback(default="AFTER_HOURS_CRYPTO_ONLY")
-    mission_human = _mission_mode_human(mode)
-
-    if not has_cycle:
-        mission_human = "First cycle pending"
-        worker_label = "First cycle pending"
-        worker_hint = "Heartbeat OK — awaiting first completed worker cycle"
-    elif fresh:
-        worker_label = "Fresh"
-        worker_hint = ""
-    elif within_wait:
-        worker_label = "Waiting"
-        worker_hint = "Between scheduled worker cycles"
-    else:
-        worker_label = "Check"
-        worker_hint = "Worker heartbeat needs review"
-
-    return {
-        "mission_mode": mode,
-        "mission_mode_human": mission_human,
-        "worker_label": worker_label,
-        "worker_hint": worker_hint,
-    }
-
-
-def _enrich_crypto_scanner_diagnostics(
-    diag: dict[str, Any] | None,
-    *,
-    fast_loop: dict[str, Any] | None = None,
-    last_runtime_reset_at: str | None = None,
-) -> dict[str, Any]:
-    """Fill scanner panel fields; mark post-reset wait when no scan since reset."""
-    out = dict(diag) if isinstance(diag, dict) else {}
-    cfl = fast_loop or {}
-    if cfl:
-        out.setdefault("universe_count", cfl.get("universe_count"))
-        out.setdefault("broker_supported_count", cfl.get("universe_count"))
-        scanned = cfl.get("symbols_scanned")
-        if scanned is not None:
-            out.setdefault("symbols_scanned_this_cycle", scanned)
-        out.setdefault("scored_count", cfl.get("scored_count"))
-        if cfl.get("top_candidates") and not out.get("top_candidates"):
-            out["top_candidates"] = cfl.get("top_candidates")
-        fl_diag = cfl.get("fast_loop_scoring_diagnostics") or {}
-        if fl_diag.get("top_rejected_reason") and not out.get("top_rejected_reason"):
-            out["top_rejected_reason"] = fl_diag.get("top_rejected_reason")
-        if cfl.get("last_loop_at"):
-            out.setdefault("last_scan_at", cfl.get("last_loop_at"))
-        out.setdefault("provider_status", "fast_loop")
-    if not out.get("universe_count") and out.get("broker_supported_count"):
-        out["universe_count"] = out["broker_supported_count"]
-    reset_at = str(last_runtime_reset_at or "").strip()
-    scan_at = str(out.get("last_scan_at") or cfl.get("last_loop_at") or "").strip()
-    pending = bool(reset_at) and (not scan_at or scan_at < reset_at)
-    if pending or (
-        not int(out.get("symbols_scanned_this_cycle") or 0)
-        and not int(out.get("scored_count") or 0)
-        and not (out.get("top_candidates") or [])
-    ):
-        out["post_reset_scan_pending"] = True
-        out["human_reason"] = "Waiting for first post-reset scan."
-        out["final_reason_code"] = out.get("final_reason_code") or "POST_RESET_SCAN_PENDING"
-    return out
-
-
-def _finalize_mission_control_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Canonical account metrics + aligned mission/worker + scanner + Momo headline."""
-    from monitoring.account_display import merge_canonical_account_into_payload
-
-    out = merge_canonical_account_into_payload(payload)
-    worker = out.get("worker") or out.get("ops_health") or {}
-    mission = dict(out.get("mission") or {})
-    mode = str(mission.get("mission_mode") or (out.get("topline") or {}).get("mission_mode") or "STARTUP")
-    labels = _mission_worker_display_labels(mission_mode=mode, worker=worker)
-    mission["mission_mode"] = labels["mission_mode"]
-    mission["mission_mode_human"] = labels["mission_mode_human"]
-    out["mission"] = mission
-    topline = dict(out.get("topline") or {})
-    topline["mission_mode"] = labels["mission_mode"]
-    topline["mission_mode_human"] = labels["mission_mode_human"]
-    out["topline"] = topline
-    w = dict(worker)
-    w["display_label"] = labels["worker_label"]
-    if labels.get("worker_hint"):
-        w["display_hint"] = labels["worker_hint"]
-    out["worker"] = w
-    if out.get("ops_health"):
-        out["ops_health"] = {**out["ops_health"], "display_label": labels["worker_label"]}
-
-    mem = out.get("memory_state_summary") or {}
-    cfl = out.get("crypto_fast_loop_status") or {}
-    out["crypto_scanner_diagnostics"] = _enrich_crypto_scanner_diagnostics(
-        out.get("crypto_scanner_diagnostics"),
-        fast_loop=cfl,
-        last_runtime_reset_at=mem.get("last_runtime_reset_at"),
-    )
-
-    ct = out.get("canonical_truth") or {}
-    if ct:
-        try:
-            from monitoring.momo_quant_memo import build_operator_momo_headline
-
-            headline = build_operator_momo_headline(ct, fast_loop_status=cfl)
-            if headline:
-                out["operator_momo_headline"] = headline
-                ms = dict(out.get("momo_summary") or {})
-                att = list(ms.get("attention") or [])
-                if not att or _momo_headline_supersedes_notes(att, ct):
-                    ms["attention"] = [headline[:320]]
-                    ms["headline"] = headline[:320]
-                    out["momo_summary"] = ms
-                stale_crypto = _note_implies_crypto_disabled(out.get("top_ai_note"))
-                if stale_crypto or not out.get("top_ai_note"):
-                    out["top_ai_note"] = {
-                        "severity": "info",
-                        "finding": headline[:320],
-                        "synthetic": True,
-                        "source": "operator_momo_headline",
-                        "note_status": "active",
-                    }
-        except Exception:
-            pass
-    return out
-
-
-def _note_implies_crypto_disabled(note: dict[str, Any] | None) -> bool:
-    if not isinstance(note, dict):
-        return False
-    f = str(note.get("finding") or note.get("message") or "").lower()
-    return any(
-        x in f
-        for x in (
-            "cannot trade crypto",
-            "inability to trade crypto",
-            "crypto disabled",
-            "executor reports",
-            "crypto_push_disabled",
-        )
-    )
-
-
-def _momo_headline_supersedes_notes(attention: list[Any], canonical_truth: dict[str, Any]) -> bool:
-    pos = (canonical_truth.get("position_state") or {}) if isinstance(canonical_truth, dict) else {}
-    rows = pos.get("operator_visible_positions") or pos.get("open_positions") or []
-    crypto_open = any(str(p.get("asset_class") or "").lower() in ("crypto", "digital") for p in rows if isinstance(p, dict))
-    if not crypto_open:
-        return False
-    joined = " ".join(str(a) for a in attention).lower()
-    return any(x in joined for x in ("cannot trade crypto", "inability to trade crypto", "executor reports"))
-
-
 def _resolve_mission_mode_for_display(
     *,
     worker: dict[str, Any],
@@ -416,17 +252,19 @@ def _ai_note_is_stale_or_resolved(
         if "broker_local_mismatch" in finding or "reconciliation" in finding:
             if int(rg.get("broker_local_mismatch_count") or 0) == 0:
                 return True
-        if any(
-            x in finding
-            for x in (
-                "cannot trade crypto",
-                "inability to trade crypto",
-                "crypto disabled",
-                "executor reports inability",
-                "executor reports",
-            )
+    try:
+        from monitoring.ui_truth_helpers import _ai_note_stale_crypto_disabled
+
+        open_crypto = int((worker or {}).get("open_crypto_count") or 0)
+        pull_active = bool((worker or {}).get("crypto_pull_active"))
+        if _ai_note_stale_crypto_disabled(
+            note,
+            open_crypto_count=open_crypto,
+            pull_active=pull_active,
         ):
             return True
+    except Exception:
+        pass
     if "max_position_pct" not in finding or "0.005" not in finding:
         return False
     try:
@@ -850,7 +688,7 @@ def _assemble_summary(
     except Exception:
         _weights_audit = {}
 
-    payload = {
+    return {
         "ok": True,
         "generated_at": generated,
         "db_path_status": db_status,
@@ -916,7 +754,6 @@ def _assemble_summary(
         "broker_account_transition_status": transition,
         "telegram_status": _telegram_status_brief(),
     }
-    return _finalize_mission_control_payload(payload)
 
 
 def build_mission_control_summary_minimal(
@@ -1205,7 +1042,50 @@ def build_mission_control_summary_minimal(
     except Exception:
         _canonical_truth = {}
 
-    payload = {
+    try:
+        from monitoring.ui_truth_helpers import (
+            build_momo_live_headline,
+            patch_account_fields_from_canonical_truth,
+            resolve_mission_display_mode,
+        )
+
+        open_crypto_n = len(
+            [
+                p
+                for p in _positions
+                if str(p.get("asset_class") or "").lower() == "crypto"
+            ]
+        )
+        worker["open_crypto_count"] = open_crypto_n
+        worker["crypto_pull_active"] = bool(
+            (crypto_session.get("crypto_pull") or {}).get("can_sell")
+        )
+        mission_mode, worker_sub, mm_meta = resolve_mission_display_mode(
+            worker=worker,
+            execution_health={},
+            positions=_positions,
+            mission_mode=mission_mode,
+            trading=trading,
+        )
+        if worker_sub:
+            worker["status_message"] = worker_sub
+            worker["worker_first_cycle_pending"] = bool(mm_meta.get("first_cycle_pending"))
+        if not top_ai_note or _ai_note_is_stale_or_resolved(
+            top_ai_note or {},
+            recovery_gate=recovery_gate,
+            worker=worker,
+        ):
+            top_ai_note = build_momo_live_headline(
+                canonical_truth=_canonical_truth,
+                crypto_pull=crypto_session.get("crypto_pull"),
+                crypto_push=crypto_session.get("crypto_push"),
+                fast_loop=_canonical_truth.get("fast_loop_state") if _canonical_truth else None,
+                open_positions=_positions,
+            )
+    except Exception:
+        pass
+
+    out = {
         "ok": True,
         "simple_fallback": True,
         "fallback": degraded,
@@ -1297,9 +1177,16 @@ def build_mission_control_summary_minimal(
             current_positions_count=len(_positions),
             runtime_positions_count=len(_positions),
         ),
-        "memory_state_summary": build_memory_state_summary(),
     }
-    return _finalize_mission_control_payload(payload)
+    try:
+        out = patch_account_fields_from_canonical_truth(out)
+        mm_h = (mm_meta or {}).get("mission_mode_human")
+        if mm_h:
+            out["mission"]["mission_mode_human"] = mm_h
+            out["topline"]["mission_mode_human"] = mm_h
+    except Exception:
+        pass
+    return out
 
 
 def _minimal_transition_status(
