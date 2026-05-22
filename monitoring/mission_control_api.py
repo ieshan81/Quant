@@ -612,6 +612,34 @@ def build_mission_control_summary_minimal(
         else []
     )
 
+    _mc_crypto_diag: dict[str, Any] = {}
+    _mc_crypto_viability: dict[str, Any] = {}
+    try:
+        from execution.crypto_scanner_diagnostics import build_crypto_scanner_diagnostics_for_api
+        from execution.trading_cycle_trace import fetch_cycle_status_from_db
+        from monitoring.cycle_brief import fetch_latest_cycle_brief
+
+        _rt_mc_fast = locals().get("rt")
+        if not isinstance(_rt_mc_fast, dict) or not _rt_mc_fast:
+            from core.paper_trading_path import load_runtime_config_for_worker
+
+            _rt_mc_fast = load_runtime_config_for_worker(config.DB_PATH)
+        _hb_mc = fetch_cycle_status_from_db() or {}
+        _brief_ev_mc: dict[str, Any] = {}
+        _brief_rows_mc = fetch_latest_cycle_brief(limit=1)
+        if _brief_rows_mc and isinstance(_brief_rows_mc[0], dict):
+            _brief_ev_mc = _brief_rows_mc[0].get("evidence") or {}
+        _mc_crypto_diag = build_crypto_scanner_diagnostics_for_api(
+            rt=_rt_mc_fast,
+            heartbeat=_hb_mc,
+            crypto_decision=crypto_dec,
+            last_cycle_evidence=_brief_ev_mc,
+        )
+        _mc_crypto_viability = _mc_crypto_diag.pop("crypto_strategy_viability", None) or {}
+    except Exception:
+        _mc_crypto_diag = {}
+        _mc_crypto_viability = {}
+
     return {
         "ok": True,
         "simple_fallback": True,
@@ -671,11 +699,9 @@ def build_mission_control_summary_minimal(
             "human_reason": crypto_dec.get("human_reason", reason),
             "blockers": crypto_dec.get("blockers") or ["MC_DEGRADED"],
         },
-        "crypto_scanner_diagnostics": (
-            trading.get("crypto_scanner_summary")
-            and {"human_reason": trading.get("crypto_scanner_summary"), "api_fallback": True}
-        )
-        or {},
+        "crypto_scanner_diagnostics": _mc_crypto_diag,
+        "crypto_strategy_viability": _mc_crypto_viability,
+        "top_ai_note": top_ai_note,
         "crypto_executor_readiness": {
             **crypto_dec,
             "source": "crypto_trade_decision",

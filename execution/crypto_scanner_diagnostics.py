@@ -252,7 +252,26 @@ def build_crypto_scanner_diagnostics_for_api(
 ) -> dict[str, Any]:
     """API-safe diagnostics when full cycle results are not in memory."""
     stored = (last_cycle_evidence or {}).get("crypto_scanner_diagnostics")
-    if isinstance(stored, dict) and stored.get("final_reason_code"):
+    if isinstance(stored, dict) and stored.get("final_reason_code") and not stored.get("error"):
+        if not stored.get("cycle_timing"):
+            try:
+                from monitoring.worker_wait_context import expected_between_cycle_interval_sec
+
+                stored = {
+                    **stored,
+                    "cycle_timing": {
+                        "worker_sleep_interval_seconds": round(
+                            float(expected_between_cycle_interval_sec(heartbeat or {})), 1
+                        ),
+                        "worker_sleep_interval_source": "worker_trade_interval_sec (300s when US market closed)",
+                        "crypto_active_cycle_seconds_role": (
+                            "Scan-gate next_check hint only — worker still sleeps ~300s between cycles overnight."
+                        ),
+                        "scalping_every_30s": False,
+                    },
+                }
+            except Exception:
+                pass
         return stored
 
     if rt is None:
@@ -315,11 +334,21 @@ def build_crypto_scanner_diagnostics_for_api(
         else:
             human = f"Last evaluated {best} scored {float(score):.4f}."
 
+    try:
+        from monitoring.worker_wait_context import expected_between_cycle_interval_sec
+
+        worker_sleep_sec = expected_between_cycle_interval_sec(hb)
+    except Exception:
+        worker_sleep_sec = 300.0
+
     out = {
         "universe_source": src,
         "universe_count": broker_n,
+        "symbols_scanned_this_cycle": 1 if best else 0,
         "symbols_considered": syms,
+        "broker_supported_universe_source": src,
         "broker_supported_count": broker_n,
+        "broker_supported_symbols_sample": syms[:15],
         "quotes_ok_count": None,
         "metadata_ok_count": None,
         "scored_count": 1 if best else 0,
@@ -334,7 +363,7 @@ def build_crypto_scanner_diagnostics_for_api(
             "crypto_active_cycle_seconds": cfg_float(rt, "crypto_active_cycle_seconds", 30.0),
             "crypto_idle_cycle_seconds": cfg_float(rt, "crypto_idle_cycle_seconds", 180.0),
         },
-        "cycle_timing": (stored or {}).get("cycle_timing") or {
+        "cycle_timing": {
             "worker_sleep_interval_seconds": round(float(worker_sleep_sec), 1),
             "worker_sleep_interval_source": "worker_trade_interval_sec (300s when US market closed)",
             "crypto_active_cycle_seconds": cfg_float(rt, "crypto_active_cycle_seconds", 30.0),
