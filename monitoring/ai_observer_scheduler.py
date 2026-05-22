@@ -29,19 +29,61 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _persist_state() -> None:
+    """Best-effort persist scheduler state to ops_log_events for cross-process visibility."""
+    try:
+        from monitoring.ops_log_store import write_ops_event
+
+        write_ops_event(
+            level="info",
+            source="observer_scheduler",
+            event_type="observer_health",
+            message="observer_health_snapshot",
+            evidence={
+                "last_attempt_at": _STATE.get("last_attempt_at"),
+                "last_success_at": _STATE.get("last_success_at"),
+                "last_error": _STATE.get("last_error"),
+                "last_summary": _STATE.get("last_summary"),
+                "cycles_since_last_run": _STATE.get("cycles_since_last_run"),
+                "next_due_at": _STATE.get("next_due_at"),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _load_persisted_state() -> dict[str, Any]:
+    """Read most recent observer_health snapshot so dashboard process sees worker state."""
+    try:
+        from monitoring.ops_log_store import fetch_ops_logs
+
+        rows = fetch_ops_logs(limit=1, event_type="observer_health")
+        if rows:
+            ev = rows[0].get("evidence") or {}
+            if isinstance(ev, dict):
+                return ev
+    except Exception:
+        pass
+    return {}
+
+
 def get_observer_health() -> dict[str, Any]:
+    persisted = _load_persisted_state()
     return {
-        "last_observer_attempt_at": _STATE["last_attempt_at"],
-        "last_observer_success_at": _STATE["last_success_at"],
-        "last_observer_error": _STATE["last_error"],
-        "cycles_since_last_observer": _STATE["cycles_since_last_run"],
-        "next_observer_due_at": _STATE["next_due_at"],
-        "last_summary": _STATE["last_summary"],
+        "last_observer_attempt_at": _STATE["last_attempt_at"] or persisted.get("last_attempt_at"),
+        "last_observer_success_at": _STATE["last_success_at"] or persisted.get("last_success_at"),
+        "last_observer_error": _STATE["last_error"] or persisted.get("last_error"),
+        "cycles_since_last_observer": (
+            _STATE["cycles_since_last_run"] or persisted.get("cycles_since_last_run") or 0
+        ),
+        "next_observer_due_at": _STATE["next_due_at"] or persisted.get("next_due_at"),
+        "last_summary": _STATE["last_summary"] or persisted.get("last_summary"),
         "cadence_note": (
             "Worker runs Momo every ai_observer_cycle_interval cycles with a "
             "minimum wall-clock interval of ai_observer_min_interval_seconds. "
             "Gemini calls respect ai_observer_use_gemini."
         ),
+        "_source": "memory_or_persisted",
     }
 
 
@@ -77,8 +119,10 @@ def maybe_run_observer_in_cycle(
 
     if not enabled:
         _STATE["last_error"] = "ai_observer_disabled"
+        _persist_state()
         return None
     if not (cycles_due and time_due):
+        _persist_state()
         return None
 
     _STATE["last_attempt_at"] = _now_iso()
@@ -113,8 +157,10 @@ def maybe_run_observer_in_cycle(
             )
         except Exception:
             pass
+        _persist_state()
         return summary
     except Exception as exc:
         _STATE["last_error"] = f"run_observer_failed:{str(exc)[:200]}"
         logger.debug("[observer_scheduler] run_observer failed", exc_info=True)
+        _persist_state()
         return None
