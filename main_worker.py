@@ -5346,7 +5346,7 @@ def run_worker_forever() -> None:
                     except Exception:
                         pass
                     try:
-                        from monitoring.reason_codes import WORKER_CYCLE_WAIT
+                        from execution.reason_codes import WORKER_CYCLE_WAIT
                         from monitoring.ops_log_store import write_ops_event
 
                         write_ops_event(
