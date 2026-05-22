@@ -45,6 +45,8 @@
   }
 
   var equityChart = null;
+  var mcEquityChart = null;
+  var _mcEqFetchGen = 0;
   var POLL_MS = 30000;
   var MIN_ORDER_NOTIONAL = 1.0;
   var _sellSubmitting = false;
@@ -494,7 +496,7 @@
         if (stale > 0) parts.push(stale + " stale local row(s)");
         if (mismatch > 0) {
           if (currMismatch === 0 && stale > 0) {
-            parts.push(mismatch + " stale-only (current broker positions reconciled)");
+            parts.push(stale + " historical stale row(s) quarantined (broker aligned)");
           } else {
             parts.push(mismatch + " broker/local mismatch(es)");
           }
@@ -1516,7 +1518,14 @@
       }
       if (name === "config") loadConfigEditor();
       if (name === "backtest" && !window.__btDefaultsLoaded) loadBacktestDefaultsOnce();
-      if (name === "ops") loadOpsTab();
+      if (name === "ops") {
+        loadOpsTab();
+        var devSec = document.getElementById("devDiagnosticsSec");
+        if (devSec) devSec.hidden = false;
+      } else {
+        var devSec2 = document.getElementById("devDiagnosticsSec");
+        if (devSec2) devSec2.hidden = true;
+      }
       if (name === "files") loadFilesTab();
       if (name === "ai") loadAiTab();
     }
@@ -1737,7 +1746,11 @@
       document.getElementById("btStatus").textContent = "Defaults loaded. Configure inputs, then Run Backtest.";
       window.__btDefaultsLoaded = true;
     } catch (e) {
-      document.getElementById("btStatus").textContent = "Could not load backtest defaults.";
+      var st = document.getElementById("btStatus");
+      if (st) {
+        st.textContent = "Momo autonomous backtesting is not enabled yet. Manual backtest API may be unavailable.";
+      }
+      window.__btDefaultsLoaded = true;
     }
   }
 
@@ -2742,18 +2755,41 @@
     var withinWait = w.within_scheduled_wait === true || String(w.health || "").indexOf("waiting") >= 0;
     var workerTone = fresh ? "ok" : withinWait ? "warn" : "bad";
     var workerLab = fresh ? "Fresh" : withinWait ? "Waiting" : "Check";
-    var cycleAge = w.last_cycle_age_seconds != null ? String(w.last_cycle_age_seconds) + "s ago" : "—";
+    var cycleAgeSec = w.last_cycle_age_seconds != null ? Number(w.last_cycle_age_seconds) : null;
     var cycleDur = w.last_cycle_duration_ms != null ? (Number(w.last_cycle_duration_ms) / 1000).toFixed(1) + "s" : "—";
-    if (withinWait && waitMsg) cycleAge = "Waiting for next cycle";
+    var waitSec = w.expected_cycle_interval_seconds != null ? Number(w.expected_cycle_interval_seconds) : 300;
+    var nextIn = cycleAgeSec != null && waitSec > cycleAgeSec ? Math.max(0, Math.round(waitSec - cycleAgeSec)) : null;
+    var workerSub = "Last cycle: " + cycleDur;
+    if (nextIn != null && withinWait) {
+      workerSub += " · Next in ~" + nextIn + "s";
+    } else if (cycleAgeSec != null) {
+      workerSub += " · " + cycleAgeSec + "s ago";
+    }
+    if (withinWait && waitMsg) workerSub = "Waiting for next cycle · " + workerSub;
     var cryptoCand = formatCryptoCandidateLabel(tr, diag);
     var pushReason = push.human_reason || push.headline || diag.human_reason || tr.last_no_trade_reason || "—";
     var cards = [
       { lab: "Equity", val: safeFmtMoney(eq), sub: ac.day_pnl != null ? "Day P&L " + safeFmtMoneySigned(ac.day_pnl) : "Paper account", tone: "" },
       { lab: "Cash / BP", val: safeFmtMoney(t.cash != null ? t.cash : ac.cash), sub: "BP " + safeFmtMoney(t.buying_power != null ? t.buying_power : ac.buying_power) + (prof.reserve_cash != null ? " · reserve " + safeFmtMoney(prof.reserve_cash) : ""), tone: "" },
-      { lab: "Usable capital", val: safeFmtMoney(prof.available_for_stock), sub: "Stocks · crypto " + safeFmtMoney(prof.available_for_crypto || alloc.available_for_crypto), tone: "" },
-      { lab: "Mission", val: safeText(mi.mission_mode_human || t.mission_mode_human || mi.mission_mode, "—"), sub: safeText(mi.session_mode, "session"), tone: "" },
-      { lab: "Worker", val: workerLab, sub: cycleAge + " · cycle " + cycleDur, tone: workerTone, pulse: fresh },
-      { lab: "Crypto push", val: safeText(push.label || push.status, "—"), sub: pushReason, tone: push.push_allowed ? "ok" : "warn" },
+      {
+        lab: "Usable capital",
+        val: prof.available_for_stock != null ? safeFmtMoney(prof.available_for_stock) : "—",
+        sub: "Stocks · crypto " + safeFmtMoney(prof.available_for_crypto || alloc.available_for_crypto),
+        tone: ""
+      },
+      {
+        lab: "Mission",
+        val: safeText(mi.mission_mode_human || t.mission_mode_human || mi.mission_mode, "—"),
+        sub: safeText(mi.session_mode_label || mi.session_mode, "session"),
+        tone: ""
+      },
+      { lab: "Worker", val: workerLab, sub: workerSub, tone: workerTone, pulse: fresh },
+      {
+        lab: "Crypto push",
+        val: safeText(push.label || push.status, "—"),
+        sub: pushReason,
+        tone: push.push_allowed ? "ok" : (push.status === "no_candidate" || !push.push_allowed ? "" : "warn")
+      },
       { lab: "Crypto pull", val: safeText(pull.label || pull.status, "—"), sub: safeText(pull.human_reason || pull.headline, ""), tone: "" },
       { lab: "Broker", val: br.aligned_with_broker ? "Aligned" : "Review", sub: "Broker " + safeText(br.broker_positions_count, "—") + " · runtime " + safeText(br.runtime_positions_count, "—"), tone: br.aligned_with_broker ? "ok" : "warn" }
     ];
@@ -2761,17 +2797,14 @@
       return '<div class="mc-cmd-card mc-' + esc(c.tone) + '"><div class="mc-cmd-lab">' + esc(c.lab) + '</div><div class="mc-cmd-val">' +
         (c.pulse ? '<span class="mc-pulse"></span>' : "") + esc(c.val) + '</div><div class="mc-cmd-sub">' + esc(c.sub) + "</div></div>";
     }).join("");
-    var spark = document.getElementById("mcEquitySpark");
-    if (spark && d._equitySpark && d._equitySpark.length) spark.innerHTML = _mcSparkSvg(d._equitySpark);
   }
 
   function _mcRenderCockpitMain(d) {
     var ac = d.account || {};
     var pos = (d.positions && d.positions.open) || [];
     var cp = d.capital_protection || {};
-    var alloc = cp.allocator || {};
+    var alloc = cp.cockpit_allocation || cp.allocator || {};
     var prof = cp.dynamic_profile || {};
-    var events = (d.crypto_night && d.crypto_night.latest_push_pull_events) || [];
     var diag = d.crypto_scanner_diagnostics || {};
     var eqEl = document.getElementById("mcEquityChartBody");
     if (eqEl) {
@@ -2779,32 +2812,57 @@
     }
     var capEl = document.getElementById("mcCapitalAllocBody");
     if (capEl) {
-      var stockPct = Number(alloc.actual_stock_pct || prof.stock_pct || 0);
-      var cryptoPct = Number(alloc.actual_crypto_pct || prof.crypto_pct || 0);
-      var resPct = Math.max(0, 100 - stockPct - cryptoPct);
-      capEl.innerHTML = '<div class="mc-donut-bar"><span style="width:' + stockPct + '%;background:#38bdf8"></span><span style="width:' + cryptoPct + '%;background:#a78bfa"></span><span style="width:' + resPct + '%;background:#334155"></span></div>' +
-        '<div style="font-size:11px;color:var(--muted)">Stock ' + stockPct.toFixed(0) + '% · Crypto ' + cryptoPct.toFixed(0) + '% · Reserve ' + resPct.toFixed(0) + '%</div>';
+      if (alloc.available === false || (alloc.actual_stock_pct == null && alloc.actual_crypto_pct == null)) {
+        capEl.innerHTML = '<span class="muted">' + esc(alloc.human_label || "Allocation unavailable") + "</span>";
+      } else {
+        var stockPct = Number(alloc.actual_stock_pct || 0);
+        var cryptoPct = Number(alloc.actual_crypto_pct || 0);
+        var cashPct = Number(alloc.cash_pct || alloc.reserve_pct || 0);
+        capEl.innerHTML =
+          '<div class="mc-donut-bar"><span style="width:' + stockPct + '%;background:#38bdf8"></span>' +
+          '<span style="width:' + cryptoPct + '%;background:#a78bfa"></span>' +
+          '<span style="width:' + cashPct + '%;background:#334155"></span></div>' +
+          '<div style="font-size:11px;color:var(--muted)">' + esc(alloc.human_label || (
+            "Stock " + stockPct.toFixed(1) + "% · Crypto " + cryptoPct.toFixed(1) + "% · Cash " + cashPct.toFixed(1) + "%"
+          )) + "</div>";
+      }
     }
     var hold = document.getElementById("mcHoldingsMini");
     if (hold) {
       if (!pos.length) hold.innerHTML = '<span class="muted">No open positions</span>';
       else {
-        hold.innerHTML = '<table class="mc-mini-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Value</th></tr></thead><tbody>' +
+        hold.innerHTML =
+          '<table class="mc-mini-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Value</th><th>P&amp;L</th></tr></thead><tbody>' +
           pos.slice(0, 8).map(function (p) {
-            return "<tr><td>" + esc(p.symbol) + "</td><td class=\"mono\">" + esc(fmtQty(p.net_qty || p.qty, String(p.asset_class).toLowerCase() === "crypto")) +
-              "</td><td class=\"mono\">" + esc(fmtMoney(p.market_value)) + "</td></tr>";
+            var up = num(p.unrealized_pnl_pct != null ? p.unrealized_pnl_pct : p.pnl_pct, null);
+            return "<tr><td>" + esc(p.symbol) + "</td><td class=\"mono\">" +
+              esc(fmtQty(p.net_qty || p.qty, String(p.asset_class).toLowerCase() === "crypto")) +
+              "</td><td class=\"mono\">" + esc(fmtMoney(p.market_value)) +
+              "</td><td class=\"mono " + pnlClass(up) + "\">" + esc(up != null ? fmtPctSigned(up) : "—") + "</td></tr>";
           }).join("") + "</tbody></table>";
       }
     }
     var pend = document.getElementById("mcPendingExits");
     if (pend) {
-      var pe = pos.filter(function (p) {
-        var st = String(p.exit_status || p.status || "").toLowerCase();
-        return st.indexOf("pending") >= 0 || st.indexOf("exit") >= 0;
-      });
-      pend.innerHTML = pe.length ? pe.map(function (p) {
-        return "<div>" + esc(p.symbol) + " · " + esc(p.exit_status || p.status) + "</div>";
-      }).join("") : '<span class="muted">No pending exits</span>';
+      var pending = d.pending_exits || [];
+      pend.innerHTML = pending.length
+        ? pending.map(function (p) {
+          return "<div style=\"margin-bottom:6px\"><strong>" + esc(p.symbol) + "</strong> · " +
+            esc(fmtQty(p.qty, false)) + " · " + esc(String(p.reason || "").replace(/_/g, " ")) +
+            "<br><span class=\"muted\">" + esc(p.human_reason || "") +
+            (p.unrealized_pnl_pct != null ? " · " + esc(String(p.unrealized_pnl_pct)) : "") + "</span></div>";
+        }).join("")
+        : '<span class="muted">No pending exits</span>';
+    }
+    var strat = document.getElementById("mcCryptoStrategyNote");
+    if (strat) {
+      var via = d.crypto_strategy_viability || diag.crypto_strategy_viability || {};
+      var note = via.mode_label || via.worker_sleep_note || "";
+      if (note) {
+        strat.innerHTML = '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + esc(String(note).slice(0, 220)) + "</div>";
+      } else {
+        strat.innerHTML = '<span class="muted">Slow overnight crypto scanner — not active scalping.</span>';
+      }
     }
     var blk = document.getElementById("mcActiveBlockers");
     if (blk) {
@@ -2818,10 +2876,18 @@
     }
     var feed = document.getElementById("mcActionFeed");
     if (feed) {
+      var events = (d.crypto_night && d.crypto_night.latest_push_pull_events) || [];
       var lines = events.slice(0, 5).map(function (e) {
         return "<li><strong>" + esc(e.symbol || e.side || "cycle") + "</strong> " + esc(e.human_reason || e.reason_code || "") + "</li>";
       });
-      if (!lines.length) lines = ["<li class=\"muted\">No recent push/pull events</li>"];
+      if (!lines.length) {
+        var hc = (d.hold_counts || {});
+        if (hc.total_open_positions) {
+          lines = ["<li>Holding " + esc(String(hc.total_open_positions)) + " open position(s) — cycle idle / waiting for next signal.</li>"];
+        } else {
+          lines = ["<li class=\"muted\">No recent actions — cycle idle / waiting for next signal.</li>"];
+        }
+      }
       feed.innerHTML = lines.join("");
     }
     var momoC = document.getElementById("mcMomoCritical");
@@ -2858,7 +2924,7 @@
   function _mcTopline(d) {
     _mcRenderCommandStrip(d);
     _mcRenderCockpitMain(d);
-    _mcLoadEquitySpark(d);
+    _mcLoadEquityChart();
   }
 
   function _mcProgressStart(label) {
@@ -2912,7 +2978,7 @@
             return String(staleDisp);
           }
           var mode = safeText(mi.mission_mode_human || mi.mission_mode, "normal");
-          var sess = safeText(mi.session_mode, "—");
+          var sess = safeText(mi.session_mode_label || mi.session_mode, "—");
           var lines = ["Mission mode is " + mode + ". Session: " + sess + "."];
           if (rg.recovery_active) {
             lines.push("Recovery is active: " + safeText(rg.recovery_reason, "see logs"));
@@ -3171,8 +3237,120 @@
       });
   }
 
+  function renderMcEquityChart(series) {
+    var canvas = document.getElementById("mcEquityChart");
+    var hint = document.getElementById("mcEqEmptyHint");
+    if (!canvas) return;
+    if (typeof Chart === "undefined") {
+      if (hint) {
+        hint.style.display = "block";
+        hint.textContent = "Chart.js not loaded.";
+      }
+      return;
+    }
+    if (!series || !series.length) {
+      if (hint) {
+        hint.style.display = "block";
+        hint.textContent = "No equity history yet.";
+      }
+      if (mcEquityChart) {
+        mcEquityChart.destroy();
+        mcEquityChart = null;
+      }
+      return;
+    }
+    if (hint) hint.style.display = "none";
+    var labels = series.map(function (r) { return _fmtEqLabel(r.snapshot_at || ""); });
+    var vals = series.map(function (r) { return num(r.equity_total, 0); });
+    var rawDates = series.map(function (r) { return r.snapshot_at || ""; });
+    if (!mcEquityChart) {
+      mcEquityChart = new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+          labels: labels,
+          datasets: [{
+            data: vals,
+            borderColor: "#38bdf8",
+            backgroundColor: "rgba(56,189,248,0.12)",
+            fill: true,
+            tension: 0.25,
+            pointRadius: 0,
+            pointHitRadius: 6,
+            rawDates: rawDates
+          }]
+        },
+        options: {
+          animation: false,
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                title: function (ctx) {
+                  var idx = ctx[0] && ctx[0].dataIndex;
+                  var ds = ctx[0] && ctx[0].dataset;
+                  if (ds && ds.rawDates && ds.rawDates[idx]) return _fmtEqDate(ds.rawDates[idx]);
+                  return ctx[0].label;
+                },
+                label: function (ctx) { return "Equity: $" + Number(ctx.parsed.y).toFixed(2); }
+              }
+            }
+          },
+          scales: {
+            y: {
+              ticks: { callback: function (v) { return "$" + Number(v).toFixed(0); }, color: "#9ca3af" },
+              grid: { color: "rgba(148,163,184,0.08)" }
+            },
+            x: {
+              ticks: { color: "#9ca3af", maxTicksLimit: 6 },
+              grid: { display: false }
+            }
+          }
+        }
+      });
+    } else {
+      mcEquityChart.data.labels = labels;
+      mcEquityChart.data.datasets[0].data = vals;
+      mcEquityChart.data.datasets[0].rawDates = rawDates;
+      mcEquityChart.update("none");
+    }
+  }
+
+  function _mcLoadEquityChart() {
+    var gen = ++_mcEqFetchGen;
+    var hint = document.getElementById("mcEqEmptyHint");
+    if (hint) {
+      hint.style.display = "block";
+      hint.textContent = "Equity chart loading…";
+    }
+    fetch("/api/account/history?range=1D", { cache: "no-store", headers: _authHeaders() })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        if (gen !== _mcEqFetchGen) return;
+        var raw = d.points || d.series || [];
+        var series = raw.map(function (p) {
+          return {
+            snapshot_at: p.timestamp || p.snapshot_at || p.ts,
+            equity_total: p.equity != null ? p.equity : p.equity_total
+          };
+        });
+        renderMcEquityChart(series);
+        if (hint && series.length) hint.style.display = "none";
+      })
+      .catch(function (e) {
+        if (hint) hint.textContent = "Equity chart unavailable: " + safeText(e && e.message, String(e));
+      });
+  }
+
   function scheduleMissionGraphLoad() {
     setTimeout(function () {
+      if (document.getElementById("panel-mission") && document.getElementById("panel-mission").classList.contains("active")) {
+        _mcLoadEquityChart();
+      }
       if (document.getElementById("panel-overview") && document.getElementById("panel-overview").classList.contains("active")) {
         _loadEquityRange(_eqCurrentRange || "1D");
       }

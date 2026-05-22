@@ -109,6 +109,17 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
             graph_edges = int(gconn.execute("SELECT COUNT(*) FROM momo_graph_edges").fetchone()[0] or 0)
     except Exception:
         pass
+    observer_health = {
+        "last_run_at": last_run_at,
+        "last_observer_attempt_at": None,
+        "last_observer_success_at": last_run_at,
+        "last_observer_error": None,
+        "scheduled_in_worker_cycle": False,
+        "note": (
+            "Momo observer runs with full activity/GPT export builds, not every trading cycle. "
+            "Stale last_run_at usually means no export-triggered observer pass recently."
+        ),
+    }
     return _attach_momo_exports({
         "enabled": True,
         "provider": provider,
@@ -120,8 +131,11 @@ def get_ai_status(db_path: Path | str | None = None) -> dict[str, Any]:
         "skills_count": skills_count,
         "last_run_at": last_run_at,
         "memory_compaction_status": compaction_status,
+        "graph_nodes_total_count": graph_nodes,
+        "graph_edges_total_count": graph_edges,
         "graph_nodes_count": graph_nodes,
         "graph_edges_count": graph_edges,
+        "observer_health": observer_health,
         "allowed_to_execute": False,
         "can_submit_orders": False,
         "can_update_config": False,

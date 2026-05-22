@@ -265,8 +265,14 @@ def fetch_ops_logs(
                     pass
         if not _is_non_failure_cycle_complete_error(d):
             out.append(d)
+    if level:
+        lvl = str(level).strip().lower()
+        filtered = [r for r in out if str(r.get("level") or "").lower() == lvl]
+        return filtered[:limit]
     if out:
         return out
+    if level:
+        return []
     return [r for r in _fetch_ops_logs_fallback(limit=limit) if not _is_non_failure_cycle_complete_error(r)]
 
 

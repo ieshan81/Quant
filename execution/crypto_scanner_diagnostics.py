@@ -56,6 +56,7 @@ def build_crypto_scanner_diagnostics_from_cycle(
     crypto_results = [r for r in results if getattr(r, "asset_class", None) == "crypto"]
     symbols_considered = universe_symbols or [getattr(r, "symbol", "") for r in crypto_results]
     symbols_considered = [s for s in symbols_considered if s]
+    symbols_scanned = len(crypto_results) if crypto_results else len(symbols_considered)
     _broker_syms, _broker_src, _broker_n = _resolve_universe_symbols()
 
     quotes_ok = sum(1 for r in crypto_results if not getattr(r, "error", None) and getattr(r, "mid", None))
@@ -133,7 +134,8 @@ def build_crypto_scanner_diagnostics_from_cycle(
     return {
         "universe_source": universe_source or "cycle_scan",
         "universe_count": _broker_n,
-        "symbols_scanned_this_cycle": len(symbols_considered),
+        "symbols_scanned_this_cycle": symbols_scanned,
+        "symbols_considered_count": len(symbols_considered),
         "symbols_considered": symbols_considered[:25],
         "broker_supported_universe_source": _broker_src,
         "broker_supported_count": _broker_n,
@@ -200,6 +202,9 @@ def build_crypto_strategy_viability(
     )
 
     return {
+        "mode_label": (
+            "Current crypto mode is a slow overnight signal scanner, not 30-second scalping."
+        ),
         "scanning_enough_symbols": universe_n >= 5,
         "universe_count": universe_n,
         "thresholds_realistic_for_micro_account": buy_th <= 0.15,
@@ -243,6 +248,25 @@ def _resolve_universe_symbols() -> tuple[list[str], str, int]:
         return list(FALLBACK_CRYPTO), "fallback_crypto", len(FALLBACK_CRYPTO)
 
 
+def _load_crypto_diag_from_cycle_journal() -> dict[str, Any] | None:
+    try:
+        import json
+
+        from monitoring.ops_log_store import _open_ops_db
+
+        with _open_ops_db() as conn:
+            row = conn.execute(
+                "SELECT summary_json FROM cycle_journal ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if not row or not row[0]:
+            return None
+        summary = json.loads(str(row[0]))
+        diag = summary.get("crypto_scanner_diagnostics") if isinstance(summary, dict) else None
+        return diag if isinstance(diag, dict) and diag.get("final_reason_code") else None
+    except Exception:
+        return None
+
+
 def build_crypto_scanner_diagnostics_for_api(
     *,
     rt: dict[str, Any] | None = None,
@@ -252,7 +276,11 @@ def build_crypto_scanner_diagnostics_for_api(
 ) -> dict[str, Any]:
     """API-safe diagnostics when full cycle results are not in memory."""
     stored = (last_cycle_evidence or {}).get("crypto_scanner_diagnostics")
+    if not isinstance(stored, dict) or not stored.get("final_reason_code"):
+        stored = _load_crypto_diag_from_cycle_journal()
     if isinstance(stored, dict) and stored.get("final_reason_code") and not stored.get("error"):
+        if not int(stored.get("symbols_scanned_this_cycle") or 0) and int(stored.get("scored_count") or 0) > 0:
+            stored = {**stored, "symbols_scanned_this_cycle": int(stored.get("scored_count") or 0)}
         if not stored.get("cycle_timing"):
             try:
                 from monitoring.worker_wait_context import expected_between_cycle_interval_sec

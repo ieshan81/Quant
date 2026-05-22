@@ -797,8 +797,8 @@ _PAGE = """<!DOCTYPE html>
       margin-bottom: 10px;
     }
     .mc-panel h4 { margin: 0 0 8px; font-size: 0.82rem; color: var(--accent); font-weight: 600; }
-    .mc-spark { height: 36px; margin-top: 6px; background: rgba(56,189,248,0.06); border-radius: 6px; position: relative; overflow: hidden; }
-    .mc-spark svg { width: 100%; height: 100%; display: block; }
+    .mc-chart-wrap { background: #0b1220; border-radius: 8px; border: 1px solid var(--border); }
+    .mc-chart-wrap canvas { width: 100% !important; height: 100% !important; }
     .mc-donut-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .mc-donut-bar { flex: 1; min-width: 120px; height: 10px; background: rgba(148,163,184,0.12); border-radius: 6px; overflow: hidden; display: flex; }
     .mc-donut-bar span { height: 100%; }
@@ -921,12 +921,13 @@ _PAGE = """<!DOCTYPE html>
       <div class="mc-command-strip" id="mcCommandStrip"></div>
       <div class="mc-cockpit-main" id="mcCockpitMain">
         <div class="mc-cockpit-left">
-          <div class="mc-panel"><h4>Equity &amp; P&amp;L</h4><div id="mcEquityChartBody" class="mono" style="font-size:12px;">Loading…</div><div class="mc-spark" id="mcEquitySpark"></div></div>
+          <div class="mc-panel mc-equity-panel"><h4>Equity &amp; P&amp;L</h4><div id="mcEquityChartBody" class="mono" style="font-size:12px;margin-bottom:6px;">Loading…</div><div class="chart-wrap mc-chart-wrap" style="position:relative;height:168px;min-height:168px;"><canvas id="mcEquityChart"></canvas></div><p id="mcEqEmptyHint" class="empty-hint" style="display:none;margin:6px 0 0;font-size:11px;"></p></div>
           <div class="mc-panel"><h4>Capital allocation</h4><div id="mcCapitalAllocBody" class="mc-donut-row">—</div></div>
         </div>
         <div class="mc-cockpit-right">
           <div class="mc-panel"><h4>Holdings</h4><div id="mcHoldingsMini"><span class="muted">Loading…</span></div></div>
           <div class="mc-panel"><h4>Pending exits</h4><div id="mcPendingExits"><span class="muted">None</span></div></div>
+          <div class="mc-panel"><h4>Crypto strategy</h4><div id="mcCryptoStrategyNote"><span class="muted">—</span></div></div>
           <div class="mc-panel"><h4>Active blockers</h4><div id="mcActiveBlockers"><span class="muted">None</span></div></div>
           <div class="mc-panel"><h4>Last actions</h4><ul class="mc-feed" id="mcActionFeed"><li>—</li></ul></div>
           <div class="mc-panel" id="mcMomoCriticalPanel"><h4>Momo critical</h4><div id="mcMomoCritical"><span class="muted">—</span></div></div>
@@ -1429,8 +1430,8 @@ _PAGE = """<!DOCTYPE html>
       </div>
     </section>
 
-    <details class="section dev-diagnostics" id="devDiagnosticsSec">
-      <summary>Developer diagnostics</summary>
+    <details class="section dev-diagnostics" id="devDiagnosticsSec" hidden>
+      <summary>Developer diagnostics (Ops)</summary>
       <div class="section-body">
         <p class="dev-db-meta mono" id="devDbMeta">DB: {{ db }} · Poll every {{ refresh_sec }}s · <span id="pollFoot">HTTP only</span></p>
         <pre id="debugStateBlock">{}</pre>
@@ -2601,16 +2602,22 @@ def create_app() -> Flask:
         from monitoring.ops_log_store import fetch_ops_logs
         from monitoring.usage_counters import increment_usage
         increment_usage("dashboard_requests")
+        level = request.args.get("level")
         logs = fetch_ops_logs(
             limit=int(request.args.get("limit", 200)),
-            level=request.args.get("level"),
+            level=level,
             event_type=request.args.get("event_type"),
             symbol=request.args.get("symbol"),
             cycle_id=request.args.get("cycle_id"),
             reason_code=request.args.get("reason_code"),
             search=request.args.get("search"),
         )
-        return Response(json.dumps({"logs": logs}, default=str), mimetype="application/json")
+        payload: dict[str, Any] = {"logs": logs, "count": len(logs)}
+        if level and str(level).lower() == "error":
+            payload["no_errors"] = len(logs) == 0
+            if not logs:
+                payload["message"] = "No error-level ops events in the requested window."
+        return Response(json.dumps(payload, default=str), mimetype="application/json")
 
     @app.get("/api/ops/logs/export.csv")
     def api_ops_logs_csv() -> Response:

@@ -421,8 +421,56 @@ def _assemble_summary(
     momo_attention = (
         [f"{str(top_ai_note.get('severity') or 'info').upper()}: {str(top_ai_note.get('finding') or '')[:160]}"]
         if top_ai_note
-        else (["No AI notes yet."] if not reason else [])
+        else ["No AI notes yet."]
     )
+
+    session_mode = str(mc.get("session_mode") or "").strip()
+    if not session_mode:
+        session_mode = mission_mode if mission_mode not in ("STARTUP", "WAITING_FOR_FIRST_CYCLE", "") else "OVERNIGHT_CRYPTO_ONLY"
+    _session_label = _mission_mode_human(mission_mode)
+    _pending_exits: list[dict[str, Any]] = []
+    _cockpit_alloc: dict[str, Any] = {}
+    try:
+        from execution import stock_broker
+        from monitoring.mission_control_enrichment import (
+            build_pending_exits,
+            compute_allocation_summary,
+            enrich_open_positions_from_broker,
+            filter_mission_action_feed,
+            resolve_session_mode_label,
+        )
+
+        _cli_asm = stock_broker.get_rest_client()
+        positions = enrich_open_positions_from_broker(
+            list(positions) if isinstance(positions, list) else [],
+            rest_client=_cli_asm,
+        )
+        _cockpit_alloc = compute_allocation_summary(equity=eq, cash=cash, positions=positions)
+        _pending_exits = build_pending_exits(
+            position_exit_rows=list(eh.get("position_exit_rows") or []),
+            positions=positions,
+        )
+        crypto_events = filter_mission_action_feed(crypto_events)
+        _session_label = resolve_session_mode_label(mission_mode=mission_mode)
+    except Exception:
+        pass
+
+    _cap_prot = {
+        "allocator": alloc,
+        "dynamic_profile": profile,
+        "why_buying_power_low": why_bp,
+        "human_summary": why_bp,
+        "buying_power_diagnostic": bp_diag,
+    }
+    if _cockpit_alloc.get("available"):
+        _cap_prot["cockpit_allocation"] = _cockpit_alloc
+        _cap_prot["allocator"] = {
+            **(alloc if isinstance(alloc, dict) else {}),
+            "actual_stock_pct": _cockpit_alloc.get("actual_stock_pct"),
+            "actual_crypto_pct": _cockpit_alloc.get("actual_crypto_pct"),
+            "stock_market_value": _cockpit_alloc.get("stock_market_value"),
+            "crypto_market_value": _cockpit_alloc.get("crypto_market_value"),
+        }
 
     return {
         "ok": True,
@@ -456,18 +504,14 @@ def _assemble_summary(
         },
         "mission": {
             "mission_mode": mission_mode,
-            "session_mode": mc.get("session_mode"),
+            "session_mode": session_mode,
+            "session_mode_label": _session_label,
             "mission_mode_human": _mission_mode_human(mission_mode),
             "recovery_status": eh.get("startup_recovery_status"),
             "next_allowed_action": allowed,
         },
-        "capital_protection": {
-            "allocator": alloc,
-            "dynamic_profile": profile,
-            "why_buying_power_low": why_bp,
-            "human_summary": why_bp,
-            "buying_power_diagnostic": bp_diag,
-        },
+        "pending_exits": _pending_exits,
+        "capital_protection": _cap_prot,
         "positions": {"open": positions[:20], "count": len(positions)},
         "crypto_night": {
             **crypto,
@@ -640,6 +684,48 @@ def build_mission_control_summary_minimal(
         _mc_crypto_diag = {}
         _mc_crypto_viability = {}
 
+    _pending_exits: list[dict[str, Any]] = []
+    _session_label = ""
+    _pe_rows: list[dict[str, Any]] = []
+    _cli_mc = None
+    try:
+        from execution import stock_broker
+        from monitoring.mission_control_enrichment import (
+            build_pending_exits,
+            compute_allocation_summary,
+            enrich_open_positions_from_broker,
+            filter_mission_action_feed,
+            resolve_session_mode_label,
+        )
+
+        _cli_mc = stock_broker.get_rest_client()
+        _positions = enrich_open_positions_from_broker(_positions, rest_client=_cli_mc)
+        try:
+            from data.data_store import get_connection
+            from monitoring.dashboard_data import fetch_latest_execution_health
+
+            with get_connection(config.DB_PATH, timeout_sec=2.0) as conn:
+                eh = fetch_latest_execution_health(conn) or {}
+                _pe_rows = list(eh.get("position_exit_rows") or [])
+        except Exception:
+            _pe_rows = []
+        _alloc = compute_allocation_summary(equity=_eq, cash=_cash, positions=_positions)
+        if _alloc.get("available"):
+            _capital_protection["cockpit_allocation"] = _alloc
+            _capital_protection["allocator"] = {
+                "actual_stock_pct": _alloc.get("actual_stock_pct"),
+                "actual_crypto_pct": _alloc.get("actual_crypto_pct"),
+                "stock_market_value": _alloc.get("stock_market_value"),
+                "crypto_market_value": _alloc.get("crypto_market_value"),
+            }
+        _pending_exits = build_pending_exits(position_exit_rows=_pe_rows, positions=_positions)
+        crypto_events = filter_mission_action_feed(crypto_events)
+        if not str(session_mode or "").strip():
+            session_mode = mission_mode or "OVERNIGHT_CRYPTO_ONLY"
+        _session_label = resolve_session_mode_label(mission_mode=mission_mode)
+    except Exception:
+        _session_label = _mission_mode_human(mission_mode)
+
     return {
         "ok": True,
         "simple_fallback": True,
@@ -665,11 +751,14 @@ def build_mission_control_summary_minimal(
         "worker_stale_display": worker_stale_display,
         "mission": {
             "mission_mode": mission_mode,
-            "session_mode": session_mode,
+            "session_mode": session_mode or mission_mode,
+            "session_mode_label": _session_label,
             "mission_mode_human": _mission_mode_human(mission_mode),
             "worker_stale_display": worker_stale_display,
             "next_allowed_action": {},
         },
+        "pending_exits": _pending_exits,
+        "position_exit_rows": _pe_rows[:20],
         "recovery_gate": recovery_gate,
         "capital_protection": _capital_protection,
         "positions": {

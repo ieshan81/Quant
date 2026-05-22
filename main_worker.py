@@ -4343,11 +4343,18 @@ def run_trading_cycle_once(
 
     st = stock_symbols
     cr = crypto_symbols
-    tasks: list[tuple[AssetClass, str]] = [("stock", s) for s in st] + [("crypto", s) for s in cr]
+    stock_tasks: list[tuple[AssetClass, str]] = [("stock", s) for s in st]
+    crypto_tasks: list[tuple[AssetClass, str]] = [("crypto", s) for s in cr]
     max_sym = os.getenv("SPRINT9_MAX_CYCLE_SYMBOLS")
     if max_sym:
         cap = int(max_sym)
-        tasks = tasks[:cap]
+        if not _mkt_open and crypto_tasks:
+            # Overnight: prioritize full crypto universe over legacy combined cap.
+            tasks = crypto_tasks if len(crypto_tasks) <= cap else crypto_tasks[:cap]
+        else:
+            tasks = (stock_tasks + crypto_tasks)[:cap]
+    else:
+        tasks = stock_tasks + crypto_tasks
 
     stage_name = "MICRO"
     try:
@@ -4713,12 +4720,37 @@ def run_trading_cycle_once(
         reverse=True,
     )
     logger.info(f"Top crypto scores: {sorted_crypto_scores[:4]}")
+    def _qty_pos(row: dict[str, Any]) -> float:
+        try:
+            return float(row.get("broker_qty") or row.get("local_qty") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    _open_stock = sum(
+        1
+        for r in (exit_health.get("position_exit_rows") or [])
+        if str(r.get("asset_class") or "").lower() == "stock" and _qty_pos(r) > 1e-6
+    )
+    _open_crypto = sum(
+        1
+        for r in (exit_health.get("position_exit_rows") or [])
+        if str(r.get("asset_class") or "").lower() == "crypto" and _qty_pos(r) > 1e-6
+    )
+    summary["hold_counts"] = {
+        "stock_open_positions": _open_stock,
+        "crypto_open_positions": _open_crypto,
+        "total_open_positions": _open_stock + _open_crypto,
+        "cycle_holds_signal": int(summary.get("holds") or 0),
+        "note": "cycle_holds_signal counts signal HOLD actions, not open position count",
+    }
+
     try:
         from execution.crypto_scanner_diagnostics import (
             build_crypto_scanner_diagnostics_from_cycle,
             build_crypto_strategy_viability,
         )
 
+        _scan_t0 = time.perf_counter()
         _uni_src = "universe_snapshot"
         if crypto_override is not None:
             _uni_src = "override"
@@ -4737,6 +4769,14 @@ def run_trading_cycle_once(
         summary["crypto_strategy_viability"] = build_crypto_strategy_viability(
             rt, summary["crypto_scanner_diagnostics"]
         )
+        _diag = summary.get("crypto_scanner_diagnostics")
+        if isinstance(_diag, dict):
+            _diag["scan_duration_ms"] = round((time.perf_counter() - _scan_t0) * 1000.0, 1)
+            _diag["skipped_count"] = max(
+                0,
+                int(_diag.get("symbols_scanned_this_cycle") or 0)
+                - int(_diag.get("scored_count") or 0),
+            )
     except Exception:
         logger.debug("crypto_scanner_diagnostics skipped", exc_info=True)
     logger.info(
@@ -4804,12 +4844,15 @@ def run_trading_cycle_once(
                 "buys": summary.get("buys"),
                 "sells": summary.get("sells"),
                 "holds": summary.get("holds"),
+                "hold_counts": summary.get("hold_counts"),
                 "overnight_risk_plan": summary.get("overnight_risk_plan"),
                 "capital_plan_enforcement": summary.get("capital_plan_enforcement"),
                 "cycle_outcome": summary.get("cycle_outcome"),
                 "last_no_trade_reason": summary.get("last_no_trade_reason"),
                 "selected_engine": summary.get("selected_engine"),
                 "crypto_executor_readiness": summary.get("crypto_executor_readiness"),
+                "crypto_scanner_diagnostics": summary.get("crypto_scanner_diagnostics"),
+                "crypto_strategy_viability": summary.get("crypto_strategy_viability"),
             },
         )
     except Exception:

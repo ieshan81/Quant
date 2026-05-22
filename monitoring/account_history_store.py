@@ -32,6 +32,9 @@ CREATE INDEX IF NOT EXISTS idx_acct_hist_at ON account_history_snapshots(recorde
 
 _RANGE_HOURS = {"1D": 26, "5D": 5 * 24 + 2, "1W": 8 * 24, "1M": 32 * 24, "ALL": 365 * 24}
 
+_HISTORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_CACHE_TTL_SEC = 12.0
+
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
@@ -88,7 +91,12 @@ def _range_cutoff(range_key: str) -> str:
 
 
 def fetch_account_history(range_key: str = "1D") -> dict[str, Any]:
+    import time as _time
+
     rk = (range_key or "1D").upper().strip()
+    cached = _HISTORY_CACHE.get(rk)
+    if cached and (_time.time() - cached[0]) < _CACHE_TTL_SEC:
+        return dict(cached[1])
     if rk == "5D":
         rk = "5D"
     cutoff = _range_cutoff(rk)
@@ -146,7 +154,7 @@ def fetch_account_history(range_key: str = "1D") -> dict[str, Any]:
     msg = None
     if insufficient:
         msg = f"Not enough history for {rk} yet ({len(points)} points)."
-    return {
+    out = {
         "range": rk,
         "points": points,
         "series": points,
@@ -154,4 +162,7 @@ def fetch_account_history(range_key: str = "1D") -> dict[str, Any]:
         "insufficient_history": insufficient,
         "message": msg,
         "count": len(points),
+        "cached": False,
     }
+    _HISTORY_CACHE[rk] = (_time.time(), out)
+    return out
