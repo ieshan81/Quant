@@ -3938,6 +3938,8 @@ def execute_cycle_results(
         "buying_power": float(alpaca_snapshot.get("buying_power", 0.0)),
         "usable_buying_power": usable_buying_power,
         "max_usable_for_new_buys_stock": max_usable_for_new_buys_stock,
+        "max_usable_for_new_buys_crypto": max_usable_for_new_buys_crypto,
+        "crypto_buys_disabled_cycle": bool(crypto_buys_disabled_cycle),
         "reserved_stock_notional": reserved_stock_notional,
         "reserved_crypto_notional": reserved_crypto_notional,
         "stock_buy_attempts": stock_buy_attempts,
@@ -4811,13 +4813,15 @@ def run_trading_cycle_once(
         _uni_src = rt.get("_crypto_universe_source") or "universe_snapshot"
         if (rt.get("_crypto_scan_gate") or {}).get("heavy_scan_skipped"):
             _uni_src = f"{_uni_src}|gate_skipped"
+        _bg_for_diag = summary.get("buy_gate") or {}
+        _crypto_buys_disabled_diag = bool(_bg_for_diag.get("crypto_buys_disabled_cycle"))
         summary["crypto_scanner_diagnostics"] = build_crypto_scanner_diagnostics_from_cycle(
             rt=rt,
             results=results,
             sorted_crypto_scores=sorted_crypto_scores,
             crypto_gate=rt.get("_crypto_scan_gate"),
-            buy_gate=summary.get("buy_gate"),
-            crypto_buys_disabled_cycle=crypto_buys_disabled_cycle,
+            buy_gate=_bg_for_diag,
+            crypto_buys_disabled_cycle=_crypto_buys_disabled_diag,
             universe_symbols=list(cr) if cr else [],
             universe_source=_uni_src,
         )
