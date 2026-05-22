@@ -1288,10 +1288,58 @@
   // Overview tab
   // ---------------------------------------------------------------------------
 
+  function _dashEl(id) {
+    return document.getElementById(id);
+  }
+
+  function _setDashText(id, text, className) {
+    var el = _dashEl(id);
+    if (!el) return;
+    el.textContent = text == null ? "—" : String(text);
+    if (className) el.className = className;
+  }
+
+  function renderOverviewTruth(vm) {
+    try {
+      var ss = vm.simpleStatus || {};
+      var cts = ss.canonical_truth_summary || {};
+      var acct = ss.account || {};
+      var fl = cts.fast_loop_state || {};
+      var bp = acct.buying_power != null ? Number(acct.buying_power) : (vm.executionHealth || {}).buying_power;
+      _setDashText("ovBp", isFiniteNum(bp) ? fmtMoney(bp) : "—");
+      _setDashText(
+        "ovRecovery",
+        cts.capital_recovery_active ? "Active" : (isFiniteNum(bp) && bp < 1 ? "Likely (low BP)" : "Off")
+      );
+      var flLine =
+        safeText(fl.ui_label || fl.execution_mode, "—") +
+        " · scored " + safeText(fl.scored_count, "0") +
+        "/" + safeText(fl.symbols_scanned, "0");
+      if (fl.top_rejected_reason || cts.fast_loop_top_reject) {
+        flLine += " · top reject: " + safeText(fl.top_rejected_reason || cts.fast_loop_top_reject, "—");
+      }
+      _setDashText("ovFastLoop", flLine);
+      var liveAllowed = cts.live_allowed;
+      _setDashText(
+        "ovLiveAllowed",
+        liveAllowed === true ? "Allowed" : liveAllowed === false ? "Blocked" : "—"
+      );
+      var blockers = cts.live_blockers || cts.momo_blockers || [];
+      var btxt = blockers.length
+        ? "Blockers: " + blockers.map(function (b) { return String(b).replace(/_/g, " "); }).join(", ")
+        : "No architecture blockers reported.";
+      _setDashText("ovBlockers", btxt);
+      _setDashText("ovMomoMemo", cts.momo_summary || cts.capital_alert || "MoMo memo available on Mission Control / GPT bundle.");
+    } catch (eOv) {
+      console.error("[renderOverviewTruth]", eOv);
+    }
+  }
+
   function renderOverview(vm) {
+    try {
     var ss = vm.simpleStatus || {};
     var hint = vm.overviewHint || buildNoTradeHint(ss.trading, ss.crypto_scanner_diagnostics);
-    var hintEl = document.getElementById("overviewDataHint");
+    var hintEl = _dashEl("overviewDataHint");
     if (hintEl) {
       if (hint) {
         hintEl.textContent = "Last cycle: " + String(hint);
@@ -1303,23 +1351,28 @@
         hintEl.style.display = "none";
       }
     }
-    document.getElementById("mMode").textContent = vm.mode ? String(vm.mode).toUpperCase() : "—";
-    document.getElementById("mEq").textContent = vm.equity != null ? fmtMoney(vm.equity) : "—";
+    _setDashText("mMode", vm.mode ? String(vm.mode).toUpperCase() : "—");
 
-    var pnlD = document.getElementById("mPnlD");
-    var pnlP = document.getElementById("mPnlP");
-    pnlD.textContent = vm.pnlDollars != null ? fmtMoneySigned(vm.pnlDollars) : "—";
-    pnlD.className = "val mono " + pnlClass(vm.pnlDollars);
-    pnlP.textContent = vm.pnlPct != null ? fmtPctSigned(vm.pnlPct) : "—";
-    pnlP.className = "val mono " + pnlClass(vm.pnlPct);
+    var pnlD = _dashEl("mPnlD");
+    var pnlP = _dashEl("mPnlP");
+    _setDashText("mEq", vm.equity != null ? fmtMoney(vm.equity) : "—");
+    if (pnlD) {
+      pnlD.textContent = vm.pnlDollars != null ? fmtMoneySigned(vm.pnlDollars) : "—";
+      pnlD.className = "val mono " + pnlClass(vm.pnlDollars);
+    }
+    if (pnlP) {
+      pnlP.textContent = vm.pnlPct != null ? fmtPctSigned(vm.pnlPct) : "—";
+      pnlP.className = "val mono " + pnlClass(vm.pnlPct);
+    }
 
-    document.getElementById("mCash").textContent = isFiniteNum(vm.cash) ? fmtMoney(vm.cash) : "—";
+    _setDashText("mCash", isFiniteNum(vm.cash) ? fmtMoney(vm.cash) : "—");
     var mo = vm.marketOpen;
-    document.getElementById("mMkt").textContent = mo === true ? "OPEN" : mo === false ? "CLOSED" : "—";
+    _setDashText("mMkt", mo === true ? "OPEN" : mo === false ? "CLOSED" : "—");
     var st = vm.capitalStage || {};
     var stageText = st.stage != null ? String(st.stage) : (st.name != null ? String(st.name) : "—");
-    document.getElementById("mCap").textContent = stageText.toUpperCase();
+    _setDashText("mCap", stageText.toUpperCase());
 
+    renderOverviewTruth(vm);
     renderCapitalCard(vm);
     renderOperatorSummary(vm);
     renderExecutionHealth(vm);
@@ -1329,7 +1382,8 @@
     var top = (vm.positions || []).slice(0, 5);
     var tb = document.querySelector("#tblOverviewPositions tbody");
     if (tb) {
-      document.getElementById("posTopEmpty").style.display = top.length ? "none" : "block";
+      var posTopEmpty = _dashEl("posTopEmpty");
+      if (posTopEmpty) posTopEmpty.style.display = top.length ? "none" : "block";
       if (P.patchTableByKey) {
         P.patchTableByKey(tb, top, function (r) {
           return String(r.symbol || "").toUpperCase();
@@ -1364,7 +1418,8 @@
     }
 
     var decs = (vm.executionDecisions || []).slice(0, 10);
-    document.getElementById("decEmpty").style.display = decs.length ? "none" : "block";
+    var decEmpty = _dashEl("decEmpty");
+    if (decEmpty) decEmpty.style.display = decs.length ? "none" : "block";
     var dt = document.querySelector("#tblOverviewDecisions tbody");
     if (dt) {
       if (P.patchTableByKey) {
@@ -1382,6 +1437,9 @@
           return "<tr><td class=\"mono\">" + esc(fmtTimestamp(r.created_at || "")) + "</td><td>" + esc(r.symbol || "") + "</td><td>" + esc(r.side || "") + "</td><td>" + decisionBadge(r.decision || "") + "</td><td>" + esc(reason) + "</td></tr>";
         }).join("");
       }
+    }
+    } catch (eRenderOv) {
+      console.error("[renderOverview]", eRenderOv);
     }
   }
 
@@ -1805,9 +1863,9 @@
     _lastVmSig = sig;
     var pairs = _collectSymbolPairsFromVm(vm);
     var done = function () {
-      renderOverview(vm);
-      renderPositionsTab(vm);
-      renderActivity(vm);
+      try { renderOverview(vm); } catch (e1) { console.error("[paintOverview]", e1); }
+      try { renderPositionsTab(vm); } catch (e2) { console.error("[paintPositions]", e2); }
+      try { renderActivity(vm); } catch (e3) { console.error("[paintActivity]", e3); }
     };
     if (P.ensureSymbolMeta) {
       P.ensureSymbolMeta(pairs, _authHeaders).then(done).catch(done);
@@ -2108,6 +2166,9 @@
       }
       if (name === "files") loadFilesTab();
       if (name === "ai") loadAiTab();
+      if (name === "overview" && window.__lastVm) {
+        try { renderOverview(window.__lastVm); } catch (eTab) { console.error(eTab); }
+      }
     }
     var t;
     for (t = 0; t < tabs.length; t++) {
@@ -3118,38 +3179,97 @@
 
   var _btPreviewCache = null;
 
+  function _fillBtList(id, items) {
+    var ul = document.getElementById(id);
+    if (!ul) return;
+    ul.innerHTML = "";
+    (items || []).forEach(function (it) {
+      var li = document.createElement("li");
+      li.textContent = String(it);
+      ul.appendChild(li);
+    });
+  }
+
   function renderBrokerTransitionCard(data) {
     data = data || {};
+    var firstRun = data.first_run_baseline_required === true || data.wizard_state === "FIRST_RUN_BASELINE_REQUIRED";
+    var headline = document.getElementById("btWizardHeadline");
     var st = document.getElementById("btWizardState");
-    var tt = document.getElementById("btTransitionType");
+    var op = document.getElementById("btOperatorLabel");
     var rk = document.getElementById("btRiskLevel");
     var bm = document.getElementById("btBrokerMode");
     var ac = document.getElementById("btAcceptance");
     var cfg = document.getElementById("btConfigLine");
-    var pre = document.getElementById("btPreviewSummary");
-    if (st) st.textContent = "State: " + safeText(data.wizard_state, "—");
-    if (tt) tt.textContent = safeText(data.transition_type, "—");
-    if (rk) rk.textContent = safeText(data.risk_level, "—");
+    var raw = document.getElementById("btPreviewRaw");
+    var mach = document.getElementById("btMachineType");
+    var cbox = document.getElementById("btConfirmBox");
+    var cphrase = document.getElementById("btConfirmPhrase");
     var fp = data.broker_fingerprint || {};
+    var opLabel = data.operator_label || (firstRun ? "First baseline required" : safeText(data.transition_type, "—"));
+
+    if (headline) {
+      headline.textContent = firstRun
+        ? "First fingerprint baseline required"
+        : safeText(data.operator_label, "Broker account transition");
+    }
+    if (st) {
+      st.textContent = firstRun
+        ? (data.operator_message || "No previous fingerprint stored. Preview, backup, then apply sync to establish baseline and reconcile runtime.")
+        : ("State: " + safeText(data.wizard_state, "—"));
+    }
+    if (op) op.textContent = opLabel;
+    if (rk) rk.textContent = safeText(data.risk_level, "—");
     if (bm) bm.textContent = safeText(fp.mode, "—");
-    if (ac) ac.textContent = safeText(data.acceptance_status || (data.active_epoch || {}).acceptance_audit_result, "—");
+    if (ac) {
+      var epochAudit = (data.active_epoch || {}).acceptance_audit_result;
+      var auditSt = typeof epochAudit === "object" ? epochAudit.acceptance_status : epochAudit;
+      ac.textContent = safeText(data.acceptance_status || auditSt, "—");
+    }
     var cd = data.config_display || {};
     if (cfg) {
       cfg.textContent =
         "URL " + safeText(cd.ALPACA_BASE_URL, "—") +
         " · QUANTBOT_MODE " + safeText(cd.QUANTBOT_MODE, "—") +
-        " · BP $" + safeText(fp.buying_power, "—");
+        " · BP $" + safeText(fp.buying_power, "—") +
+        (firstRun ? " · No previous fingerprint on file" : "");
     }
-    if (pre) {
-      pre.textContent = JSON.stringify({
-        preserved: data.preserved,
-        rows_to_clear: data.rows_to_clear,
-        warnings: data.warnings,
-        required_confirmation: data.required_confirmation,
-        reset_allowed: data.reset_allowed
-      }, null, 2);
+    if (cbox && cphrase) {
+      cbox.style.display = "block";
+      cphrase.textContent = safeText(data.required_confirmation, "RESET PAPER RUNTIME");
     }
+    _fillBtList("btPreservedList", data.preserved_human || data.preserved || []);
+    _fillBtList("btClearList", data.would_clear_human || []);
+    var snap = data.broker_snapshot || {};
+    _fillBtList("btBrokerSnapList", [
+      "Mode: " + safeText(snap.mode, fp.mode),
+      "Base URL: " + safeText(snap.base_url, fp.base_url),
+      "Equity: $" + safeText(snap.equity, fp.equity),
+      "Buying power: $" + safeText(snap.buying_power, fp.buying_power),
+      "Positions: " + safeText(snap.positions_count, fp.positions_count),
+      "Open orders: " + safeText(snap.open_orders_count, fp.open_orders_count),
+      "Fingerprint: " + safeText(snap.fingerprint_hash_short, (fp.fingerprint_hash || "").slice(0, 12))
+    ]);
+    if (raw) {
+      raw.textContent = JSON.stringify(
+        {
+          wizard_state: data.wizard_state,
+          transition_type: data.transition_type,
+          warnings: data.warnings,
+          rows_to_clear: data.rows_to_clear,
+          reset_allowed: data.reset_allowed
+        },
+        null,
+        2
+      );
+    }
+    if (mach) {
+      mach.textContent = "Machine type: " + safeText(data.transition_type_machine || data.transition_type, "—");
+    }
+    _btPreviewCache = data;
+    _btPreviewLoaded = true;
   }
+
+  var _btPreviewLoaded = false;
 
   function loadBrokerTransitionWizard() {
     fetch("/api/ops/broker-transition/status", { cache: "no-store", headers: _authHeaders() })
@@ -3194,7 +3314,6 @@
       fetch("/api/ops/broker-transition/preview", { cache: "no-store", headers: _authHeaders() })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-          _btPreviewCache = d;
           renderBrokerTransitionCard(d);
           setStatus("Preview refreshed.");
         })
@@ -3232,6 +3351,10 @@
 
     btnApply.addEventListener("click", function () {
       var pv = _btPreviewCache || {};
+      if (!_btPreviewLoaded) {
+        setStatus("Load preview first (Preview Transition).");
+        return;
+      }
       var req = pv.required_confirmation || "RESET PAPER RUNTIME";
       var conf = window.prompt("Type exactly:\n" + req);
       if (!conf) return;
@@ -3965,7 +4088,7 @@
           var ct = d.canonical_truth || {};
           var capSt = ct.capital_state || {};
           var rec = capSt.capital_recovery_state || {};
-          if (rec.enabled && rec.human_summary) {
+          if (rec && rec.enabled && rec.human_summary) {
             return "Capital recovery: " + String(rec.human_summary);
           }
           var cp = d.capital_protection || {};

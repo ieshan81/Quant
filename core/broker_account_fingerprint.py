@@ -272,9 +272,34 @@ def _transition_meta(ttype: str) -> dict[str, Any]:
     return mapping.get(ttype, mapping[TRANSITION_UNKNOWN])
 
 
-def required_confirmation_for(transition_type: str) -> str:
+def required_confirmation_for(
+    transition_type: str,
+    *,
+    first_run_baseline: bool = False,
+    broker_mode: str = "paper",
+) -> str:
+    if first_run_baseline and str(broker_mode).lower() == "paper":
+        return CONFIRM_PAPER_RESET
     if transition_type in (TRANSITION_PAPER_TO_LIVE, TRANSITION_LIVE_TO_PAPER):
         return CONFIRM_LIVE
     if transition_type in (TRANSITION_PAPER_RESET, TRANSITION_PAPER_KEY_ROTATION):
         return CONFIRM_PAPER_RESET
+    if first_run_baseline:
+        return CONFIRM_SYNC
     return CONFIRM_SYNC
+
+
+def operator_transition_label(transition_type: str, *, first_run_baseline: bool = False) -> str:
+    if first_run_baseline:
+        return "First baseline required"
+    labels = {
+        TRANSITION_NO_CHANGE: "No change",
+        TRANSITION_PAPER_RESET: "Paper account reset",
+        TRANSITION_PAPER_KEY_ROTATION: "Paper key rotation",
+        TRANSITION_PAPER_TO_LIVE: "Paper to live transition",
+        TRANSITION_LIVE_TO_PAPER: "Live to paper transition",
+        TRANSITION_UNKNOWN: "Account change (review)",
+        TRANSITION_BROKER_UNAVAILABLE: "Broker unavailable",
+        TRANSITION_MODE_MISMATCH: "Mode mismatch",
+    }
+    return labels.get(transition_type, "Review required")

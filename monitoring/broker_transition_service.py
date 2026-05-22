@@ -35,8 +35,45 @@ from core.broker_account_fingerprint import (
     TRANSITION_UNKNOWN,
     classify_broker_transition,
     fetch_broker_fingerprint,
+    operator_transition_label,
     required_confirmation_for,
 )
+
+WIZARD_FIRST_RUN_BASELINE = "FIRST_RUN_BASELINE_REQUIRED"
+
+_FIRST_RUN_MESSAGE = (
+    "This is the first time this broker account has been fingerprinted. "
+    "Preview the broker account, download a backup, then apply runtime sync to store "
+    "the baseline and reconcile runtime state. Apply creates the first broker account epoch."
+)
+
+_HUMAN_PRESERVE = [
+    "bot_config",
+    "strategy weights",
+    "Momo memory",
+    "Graphify artifacts",
+    "acceptance reports",
+    "provider config",
+    "code graph",
+]
+
+_HUMAN_CLEAR = [
+    "local paper positions (runtime tables)",
+    "stale local rows",
+    "pending exits",
+    "stale exit signals",
+    "deferred exits tied to old broker state",
+    "temporary old runtime order state",
+    "old order journals (archived, not deleted)",
+]
+
+
+def _has_stored_fingerprint(stored: dict[str, Any] | None) -> bool:
+    return bool(stored and stored.get("fingerprint_hash"))
+
+
+def _is_first_run_baseline(previous: dict[str, Any] | None, current_stored: dict[str, Any] | None) -> bool:
+    return not _has_stored_fingerprint(previous) and not _has_stored_fingerprint(current_stored)
 from data.data_store import get_connection
 from monitoring.ops_log_store import write_ops_event
 from monitoring.ops_paths import data_dir
@@ -169,7 +206,14 @@ def _plan_cleanup(transition_type: str) -> dict[str, Any]:
     }
 
 
-def _wizard_state(transition_type: str, *, aligned: bool) -> str:
+def _wizard_state(
+    transition_type: str,
+    *,
+    aligned: bool,
+    first_run_baseline: bool = False,
+) -> str:
+    if first_run_baseline:
+        return WIZARD_FIRST_RUN_BASELINE
     if transition_type == TRANSITION_NO_CHANGE and aligned:
         return "healthy"
     if transition_type == TRANSITION_BROKER_UNAVAILABLE:
@@ -244,6 +288,7 @@ def _block_apply(
     backup_result: dict[str, Any] | None,
     acknowledged_open_orders: bool,
     acknowledged_broker_positions: bool,
+    first_run_baseline: bool = False,
 ) -> tuple[bool, str]:
     if not fp.get("broker_available"):
         return False, "broker_unavailable"
@@ -251,23 +296,29 @@ def _block_apply(
         return False, "broker_unavailable"
     if transition_type == TRANSITION_MODE_MISMATCH:
         return False, "mode_mismatch_unexplained"
-    if transition_type == TRANSITION_UNKNOWN:
+    if transition_type == TRANSITION_UNKNOWN and not first_run_baseline:
         return False, "unknown_transition_requires_operator_review"
     if not backup_first:
         return False, "backup_first_required"
     if not (backup_result or {}).get("ok"):
         return False, "backup_failed"
-    req = required_confirmation_for(transition_type)
-    if confirmation_text.strip() != req:
+    conf = confirmation_text.strip()
+    req = required_confirmation_for(
+        transition_type,
+        first_run_baseline=first_run_baseline,
+        broker_mode=str(fp.get("mode") or "paper"),
+    )
+    allowed_conf = {req}
+    if first_run_baseline:
+        allowed_conf = {CONFIRM_PAPER_RESET, CONFIRM_SYNC}
+    if conf not in allowed_conf:
         return False, f"confirmation_must_be:{req}"
     if transition_type == TRANSITION_PAPER_TO_LIVE:
         live_ok, _ = _live_readiness_ok()
         if not live_ok:
             return False, "live_readiness_failed"
-        if confirmation_text.strip() != CONFIRM_LIVE:
+        if conf != CONFIRM_LIVE:
             return False, f"confirmation_must_be:{CONFIRM_LIVE}"
-    if transition_type in (TRANSITION_PAPER_RESET,) and confirmation_text.strip() != CONFIRM_PAPER_RESET:
-        return False, f"confirmation_must_be:{CONFIRM_PAPER_RESET}"
     if fp.get("open_orders_count", 0) > 0 and not acknowledged_open_orders:
         return False, "acknowledge_open_orders_required"
     if fp.get("positions_count", 0) > 0 and not acknowledged_broker_positions:
@@ -286,6 +337,7 @@ def preview_broker_transition() -> dict[str, Any]:
         prev = current_stored
     transition = classify_broker_transition(fp, prev)
     ttype = transition["broker_transition_type"]
+    first_run = _is_first_run_baseline(prev, current_stored)
     snap = _local_runtime_snapshot()
     cleanup = _plan_cleanup(ttype)
     cfg = _config_display()
@@ -306,11 +358,14 @@ def preview_broker_transition() -> dict[str, Any]:
     if warnings:
         risks.extend(warnings)
 
-    reset_allowed = ttype in (
-        TRANSITION_PAPER_RESET,
-        TRANSITION_PAPER_KEY_ROTATION,
-        TRANSITION_NO_CHANGE,
-    ) and fp.get("broker_available")
+    risk_level = transition["risk_level"]
+    if first_run:
+        risk_level = "high" if (len(snap.get("stale_rows") or []) > 0 or broker_local_mismatch > 0) else "medium"
+
+    reset_allowed = fp.get("broker_available") and (
+        first_run
+        or ttype in (TRANSITION_PAPER_RESET, TRANSITION_PAPER_KEY_ROTATION, TRANSITION_NO_CHANGE)
+    )
     block_reason = None
     if not fp.get("broker_available"):
         block_reason = "broker_unavailable"
@@ -319,11 +374,34 @@ def preview_broker_transition() -> dict[str, Any]:
         if not live_ok:
             block_reason = f"live_readiness_failed:{detail.get('failed_gates', [])}"
 
+    req_conf = required_confirmation_for(
+        ttype,
+        first_run_baseline=first_run,
+        broker_mode=str(fp.get("mode") or "paper"),
+    )
+    fp_short = (fp.get("fingerprint_hash") or "")[:12]
+
     return {
         "ok": True,
-        "wizard_state": _wizard_state(ttype, aligned=aligned),
+        "wizard_state": _wizard_state(ttype, aligned=aligned, first_run_baseline=first_run),
+        "first_run_baseline_required": first_run,
+        "operator_label": operator_transition_label(ttype, first_run_baseline=first_run),
+        "operator_message": _FIRST_RUN_MESSAGE if first_run else "",
+        "previous_fingerprint_stored": _has_stored_fingerprint(prev) or _has_stored_fingerprint(current_stored),
+        "transition_type_machine": ttype,
         "transition_type": ttype,
-        "risk_level": transition["risk_level"],
+        "risk_level": risk_level,
+        "preserved_human": list(_HUMAN_PRESERVE),
+        "would_clear_human": list(_HUMAN_CLEAR),
+        "broker_snapshot": {
+            "mode": fp.get("mode"),
+            "base_url": fp.get("base_url"),
+            "equity": fp.get("equity"),
+            "buying_power": fp.get("buying_power"),
+            "positions_count": fp.get("positions_count"),
+            "open_orders_count": fp.get("open_orders_count"),
+            "fingerprint_hash_short": fp_short,
+        },
         "broker_fingerprint": fp,
         "previous_fingerprint": prev,
         "broker_account_equity": fp.get("equity"),
@@ -335,7 +413,10 @@ def preview_broker_transition() -> dict[str, Any]:
         "risks": risks,
         "reset_allowed": bool(reset_allowed),
         "reason_if_blocked": block_reason,
-        "required_confirmation": required_confirmation_for(ttype),
+        "required_confirmation": req_conf,
+        "required_confirmation_phrases": (
+            [CONFIRM_PAPER_RESET, CONFIRM_SYNC] if first_run else [req_conf]
+        ),
         "required_confirmations": transition.get("required_confirmations") or [],
         "allowed_actions": transition.get("allowed_actions") or [],
         "runtime_state_actions": transition.get("runtime_state_actions") or [],
@@ -428,6 +509,7 @@ def apply_broker_transition(
         except Exception as exc:
             backup_result = {"ok": False, "error": str(exc)[:200]}
 
+    first_run = bool(preview.get("first_run_baseline_required"))
     allowed, block_reason = _block_apply(
         transition_type=ttype,
         fp=preview["broker_fingerprint"],
@@ -436,6 +518,7 @@ def apply_broker_transition(
         backup_result=backup_result,
         acknowledged_open_orders=acknowledged_open_orders,
         acknowledged_broker_positions=acknowledged_broker_positions,
+        first_run_baseline=first_run,
     )
     if not allowed:
         return {
@@ -445,7 +528,7 @@ def apply_broker_transition(
             "backup_paths": [backup_result.get("backup_path")] if backup_result else [],
         }
 
-    if ttype == TRANSITION_NO_CHANGE:
+    if ttype == TRANSITION_NO_CHANGE and not first_run:
         fp = preview["broker_fingerprint"]
         save_fingerprints(current=fp)
         audit = _run_acceptance_audit(production_url=production_audit_url) if run_acceptance_audit else {}
@@ -464,7 +547,7 @@ def apply_broker_transition(
     archived = _archive_journals(archive_dir)
     rows_changed = (
         _clear_runtime_tables()
-        if ttype in (TRANSITION_PAPER_RESET, TRANSITION_PAPER_TO_LIVE)
+        if first_run or ttype in (TRANSITION_PAPER_RESET, TRANSITION_PAPER_TO_LIVE)
         else {}
     )
 

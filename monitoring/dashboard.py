@@ -214,6 +214,39 @@ _PAGE = """<!DOCTYPE html>
       gap: 12px;
       margin-bottom: 0;
     }
+    #brokerTransitionCard .bt-metric .val {
+      font-size: 0.78rem;
+      line-height: 1.35;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    #brokerTransitionCard .bt-headline {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #e2e8f0;
+      margin: 0 0 6px;
+      line-height: 1.45;
+    }
+    #brokerTransitionCard .bt-section { margin: 10px 0 0; font-size: 12px; }
+    #brokerTransitionCard .bt-section h4 {
+      margin: 0 0 4px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    #brokerTransitionCard .bt-list { margin: 0; padding-left: 1.1rem; color: #cbd5e1; }
+    #brokerTransitionCard .bt-confirm {
+      margin: 10px 0 0;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      font-size: 12px;
+    }
+    #brokerTransitionCard details.bt-raw { margin-top: 8px; font-size: 11px; }
     .metric {
       background: var(--card);
       border: 1px solid var(--border);
@@ -1133,6 +1166,17 @@ _PAGE = """<!DOCTYPE html>
     <section id="panel-overview" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Overview</h2><p>Executive summary — portfolio, engines, risk, and what the bot is doing.</p></div>
       <p id="overviewDataHint" class="muted" style="display:none;margin:0 0 12px;font-size:13px;"></p>
+      <div class="card glass-card" id="overviewTruthCard">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Live posture</h2>
+        <div class="grid-metrics" style="margin-bottom:8px;">
+          <div class="metric"><div class="lab">Buying power</div><div class="val mono" id="ovBp">—</div></div>
+          <div class="metric"><div class="lab">Capital recovery</div><div class="val" id="ovRecovery">—</div></div>
+          <div class="metric"><div class="lab">Fast loop</div><div class="val" id="ovFastLoop">—</div></div>
+          <div class="metric"><div class="lab">Live trading</div><div class="val" id="ovLiveAllowed">—</div></div>
+        </div>
+        <p class="mono" style="font-size:12px;margin:0 0 6px;line-height:1.5;" id="ovBlockers">—</p>
+        <p class="empty-hint" style="margin:0;font-size:12px;line-height:1.5;" id="ovMomoMemo">—</p>
+      </div>
       <div class="grid-metrics">
         <div class="metric"><div class="lab">Mode</div><div class="val mono" id="mMode">—</div></div>
         <div class="metric"><div class="lab">Total equity</div><div class="val mono" id="mEq">—</div></div>
@@ -1549,15 +1593,25 @@ _PAGE = """<!DOCTYPE html>
       </div>
       <div class="danger-zone card" id="brokerTransitionCard">
         <h3>Broker Account Transition / Runtime Sync</h3>
+        <p class="bt-headline" id="btWizardHeadline">Loading…</p>
         <p class="empty-hint" id="btWizardState" style="margin:0 0 8px;">Loading…</p>
         <div class="grid-metrics" style="margin-bottom:8px;">
-          <div class="metric"><div class="lab">Transition</div><div class="val mono" id="btTransitionType">—</div></div>
-          <div class="metric"><div class="lab">Risk</div><div class="val" id="btRiskLevel">—</div></div>
-          <div class="metric"><div class="lab">Broker mode</div><div class="val mono" id="btBrokerMode">—</div></div>
-          <div class="metric"><div class="lab">Acceptance</div><div class="val" id="btAcceptance">—</div></div>
+          <div class="metric bt-metric"><div class="lab">Operator status</div><div class="val" id="btOperatorLabel">—</div></div>
+          <div class="metric bt-metric"><div class="lab">Risk</div><div class="val" id="btRiskLevel">—</div></div>
+          <div class="metric bt-metric"><div class="lab">Broker mode</div><div class="val mono" id="btBrokerMode">—</div></div>
+          <div class="metric bt-metric"><div class="lab">Acceptance</div><div class="val" id="btAcceptance">—</div></div>
         </div>
         <p class="mono" id="btConfigLine" style="font-size:11px;color:var(--muted);margin:0 0 8px;"></p>
-        <pre id="btPreviewSummary" class="sec" style="max-height:160px;font-size:11px;margin:0 0 8px;"></pre>
+        <div class="bt-confirm" id="btConfirmBox" style="display:none;">
+          <strong>Confirmation phrase:</strong> <span class="mono" id="btConfirmPhrase">—</span>
+        </div>
+        <div id="btPreviewSummary">
+          <div class="bt-section"><h4>Preserved</h4><ul class="bt-list" id="btPreservedList"></ul></div>
+          <div class="bt-section"><h4>Would clear / archive</h4><ul class="bt-list" id="btClearList"></ul></div>
+          <div class="bt-section"><h4>Broker snapshot</h4><ul class="bt-list" id="btBrokerSnapList"></ul></div>
+        </div>
+        <details class="bt-raw"><summary>Diagnostics (raw JSON)</summary><pre id="btPreviewRaw" class="sec" style="max-height:140px;font-size:10px;margin:8px 0 0;"></pre></details>
+        <p class="mono" id="btMachineType" style="font-size:10px;color:var(--muted);margin:6px 0 0;"></p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
           <button type="button" id="btnBtPreview" class="tab-btn" style="font-size:12px;">Preview Transition</button>
           <button type="button" id="btnBtBackup" class="tab-btn" style="font-size:12px;">Download Backup</button>

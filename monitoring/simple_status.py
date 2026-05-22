@@ -208,6 +208,24 @@ def build_simple_worker_status() -> dict[str, Any]:
                 "Buying power near zero — open GPT bundle canonical_truth.capital_state "
                 "for stock/crypto sleeve and deployment breakdown."
             )
+        try:
+            from core.canonical_state import build_live_readiness_state
+
+            lr = build_live_readiness_state()
+            canonical_truth_summary["live_allowed"] = lr.get("live_allowed")
+            canonical_truth_summary["live_blockers"] = (lr.get("architecture_blockers") or [])[:10]
+        except Exception:
+            canonical_truth_summary.setdefault("live_blockers", [])
+        try:
+            from monitoring.momo_quant_memo import build_momo_quant_memo
+
+            memo = build_momo_quant_memo()
+            blockers = memo.get("current_blockers") or []
+            canonical_truth_summary["momo_blockers"] = blockers[:6]
+            if memo.get("human_summary"):
+                canonical_truth_summary["momo_summary"] = str(memo.get("human_summary"))[:300]
+        except Exception:
+            pass
     except Exception:
         canonical_truth_summary = {}
 

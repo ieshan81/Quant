@@ -543,8 +543,11 @@ def test_api_preview_returns_required_fields(dash_app, monkeypatch):
 def test_ui_card_only_in_ops_center(dash_app):
     html = dash_app.test_client().get("/").data.decode("utf-8", errors="replace")
     assert "brokerTransitionCard" in html
-    assert html.index("brokerTransitionCard") < html.index('id="panel-mission"') or "panel-ops" in html
-    assert "Broker Account Transition" in html
+    assert 'id="panel-ops"' in html
+    ops_section = html.split('id="panel-ops"', 1)[1][:12000]
+    assert "brokerTransitionCard" in ops_section
+    mission_section = html.split('id="panel-mission"', 1)[1].split('id="panel-overview"', 1)[0]
+    assert "brokerTransitionCard" not in mission_section
 
 
 def test_live_transition_stricter_confirmation():
@@ -633,6 +636,62 @@ def test_paper_reset_clears_stale_exits(bt_db, monkeypatch):
         n = conn.execute("SELECT COUNT(*) FROM deferred_exit_plans").fetchone()[0]
     assert n == 0
     assert "deferred_exit_plans" in changed
+
+
+def test_first_run_maps_to_first_run_baseline_ui_state(bt_db, monkeypatch):
+    monkeypatch.setattr(
+        "monitoring.broker_transition_service.fetch_broker_fingerprint",
+        lambda **_: _fp(),
+    )
+    from monitoring.broker_transition_service import preview_broker_transition
+
+    out = preview_broker_transition()
+    assert out["first_run_baseline_required"] is True
+    assert out["wizard_state"] == "FIRST_RUN_BASELINE_REQUIRED"
+    assert out["operator_label"] == "First baseline required"
+    assert "first time" in (out.get("operator_message") or "").lower()
+
+
+def test_first_run_not_primary_unknown_label(bt_db, monkeypatch):
+    from monitoring.broker_transition_service import preview_broker_transition
+
+    monkeypatch.setattr(
+        "monitoring.broker_transition_service.fetch_broker_fingerprint",
+        lambda **_: _fp(),
+    )
+    out = preview_broker_transition()
+    assert out["operator_label"] != "UNKNOWN_ACCOUNT_CHANGE"
+    assert out["transition_type"] == "UNKNOWN_ACCOUNT_CHANGE"
+
+
+def test_dashboard_has_broker_transition_layout(dash_app):
+    html = dash_app.test_client().get("/").data.decode("utf-8", errors="replace")
+    assert "btOperatorLabel" in html
+    assert "btPreservedList" in html
+    assert "bt-preview" not in html
+    assert "overflow-wrap" in html or "bt-metric" in html
+
+
+def test_dashboard_overview_truth_card(dash_app):
+    html = dash_app.test_client().get("/").data.decode("utf-8", errors="replace")
+    assert "overviewTruthCard" in html
+    assert "ovBlockers" in html
+    assert "renderOverviewTruth" in _js_bundle(dash_app)
+
+
+def _js_bundle(dash_app):
+    from tests.test_dashboard import _html_and_js
+
+    _, bundle, _ = _html_and_js(dash_app.test_client())
+    return bundle
+
+
+def test_overview_render_with_minimal_vm(dash_app):
+    from tests.test_dashboard import _html_and_js
+
+    _, bundle, _ = _html_and_js(dash_app.test_client())
+    assert "renderOverviewTruth" in bundle
+    assert "[renderOverview]" in bundle
 
 
 def test_fingerprint_fetch_with_mock_client(monkeypatch):
