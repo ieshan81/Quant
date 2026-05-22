@@ -138,6 +138,60 @@ def _merge_history_points(primary: list[dict[str, Any]], extra: list[dict[str, A
     return merged
 
 
+def _live_broker_equity() -> float | None:
+    try:
+        from monitoring.dashboard_data import fetch_latest_portfolio, get_alpaca_background_snapshot
+
+        snap = get_alpaca_background_snapshot()
+        pf = snap.get("portfolio") if isinstance(snap, dict) else None
+        if isinstance(pf, dict):
+            for key in ("equity_total", "equity"):
+                if pf.get(key) is not None:
+                    return float(pf[key])
+        import config
+        from data.data_store import get_connection
+
+        with get_connection(config.DB_PATH) as conn:
+            latest = fetch_latest_portfolio(conn)
+        if isinstance(latest, dict) and latest.get("equity_total") is not None:
+            return float(latest["equity_total"])
+    except Exception:
+        logger.debug("[account_history] live equity lookup skipped", exc_info=True)
+    return None
+
+
+def _legacy_curve_plausible(legacy: list[dict[str, Any]], live_eq: float | None) -> bool:
+    if not legacy or live_eq is None or live_eq <= 0:
+        return bool(legacy)
+    vals = [float(p.get("equity") or 0) for p in legacy if float(p.get("equity") or 0) > 0]
+    if not vals:
+        return False
+    mid = sorted(vals)[len(vals) // 2]
+    return abs(mid - live_eq) / live_eq <= 0.12
+
+
+def _append_live_equity_tail(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    live_eq = _live_broker_equity()
+    if live_eq is None or live_eq <= 0:
+        return points
+    live_eq = round(live_eq, 4)
+    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = list(points)
+    if out:
+        try:
+            last_ts = str(out[-1].get("timestamp") or "")
+            last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+            now_dt = datetime.fromisoformat(now_ts.replace("Z", "+00:00"))
+            last_eq = float(out[-1].get("equity") or 0)
+            if (now_dt - last_dt).total_seconds() < 300 and abs(last_eq - live_eq) < 0.02:
+                out[-1] = {**out[-1], "equity": live_eq, "timestamp": now_ts}
+                return out
+        except Exception:
+            pass
+    out.append({"timestamp": now_ts, "equity": live_eq})
+    return out
+
+
 def _supplement_history(points: list[dict[str, Any]], range_key: str) -> list[dict[str, Any]]:
     """Fill sparse ops snapshots with Alpaca curves and local portfolio_state rows."""
     rk = (range_key or "1D").upper().strip()
@@ -157,29 +211,32 @@ def _supplement_history(points: list[dict[str, Any]], range_key: str) -> list[di
     if not need:
         return points
 
+    live_eq = _live_broker_equity()
     legacy: list[dict[str, Any]] = []
     try:
-        from monitoring.dashboard_data import get_alpaca_background_snapshot
+        import config
+        from data.data_store import get_connection
+        from monitoring.dashboard_data import fetch_portfolio_equity_series
 
-        per = _alpaca_period_for_range(rk)
-        curves = get_alpaca_background_snapshot().get("equity_curves") or {}
-        raw = curves.get(per) if isinstance(curves, dict) else None
-        if isinstance(raw, list):
-            legacy = _legacy_rows_to_points(raw)
+        with get_connection(config.DB_PATH) as conn:
+            ps = fetch_portfolio_equity_series(conn, limit=_portfolio_state_limit(rk))
+        legacy = _legacy_rows_to_points(ps)
     except Exception:
-        logger.debug("[account_history] alpaca curve supplement skipped", exc_info=True)
+        logger.debug("[account_history] portfolio_state supplement skipped", exc_info=True)
 
     if len(legacy) < 3:
         try:
-            import config
-            from data.data_store import get_connection
-            from monitoring.dashboard_data import fetch_portfolio_equity_series
+            from monitoring.dashboard_data import get_alpaca_background_snapshot
 
-            with get_connection(config.DB_PATH) as conn:
-                ps = fetch_portfolio_equity_series(conn, limit=_portfolio_state_limit(rk))
-            legacy = _legacy_rows_to_points(ps)
+            per = _alpaca_period_for_range(rk)
+            curves = get_alpaca_background_snapshot().get("equity_curves") or {}
+            raw = curves.get(per) if isinstance(curves, dict) else None
+            if isinstance(raw, list):
+                alpaca_pts = _legacy_rows_to_points(raw)
+                if _legacy_curve_plausible(alpaca_pts, live_eq):
+                    legacy = alpaca_pts
         except Exception:
-            logger.debug("[account_history] portfolio_state supplement skipped", exc_info=True)
+            logger.debug("[account_history] alpaca curve supplement skipped", exc_info=True)
 
     if not legacy:
         return points
@@ -248,6 +305,7 @@ def fetch_account_history(range_key: str = "1D") -> dict[str, Any]:
     }
     _orig_count = len(points)
     points = _supplement_history(points, rk)
+    points = _append_live_equity_tail(points)
     _was_supplemented = len(points) > _orig_count
     if _was_supplemented:
         series_available["equity"] = _has("equity")

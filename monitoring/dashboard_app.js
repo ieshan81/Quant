@@ -912,7 +912,7 @@
 
   function _fmtEqDate(raw) {
     if (!raw) return "";
-    var d = new Date(String(raw).replace(" ", "T") + (raw.indexOf("Z") < 0 ? "Z" : ""));
+    var d = _parseEqDate(raw);
     if (isNaN(d.getTime())) return String(raw);
     var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     var day = d.getDate();
@@ -926,9 +926,18 @@
     return day + " " + mon + " " + yr + ", " + hh + ":" + mmStr + " " + ampm;
   }
 
-  function _fmtEqLabel(raw) {
+  function _parseEqDate(raw) {
+    if (!raw) return new Date(NaN);
+    var s = String(raw).trim();
+    if (!s) return new Date(NaN);
+    if (/[zZ]$/.test(s) || /[+-]\d{2}:\d{2}$/.test(s)) return new Date(s);
+    if (s.indexOf("T") >= 0) return new Date(s);
+    return new Date(s.replace(" ", "T"));
+  }
+
+  function _fmtEqAxisLabel(raw, rangeKey) {
     if (!raw) return "";
-    var d = new Date(String(raw).replace(" ", "T") + (raw.indexOf("Z") < 0 ? "Z" : ""));
+    var d = _parseEqDate(raw);
     if (isNaN(d.getTime())) return String(raw);
     var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     var day = d.getDate();
@@ -938,8 +947,14 @@
     var ampm = hh >= 12 ? "PM" : "AM";
     hh = hh % 12 || 12;
     var mmStr = mm < 10 ? "0" + mm : "" + mm;
-    if (_eqCurrentRange === "1D") return hh + ":" + mmStr + " " + ampm;
-    return day + " " + mon + " " + hh + ":" + mmStr;
+    var rk = String(rangeKey || "1D").toUpperCase();
+    if (rk === "1D") return hh + ":" + mmStr + " " + ampm;
+    if (rk === "5D" || rk === "1W") return day + " " + mon + " " + hh + ":" + mmStr;
+    return day + " " + mon;
+  }
+
+  function _fmtEqLabel(raw) {
+    return _fmtEqAxisLabel(raw, _eqCurrentRange || "1D");
   }
 
   function symbolIconHtml(assetClass, symbol) {
@@ -968,6 +983,20 @@
     }).filter(function (r) {
       return isFiniteNum(r.equity_total) && Number(r.equity_total) > 0;
     });
+  }
+
+  function _mergeLiveEquityIntoSeries(series, liveEquity) {
+    if (!series || !series.length || !isFiniteNum(liveEquity) || Number(liveEquity) <= 0) return series || [];
+    var live = Number(liveEquity);
+    var out = series.slice();
+    var nowIso = new Date().toISOString();
+    var last = out[out.length - 1];
+    if (last && Math.abs(num(last.equity_total, 0) - live) < 0.02) {
+      out[out.length - 1] = { snapshot_at: nowIso, equity_total: live };
+    } else {
+      out.push({ snapshot_at: nowIso, equity_total: live });
+    }
+    return out;
   }
 
   function _equityYScaleBounds(vals) {
@@ -1056,7 +1085,7 @@
     }
     _updateEqRangeChange(series);
     var labels = series.map(function (r) {
-      return _eqCurrentRange === "1D" ? _fmtEqLabel(r.snapshot_at || "") : _fmtEqDateLabel(r.snapshot_at || "");
+      return _fmtEqAxisLabel(r.snapshot_at || "", _eqCurrentRange);
     });
     var vals = series.map(function (r) { return num(r.equity_total, 0); });
     var rawDates = series.map(function (r) { return r.snapshot_at || ""; });
@@ -1144,7 +1173,7 @@
         var meta = document.getElementById("eqRangeChange");
         var ms = Date.now() - t0;
         if (meta) {
-          var fmtTs = range === "1D" ? _fmtEqLabel : _fmtEqDateLabel;
+          var fmtTs = function (ts) { return _fmtEqAxisLabel(ts, range); };
           var start = series.length ? fmtTs(series[0].snapshot_at) : "—";
           var end = series.length ? fmtTs(series[series.length - 1].snapshot_at) : "—";
           meta.textContent = range + " · " + (d.count || series.length) + " pts · " + start + " → " + end + " · " + ms + "ms";
@@ -1161,6 +1190,10 @@
         } else if (eqHint) {
           eqHint.style.display = "none";
         }
+        var liveEq = (_mcCache && _mcCache.account && _mcCache.account.equity != null)
+          ? _mcCache.account.equity
+          : (window.__dashVm && window.__dashVm.equity != null ? window.__dashVm.equity : null);
+        series = _mergeLiveEquityIntoSeries(series, liveEq);
         renderEquityChart({ equitySeries: series });
         var noteEl = document.getElementById("eqHistoryNote");
         var sa = d.series_available || {};
@@ -3586,7 +3619,10 @@
     if (d && d.stale_warning) parts.push(d.stale_warning);
     if (d && d.cache_age_seconds != null) parts.push("Cache " + d.cache_age_seconds + "s");
     if (d && d.backend_duration_ms != null) parts.push("API " + d.backend_duration_ms + "ms");
-    parts.push("GPT bundle: not loaded");
+    var gptBar = document.getElementById("mcGptBundleStatus");
+    if (gptBar && gptBar.textContent.indexOf("ready") < 0 && gptBar.textContent.indexOf("failed") < 0) {
+      parts.push("GPT bundle: use Build / Copy / Download above");
+    }
     parts.push("Momo: on demand");
     perf.textContent = parts.join(" · ");
   }
@@ -3688,7 +3724,7 @@
     }
     if (hint) hint.style.display = "none";
     var labels = series.map(function (r) {
-      return _mcEqRange === "1D" ? _fmtEqLabel(r.snapshot_at || "") : _fmtEqDateLabel(r.snapshot_at || "");
+      return _fmtEqAxisLabel(r.snapshot_at || "", _mcEqRange);
     });
     var vals = series.map(function (r) { return num(r.equity_total, 0); });
     var rawDates = series.map(function (r) { return r.snapshot_at || ""; });
@@ -3742,14 +3778,6 @@
     }
   }
 
-  function _fmtEqDateLabel(raw) {
-    if (!raw) return "";
-    var d = new Date(String(raw).replace(" ", "T") + (raw.indexOf("Z") < 0 ? "Z" : ""));
-    if (isNaN(d.getTime())) return String(raw);
-    var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return d.getDate() + " " + months[d.getMonth()];
-  }
-
   function _mcLoadEquityChart(range) {
     _mcEqRange = range || _mcEqRange || "1D";
     var gen = ++_mcEqFetchGen;
@@ -3774,6 +3802,8 @@
       .then(function (d) {
         if (gen !== _mcEqFetchGen) return;
         var series = _parseEquityHistoryJson(d);
+        var liveEq = _mcCache && _mcCache.account ? (_mcCache.account.equity != null ? _mcCache.account.equity : (_mcCache.topline || {}).equity) : null;
+        series = _mergeLiveEquityIntoSeries(series, liveEq);
         if (d.insufficient_history && series.length < 3 && hint) {
           hint.textContent = d.message || "Not enough history for this range yet.";
           hint.style.display = "block";
@@ -3997,8 +4027,12 @@
             mission_control_summary: !!(d.mission_control_summary)
           }, null, 2);
         }
+        var gptSt = document.getElementById("mcGptBundleStatus");
+        if (gptSt) gptSt.textContent = "GPT bundle ready — " + (d.generated_at || "built") + " · use Copy or Download.";
         _mcProgressDone("GPT bundle ready — use Copy or Download.", true);
       }).catch(function (e) {
+        var gptSt = document.getElementById("mcGptBundleStatus");
+        if (gptSt) gptSt.textContent = "GPT bundle failed: " + safeText(e && e.message, String(e));
         _mcProgressDone(safeText(e && e.message, String(e)), false);
       });
     });

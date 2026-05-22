@@ -32,6 +32,7 @@ _CLIENT_DEBUG_EVENTS: list[dict[str, Any]] = []
 
 _DASHBOARD_APP_JS_PATH = Path(__file__).resolve().parent / "dashboard_app.js"
 _DASHBOARD_THEME_PATH = Path(__file__).resolve().parent / "dashboard_theme.css"
+_DASHBOARD_LOGO_PATH = Path(__file__).resolve().parent / "static" / "momo-logo.png"
 
 
 def _debug_log(hypothesis_id: str, message: str, data: dict[str, Any]) -> None:
@@ -62,7 +63,7 @@ _PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>QuantBot / Momo</title>
+  <title>MoMo · MORE MONEY</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <link rel="stylesheet" href="/dashboard-theme.css"/>
   <style>
@@ -849,6 +850,10 @@ _PAGE = """<!DOCTYPE html>
     .mc-cmd-spark svg { width: 100%; height: 100%; display: block; }
     .mc-pending-empty { text-align: center; padding: 20px 8px; color: var(--muted); }
     .mc-pending-empty .mc-check-icon { font-size: 2.2rem; line-height: 1; color: #34d399; opacity: 0.75; margin-bottom: 6px; }
+    .mc-gpt-bar { margin: 14px 0 12px; padding: 14px 16px; border-radius: 12px; border: 1px solid rgba(167, 139, 250, 0.28); }
+    .mc-gpt-bar h4 { margin: 0 0 4px; font-size: 0.85rem; color: #c4b5fd; }
+    .mc-gpt-bar .mc-gpt-sub { font-size: 11px; color: var(--muted); margin: 0 0 10px; }
+    .mc-gpt-bar .mc-action-btns { display: flex; flex-wrap: wrap; gap: 8px; }
     .mc-ask-footer { margin: 16px 0 12px; padding: 14px 16px; border-radius: 12px; }
     .mc-ask-footer .mc-ask-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .mc-ask-footer input { flex: 1; min-width: 200px; }
@@ -959,10 +964,10 @@ _PAGE = """<!DOCTYPE html>
   <div class="app-shell">
     <aside class="app-sidebar" aria-label="Primary navigation">
       <div class="sidebar-brand">
-        <div class="brand-mark" aria-hidden="true">QB</div>
+        <img class="brand-mark-img" src="/momo-logo.png" alt="MoMo" width="40" height="40"/>
         <div>
-          <div class="brand-title">QuantBot</div>
-          <div class="brand-sub">Momo</div>
+          <div class="brand-title">MoMo</div>
+          <div class="brand-sub">More Money</div>
         </div>
       </div>
       <div class="sidebar-badges">
@@ -1061,8 +1066,22 @@ _PAGE = """<!DOCTYPE html>
           </div>
         </div>
       </div>
+      <div class="mc-gpt-bar glass-card" id="mcGptBundleBar">
+        <h4>GPT analysis bundle</h4>
+        <p class="mc-gpt-sub">Live scrubbed operator export from <span class="mono">/api/ops/gpt-analyze-bundle</span> — copy or download for ChatGPT.</p>
+        <div class="mc-action-btns">
+          <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">Build bundle</button>
+          <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy JSON</button>
+          <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download JSON</button>
+          <button type="button" id="btnDownloadGPTAnalyzeBundleTxt" class="btn secondary">Download TXT</button>
+          <button type="button" id="btnCopyAiMemory" class="btn secondary">AI memory copy</button>
+          <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Telegram summary</button>
+        </div>
+        <p id="mcGptBundleStatus" class="empty-hint" style="margin:8px 0 0;font-size:11px;">GPT bundle: not loaded — click Build bundle or Copy/Download.</p>
+        <pre id="mcGptPreview" class="mono sec" style="display:none;max-height:100px;margin-top:8px;font-size:10px;"></pre>
+      </div>
       <div class="mc-ask-footer glass-card">
-        <h3 style="margin:0 0 8px;font-size:0.9rem;color:#a78bfa;">Ask Momo</h3>
+        <h3 style="margin:0 0 8px;font-size:0.9rem;color:#a78bfa;">Ask MoMo</h3>
         <div class="mc-ask-row">
           <input type="text" id="mcMomoInput" placeholder="Ask a question or request analysis…" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px;" />
           <button type="button" id="btnMcAskMomo" class="btn primary">Send</button>
@@ -1078,19 +1097,9 @@ _PAGE = """<!DOCTYPE html>
       <details class="diag-drawer mc-diagnostics-zone" id="mcDiagnosticsZone">
         <summary>Advanced diagnostics &amp; exports (operator)</summary>
       <div class="mc-action-center">
-        <details class="mc-action-group">
-          <summary>Analyze Logs</summary>
-          <div class="mc-action-btns">
-            <button type="button" id="btnGPTAnalyzeLogs" class="btn primary">GPT Analyze Logs</button>
-            <button type="button" id="btnCopyGPTAnalyzeBundle" class="btn secondary">Copy GPT Bundle</button>
-            <button type="button" id="btnDownloadGPTAnalyzeBundle" class="btn secondary">Download GPT JSON</button>
-            <button type="button" id="btnDownloadGPTAnalyzeBundleTxt" class="btn secondary">Download GPT TXT</button>
-            <button type="button" id="btnCopyAiMemory" class="btn secondary">AI Memory Copy</button>
-          </div>
-        </details>
+        <p class="mc-gpt-sub" style="margin:0 0 8px;">GPT bundle controls are in the panel above. Use Refresh to reload Mission Control.</p>
         <div class="mc-action-btns" style="margin-top:6px;">
-          <button type="button" id="btnSendGPTAnalyzeBundleTelegram" class="btn secondary">Send Telegram Summary</button>
-          <button type="button" id="btnMcRefresh" class="btn secondary">Refresh</button>
+          <button type="button" id="btnMcRefresh" class="btn secondary">Refresh Mission Control</button>
         </div>
       </div>
       <div id="mcProgress" class="mc-progress"><div id="mcProgressBar" class="mc-progress-bar"></div></div>
@@ -3740,6 +3749,16 @@ def create_app() -> Flask:
                 "type": "stock",
                 "description": "Stock — live data unavailable",
             }
+        )
+
+    @app.get("/momo-logo.png")
+    def momo_logo() -> Response:
+        if not _DASHBOARD_LOGO_PATH.is_file():
+            return Response(status=404)
+        return Response(
+            _DASHBOARD_LOGO_PATH.read_bytes(),
+            mimetype="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
         )
 
     @app.get("/dashboard-theme.css")

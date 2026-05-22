@@ -1345,6 +1345,9 @@ def test_mission_control_equity_range_buttons(dash_app) -> None:
     assert "mcAllocDonut" in html
     assert "mc-mock-grid" in html
     assert "mc-ask-footer" in html
+    assert "mcGptBundleBar" in html
+    assert "momo-logo.png" in html
+    assert "MoMo" in html
     assert "wireMcEquityRangeButtons" in bundle
     assert "_mcRenderAllocDonut" in bundle
     assert "symbolIconHtml" in bundle

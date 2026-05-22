@@ -7,7 +7,7 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, TypeVar
 
 from loguru import logger
@@ -689,7 +689,9 @@ def get_equity_curve(rest_client: Any, period: str = "1D") -> list[dict[str, Any
                 continue
             out.append(
                 {
-                    "snapshot_at": datetime.utcfromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "snapshot_at": datetime.fromtimestamp(
+                        int(ts), tz=timezone.utc
+                    ).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "equity_total": round(eqf, 2),
                 }
             )

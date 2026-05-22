@@ -51,19 +51,23 @@ def test_account_history_supplements_sparse_snapshots(tmp_path, monkeypatch) -> 
 
     record_account_snapshot({"equity": 200.0, "recorded_at": "2026-05-20T12:00:00Z"})
     legacy = [
-        {"timestamp": "2026-05-18T10:00:00Z", "equity": 198.0},
-        {"timestamp": "2026-05-19T10:00:00Z", "equity": 199.0},
-        {"timestamp": "2026-05-20T10:00:00Z", "equity": 201.0},
-        {"timestamp": "2026-05-21T10:00:00Z", "equity": 203.0},
+        {"snapshot_at": "2026-05-18T10:00:00Z", "equity_total": 198.0},
+        {"snapshot_at": "2026-05-19T10:00:00Z", "equity_total": 199.0},
+        {"snapshot_at": "2026-05-20T10:00:00Z", "equity_total": 201.0},
+        {"snapshot_at": "2026-05-21T10:00:00Z", "equity_total": 203.0},
     ]
     monkeypatch.setattr(
-        "monitoring.dashboard_data.get_alpaca_background_snapshot",
-        lambda: {"equity_curves": {"1W": legacy}},
+        "monitoring.dashboard_data.fetch_portfolio_equity_series",
+        lambda conn, limit=600: list(reversed(legacy)),
+    )
+    monkeypatch.setattr(
+        "monitoring.account_history_store._live_broker_equity",
+        lambda: 206.21,
     )
     data = fetch_account_history("5D")
     assert data["count"] >= 3
     equities = [p["equity"] for p in data["points"]]
-    assert max(equities) >= 201.0
+    assert max(equities) >= 206.0
     assert min(equities) <= 199.0
 
 

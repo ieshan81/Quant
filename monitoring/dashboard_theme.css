@@ -59,6 +59,16 @@ body.qb-app {
   letter-spacing: 0.04em;
 }
 
+.brand-mark-img {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.25);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
 .brand-title { font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.2; }
 .brand-sub { font-size: 11px; color: var(--muted); }
 
