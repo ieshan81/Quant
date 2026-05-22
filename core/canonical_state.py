@@ -467,6 +467,41 @@ def build_exit_state(
     crypto_candidates = [e for e in exit_rows if str(e.get("asset_class") or "").lower() == "crypto"]
 
     broker_rejections: list[dict[str, Any]] = []
+    journal_rows: list[dict[str, Any]] = []
+    try:
+        from monitoring.order_forensics_journal import fetch_recent_rejections
+
+        journal_rows = fetch_recent_rejections(limit=30)
+    except Exception:
+        journal_rows = []
+    for jr in journal_rows:
+        forensics = jr.get("forensics") or {}
+        broker_rejections.append(
+            {
+                "symbol": jr.get("symbol"),
+                "asset_class": jr.get("asset_class"),
+                "side": jr.get("side"),
+                "qty": jr.get("qty"),
+                "notional": jr.get("notional"),
+                "order_attempted": True,
+                "order_submitted": False,
+                "broker_response": forensics.get("response_body"),
+                "exact_reject_reason": forensics.get("exact_reject_reason"),
+                "broker_error_code": forensics.get("broker_error_code"),
+                "http_status": forensics.get("http_status"),
+                "reason_code": jr.get("reason_code"),
+                "next_action": "review_broker_preflight",
+                "retry_allowed": bool(str(jr.get("reason_code") or "").startswith("PDT")),
+                "risk_severity": (
+                    "high"
+                    if not forensics.get("broker_error_code") and not forensics.get("response_body")
+                    else "medium"
+                ),
+                "ts": jr.get("ts"),
+                "source": "broker_rejections_journal",
+            }
+        )
+
     try:
         from data.data_store import get_connection
         from monitoring.dashboard_data import fetch_recent_execution_decisions

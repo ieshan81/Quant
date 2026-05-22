@@ -353,17 +353,61 @@ def submit_order_with_preflight(
         result = broker_submit_fn()
     except Exception as e:
         logger.error("[preflight] broker_submit_fn raised: %s", e)
-        return SimpleNamespace(
+        try:
+            from execution.order_forensics import extract_rejection_forensics
+
+            forensics = extract_rejection_forensics(e, side=preflight.side, symbol=preflight.symbol)
+        except Exception:
+            forensics = {
+                "exact_reject_reason": f"broker_submit_raised: {e}"[:300],
+                "captured_via": "preflight_wrapper_exception",
+            }
+        broker_fail = SimpleNamespace(
             ok=False,
             broker_order_id=None,
             message=f"broker_exception: {e}",
             raw=None,
             reason_code="BROKER_EXCEPTION",
             preflight=pf_dict,
+            forensics=forensics,
         )
+        try:
+            from monitoring.order_forensics_journal import record_broker_rejection
+
+            record_broker_rejection(
+                result=broker_fail,
+                symbol=preflight.symbol,
+                side=preflight.side,
+                asset_class=preflight.asset_class,
+                qty=preflight.qty,
+                notional=preflight.notional,
+                cycle_id=cycle_id,
+                extra={"preflight": pf_dict},
+            )
+        except Exception:
+            logger.debug("[forensics_journal] broker-exception write failed", exc_info=True)
+        return broker_fail
 
     if hasattr(result, "preflight"):
         pass
     elif hasattr(result, "__dict__"):
         result.preflight = pf_dict
+
+    try:
+        if not bool(getattr(result, "ok", True)):
+            from monitoring.order_forensics_journal import record_broker_rejection
+
+            record_broker_rejection(
+                result=result,
+                symbol=preflight.symbol,
+                side=preflight.side,
+                asset_class=preflight.asset_class,
+                qty=preflight.qty,
+                notional=preflight.notional,
+                cycle_id=cycle_id,
+                extra={"preflight": pf_dict},
+            )
+    except Exception:
+        logger.debug("[forensics_journal] write failed", exc_info=True)
+
     return result

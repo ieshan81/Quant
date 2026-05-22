@@ -492,11 +492,44 @@ def submit_market_order(side: str, symbol: str, qty: float, *, notional: float |
             logger.error("[alpaca_short] Full error: {}", full_err)
         logger.error("[alpaca_order] FAILED: {}", e, exc_info=True)
         pdt = _looks_like_pdt_rejection(e)
+        try:
+            from execution.order_forensics import extract_rejection_forensics
+
+            forensics = extract_rejection_forensics(e, side=s, symbol=order_sym)
+        except Exception as _fe:
+            forensics = {
+                "ok": False,
+                "exact_reject_reason": f"{type(e).__name__}: {e}"[:300],
+                "broker_error_code": None,
+                "http_status": None,
+                "response_body": None,
+                "captured_via": "forensics_extract_failed",
+                "extract_error": str(_fe)[:120],
+            }
+        forensics.update(
+            {
+                "order_payload": {
+                    "symbol": order_sym,
+                    "qty": q,
+                    "side": s,
+                    "order_type": "market",
+                    "time_in_force": tif,
+                    "notional": notional,
+                    "route": route,
+                    "asset_class": "crypto" if "/" in sym else "stock",
+                },
+                "pdt_suspected": pdt,
+            }
+        )
+        if not forensics.get("exact_reject_reason"):
+            forensics["exact_reject_reason"] = reason_codes.BROKER_REJECT_BODY_NOT_CAPTURED_BUG
+            forensics["captured_via"] = reason_codes.BROKER_REJECT_BODY_NOT_CAPTURED_BUG
         return SimpleNamespace(
             ok=False,
             broker_order_id=None,
             message=str(e),
             raw=None,
+            forensics=forensics,
             reason_code=(
                 reason_codes.PDT_PROTECTION
                 if pdt

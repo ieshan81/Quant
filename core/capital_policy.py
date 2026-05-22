@@ -129,4 +129,22 @@ def evaluate_stock_buy_capital_gates(
         if bp < hard_reserve + 2.0 * min_n and candidate_notional > min_n:
             return False, rc.BUY_BLOCKED_CAPITAL_CONSTITUTION
 
+    # Capital sleeve enforcement (Phase 2) — stock engine respects sleeves unless
+    # explicitly allowed to borrow. Disabled when sleeve_enforcement_enabled=false.
+    if cfg_is_enabled(rt.get("sleeve_enforcement_enabled"), default=True):
+        from core.capital_sleeves import evaluate_sleeve_gate
+
+        allowed, sleeve_code, _ev = evaluate_sleeve_gate(
+            engine="stock",
+            rt=rt,
+            equity=eq,
+            cash=cash_after_buy + candidate_notional,
+            buying_power=bp,
+            candidate_notional=candidate_notional,
+            stock_market_value=stock_market_value,
+            crypto_market_value=crypto_market_value,
+        )
+        if not allowed and sleeve_code:
+            return False, sleeve_code
+
     return True, None
