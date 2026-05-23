@@ -53,14 +53,14 @@ def answer_momo_question(
     # context loaders unless the operator explicitly enables them. This keeps the
     # default quick chip under 5 seconds even in production where broker calls are slow.
     if include.get("momo_memory") is False:
-        if "broker_diagnostic" not in include:
-            include["broker_diagnostic"] = False
-        if "order_flow" not in include:
-            include["order_flow"] = False
-        if "ops_logs" not in include:
-            include["ops_logs"] = False
-        if "activity_export" not in include:
-            include["activity_export"] = False
+        for k in ("broker_diagnostic", "order_flow", "ops_logs", "activity_export"):
+            if k not in include:
+                include[k] = False
+        # Production canonical_state can take 3-15s. Fast path uses cached mission_control only.
+        if "canonical_truth" not in include:
+            include["canonical_truth"] = False
+        if "momo_brain" not in include:
+            include["momo_brain"] = False
     q = (question or "").strip()
     t0 = time.perf_counter()
     if not q:
