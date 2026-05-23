@@ -437,12 +437,20 @@ def build_fast_loop_state() -> dict[str, Any]:
         if not raw.get("top_candidates"):
             why_zero.append("no_candidates_in_current_batch")
     mode = str(raw.get("execution_mode") or "off")
+    # Always expose canonical fast-loop keys with explicit values (even 0/false) so
+    # downstream consumers (acceptance audit, UI) can assume their presence.
     return _envelope(
         source="execution.crypto_fast_loop.get_crypto_fast_loop_status",
         human_summary=str(raw.get("note") or raw.get("ui_label") or "Fast loop"),
         reason_code=str(raw.get("exact_push_blocker") or "OK"),
         extra={
             **raw,
+            "scan_enabled": bool(raw.get("scan_enabled", False)),
+            "execution_enabled": bool(raw.get("execution_enabled", False)),
+            "execution_mode": mode,
+            "symbols_scanned": scanned,
+            "scored_count": scored,
+            "enabled": bool(raw.get("enabled", False)),
             "why_scored_count_zero": why_zero,
             "current_truth_source": "persist/crypto_fast_loop_status.json",
         },
