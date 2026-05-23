@@ -2874,6 +2874,7 @@ def _submit_routed_order(
     pdt_reason = ""
     session_state = "regular"
     legacy_sell_ok = False
+    buying_power: float | None = None
 
     sell_active: list[dict[str, Any]] | None = None
     sell_qty = float(qty)
@@ -2922,6 +2923,17 @@ def _submit_routed_order(
         except Exception:
             pass
 
+    pf_meta = dict(meta or {})
+    try:
+        from execution.crypto_buy_preflight import resolve_crypto_buy_account
+
+        canon_acct = resolve_crypto_buy_account(rt if rt is not None else load_runtime_config_dict())
+        pf_meta["canonical_account"] = canon_acct
+        if s_side == "buy" and buying_power is None:
+            buying_power = float(canon_acct.get("usable_crypto_cash") or canon_acct.get("cash") or 0)
+    except Exception:
+        canon_acct = {}
+
     preflight = run_preflight_checks(
         symbol=sym,
         asset_class=ac,
@@ -2932,8 +2944,9 @@ def _submit_routed_order(
         session_state=session_state,
         pdt_blocked=pdt_blocked,
         pdt_reason=pdt_reason,
+        buying_power=buying_power if s_side == "buy" else None,
         config_snapshot={"reason_code": reason_code, "mode": str(config.MODE)},
-        extra_meta=meta,
+        extra_meta=pf_meta,
         broker_active_positions=sell_active,
         local_qty_audit=float((meta or {}).get("local_qty")) if (meta or {}).get("local_qty") is not None else None,
     )

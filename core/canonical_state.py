@@ -1372,8 +1372,32 @@ def build_canonical_state(
         "momo_state": momo_state,
     })
 
+    momo_brain_state: dict[str, Any] = {}
+    try:
+        from core.momo_brain import build_momo_brain_state, ensure_bootstrap, snapshot_runtime
+
+        ensure_bootstrap()
+        momo_brain_state = build_momo_brain_state(
+            canonical_truth={
+                "account_state": account_state,
+                "position_state": position_state,
+                "crypto_state": crypto_state,
+                "capital_state": capital_state,
+                "fast_loop_state": fast_loop_state,
+                "live_readiness_state": live_readiness_state,
+            }
+        )
+        snapshot_runtime(canonical_truth={
+            "account_state": account_state,
+            "position_state": position_state,
+            "crypto_state": crypto_state,
+        })
+    except Exception as exc:
+        momo_brain_state = {"error": str(exc)[:120], "memory_health": "degraded"}
+
     return {
         "generated_at": _now(),
+        "momo_brain_state": momo_brain_state,
         "account_state": account_state,
         "capital_state": capital_state,
         "position_state": position_state,

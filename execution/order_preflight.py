@@ -256,11 +256,37 @@ def run_preflight_checks(
             **common,
         )
 
-    # 5. Buying power check
-    if buying_power is not None and notional > 0:
+    # 5. Buying power / crypto USD cash check
+    if ac == "crypto" and s == "buy" and notional > 0:
+        rt_snap = dict(config_snapshot or {})
+        try:
+            from core.paper_trading_path import load_runtime_config_for_worker
+
+            rt_snap = load_runtime_config_for_worker()
+        except Exception:
+            pass
+        from execution.crypto_buy_preflight import evaluate_crypto_buy_cash
+
+        bp_meta = dict(extra_meta or {})
+        acct_in = bp_meta.get("canonical_account") if isinstance(bp_meta.get("canonical_account"), dict) else None
+        ok_cash, cash_code, cash_human, bp_st = evaluate_crypto_buy_cash(
+            rt=rt_snap,
+            symbol=sym,
+            notional=notional,
+            qty=qty,
+            price=price,
+            account=acct_in,
+        )
+        common["buying_power_status"] = bp_st
+        if not ok_cash:
+            return OrderPreflightResult.blocked(cash_code, cash_human, **common)
+    elif buying_power is not None and notional > 0:
         bp_ok = buying_power >= notional
         common["buying_power_status"] = {
-            "buying_power": buying_power, "required": notional, "ok": bp_ok,
+            "status": "checked",
+            "buying_power": buying_power,
+            "required": notional,
+            "ok": bp_ok,
         }
         if not bp_ok:
             return OrderPreflightResult.blocked(
@@ -268,8 +294,10 @@ def run_preflight_checks(
                 f"{sym}: Insufficient buying power ${buying_power:.2f} < ${notional:.2f}",
                 **common,
             )
+    elif s == "buy" and notional > 0:
+        common["buying_power_status"] = {"status": "not_checked", "warning": "buy_without_bp_check"}
     else:
-        common["buying_power_status"] = {"status": "not_checked"}
+        common["buying_power_status"] = {"status": "not_applicable"}
 
     # 6. Capital allocator check
     common["capital_allocator_status"] = {
@@ -317,6 +345,19 @@ def run_preflight_checks(
             },
         }
         if not sell_val.allowed:
+            if sell_val.reason_code == rc.SELL_BLOCKED_NO_BROKER_POSITION:
+                try:
+                    from core.stale_sell_suppression import record_stale_sell_block
+
+                    rec = record_stale_sell_block(symbol=sym, asset_class=ac, reason_code=sell_val.reason_code)
+                    if rec.get("quarantined"):
+                        return OrderPreflightResult.blocked(
+                            rc.STALE_EXIT_SIGNAL_QUARANTINED,
+                            f"{sym}: Stale exit signal quarantined — no broker position",
+                            **common,
+                        )
+                except Exception:
+                    pass
             return OrderPreflightResult.blocked(
                 sell_val.reason_code,
                 f"{sym}: Sell blocked — broker qty authority ({sell_val.reason_code})",

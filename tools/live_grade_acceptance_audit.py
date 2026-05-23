@@ -392,6 +392,152 @@ def check_all(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         )
     )
 
+    brain = ct.get("momo_brain_state") or (ctx.get("bundle") or {}).get("forensic_debug", {}).get("momo_brain", {}).get("brain_state") or {}
+    if not brain:
+        try:
+            from core.momo_brain import build_momo_brain_state, ensure_bootstrap
+
+            ensure_bootstrap()
+            brain = build_momo_brain_state(canonical_truth=ct)
+        except Exception as exc:
+            brain = {"error": str(exc)[:120]}
+    ac21_ok = bool(brain.get("current_context_summary")) and brain.get("memory_health") != "degraded"
+    items.append(
+        _item(
+            "AC21",
+            "MoMo brain memory exists and is current",
+            "PASS" if ac21_ok else "FAIL",
+            evidence={
+                "memory_health": brain.get("memory_health"),
+                "graphify": brain.get("graphify"),
+                "active_issues_n": len(brain.get("active_issues") or []),
+            },
+            failing_module="core/momo_brain.py",
+        )
+    )
+
+    acct = ct.get("account_state") or {}
+    mc = ctx.get("mission_control") or {}
+    mc_acct = (mc.get("account") or {}) if isinstance(mc, dict) else {}
+    mc_top = (mc.get("topline") or {}) if isinstance(mc, dict) else {}
+    eq_vals = [
+        float(acct.get("equity") or 0),
+        float(mc_acct.get("equity") or 0),
+        float(mc_top.get("equity") or 0),
+    ]
+    eq_vals = [v for v in eq_vals if v > 0]
+    ac22_ok = len(eq_vals) <= 1 or (max(eq_vals) - min(eq_vals) < 0.05)
+    items.append(
+        _item(
+            "AC22",
+            "no mixed account truth in API surfaces",
+            "PASS" if ac22_ok else "FAIL",
+            evidence={"equity_values": eq_vals, "bp_canonical": acct.get("buying_power")},
+            failing_module="monitoring/ui_truth_helpers.py",
+            failure_class="config",
+        )
+    )
+
+    blocks = (ctx.get("bundle") or {}).get("forensic_debug", {}).get("order_flow", {}).get("local_blocks") or []
+    crypto_buys_bad = [
+        b
+        for b in blocks
+        if str(b.get("asset_class") or "").lower() == "crypto"
+        and str(b.get("side") or "").lower() == "buy"
+        and b.get("allowed") is True
+        and str((b.get("buying_power_status") or {}).get("status")) == "not_checked"
+    ]
+    items.append(
+        _item(
+            "AC23",
+            "crypto buy cash preflight (buying_power_status checked)",
+            "PASS" if not crypto_buys_bad else "FAIL",
+            evidence={"bad_rows": crypto_buys_bad[:3]},
+            failing_module="execution/crypto_buy_preflight.py",
+        )
+    )
+
+    from monitoring.order_flow_labels import classify_broker_rejection_reason
+
+    ondo_ok = True
+    for row in (ctx.get("bundle") or {}).get("forensic_debug", {}).get("order_flow", {}).get("broker_rejections") or []:
+        msg = str(row.get("message") or row.get("exact_reject_reason") or "")
+        if "insufficient balance for usd" in msg.lower():
+            cls = classify_broker_rejection_reason(exact_reject_reason=msg, message=msg)
+            if cls == "BROKER_REJECT_SHORT_NOT_ALLOWED":
+                ondo_ok = False
+    items.append(
+        _item(
+            "AC24",
+            "broker rejection parser (insufficient USD not shorting)",
+            "PASS" if ondo_ok else "FAIL",
+            evidence={"checked": True},
+            failing_module="monitoring/order_flow_labels.py",
+        )
+    )
+
+    stale_repeat = sum(
+        1
+        for b in blocks
+        if str(b.get("block_reason_code") or b.get("reason_code")) == "SELL_BLOCKED_NO_BROKER_POSITION"
+    )
+    quarantine_ok = True
+    try:
+        from core.stale_sell_suppression import record_stale_sell_block
+
+        r1 = record_stale_sell_block(symbol="ACCEPT_TEST", asset_class="stock")
+        r2 = record_stale_sell_block(symbol="ACCEPT_TEST", asset_class="stock")
+        quarantine_ok = bool(r2.get("quarantined"))
+    except Exception:
+        quarantine_ok = False
+    items.append(
+        _item(
+            "AC25",
+            "repeated stale sell suppression quarantines",
+            "PASS" if quarantine_ok else "FAIL",
+            evidence={"preflight_blocks_sample": stale_repeat},
+            failing_module="core/stale_sell_suppression.py",
+        )
+    )
+
+    diag = (mc.get("crypto_scanner_diagnostics") or {}) if isinstance(mc, dict) else {}
+    if not diag:
+        try:
+            from execution.crypto_scanner_diagnostics import build_crypto_scanner_diagnostics_for_api
+
+            diag = build_crypto_scanner_diagnostics_for_api()
+        except Exception:
+            diag = {}
+    try:
+        from monitoring.scanner_db_health import build_scanner_diagnostics_db_health
+
+        db_h = diag.get("scanner_diagnostics_db_health") or build_scanner_diagnostics_db_health()
+    except Exception as exc:
+        db_h = {"status": "error", "human": str(exc)[:80]}
+    raw_err = str(diag.get("human_reason") or "")
+    ac26_ok = "file is not a database" not in raw_err.lower() and bool(db_h.get("status"))
+    items.append(
+        _item(
+            "AC26",
+            "scanner diagnostics DB health structured",
+            "PASS" if ac26_ok else "FAIL",
+            evidence={"db_health": db_h, "panel_message": diag.get("scanner_panel_message")},
+            failing_module="monitoring/scanner_db_health.py",
+        )
+    )
+
+    memo = brain.get("operator_memo") or {}
+    ac27_ok = bool(memo.get("next_best_action")) and "cannot trade crypto" not in str(memo.get("memo") or "").lower()
+    items.append(
+        _item(
+            "AC27",
+            "MoMo next-best-action uses brain + canonical_truth",
+            "PASS" if ac27_ok else "FAIL",
+            evidence={"next_best_action": memo.get("next_best_action"), "memo_head": str(memo.get("memo") or "")[:120]},
+            failing_module="core/momo_brain.py",
+        )
+    )
+
     return items
 
 

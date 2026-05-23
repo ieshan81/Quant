@@ -914,16 +914,23 @@ def build_mission_control_summary_minimal(
             recovery_block=False,
         )
     except Exception as exc:
+        try:
+            from monitoring.scanner_db_health import build_scanner_diagnostics_db_health
+
+            db_health = build_scanner_diagnostics_db_health()
+        except Exception:
+            db_health = {"status": "error", "human": str(exc)[:80]}
         _mc_crypto_diag = {
             "universe_count": 0,
             "symbols_scanned_this_cycle": 0,
             "scored_count": 0,
             "top_candidates": [],
             "provider_status": "unavailable",
-            "scanner_panel_message": "Waiting for first post-reset scan.",
-            "human_reason": f"Scanner diagnostics unavailable ({str(exc)[:80]}).",
+            "scanner_panel_message": db_health.get("human") or "Waiting for first post-reset scan.",
+            "human_reason": db_health.get("human") or f"Scanner diagnostics unavailable ({str(exc)[:40]}).",
             "api_fallback": True,
             "top_rejected_reason": "SCANNER_DIAG_UNAVAILABLE",
+            "scanner_diagnostics_db_health": db_health,
         }
         _mc_crypto_viability = {}
         _mc_canonical_reason = {}

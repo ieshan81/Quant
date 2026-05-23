@@ -31,6 +31,15 @@ def build_forensic_debug(
 
     positions = (ms.get("positions") or {}).get("open") or []
     stale_local = (ms.get("positions") or {}).get("stale_local_rows") or []
+    if not positions:
+        try:
+            from core.canonical_positions import fetch_positions_bundle
+
+            _pb = fetch_positions_bundle()
+            positions = _pb.get("open_positions") or []
+            stale_local = _pb.get("local_stale_rows") or stale_local
+        except Exception:
+            pass
     eh = ms.get("execution_health") or act.get("execution_health") or {}
     exit_rows = eh.get("position_exit_rows") or ms.get("position_exit_rows") or []
 
@@ -65,8 +74,21 @@ def build_forensic_debug(
         "crypto_pull_forensics": _crypto_pull_forensics(crypto_session, truth_audit, dec),
         "crypto_fast_loop_forensics": fast_forensics,
         "momo_forensics": _momo_forensics(ms),
+        "momo_brain": _momo_brain_forensics(),
         "ui_data_sources": _ui_data_sources(ms, ss),
     }
+
+
+def _momo_brain_forensics() -> dict[str, Any]:
+    try:
+        from core.momo_brain import build_momo_brain_state, get_current_context
+
+        return {
+            "brain_state": build_momo_brain_state(),
+            "current_context": get_current_context(),
+        }
+    except Exception as exc:
+        return {"error": str(exc)[:120]}
 
 
 def _order_flow_forensics() -> dict[str, Any]:

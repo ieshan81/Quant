@@ -59,6 +59,20 @@ def resolve_crypto_push_preflight(
     else:
         sub = str(push_subreason or ready.get("push_blocked_reason") or "").strip().upper()
     if sub == "OK":
+        req_n = _f(ready.get("required_notional")) or min_n
+        buf_pct = cfg_float(rt, "crypto_order_cash_buffer_pct", cfg_float(rt, "crypto_market_order_buffer_pct", 2.0)) / 100.0
+        max_after_buf = round(float(usable or avail or 0) * (1.0 - buf_pct), 2)
+        if req_n > max_after_buf + 0.01 and max_after_buf >= 0:
+            return {
+                "chosen_candidate": sym,
+                "exact_final_blocker": reason_codes.CRYPTO_BUY_BLOCKED_NOTIONAL_EXCEEDS_AVAILABLE_CASH,
+                "push_subreason": "NOTIONAL_EXCEEDS_CASH_BUFFER",
+                "required_notional": req_n,
+                "available_after_reserve": avail,
+                "max_notional_after_buffer": max_after_buf,
+                "buying_power_ok": False,
+                "usable_buying_power": usable,
+            }
         return {
             "chosen_candidate": sym,
             "exact_final_blocker": reason_codes.CRYPTO_PUSH_ALLOWED,

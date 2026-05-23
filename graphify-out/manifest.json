@@ -10,7 +10,7 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\config.py": {
-    "mtime": 1779464609.9800923,
+    "mtime": 1779493192.1932833,
     "ast_hash": "8442707c72c95413a94860bfbd2bd633",
     "semantic_hash": ""
   },
@@ -20,8 +20,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\main_worker.py": {
-    "mtime": 1779471926.4191926,
-    "ast_hash": "12075706a08b705971b0d0210f1dd5b2",
+    "mtime": 1779495337.6719034,
+    "ast_hash": "34daa8a5dfd560a460c14b1b222417d0",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\market_hours.py": {
@@ -120,8 +120,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\core\\app_config_registry.py": {
-    "mtime": 1779477451.7687907,
-    "ast_hash": "a62c70480d45ff0f33c396ede8761b4c",
+    "mtime": 1779477544.114208,
+    "ast_hash": "7886877f32d17986aaf0154911c63ee8",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\core\\broker_account_transition.py": {
@@ -205,7 +205,7 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\data\\crypto_quote_snapshot.py": {
-    "mtime": 1779464609.9800923,
+    "mtime": 1779493101.179112,
     "ast_hash": "bd74cd38753b91f9b9d74f86afbdb336",
     "semantic_hash": ""
   },
@@ -285,8 +285,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\crypto_fast_loop.py": {
-    "mtime": 1779477300.5085547,
-    "ast_hash": "8766c30c72d592236e61e965328de5dc",
+    "mtime": 1779493727.360407,
+    "ast_hash": "d8bffe1c2661df0f2b612b035f0a392e",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\crypto_night_session.py": {
@@ -295,8 +295,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\crypto_push_preflight.py": {
-    "mtime": 1779435883.5313058,
-    "ast_hash": "3dfe277332f47b50810b63e41374fd83",
+    "mtime": 1779495441.372972,
+    "ast_hash": "b4f1f9ddc14e9d5c5f3a50b4c939809d",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\crypto_push_pull.py": {
@@ -315,8 +315,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\crypto_scanner_diagnostics.py": {
-    "mtime": 1779464609.9800923,
-    "ast_hash": "b29b12f4359cfb4058f05600d6a426c8",
+    "mtime": 1779495361.977069,
+    "ast_hash": "81f59a8a83b4fbce2dc18ee8fdf177a1",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\crypto_trade_decision.py": {
@@ -340,7 +340,7 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\deferred_exit_plans.py": {
-    "mtime": 1779464609.9800923,
+    "mtime": 1779493101.179112,
     "ast_hash": "173df9281387db6ec4dde94014936608",
     "semantic_hash": ""
   },
@@ -360,8 +360,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\order_preflight.py": {
-    "mtime": 1779473478.5125356,
-    "ast_hash": "627638aa7e5713e6653c78fa50344cc4",
+    "mtime": 1779495324.7876263,
+    "ast_hash": "5d0642520fcfc19b3e0d253f90c5c723",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\position_reconciliation.py": {
@@ -375,8 +375,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\reason_codes.py": {
-    "mtime": 1779471595.617271,
-    "ast_hash": "fcba8867300caf23ac7a5f2c3c7b39f5",
+    "mtime": 1779495296.1296375,
+    "ast_hash": "613949688f46bd1ce3ad3318954d8907",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\startup_recovery.py": {
@@ -510,17 +510,17 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\dashboard.py": {
-    "mtime": 1779464609.9800923,
-    "ast_hash": "3d1cd50328e2ac0460d617d4424b3f02",
+    "mtime": 1779490848.4831095,
+    "ast_hash": "0394bac667df2508ddaf70f46611117d",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\dashboard_app.js": {
-    "mtime": 1779475521.522123,
-    "ast_hash": "ea4cc70cc617902c22851cd8f33e5a02",
+    "mtime": 1779495473.2872236,
+    "ast_hash": "d710b298cf087c89dfc4dd3f26f63a77",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\dashboard_data.py": {
-    "mtime": 1779464609.9800923,
+    "mtime": 1779493101.179112,
     "ast_hash": "a40d35f581d0706ea6d864302d7cd596",
     "semantic_hash": ""
   },
@@ -545,8 +545,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\forensic_debug.py": {
-    "mtime": 1779474363.3638155,
-    "ast_hash": "8ebebb2c17e2b77c6fa701ff26583427",
+    "mtime": 1779495424.4620588,
+    "ast_hash": "41085a39aafbbad320557fe12a793ebe",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\gpt_activity_summary.py": {
@@ -555,8 +555,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\gpt_analyze_bundle.py": {
-    "mtime": 1779469716.6402433,
-    "ast_hash": "981619a41d8a972428a6e93cf4a21445",
+    "mtime": 1779493101.18011,
+    "ast_hash": "3ce09a3b9e95e53927c7ba65c3f06929",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\gpt_analyze_telegram.py": {
@@ -575,13 +575,13 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\mission_control_api.py": {
-    "mtime": 1779466104.3807778,
-    "ast_hash": "6be64c4d3dd2ae906d07382576cbc4a2",
+    "mtime": 1779495430.1058302,
+    "ast_hash": "4dc516d29c19f9b4253549806d6d0bed",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\mission_control_cache.py": {
-    "mtime": 1779342794.7419846,
-    "ast_hash": "1d73a2c1995b772c04041bdd96eb5543",
+    "mtime": 1779493190.737547,
+    "ast_hash": "436e377e15a1c328cba5a0a6dd5f584d",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\mission_control_enrichment.py": {
@@ -655,8 +655,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\simple_status.py": {
-    "mtime": 1779477346.953654,
-    "ast_hash": "0ae696cd9ea514ebffe09ea656be0122",
+    "mtime": 1779483430.347983,
+    "ast_hash": "0308218e68b2f9fd7ce194508bc8fc40",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\strategy_weights.py": {
@@ -860,8 +860,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_ai_observer.py": {
-    "mtime": 1779477444.489979,
-    "ast_hash": "b51088dfe6e024760770b58401e2b384",
+    "mtime": 1779477855.2441072,
+    "ast_hash": "8fd45937d39b66eb46c490e1752416ce",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_alerts.py": {
@@ -870,8 +870,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_app_config_registry.py": {
-    "mtime": 1779323522.7288241,
-    "ast_hash": "b53cf9a0dfb4647c0597b36c14a44704",
+    "mtime": 1779477533.4546053,
+    "ast_hash": "42bd465fede399f894b22eb6aa216411",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_architecture_and_ah_planner.py": {
@@ -905,8 +905,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_broker_diagnostic.py": {
-    "mtime": 1779477442.3418653,
-    "ast_hash": "7a02d6f4584b9a72f8de5e0e99a08232",
+    "mtime": 1779477679.1391096,
+    "ast_hash": "1c3919dceaf70994fd44bb884d4eb60a",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_broker_reconciliation.py": {
@@ -1040,8 +1040,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_live_readiness_gate.py": {
-    "mtime": 1779464609.9800923,
-    "ast_hash": "a452cae0b7654ba7efc1772da42e5d1c",
+    "mtime": 1779493192.2586448,
+    "ast_hash": "5cf427e876528a4d2a9f8ecced348ae4",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_main_worker.py": {
@@ -1055,8 +1055,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_market_readiness.py": {
-    "mtime": 1779258639.3008516,
-    "ast_hash": "d80cf63cc3a70e4e2feb1a1b33d3caae",
+    "mtime": 1779495665.152512,
+    "ast_hash": "b6036acc314c49346cd7cdd6e372ce9f",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_master_crypto_fix.py": {
@@ -1415,8 +1415,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\core\\canonical_state.py": {
-    "mtime": 1779477360.6051838,
-    "ast_hash": "55eec680b6f509c8365ad62f9b854f15",
+    "mtime": 1779495420.1577318,
+    "ast_hash": "fa6485e11d9c4f28c05d0ef5d41081ed",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\code_graph_summary.py": {
@@ -1435,8 +1435,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\docs\\QUANTBOT_CODE_GRAPH_AUDIT.md": {
-    "mtime": 1779469789.0235593,
-    "ast_hash": "6751a128767ead7a202669aa6fc3a2e5",
+    "mtime": 1779478070.8427134,
+    "ast_hash": "f33670702dbb47240d9a95da332c1c98",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\core\\universe_state.py": {
@@ -1445,8 +1445,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\data_providers\\alpaca_provider.py": {
-    "mtime": 1779469363.8716145,
-    "ast_hash": "95791bea86964deb9e59191390b83d5a",
+    "mtime": 1779493191.6458268,
+    "ast_hash": "590a53dbcd3d54f24106d51085240787",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\data_providers\\alpha_vantage_provider.py": {
@@ -1485,8 +1485,8 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\momo_quant_memo.py": {
-    "mtime": 1779477319.6014948,
-    "ast_hash": "4db7b6966857a25379c70c1e85d33e7d",
+    "mtime": 1779493191.8067713,
+    "ast_hash": "a3681086a6e3717b6fa2d6b9d91a7bef",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\runtime_config\\config_migration.py": {
@@ -1540,18 +1540,18 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\execution\\fast_loop_scoring.py": {
-    "mtime": 1779477300.0625248,
-    "ast_hash": "ac7b28c14a315d7b9ac3c8cdf19cbb94",
+    "mtime": 1779477530.415847,
+    "ast_hash": "3b54020cedd6506aef1bca7be615da34",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\broker_rejection_resolution.py": {
-    "mtime": 1779474324.1505153,
-    "ast_hash": "b8cd6e270fcce29aa1162cac96337b5d",
+    "mtime": 1779493390.4726567,
+    "ast_hash": "2c2df998618e435c0a8936ed274da2f7",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\order_flow_labels.py": {
-    "mtime": 1779473440.4407754,
-    "ast_hash": "1be14f1a5cac692e7bbf530ca695145a",
+    "mtime": 1779495307.913378,
+    "ast_hash": "e11112c0c3f8bfbaadef3665d1e3b115",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\order_forensics_journal.py": {
@@ -1595,18 +1595,88 @@
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_fast_loop_scoring.py": {
-    "mtime": 1779477426.2709415,
-    "ast_hash": "614517cac4965ba526b1ab43df17b9b0",
+    "mtime": 1779477531.2408302,
+    "ast_hash": "020252833ba1d923f1c33c4f73237359",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tools\\live_grade_acceptance_audit.py": {
-    "mtime": 1779477409.9320529,
-    "ast_hash": "ac50b48cfeeb28af43439a6d6f4b8346",
+    "mtime": 1779495687.0649948,
+    "ast_hash": "10d051ba3bf19b3a729360811a053185",
     "semantic_hash": ""
   },
   "C:\\Users\\iesha\\Desktop\\Quant\\tests\\QUARANTINED_TESTS.md": {
     "mtime": 1779477453.6031406,
     "ast_hash": "e81a42e8ea1ffd5ae272dbcc13028b54",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\tmp_poll_mc.py": {
+    "mtime": 1779493942.1618485,
+    "ast_hash": "78e82350cea4d89bd81db248e8fdccab",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\core\\broker_account_epoch.py": {
+    "mtime": 1779480251.7154183,
+    "ast_hash": "99f9329ac9306162a78792a5c7adb2d6",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\core\\broker_account_fingerprint.py": {
+    "mtime": 1779483363.1562657,
+    "ast_hash": "5d4075bb65212e77faff1470b9f9907c",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\core\\momo_brain.py": {
+    "mtime": 1779495410.8865826,
+    "ast_hash": "abbddf0945ca623e7d42860a81bf5ae8",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\core\\sqlite_health.py": {
+    "mtime": 1779495245.9389942,
+    "ast_hash": "9e449b5b0b6115dd31ea7b2138a8c0ab",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\core\\stale_sell_suppression.py": {
+    "mtime": 1779495263.3036492,
+    "ast_hash": "eca8ae58dd7541d0c4dc675fb62a1d62",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\execution\\crypto_buy_preflight.py": {
+    "mtime": 1779495436.7140217,
+    "ast_hash": "bed29baeae0935ac5e5a79accea02e49",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\broker_transition_service.py": {
+    "mtime": 1779490483.747603,
+    "ast_hash": "401990fb0b2ccedaf11afb3be5f1f796",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\scanner_db_health.py": {
+    "mtime": 1779495349.0030282,
+    "ast_hash": "f0624dd6eebc0dcdda41e83c2fd91452",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\monitoring\\ui_truth_helpers.py": {
+    "mtime": 1779493583.424007,
+    "ast_hash": "d288712222860fe029a7a070428d8d47",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_broker_transition_wizard.py": {
+    "mtime": 1779490544.717517,
+    "ast_hash": "786cb0490cfcef7ef76682939ed9fd76",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_momo_brain_stabilization.py": {
+    "mtime": 1779495492.405027,
+    "ast_hash": "97e63d25d7559d57e3ad27d7811f3865",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\tests\\test_post_reset_ui_truth.py": {
+    "mtime": 1779493583.8847291,
+    "ast_hash": "6c3a40caadca7a488221f2b05d714dd7",
+    "semantic_hash": ""
+  },
+  "C:\\Users\\iesha\\Desktop\\Quant\\tools\\broker_transition_sync.py": {
+    "mtime": 1779480258.7406082,
+    "ast_hash": "fdb078f1d93f7214901c7db871767017",
     "semantic_hash": ""
   }
 }

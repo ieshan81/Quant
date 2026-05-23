@@ -4066,10 +4066,14 @@
     }
     var momoC = document.getElementById("mcMomoCritical");
     if (momoC) {
+      var brain = (d.canonical_truth && d.canonical_truth.momo_brain_state) || d.momo_brain_state || {};
       var note = d.top_ai_note || {};
       var ms = d.momo_summary || {};
       var body = "";
-      if (note.finding) {
+      if (brain.current_context_summary && !note.finding) {
+        body = '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(String(brain.current_context_summary).slice(0, 280)) + "</p>" +
+          (brain.next_best_action ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Next: ' + esc(brain.next_best_action) + "</div>" : "");
+      } else if (note.finding) {
         var sev = String(note.severity || "info").toLowerCase();
         body = _mcBadge(sev, sev === "critical" ? "bad" : sev === "warning" ? "warn" : "ok") +
           " <span style=\"font-size:12px;line-height:1.45\">" + esc((note.finding || "").slice(0, 280)) + "</span>" +
@@ -4377,15 +4381,31 @@
         id: "mcMomo",
         tone: "",
         render: function () {
+          var brain = (d.canonical_truth && d.canonical_truth.momo_brain_state) || d.momo_brain_state || {};
           var ms = d.momo_summary || {};
-          var saw = Array.isArray(ms.saw) ? ms.saw.join(" ") : "";
-          var att = Array.isArray(ms.attention) ? ms.attention.join(" ") : "";
-          var learned = Array.isArray(ms.learned) ? ms.learned.join(" ") : "";
-          var parts = [];
-          if (saw) parts.push("Recently: " + saw);
-          if (learned) parts.push("Learned: " + learned);
-          if (att) parts.push("Attention: " + att);
-          return parts.length ? parts.join("\n") : "MoMo has no new summary items this cycle.";
+          var lines = [];
+          if (brain.current_context_summary) {
+            lines.push("System truth: " + brain.current_context_summary);
+          }
+          if (brain.next_best_action) {
+            lines.push("Next: " + brain.next_best_action);
+          }
+          if ((brain.active_issues || []).length) {
+            lines.push("Active issues: " + brain.active_issues.slice(0, 3).map(function (x) {
+              return x.title || x.fact_key;
+            }).join("; "));
+          }
+          if ((brain.resolved_issues || []).length) {
+            lines.push("Resolved: " + (brain.resolved_issues[0].title || brain.resolved_issues[0].fact_key || ""));
+          }
+          if (brain.memory_health) {
+            lines.push("Memory: " + brain.memory_health);
+          }
+          if (!lines.length) {
+            var att = Array.isArray(ms.attention) ? ms.attention.join(" ") : "";
+            if (att) lines.push("Attention: " + att);
+          }
+          return lines.length ? lines.join("\n") : "MoMo brain loading — refresh Mission Control.";
         }
       },
       {

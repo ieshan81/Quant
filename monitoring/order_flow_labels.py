@@ -129,7 +129,9 @@ def classify_broker_rejection_reason(
         return "BROKER_REJECT_INSUFFICIENT_BUYING_POWER"
     if "insufficient balance" in detail:
         return "BROKER_REJECT_INSUFFICIENT_BALANCE"
-    return "BROKER_REJECT_UNKNOWN"
+    if "order rejected" in detail:
+        return "BROKER_REJECT_ORDER_REJECTED"
+    return "BROKER_REJECT_UNCLASSIFIED"
 
 
 def format_broker_rejected_human(

@@ -211,12 +211,23 @@ def test_preflight_crypto_always_allowed_session():
         asset_class="crypto",
         side="buy",
         qty=0.01,
-        notional=500.0,
+        notional=50.0,
         price=50_000.0,
         session_state=SESSION_CLOSED,
+        extra_meta={
+            "canonical_account": {
+                "cash": 500.0,
+                "buying_power": 500.0,
+                "usable_crypto_cash": 480.0,
+                "equity": 2000.0,
+                "min_remaining_cash_usd": 5.0,
+                "reserve_cash": 10.0,
+            }
+        },
     )
     assert result.allowed is True
     assert result.market_session_status == "crypto_always_open"
+    assert result.buying_power_status.get("status") == "checked"
 
 
 def test_preflight_decisions_logged():

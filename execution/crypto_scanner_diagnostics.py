@@ -494,19 +494,10 @@ def _resolve_universe_symbols() -> tuple[list[str], str, int]:
 
 def _load_crypto_diag_from_cycle_journal() -> dict[str, Any] | None:
     try:
-        import json
+        from monitoring.scanner_db_health import load_cycle_journal_diag_safe
 
-        from monitoring.ops_log_store import _open_ops_db
-
-        with _open_ops_db() as conn:
-            row = conn.execute(
-                "SELECT summary_json FROM cycle_journal ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        if not row or not row[0]:
-            return None
-        summary = json.loads(str(row[0]))
-        diag = summary.get("crypto_scanner_diagnostics") if isinstance(summary, dict) else None
-        return diag if isinstance(diag, dict) and diag.get("final_reason_code") else None
+        diag, _health = load_cycle_journal_diag_safe()
+        return diag
     except Exception:
         return None
 
@@ -654,8 +645,18 @@ def build_crypto_scanner_diagnostics_for_api(
             or blocker
         ),
     }
-    if not int(out.get("symbols_scanned_this_cycle") or 0):
-        if out.get("api_fallback") or not int(out.get("scored_count") or 0):
+    try:
+        from monitoring.scanner_db_health import build_scanner_diagnostics_db_health
+
+        out["scanner_diagnostics_db_health"] = build_scanner_diagnostics_db_health()
+        db_h = out["scanner_diagnostics_db_health"]
+        if db_h.get("status") == "corrupt":
+            out["scanner_panel_message"] = "Diagnostics DB quarantined — using live API fallback."
+        elif not int(out.get("symbols_scanned_this_cycle") or 0):
+            if out.get("api_fallback") or not int(out.get("scored_count") or 0):
+                out["scanner_panel_message"] = "Waiting for first post-reset scan."
+    except Exception:
+        if not int(out.get("symbols_scanned_this_cycle") or 0) and out.get("api_fallback"):
             out["scanner_panel_message"] = "Waiting for first post-reset scan."
     out["crypto_strategy_viability"] = build_crypto_strategy_viability(rt, out)
     try:
