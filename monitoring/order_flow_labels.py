@@ -112,8 +112,15 @@ def classify_broker_rejection_reason(
     broker_error_code: str | None = None,
     exact_reject_reason: str | None = None,
     message: str | None = None,
+    side: str | None = None,
+    asset_class: str | None = None,
 ) -> str:
-    """Map Alpaca body text to stable rejection reason codes."""
+    """Map Alpaca body text to stable rejection reason codes.
+
+    Alpaca emits broker code 40310000 for BOTH "short not allowed" (sell side)
+    AND "insufficient USD balance" on crypto buys when the body text is
+    generic. Use `side` to disambiguate: a buy can never be a short attempt.
+    """
     detail = " ".join(
         [
             str(exact_reject_reason or ""),
@@ -121,8 +128,16 @@ def classify_broker_rejection_reason(
         ]
     ).lower()
     code = str(broker_error_code or "").strip()
+    side_l = str(side or "").strip().lower()
+    asset_l = str(asset_class or "").strip().lower()
     if "insufficient balance for usd" in detail:
         return "BROKER_REJECT_INSUFFICIENT_USD_BALANCE"
+    # A buy CAN NOT be a short attempt. When code 40310000 fires on a buy,
+    # Alpaca means insufficient USD/balance — not shorting.
+    if code == "40310000" and side_l == "buy":
+        if asset_l == "crypto":
+            return "BROKER_REJECT_INSUFFICIENT_USD_BALANCE"
+        return "BROKER_REJECT_INSUFFICIENT_BALANCE"
     if code == "40310000" or "not allowed to short" in detail:
         return "BROKER_REJECT_SHORT_NOT_ALLOWED"
     if "insufficient buying power" in detail or "buying power" in detail:
@@ -139,6 +154,8 @@ def format_broker_rejected_human(
     *,
     broker_error_code: str | None = None,
     exact_reject_reason: str | None = None,
+    side: str | None = None,
+    asset_class: str | None = None,
 ) -> str:
     sym = str(symbol or "").strip().upper() or "symbol"
     code = str(broker_error_code or "").strip()
@@ -146,6 +163,8 @@ def format_broker_rejected_human(
     reason_class = classify_broker_rejection_reason(
         broker_error_code=code,
         exact_reject_reason=detail,
+        side=side,
+        asset_class=asset_class,
     )
     if reason_class == "BROKER_REJECT_INSUFFICIENT_USD_BALANCE":
         return f"{sym} broker rejected: insufficient USD balance for this order."

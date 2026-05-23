@@ -54,6 +54,11 @@ def _parse_ts_epoch(row: dict[str, Any]) -> float:
 
 
 def _is_short_block_row(row: dict[str, Any]) -> bool:
+    """True only if this row is a real short-not-allowed (sell-side) rejection.
+
+    Alpaca emits code 40310000 for buy-side insufficient USD too, so we
+    pass side + asset_class into the classifier to disambiguate.
+    """
     from monitoring.order_flow_labels import classify_broker_rejection_reason
 
     code = str(
@@ -68,10 +73,18 @@ def _is_short_block_row(row: dict[str, Any]) -> bool:
             str((row.get("forensics") or {}).get("exact_reject_reason") or ""),
         ]
     )
+    side = str(row.get("side") or (row.get("forensics") or {}).get("side") or "").strip().lower()
+    asset_class = str(
+        row.get("asset_class")
+        or (row.get("forensics") or {}).get("asset_class")
+        or ""
+    ).strip().lower()
     reason_class = classify_broker_rejection_reason(
         broker_error_code=code,
         exact_reject_reason=msg,
         message=msg,
+        side=side,
+        asset_class=asset_class,
     )
     return reason_class == "BROKER_REJECT_SHORT_NOT_ALLOWED"
 

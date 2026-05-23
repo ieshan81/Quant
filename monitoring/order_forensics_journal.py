@@ -96,6 +96,8 @@ def record_broker_rejection(
             sym,
             broker_error_code=forensics.get("broker_error_code"),
             exact_reject_reason=forensics.get("exact_reject_reason"),
+            side=side,
+            asset_class=asset_class,
         ),
         "forensics": forensics,
         "event_class": "broker_order_rejections",
