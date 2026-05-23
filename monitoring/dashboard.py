@@ -1106,12 +1106,39 @@ _PAGE = """<!DOCTYPE html>
           <div class="mc-panel glass-card"><h4>Pending Exits</h4><div id="mcPendingExits"><span class="muted">None</span></div></div>
           <div class="mc-panel mc-crypto-scanner glass-card" id="mcCryptoScannerPanel"><h4>Crypto Scanner</h4><div id="mcCryptoScanner"><span class="muted">Loading…</span></div></div>
           <div class="mc-panel glass-card"><h4>Last Actions</h4><ul class="mc-feed timeline-feed" id="mcActionFeed"><li>—</li></ul></div>
-          <div class="mc-panel mc-momo-observer glass-card" id="mcMomoCriticalPanel">
-            <h4>MoMo · Observer</h4>
-            <div class="momo-role">Observer · paper recommendations only</div>
-            <div class="mc-momo-row">
+          <div class="mc-panel mc-growth-plan glass-card" id="growthPlanPanel">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 6px;">
+              <h4 style="margin:0;">Growth Plan · Milestone Forecast</h4>
+              <span class="growth-confidence-badge" id="growthConfidenceBadge" style="font-size:11px;color:#9ca3af;">Confidence: —</span>
+            </div>
+            <div class="growth-current-row" style="display:flex;gap:10px;align-items:center;font-size:12px;flex-wrap:wrap;margin-bottom:6px;">
+              <span>Current: <strong id="growthCurrentEquity">—</strong></span>
+              <span>Next: <strong id="growthNextMilestone">—</strong></span>
+              <span id="growthProgressLabel">Progress —</span>
+            </div>
+            <div class="growth-progress-bar" style="height:6px;background:#1f2937;border-radius:3px;overflow:hidden;margin-bottom:6px;">
+              <div id="growthProgressFill" style="height:100%;width:0%;background:linear-gradient(90deg,#38bdf8,#a78bfa);transition:width 0.5s;"></div>
+            </div>
+            <div id="growthRequiredBlock" style="font-size:11px;color:#9ca3af;margin-bottom:4px;">
+              Required return: <span id="growthRequiredReturn">—</span><br/>
+              Required daily compounded:<br/>
+              <span class="mono" id="growthDailyTable" style="display:inline-block;margin-left:4px;">—</span>
+            </div>
+            <div id="growthMonteCarloBlock" style="font-size:11px;color:#9ca3af;margin-bottom:4px;">
+              Monte Carlo (90d):<br/>
+              <span class="mono" style="display:inline-block;margin-left:4px;">
+                Hit: <span id="growthMcHit">—</span> ·
+                Median: <span id="growthMcMedian">—</span> ·
+                Ruin: <span id="growthMcRuin">—</span>
+              </span>
+            </div>
+            <div id="growthBlockersBlock" style="font-size:11px;color:#fbbf24;margin-bottom:6px;display:none;">
+              <strong>Blockers:</strong>
+              <ul id="growthBlockersList" style="margin:2px 0 0 14px;padding:0;font-size:11px;"></ul>
+            </div>
+            <div class="mc-momo-row" style="margin-top:6px;">
               <div class="mc-momo-avatar" aria-hidden="true"><img src="/momo-logo.png" alt="" class="momo-avatar-img"/></div>
-              <div id="mcMomoCritical" style="flex:1;min-width:0;"><span class="muted">—</span></div>
+              <div id="growthVerdict" style="flex:1;min-width:0;font-size:11px;color:#e5e7eb;">Loading projection…</div>
             </div>
           </div>
         </div>
@@ -2774,6 +2801,82 @@ def create_app() -> Flask:
         from monitoring.momo_loss_pattern_detector import detect_loss_patterns
 
         return Response(json.dumps({"patterns": detect_loss_patterns()}, default=str), mimetype="application/json")
+
+    @app.get("/api/momo/growth_projection")
+    def api_momo_growth_projection() -> Response:
+        from core.growth_projection import build_growth_projection_output
+        from core.momo_brain import save_growth_projection
+        from monitoring.equity_forensics import fetch_closed_trade_pnls
+
+        try:
+            from monitoring.canonical_account import resolve_canonical_account_metrics
+
+            acct = resolve_canonical_account_metrics(live_broker=False) or {}
+            current_eq = float(acct.get("equity") or 0.0)
+        except Exception:
+            current_eq = 200.0
+
+        try:
+            closed_trades = fetch_closed_trade_pnls()
+        except Exception:
+            closed_trades = []
+
+        acceptance_pass = False
+        live_readiness_ok = False
+        try:
+            from monitoring.live_readiness import build_live_readiness
+
+            lr = build_live_readiness(account={"mode": "paper", "live_enabled": False})
+            live_readiness_ok = bool(lr.get("live_allowed"))
+        except Exception:
+            pass
+
+        risk_controls_present = False
+        try:
+            import core.risk_controls  # noqa: F401
+
+            risk_controls_present = True
+        except Exception:
+            pass
+
+        has_real_backtest = False
+        has_paper_forward = False
+        try:
+            from core.momo_brain import _conn
+
+            with _conn() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) FROM momo_parameter_proposals WHERE backtest_result_json IS NOT NULL AND backtest_result_json LIKE '%\"engine\": \"vectorbt\"%'"
+                ).fetchone()
+                has_real_backtest = bool(int(row[0]) if row else 0)
+                row2 = conn.execute(
+                    "SELECT COUNT(*) FROM momo_parameter_proposals WHERE paper_forward_result_json IS NOT NULL AND length(paper_forward_result_json) > 5"
+                ).fetchone()
+                has_paper_forward = bool(int(row2[0]) if row2 else 0)
+        except Exception:
+            pass
+
+        projection = build_growth_projection_output(
+            current_equity=current_eq,
+            closed_trades=closed_trades,
+            acceptance_pass=acceptance_pass,
+            live_readiness_ok=live_readiness_ok,
+            risk_controls_present=risk_controls_present,
+            has_real_backtest=has_real_backtest,
+            has_paper_forward=has_paper_forward,
+        )
+        try:
+            save_growth_projection(projection)
+        except Exception:
+            pass
+        return Response(json.dumps(projection, default=str), mimetype="application/json")
+
+    @app.get("/api/momo/equity_forensics")
+    def api_momo_equity_forensics() -> Response:
+        from monitoring.equity_forensics import build_equity_forensics_report
+
+        report = build_equity_forensics_report()
+        return Response(json.dumps(report, default=str), mimetype="application/json")
 
     @app.post("/api/momo/ask")
     def api_momo_ask() -> Any:

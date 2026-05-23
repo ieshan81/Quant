@@ -4100,30 +4100,91 @@
         }
       }
     }
-    var momoC = document.getElementById("mcMomoCritical");
-    if (momoC) {
-      var brain = (d.canonical_truth && d.canonical_truth.momo_brain_state) || d.momo_brain_state || {};
-      var note = d.top_ai_note || {};
-      var ms = d.momo_summary || {};
-      var body = "";
-      if (brain.current_context_summary && !note.finding) {
-        body = '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(String(brain.current_context_summary).slice(0, 280)) + "</p>" +
-          (brain.next_best_action ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">Next: ' + esc(brain.next_best_action) + "</div>" : "");
-      } else if (note.finding) {
-        var sev = String(note.severity || "info").toLowerCase();
-        body = _mcBadge(sev, sev === "critical" ? "bad" : sev === "warning" ? "warn" : "ok") +
-          " <span style=\"font-size:12px;line-height:1.45\">" + esc((note.finding || "").slice(0, 280)) + "</span>" +
-          (note.suggested_action ? '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + esc(note.suggested_action) + "</div>" : "");
-      } else if (ms.summary_text || ms.headline) {
-        body = '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(String(ms.summary_text || ms.headline).slice(0, 320)) + "</p>";
-      } else {
-        var att = ms.attention || [];
-        var canon = canonicalNoTradeHuman(d);
-        body = att.length
-          ? '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(att[0]) + "</p>"
-          : (canon ? '<p style="margin:0;font-size:12px;line-height:1.5">' + esc(canon) + "</p>" : '<span class="muted">No critical MoMo notes</span>');
-      }
-      momoC.innerHTML = body + ' <a href="#" data-tab-jump="ai" style="font-size:11px;display:inline-block;margin-top:6px">MoMo Console →</a>';
+    // Growth Plan / Milestone Forecast panel replaces the prior MoMo Observer.
+    if (document.getElementById("growthPlanPanel")) {
+      _loadGrowthPlanPanel();
+    }
+  }
+
+  var _growthPlanFetchInFlight = false;
+  function _loadGrowthPlanPanel() {
+    if (_growthPlanFetchInFlight) return;
+    _growthPlanFetchInFlight = true;
+    fetch("/api/momo/growth_projection", { cache: "no-store", headers: _authHeaders() })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (p) { if (p) renderGrowthPlanPanel(p); })
+      .catch(function () {})
+      .finally(function () { _growthPlanFetchInFlight = false; });
+  }
+
+  function _setText(id, val) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = String(val);
+  }
+  function _setHtml(id, val) {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = String(val);
+  }
+
+  function renderGrowthPlanPanel(p) {
+    var INSUFFICIENT = "── insufficient evidence ──";
+    var insufficient = !!(p && p.insufficient_evidence);
+    var current = Number(p.current_equity || 0);
+    var target = Number(p.target_milestone || 0);
+    var progress = Number(p.progress_pct || 0);
+    _setText("growthCurrentEquity", "$" + current.toFixed(2));
+    _setText("growthNextMilestone", "$" + target.toFixed(0));
+    _setText("growthProgressLabel", "Progress " + progress.toFixed(1) + "%");
+    var bar = document.getElementById("growthProgressFill");
+    if (bar) bar.style.width = Math.min(100, Math.max(0, progress)) + "%";
+
+    var conf = Number(((p.confidence || {}).confidence_score) || 0) * 100;
+    var confBadge = document.getElementById("growthConfidenceBadge");
+    if (confBadge) {
+      confBadge.textContent = "Confidence: " + conf.toFixed(0) + "%";
+      confBadge.style.color = conf < 20 ? "#fbbf24" : (conf < 50 ? "#a78bfa" : "#10b981");
+    }
+
+    var reqPct = Number(p.required_return_pct || 0);
+    _setText("growthRequiredReturn", "+" + reqPct.toFixed(0) + "%");
+    var daily = (p.required_daily_return_pct || {});
+    var ann = (p.annualized_equivalent_pct || {});
+    var rows = ["30d", "60d", "90d", "180d"].map(function (k) {
+      var d = Number(daily[k] || 0);
+      var a = Number(ann[k] || 0);
+      return k.padEnd(4, " ") + ": " + d.toFixed(2) + "%  (ann " + a.toLocaleString() + "%)";
+    }).join("<br/>");
+    _setHtml("growthDailyTable", rows);
+
+    var mc = p.monte_carlo_90d || {};
+    if (insufficient || mc.insufficient_evidence) {
+      _setText("growthMcHit", INSUFFICIENT);
+      _setText("growthMcMedian", INSUFFICIENT);
+      _setText("growthMcRuin", INSUFFICIENT);
+    } else {
+      var hit = Number(mc.probability_hit || 0);
+      _setText("growthMcHit", (hit * 100).toFixed(1) + "%");
+      _setText("growthMcMedian", "$" + Number(mc.median_final_equity || 0).toFixed(0));
+      var ruin = (p.risk_of_ruin != null) ? p.risk_of_ruin : mc.risk_of_ruin;
+      _setText("growthMcRuin", ruin != null ? (Number(ruin) * 100).toFixed(1) + "%" : INSUFFICIENT);
+    }
+
+    var blockers = p.blockers || [];
+    var blockersWrap = document.getElementById("growthBlockersBlock");
+    var blockersList = document.getElementById("growthBlockersList");
+    if (blockersList) {
+      blockersList.innerHTML = blockers.map(function (b) { return "<li>" + esc(String(b)) + "</li>"; }).join("");
+    }
+    if (blockersWrap) {
+      blockersWrap.style.display = blockers.length ? "block" : "none";
+    }
+
+    _setText("growthVerdict", String(p.verdict || ""));
+
+    var panel = document.getElementById("growthPlanPanel");
+    if (panel) {
+      var negExp = (p.expectancy && Number(p.expectancy.expectancy_per_trade_pct) < 0);
+      panel.style.border = negExp ? "1px solid #ef4444" : "";
     }
   }
 

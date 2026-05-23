@@ -57,8 +57,19 @@ def evaluate_crypto_pull(
     entry_price: float,
     current_price: float,
     rt: dict,
+    high_water_mark: float | None = None,
+    opened_at_epoch: float | None = None,
+    now_epoch: float | None = None,
 ) -> CryptoPullCandidate:
-    """Evaluate one crypto position for exit signals."""
+    """Evaluate one crypto position for exit signals.
+
+    A loss sell is only allowed when a named rule fires:
+      - stop_loss_triggered (pnl_pct <= -crypto_sl)
+      - trailing_stop_triggered (drawdown from peak >= crypto_trail AND pnl >= 0 only — never a "hidden" loss-sell)
+      - max_hold_triggered (held longer than crypto_max_hold_minutes)
+      - take_profit_triggered (pnl_pct >= crypto_tp)
+    Anything else returns HOLD with reason_code WITHIN_THRESHOLDS or NO_PRICE.
+    """
     if entry_price <= 1e-9 or current_price <= 0:
         return CryptoPullCandidate(
             symbol=symbol, qty=qty, entry_price=entry_price,
@@ -70,6 +81,7 @@ def evaluate_crypto_pull(
     crypto_tp = cfg_float(rt, "crypto_take_profit_pct", 0.015) * 100.0
     crypto_sl = cfg_float(rt, "crypto_stop_loss_pct", 0.008) * 100.0
     crypto_trail = cfg_float(rt, "crypto_trailing_stop_pct", 0.02) * 100.0
+    crypto_max_hold_min = cfg_float(rt, "crypto_max_hold_minutes", 1440.0)
 
     c = CryptoPullCandidate(
         symbol=symbol, qty=qty, entry_price=entry_price,
@@ -79,13 +91,42 @@ def evaluate_crypto_pull(
     if pnl_pct >= crypto_tp:
         c.action = "PULL"
         c.reason_code = rc.CRYPTO_PULL_TAKE_PROFIT
-    elif pnl_pct <= -crypto_sl:
+        return c
+
+    if pnl_pct <= -crypto_sl:
         c.action = "PULL"
         c.reason_code = rc.CRYPTO_PULL_STOP_LOSS
-    else:
-        c.action = "HOLD"
-        c.reason_code = "WITHIN_THRESHOLDS"
+        return c
 
+    # Trailing stop: requires a watermark high above entry to be meaningful.
+    if (
+        high_water_mark is not None
+        and high_water_mark > entry_price
+        and crypto_trail > 0
+    ):
+        peak_pnl_pct = (high_water_mark - entry_price) / entry_price * 100.0
+        drawdown_from_peak_pct = (high_water_mark - current_price) / high_water_mark * 100.0
+        if peak_pnl_pct > 0 and drawdown_from_peak_pct >= crypto_trail:
+            c.action = "PULL"
+            c.reason_code = rc.CRYPTO_PULL_TRAILING_STOP
+            return c
+
+    # Max-hold: only a loss-sell candidate if the operator configured the bot
+    # to time-out crypto positions. Default 24h. Loss-sells via max-hold are
+    # surfaced with explicit reason_code so journals can audit them.
+    if (
+        opened_at_epoch is not None
+        and now_epoch is not None
+        and crypto_max_hold_min > 0
+    ):
+        held_min = max(0.0, (now_epoch - opened_at_epoch) / 60.0)
+        if held_min >= crypto_max_hold_min:
+            c.action = "PULL"
+            c.reason_code = rc.CRYPTO_PULL_MAX_HOLD
+            return c
+
+    c.action = "HOLD"
+    c.reason_code = "WITHIN_THRESHOLDS"
     return c
 
 

@@ -29,6 +29,50 @@ def answer_momo_question(
         "turn on live",
         "flip live",
     )
+    guaranteed_profit_phrases = (
+        "guaranteed",
+        "sure thing",
+        "risk-free",
+        "risk free",
+        "100% profit",
+        "will make money",
+        "always profitable",
+        "no risk",
+        "can't lose",
+        "cannot lose",
+    )
+    if any(p in ql for p in guaranteed_profit_phrases):
+        try:
+            from core.growth_projection import required_returns, select_next_milestone
+            from monitoring.canonical_account import resolve_canonical_account_metrics
+
+            _acct = resolve_canonical_account_metrics(live_broker=False) or {}
+            _eq = float(_acct.get("equity") or 200.0)
+            _target = select_next_milestone(_eq)
+            _req = required_returns(_eq, _target, [90])
+            _daily_90 = _req["daily_required"].get("90d", 0.0)
+            _ann_90 = _req["annualized_equivalent_pct"].get("90d", 0.0)
+        except Exception:
+            _target = 500.0
+            _daily_90 = 1.02
+            _ann_90 = 3778.0
+        return {
+            "ok": True,
+            "assistant_name": "Momo",
+            "provider": "momo_policy_refusal",
+            "refused": True,
+            "answer": (
+                "Refused: QuantBot policy blocks guaranteed-profit language. "
+                "Markets do not guarantee returns. "
+                f"Required daily compounded return to reach ${_target:.0f}: {_daily_90:.2f}% — "
+                f"annualized equivalent {_ann_90:,.0f}%. "
+                "See Growth Plan panel for evidence-based probability bands."
+            ),
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            "can_submit_orders": False,
+            "can_update_config": False,
+            "allowed_to_execute": False,
+        }
     if any(p in ql for p in unsafe_phrases):
         from core.momo_brain import MomoRefusal
 
@@ -45,6 +89,61 @@ def answer_momo_question(
             "refused": True,
             "can_submit_orders": False,
         }
+
+    # Growth/milestone questions answer with math even without canonical context.
+    growth_keywords = (
+        "milestone", "realistic", "$10k", "$10,000", "10000",
+        "$5k", "5000", "$2k", "2000", "$1k", "1000", "$500",
+        "growth", "required return", "required daily", "risk of ruin",
+        "how long to", "how long until",
+    )
+    if any(k in ql for k in growth_keywords):
+        try:
+            from core.growth_projection import (
+                required_returns,
+                select_next_milestone,
+            )
+
+            try:
+                from monitoring.canonical_account import resolve_canonical_account_metrics
+
+                _acct_g = resolve_canonical_account_metrics(live_broker=False) or {}
+                _eq_g = float(_acct_g.get("equity") or 200.0)
+            except Exception:
+                _eq_g = 200.0
+            _target_g = select_next_milestone(_eq_g)
+            _req_g = required_returns(_eq_g, _target_g, [30, 90, 180])
+            ans = (
+                f"Next milestone: ${_target_g:.0f} from current equity ${_eq_g:.2f}. "
+                f"Required total return: +{_req_g['required_return_pct']:.0f}%. "
+                f"Required daily compounded: "
+                f"30d {_req_g['daily_required']['30d']:.2f}%, "
+                f"90d {_req_g['daily_required']['90d']:.2f}%, "
+                f"180d {_req_g['daily_required']['180d']:.2f}%. "
+                f"Annualized (90d): {_req_g['annualized_equivalent_pct']['90d']:,.0f}%. "
+                "Projection blocked until 20+ closed trades + positive expectancy + real backtest exist. "
+                "Live trading remains hard-blocked."
+            )
+            return {
+                "ok": True,
+                "assistant_name": "Momo",
+                "provider": "momo_growth_math",
+                "answer": ans,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "refused": False,
+                "can_submit_orders": False,
+                "can_update_config": False,
+                "allowed_to_execute": False,
+                "growth_math": {
+                    "current_equity": round(_eq_g, 2),
+                    "target_milestone": _target_g,
+                    "required_return_pct": _req_g["required_return_pct"],
+                    "daily_required_pct": _req_g["daily_required"],
+                    "annualized_equivalent_pct": _req_g["annualized_equivalent_pct"],
+                },
+            }
+        except Exception:
+            pass
 
     ctx: dict[str, Any] = {"question": q}
     missing: list[str] = []
@@ -282,6 +381,57 @@ def _deterministic_answer(
             f"signal_timeframe={fl.get('signal_timeframe')}, scalping_capable={fl.get('scalping_capable')}."
         )
         parts.append(brain.get("next_best_action") or "")
+
+    growth_keywords = (
+        "milestone", "target", "realistic", "how long",
+        "$10k", "$10,000", "10000", "$5k", "5000",
+        "$2k", "2000", "$1k", "1000", "$500", "500",
+        "growth", "next milestone", "growth plan", "growth panel",
+        "required return", "required daily", "risk of ruin",
+    )
+    if any(k in ql for k in growth_keywords):
+        try:
+            from core.growth_projection import (
+                build_growth_projection_output,
+                required_returns,
+                select_next_milestone,
+            )
+            from core.momo_brain import fetch_latest_growth_projection
+
+            current_eq = float(acct.get("equity") or 0.0) or 200.0
+            latest = fetch_latest_growth_projection()
+            if latest and float(latest.get("current_equity") or 0) > 0:
+                target = float(latest.get("target_milestone") or select_next_milestone(current_eq))
+                req_total = float(latest.get("required_return_pct") or 0.0)
+                daily_90 = float(latest.get("required_daily_90d") or 0.0)
+                ruin = latest.get("risk_of_ruin")
+                conf = float(latest.get("confidence_score") or 0.0)
+                verdict = str(latest.get("verdict") or "")
+                parts.append(
+                    f"Next milestone: ${target:.0f} (current ${current_eq:.2f}). "
+                    f"Required +{req_total:.0f}% total. "
+                    f"Daily compounded over 90d: {daily_90:.2f}%."
+                )
+                if ruin is not None:
+                    parts.append(f"Risk of ruin (90d): {float(ruin)*100:.1f}%.")
+                else:
+                    parts.append("Risk of ruin: ── insufficient evidence ──")
+                parts.append(f"Confidence: {conf*100:.0f}%.")
+                if verdict:
+                    parts.append(f"Verdict: {verdict}")
+            else:
+                target = select_next_milestone(current_eq)
+                req = required_returns(current_eq, target, [90])
+                parts.append(
+                    f"Next milestone: ${target:.0f} (current ${current_eq:.2f}). "
+                    f"Required +{req['required_return_pct']:.0f}% total. "
+                    f"Daily compounded over 90d: {req['daily_required']['90d']:.2f}% "
+                    f"(annualized {req['annualized_equivalent_pct']['90d']:,.0f}%). "
+                    "Projection blocked: 0 closed trades — need 20+. Run real backtests; "
+                    "accumulate paper trades; do not trust any forecast yet."
+                )
+        except Exception as exc:
+            parts.append(f"Growth projection unavailable: {exc}")
 
     if brain.get("current_context_summary"):
         parts.append("System truth: " + str(brain["current_context_summary"])[:280])

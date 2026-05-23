@@ -129,6 +129,43 @@ CREATE TABLE IF NOT EXISTS momo_daily_pnl_autopsy (
     pattern_summary_json TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS momo_growth_projections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    generated_at TEXT NOT NULL,
+    current_equity REAL NOT NULL,
+    target_milestone REAL NOT NULL,
+    required_return_pct REAL,
+    required_daily_30d REAL,
+    required_daily_60d REAL,
+    required_daily_90d REAL,
+    required_daily_180d REAL,
+    probability_hit_30d REAL,
+    probability_hit_60d REAL,
+    probability_hit_90d REAL,
+    probability_hit_180d REAL,
+    risk_of_ruin REAL,
+    confidence_score REAL,
+    confidence_reason TEXT,
+    source_data_summary TEXT,
+    blockers_json TEXT,
+    verdict TEXT,
+    insufficient_evidence INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_growth_proj_generated ON momo_growth_projections(generated_at DESC);
+
+CREATE TABLE IF NOT EXISTS momo_strategy_expectancy (
+    strategy_id TEXT PRIMARY KEY,
+    sample_size INTEGER NOT NULL,
+    win_rate REAL,
+    avg_win REAL,
+    avg_loss REAL,
+    expectancy REAL,
+    fees_assumption REAL,
+    slippage_assumption REAL,
+    last_updated_at TEXT NOT NULL
+);
 """
 
 
@@ -572,3 +609,120 @@ def ensure_bootstrap() -> None:
     if not _fetch_facts(limit=1):
         _seed_known_incidents()
         ingest_graphify()
+
+
+# ---------------------------------------------------------------------------
+# Growth memory — projections + strategy expectancy
+# ---------------------------------------------------------------------------
+
+
+def save_growth_projection(projection: dict[str, Any]) -> int:
+    """Persist one growth-projection payload row. Returns inserted rowid."""
+    p = dict(projection or {})
+    rd = dict(p.get("required_daily_return_pct") or {})
+    mc30 = dict(p.get("monte_carlo_30d") or {})
+    mc60 = dict(p.get("monte_carlo_60d") or {})
+    mc90 = dict(p.get("monte_carlo_90d") or {})
+    mc180 = dict(p.get("monte_carlo_180d") or {})
+    conf = dict(p.get("confidence") or {})
+    blockers = p.get("blockers") or []
+    insufficient = 1 if p.get("insufficient_evidence") else 0
+    with _LOCK:
+        with _conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO momo_growth_projections (
+                    generated_at, current_equity, target_milestone,
+                    required_return_pct,
+                    required_daily_30d, required_daily_60d,
+                    required_daily_90d, required_daily_180d,
+                    probability_hit_30d, probability_hit_60d,
+                    probability_hit_90d, probability_hit_180d,
+                    risk_of_ruin, confidence_score, confidence_reason,
+                    source_data_summary, blockers_json,
+                    verdict, insufficient_evidence, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _now(),
+                    float(p.get("current_equity") or 0.0),
+                    float(p.get("target_milestone") or 0.0),
+                    float(p.get("required_return_pct") or 0.0),
+                    float(rd.get("30d") or 0.0),
+                    float(rd.get("60d") or 0.0),
+                    float(rd.get("90d") or 0.0),
+                    float(rd.get("180d") or 0.0),
+                    None if mc30.get("insufficient_evidence") else float(mc30.get("probability_hit") or 0.0),
+                    None if mc60.get("insufficient_evidence") else float(mc60.get("probability_hit") or 0.0),
+                    None if mc90.get("insufficient_evidence") else float(mc90.get("probability_hit") or 0.0),
+                    None if mc180.get("insufficient_evidence") else float(mc180.get("probability_hit") or 0.0),
+                    p.get("risk_of_ruin"),
+                    float(conf.get("confidence_score") or 0.0),
+                    str(conf.get("confidence_reason") or "")[:500],
+                    json.dumps(p.get("expectancy") or {}, default=str)[:4000],
+                    json.dumps(blockers, default=str)[:2000],
+                    str(p.get("verdict") or "")[:1000],
+                    insufficient,
+                    json.dumps(p, default=str)[:200_000],
+                ),
+            )
+            rowid = int(cur.lastrowid or 0)
+            conn.commit()
+            return rowid
+
+
+def fetch_latest_growth_projection() -> dict[str, Any] | None:
+    """Return the most recent growth projection row as a dict (or None)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM momo_growth_projections ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_strategy_expectancy(strategy_id: str, expectancy: dict[str, Any]) -> None:
+    """Insert or update a strategy expectancy row keyed by strategy_id."""
+    sid = str(strategy_id or "default").strip()[:120]
+    if not sid:
+        return
+    with _LOCK:
+        with _conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO momo_strategy_expectancy (
+                    strategy_id, sample_size, win_rate, avg_win, avg_loss,
+                    expectancy, fees_assumption, slippage_assumption, last_updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(strategy_id) DO UPDATE SET
+                    sample_size=excluded.sample_size,
+                    win_rate=excluded.win_rate,
+                    avg_win=excluded.avg_win,
+                    avg_loss=excluded.avg_loss,
+                    expectancy=excluded.expectancy,
+                    fees_assumption=excluded.fees_assumption,
+                    slippage_assumption=excluded.slippage_assumption,
+                    last_updated_at=excluded.last_updated_at
+                """,
+                (
+                    sid,
+                    int(expectancy.get("sample_size") or 0),
+                    float(expectancy.get("win_rate") or 0.0),
+                    float(expectancy.get("avg_win_pct") or expectancy.get("avg_win") or 0.0),
+                    float(expectancy.get("avg_loss_pct") or expectancy.get("avg_loss") or 0.0),
+                    float(expectancy.get("expectancy_per_trade_pct") or expectancy.get("expectancy") or 0.0),
+                    float(expectancy.get("fees_assumption") or 0.0),
+                    float(expectancy.get("slippage_assumption") or 0.0),
+                    _now(),
+                ),
+            )
+            conn.commit()
+
+
+def fetch_strategy_expectancy(strategy_id: str) -> dict[str, Any] | None:
+    sid = str(strategy_id or "default").strip()[:120]
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM momo_strategy_expectancy WHERE strategy_id = ?",
+            (sid,),
+        ).fetchone()
+    return dict(row) if row else None

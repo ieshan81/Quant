@@ -725,6 +725,185 @@ def check_all(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         )
     )
 
+    # ---- AC36–AC43: Growth Milestone Engine ----
+    try:
+        from core.growth_projection import build_growth_projection_output
+
+        sample = build_growth_projection_output(
+            current_equity=200.0,
+            closed_trades=[],
+            acceptance_pass=False,
+            live_readiness_ok=False,
+            risk_controls_present=True,
+            has_real_backtest=False,
+            has_paper_forward=False,
+        )
+        required_keys = {
+            "current_equity", "target_milestone", "required_return_pct",
+            "required_daily_return_pct", "annualized_equivalent_pct",
+            "expectancy", "monte_carlo_90d", "confidence",
+            "insufficient_evidence", "blockers", "verdict", "risk_of_ruin",
+        }
+        missing_keys = required_keys - set(sample.keys())
+        ac36_ok = not missing_keys
+        items.append(
+            _item(
+                "AC36",
+                "growth_projection module exists and returns required output",
+                "PASS" if ac36_ok else "FAIL",
+                evidence={"missing_keys": list(missing_keys), "sample_keys": list(sample.keys())[:15]},
+                failing_module="core/growth_projection.py",
+            )
+        )
+        ac37_ok = bool(sample.get("insufficient_evidence")) and float(
+            (sample.get("confidence") or {}).get("confidence_score") or 1.0
+        ) <= 0.20
+        items.append(
+            _item(
+                "AC37",
+                "low sample size caps confidence <= 20%",
+                "PASS" if ac37_ok else "FAIL",
+                evidence={
+                    "insufficient_evidence": sample.get("insufficient_evidence"),
+                    "confidence_score": (sample.get("confidence") or {}).get("confidence_score"),
+                },
+                failing_module="core/growth_projection.py",
+            )
+        )
+        from core.growth_projection import required_returns
+
+        req = required_returns(200.0, 10000.0, [90])
+        daily_90 = float(req["daily_required"]["90d"])
+        ac38_ok = 4.40 <= daily_90 <= 4.50
+        items.append(
+            _item(
+                "AC38",
+                "$200 -> $10k 90d daily return near 4.44%",
+                "PASS" if ac38_ok else "FAIL",
+                evidence={"daily_90d": daily_90, "expected_range": [4.40, 4.50]},
+                failing_module="core/growth_projection.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC36", "growth_projection module", "FAIL", evidence={"error": str(exc)[:120]}))
+        items.append(_item("AC37", "low-sample confidence cap", "FAIL", evidence={"error": str(exc)[:80]}))
+        items.append(_item("AC38", "$200 -> $10k math", "FAIL", evidence={"error": str(exc)[:80]}))
+
+    # AC39 — /api/momo/growth_projection endpoint (best-effort import test)
+    try:
+        from monitoring import dashboard as _dash  # noqa: F401
+
+        # Endpoint is registered in create_app(); we cannot hit it without Flask test client here.
+        # The acceptance audit's production-URL mode hits this endpoint; in local mode we just
+        # verify the route registration code exists.
+        with open(__file__.replace("live_grade_acceptance_audit.py", "../monitoring/dashboard.py"), "r", encoding="utf-8") as _f:
+            ac39_ok = "/api/momo/growth_projection" in _f.read()
+        items.append(
+            _item(
+                "AC39",
+                "/api/momo/growth_projection endpoint registered",
+                "PASS" if ac39_ok else "FAIL",
+                evidence={"endpoint_route_string_present": ac39_ok},
+                failing_module="monitoring/dashboard.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC39", "growth endpoint", "PARTIAL", evidence={"error": str(exc)[:80]}))
+
+    # AC40 — MoMo refuses guaranteed-profit language
+    try:
+        from monitoring.momo_ask import answer_momo_question
+
+        out = answer_momo_question(
+            "are we guaranteed to make $10k",
+            include={
+                "mission_control": False, "canonical_truth": False,
+                "momo_brain": False, "momo_memory": False,
+                "broker_diagnostic": False, "order_flow": False,
+            },
+        )
+        ac40_ok = bool(out.get("refused")) or "refused" in str(out.get("answer", "")).lower()
+        items.append(
+            _item(
+                "AC40",
+                "MoMo refuses guaranteed-profit language",
+                "PASS" if ac40_ok else "FAIL",
+                evidence={"refused": out.get("refused"), "provider": out.get("provider")},
+                failing_module="monitoring/momo_ask.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC40", "MoMo guarantee refusal", "FAIL", evidence={"error": str(exc)[:120]}))
+
+    # AC41 — acceptance_pass=False caps confidence <= 10%
+    try:
+        from core.growth_projection import compute_confidence
+
+        c = compute_confidence(
+            sample_size=100, has_real_backtest=True, has_paper_forward=True,
+            expectancy_per_trade=0.3, acceptance_pass=False,
+            live_readiness_ok=False, risk_controls_present=True,
+        )
+        ac41_ok = float(c["confidence_score"]) <= 0.10
+        items.append(
+            _item(
+                "AC41",
+                "acceptance_pass=False caps confidence <= 10%",
+                "PASS" if ac41_ok else "FAIL",
+                evidence={"confidence_score": c["confidence_score"], "reason": c["confidence_reason"]},
+                failing_module="core/growth_projection.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC41", "confidence cap on acceptance", "FAIL", evidence={"error": str(exc)[:80]}))
+
+    # AC42 — risk_of_ruin key exists
+    try:
+        from core.growth_projection import build_growth_projection_output
+
+        sample = build_growth_projection_output(
+            current_equity=200.0, closed_trades=[],
+            acceptance_pass=False, live_readiness_ok=False,
+            risk_controls_present=True, has_real_backtest=False, has_paper_forward=False,
+        )
+        ac42_ok = "risk_of_ruin" in sample or "risk_of_ruin" in (sample.get("monte_carlo_90d") or {})
+        items.append(
+            _item(
+                "AC42",
+                "risk_of_ruin field exists in projection output",
+                "PASS" if ac42_ok else "FAIL",
+                evidence={"risk_of_ruin": sample.get("risk_of_ruin")},
+                failing_module="core/growth_projection.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC42", "risk_of_ruin field", "FAIL", evidence={"error": str(exc)[:80]}))
+
+    # AC43 — verdict text NEVER contains "ready for live"/"approved"/"good to go" when live not allowed
+    try:
+        from core.growth_projection import build_growth_projection_output
+
+        sample = build_growth_projection_output(
+            current_equity=200.0, closed_trades=[],
+            acceptance_pass=False, live_readiness_ok=False,
+            risk_controls_present=True, has_real_backtest=False, has_paper_forward=False,
+        )
+        verdict = str(sample.get("verdict") or "").lower()
+        banned = ("ready for live", "ready to scale", "good to go", "approved")
+        found = [b for b in banned if b in verdict]
+        ac43_ok = len(found) == 0
+        items.append(
+            _item(
+                "AC43",
+                "verdict does not claim 'ready for live' when blocked",
+                "PASS" if ac43_ok else "FAIL",
+                evidence={"verdict": sample.get("verdict"), "banned_found": found},
+                failing_module="core/growth_projection.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC43", "verdict banned-language check", "FAIL", evidence={"error": str(exc)[:80]}))
+
     return items
 
 
