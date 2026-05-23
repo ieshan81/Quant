@@ -1,0 +1,5 @@
+﻿{
+    "path":  "/health",
+    "body":  "{\"ok\":true,\"service\":\"quantbot-dashboard\"}\n",
+    "status":  200
+}

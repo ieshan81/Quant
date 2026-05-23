@@ -2778,6 +2778,67 @@ def create_app() -> Flask:
         from core.app_config_registry import export_railway_env_template
         return Response(export_railway_env_template(), mimetype="text/plain")
 
+    @app.get("/api/ops/storage-audit")
+    def api_ops_storage_audit() -> Response:
+        from tools.storage_audit import audit
+
+        return Response(json.dumps(audit("data"), default=str), mimetype="application/json")
+
+    @app.get("/api/connections/status")
+    def api_connections_status() -> Response:
+        from monitoring.connection_profiles import list_profiles
+
+        return Response(json.dumps(list_profiles(), default=str), mimetype="application/json")
+
+    @app.get("/api/ops/safe-flags")
+    def api_ops_safe_flags() -> Response:
+        from monitoring.dashboard_auth import safe_default_flags
+
+        return Response(json.dumps(safe_default_flags(), default=str), mimetype="application/json")
+
+    @app.get("/api/ops/fresh-start/preview")
+    def api_fresh_start_preview() -> Response:
+        from tools.fresh_start_runtime import preview
+
+        opts = {}
+        try:
+            for k, v in (request.args or {}).items():
+                opts[str(k)] = v in ("1", "true", "True", "yes")
+        except Exception:
+            opts = {}
+        return Response(json.dumps(preview(opts), default=str), mimetype="application/json")
+
+    @app.post("/api/ops/fresh-start/apply")
+    def api_fresh_start_apply() -> Any:
+        from monitoring.dashboard_auth import admin_required, fresh_start_enabled
+        from tools.fresh_start_runtime import apply as fs_apply
+        from tools.fresh_start_runtime import REQUIRED_PHRASE
+
+        if not fresh_start_enabled():
+            return jsonify({"ok": False, "error": "fresh_start_disabled"}), 503
+        body = request.get_json(force=True, silent=True) or {}
+        phrase = str(body.get("confirmation_phrase") or "").strip()
+        if phrase != REQUIRED_PHRASE:
+            return jsonify({"ok": False, "error": "confirmation_phrase mismatch", "required": REQUIRED_PHRASE}), 400
+        return jsonify(fs_apply(body.get("options") or {}, confirmation_phrase=phrase))
+
+    @app.get("/api/ops/fresh-start/history")
+    def api_fresh_start_history() -> Response:
+        from tools.fresh_start_runtime import history
+
+        return Response(json.dumps({"history": history()}, default=str), mimetype="application/json")
+
+    @app.get("/api/monitoring/mode")
+    def api_monitoring_mode() -> Response:
+        from core.canonical_state import build_canonical_state
+        from monitoring.monitoring_mode import build_monitoring_mode_summary
+
+        try:
+            ct = build_canonical_state()
+        except Exception:
+            ct = {}
+        return Response(json.dumps(build_monitoring_mode_summary(ct), default=str), mimetype="application/json")
+
     @app.get("/api/momo/post_trade_reviews")
     def api_momo_post_trade_reviews() -> Response:
         from monitoring.momo_post_trade_review import fetch_post_trade_reviews

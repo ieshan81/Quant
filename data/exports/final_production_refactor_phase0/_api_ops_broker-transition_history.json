@@ -1,0 +1,5 @@
+﻿{
+    "path":  "/api/ops/broker-transition/history",
+    "body":  "{\"history\": []}",
+    "status":  200
+}

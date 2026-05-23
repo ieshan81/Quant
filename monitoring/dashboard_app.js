@@ -1334,7 +1334,12 @@
       var ss = vm.simpleStatus || {};
       var cts = ss.canonical_truth_summary || {};
       var acct = ss.account || {};
+      // Monitoring Mode operator wording (replaces raw observe-only jargon)
       var fl = cts.fast_loop_state || {};
+      if (fl && fl.execution_mode === "observe_only") {
+        fl.ui_label = "Monitoring Mode";
+        fl.human_summary = "MoMo is watching opportunities. Fast-loop orders are disabled by config.";
+      }
       var bp = acct.buying_power != null ? Number(acct.buying_power) : (vm.executionHealth || {}).buying_power;
       _setDashText("ovBp", isFiniteNum(bp) ? fmtMoney(bp) : "—");
       _setDashText(

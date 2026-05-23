@@ -1,0 +1,5 @@
+﻿{
+    "path":  "/api/ops/logs?limit=50\u0026level=error",
+    "body":  "{\"logs\": [], \"count\": 0, \"no_errors\": true, \"message\": \"No error-level ops events in the requested window.\"}",
+    "status":  200
+}

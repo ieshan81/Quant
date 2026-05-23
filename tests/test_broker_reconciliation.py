@@ -42,9 +42,12 @@ def test_reconcile_sell_adjusts_local_to_broker_qty(tmp_path: Path) -> None:
     pos.current_price = "5.1"
     client.list_positions.return_value = [pos]
 
+    broker_reconciliation._RECENT_ADJ_HASHES.clear()
     summary = broker_reconciliation.reconcile_sqlite_with_broker(db, client, mode=mode)
     assert summary.get("adjustments", 0) >= 1
 
+    # Production refactor: reconcile no longer inserts synthetic BROKER_RECONCILE_ADJUST trade rows;
+    # the local audit (excluding synthetic codes) still reflects the original buy of 10.
     with get_connection(db) as conn:
         cur = conn.execute(
             """
@@ -53,7 +56,10 @@ def test_reconcile_sell_adjusts_local_to_broker_qty(tmp_path: Path) -> None:
             """
         )
         net = float(cur.fetchone()[0] or 0)
-    assert abs(net - 5.0) < 1e-5
+    assert abs(net - 10.0) < 1e-5
+    with get_connection(db) as conn:
+        events = list(conn.execute("SELECT event_type FROM reconciliation_events"))
+    assert any("LEDGER_ADJUSTMENT" in str(r[0]) for r in events)
 
 
 def test_reconcile_no_sell_when_broker_zero_inserts_cleanup_attempt(tmp_path: Path) -> None:

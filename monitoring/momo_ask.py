@@ -9,6 +9,31 @@ from typing import Any
 from monitoring.momo import build_momo_authority_status, build_momo_status
 
 
+def build_structured_response(
+    *,
+    summary: str,
+    confidence: float,
+    cards: list[dict[str, Any]] | None = None,
+    charts: list[dict[str, Any]] | None = None,
+    tables: list[dict[str, Any]] | None = None,
+    timeline: list[dict[str, Any]] | None = None,
+    blockers: list[str] | None = None,
+    actions: list[str] | None = None,
+    raw: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "summary": summary,
+        "confidence": float(max(0.0, min(1.0, confidence))),
+        "cards": cards or [],
+        "charts": charts or [],
+        "tables": tables or [],
+        "timeline": timeline or [],
+        "blockers": blockers or [],
+        "recommended_actions": actions or [],
+        "raw_evidence": raw or {},
+    }
+
+
 def answer_momo_question(
     question: str,
     *,
@@ -256,11 +281,32 @@ def answer_momo_question(
     if missing and "context unavailable" not in answer.lower():
         answer += "\n\n(Context gaps: " + "; ".join(missing[:4]) + ")"
 
+    # Build structured graphical response
+    blockers = list((canonical.get("live_readiness_state") or {}).get("architecture_blockers") or [])
+    active_positions = list((canonical.get("position_state") or {}).get("active_positions") or [])
+    cards = []
+    if active_positions:
+        cards.append({
+            "title": "Active Positions",
+            "kind": "positions",
+            "items": [{"symbol": p.get("symbol"), "net_qty": p.get("net_qty"), "asset_class": p.get("asset_class")} for p in active_positions[:6]],
+        })
+    if blockers:
+        cards.append({"title": "Active Blockers", "kind": "blockers", "items": blockers[:8]})
+    structured = build_structured_response(
+        summary=answer[:600],
+        confidence=0.6 if not missing else 0.35,
+        cards=cards,
+        blockers=blockers,
+        raw={"missing": missing, "provider": provider},
+    )
+
     return {
         "ok": True,
         "assistant_name": "Momo",
         "provider": provider,
         "answer": answer,
+        "structured": structured,
         "elapsed_ms": elapsed_ms,
         "missing_data": missing,
         "momo_status": momo_st,

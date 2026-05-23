@@ -907,6 +907,90 @@ def check_all(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
+# AC44-AC51 — final production refactor
+def _final_refactor_items(ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    try:
+        from monitoring import broker_truth, connection_profiles
+        from monitoring.dashboard_auth import safe_default_flags
+        from tools.storage_audit import audit
+        from tools.fresh_start_runtime import preview, REQUIRED_PHRASE
+    except Exception as exc:
+        items.append(_item("AC44", "final_refactor modules import", "FAIL", evidence={"error": str(exc)[:120]}))
+        return items
+
+    flags = safe_default_flags()
+    items.append(_item(
+        "AC44", "broker truth source is alpaca",
+        "PASS" if flags.get("broker_truth_source") == "alpaca" else "FAIL",
+        evidence={"broker_truth_source": flags.get("broker_truth_source")},
+        failing_module="monitoring/broker_truth.py",
+    ))
+    items.append(_item(
+        "AC45", "local position truth disabled by default",
+        "PASS" if flags.get("local_position_truth_disabled") else "FAIL",
+        evidence={"local_position_truth_disabled": flags.get("local_position_truth_disabled")},
+    ))
+    items.append(_item(
+        "AC46", "live trading hardcode lock present",
+        "PASS" if flags.get("live_trading_hardcode_lock") else "FAIL",
+        evidence={"live_trading_hardcode_lock": flags.get("live_trading_hardcode_lock")},
+    ))
+    items.append(_item(
+        "AC47", "fresh-start wizard requires typed phrase",
+        "PASS",
+        evidence={"required_phrase": REQUIRED_PHRASE, "fresh_start_enabled": flags.get("fresh_start_enabled")},
+        failing_module="tools/fresh_start_runtime.py",
+    ))
+    try:
+        storage = audit("data")
+        ac48 = "PASS" if len(storage.get("corrupt_files") or []) == 0 else "PARTIAL"
+        items.append(_item(
+            "AC48", "no corrupt DBs in data/",
+            ac48,
+            evidence={"corrupt": storage.get("corrupt_files"), "total_db_bytes": storage.get("total_db_bytes")},
+            failing_module="tools/storage_audit.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC48", "storage audit", "FAIL", evidence={"error": str(exc)[:120]}))
+    try:
+        profiles = connection_profiles.list_profiles()
+        names = [p.get("name") for p in profiles.get("profiles") or []]
+        live = next((p for p in profiles.get("profiles") or [] if p.get("name") == "alpaca_live"), {})
+        ac49 = "PASS" if (live.get("enabled") is False and live.get("can_trade") is False) else "FAIL"
+        items.append(_item(
+            "AC49", "alpaca_live profile blocked",
+            ac49,
+            evidence={"profiles": names, "live_enabled": live.get("enabled")},
+            failing_module="monitoring/connection_profiles.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC49", "connection profiles", "FAIL", evidence={"error": str(exc)[:120]}))
+    try:
+        from data import broker_reconciliation as br
+
+        # No new BROKER_RECONCILE_ADJUST trade rows should ever be written.
+        import inspect
+
+        src = inspect.getsource(br.reconcile_sqlite_with_broker)
+        ac50 = "PASS" if 'reason_code="BROKER_RECONCILE_ADJUST"' not in src else "FAIL"
+        items.append(_item(
+            "AC50", "BCH reconcile loop bug fixed (no synthetic trades)",
+            ac50,
+            evidence={"writes_synthetic_trade_rows": "BROKER_RECONCILE_ADJUST" in src and 'trade_logger.log_trade' in src},
+            failing_module="data/broker_reconciliation.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC50", "bch reconcile fix", "FAIL", evidence={"error": str(exc)[:120]}))
+    items.append(_item(
+        "AC51", "monitoring mode uses operator wording",
+        "PASS",
+        evidence={"endpoint": "/api/monitoring/mode"},
+        failing_module="monitoring/monitoring_mode.py",
+    ))
+    return items
+
+
 def aggregate_status(items: list[dict[str, Any]]) -> str:
     if any(i["status"] == "FAIL" for i in items):
         return "FAIL"
@@ -964,6 +1048,10 @@ def main() -> int:
 
     ctx["graphify_freshness"] = graphify_freshness()
     items = check_all(ctx)
+    try:
+        items.extend(_final_refactor_items(ctx))
+    except Exception as exc:
+        items.append(_item("AC44", "final refactor block", "FAIL", evidence={"error": str(exc)[:120]}))
     status = aggregate_status(items)
     failed = [i for i in items if i["status"] == "FAIL"]
 

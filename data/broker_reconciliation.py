@@ -1,16 +1,19 @@
 """Align SQLite `trades` net quantities with Alpaca broker positions (paper-first).
 
-Broker quantity is authoritative for execution; this module fixes local drift by:
-- Synthetic adjustment trades (reason ``BROKER_RECONCILE_ADJUST``) when local != broker,
-- Or ``reconcile_sqlite_symbol_if_broker_missing`` when broker has zero but SQLite shows inventory.
+Broker quantity is authoritative for execution; this module records local drift via:
+- ``reconciliation_events`` rows tagged ``RECONCILE_LOCAL_LEDGER_ADJUSTMENT`` (idempotent),
+- ``reconcile_sqlite_symbol_if_broker_missing`` when broker has zero but SQLite shows inventory.
 
-Every action records a row in ``reconciliation_events``.
+It NEVER inserts synthetic ``trades`` rows for delta adjustments — that produced repeating
+BROKER_RECONCILE_ADJUST loops that polluted P&L and activity. Local audit always re-derives
+from real fills; reconcile writes are diagnostic only.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
-import uuid
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +21,27 @@ from loguru import logger
 
 import config
 from data.data_store import get_connection, reconcile_sqlite_symbol_if_broker_missing
-from monitoring import trade_logger
 from utils.symbols import normalize_asset_class, normalize_symbol_for_db
 
 
 EVENT_BROKER_LOCAL_MISMATCH = "BROKER_LOCAL_MISMATCH"
 EVENT_LOCAL_STALE_NO_BROKER = "LOCAL_POSITION_STALE"
+EVENT_LOCAL_LEDGER_ADJUSTMENT = "RECONCILE_LOCAL_LEDGER_ADJUSTMENT"
+
+_RECENT_ADJ_HASHES: dict[str, float] = {}
+_ADJ_DEDUP_WINDOW_SEC = 1800.0  # do not re-write the same delta event within 30 minutes
+
+
+def _idempotency_key(asset_class: str, symbol: str, local_qty: float, broker_qty: float) -> str:
+    raw = f"{asset_class}|{symbol}|{round(local_qty, 8)}|{round(broker_qty, 8)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _purge_old_hashes() -> None:
+    cutoff = time.time() - _ADJ_DEDUP_WINDOW_SEC
+    stale = [k for k, ts in _RECENT_ADJ_HASHES.items() if ts < cutoff]
+    for k in stale:
+        del _RECENT_ADJ_HASHES[k]
 
 
 def _eps_qty(asset_class: str) -> float:
@@ -185,51 +203,33 @@ def reconcile_sqlite_with_broker(
                 summary["events_logged"] += 1
                 continue
 
-            # Broker has size; adjust SQLite net to match via synthetic trade.
+            # Broker has size and local audit differs — record diagnostic event only.
+            # No synthetic trade row is written; the audit query derives from real fills.
             if abs(B) > eps:
                 delta = L - B
                 if abs(delta) <= eps:
                     continue
-                price = float(br["mark"] if br else 1.0)
-                if price <= 0:
-                    price = 1.0
-                side = "sell" if delta > 0 else "buy"
-                qty_adj = abs(delta)
-                notional = qty_adj * price
-                oid = f"br-{uuid.uuid4().hex[:12]}"
-                trade_logger.log_trade(
-                    conn,
-                    mode=eff_mode,
-                    asset_class=ac,
-                    symbol=sym_disp,
-                    side=side,
-                    quantity=qty_adj,
-                    price=price,
-                    notional=notional,
-                    status="filled",
-                    broker_order_id=oid,
-                    reason_code="BROKER_RECONCILE_ADJUST",
-                    meta={
-                        "local_qty_before": L,
-                        "broker_qty_target": B,
-                        "delta_qty": delta,
-                    },
-                )
+                _purge_old_hashes()
+                idk = _idempotency_key(ac, sym_disp, L, B)
+                if idk in _RECENT_ADJ_HASHES:
+                    summary["dedup_skipped"] = summary.get("dedup_skipped", 0) + 1
+                    continue
+                _RECENT_ADJ_HASHES[idk] = time.time()
                 _log_event(
                     conn,
-                    event_type=EVENT_BROKER_LOCAL_MISMATCH,
+                    event_type=EVENT_LOCAL_LEDGER_ADJUSTMENT,
                     asset_class=ac,
                     symbol=sym_disp,
                     local_qty=L,
                     broker_qty=B,
-                    action_taken="SYNTHETIC_TRADE_" + side.upper(),
+                    action_taken="LOCAL_LEDGER_SYNC",
                     meta={
-                        "quantity": qty_adj,
-                        "price": price,
-                        "broker_order_id": oid,
+                        "delta_qty": delta,
+                        "idempotency_key": idk,
+                        "note": "audit-only; no trade row written",
                     },
                 )
                 summary["adjustments"] += 1
-                summary["events_logged"] += 2
+                summary["events_logged"] += 1
 
     return summary
