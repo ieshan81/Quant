@@ -96,8 +96,16 @@ docs
 docs/
 scripts
 scripts/
-tools
-tools/
+# tools/ is selectively included — the dashboard exposes endpoints that import
+# storage_audit, fresh_start_runtime, purge_ghost_trade_rows, live_grade_acceptance_audit.
+tools/*
+!tools/__init__.py
+!tools/storage_audit.py
+!tools/storage_migrate.py
+!tools/storage_compact.py
+!tools/fresh_start_runtime.py
+!tools/purge_ghost_trade_rows.py
+!tools/live_grade_acceptance_audit.py
 .cursor
 .claude
 .code-review-graph
