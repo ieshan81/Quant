@@ -398,3 +398,104 @@ def test_dangerous_config_requires_typed_confirmation():
     ok2, msg = verify_dangerous_update(key="allow_full_deployment", value=True, header_token="wrong")
     assert not ok2
     assert "X-Operator-Confirm" in msg
+
+
+# --- Daily scheduler / activities poller wiring ---
+
+
+def test_daily_scheduler_runs_once_per_utc_date(tmp_path: Path):
+    """run_daily_jobs_once is idempotent within a UTC day, refires after rollover."""
+    from monitoring import daily_scheduler
+
+    daily_scheduler._last_run_utc_date = ""  # reset module global
+    with patch("monitoring.momo_daily_pnl_autopsy.run_daily_autopsy_for_date") as mock_autopsy, \
+         patch("monitoring.paper_forward_tracker.record_paper_forward_day_for_active_proposals") as mock_pf, \
+         patch("core.risk_controls._ensure_today_state") as mock_risk:
+        mock_autopsy.return_value = {"date_utc": "2026-01-01"}
+        mock_pf.return_value = {"updated": 0}
+        mock_risk.return_value = SimpleNamespace(utc_date="2026-01-01")
+
+        first = daily_scheduler.run_daily_jobs_once()
+        assert first.get("skipped") is not True
+
+        # Second call same day -> skipped
+        second = daily_scheduler.run_daily_jobs_once()
+        assert second.get("skipped") is True
+
+        # force=True bypasses the per-day guard
+        forced = daily_scheduler.run_daily_jobs_once(force=True)
+        assert forced.get("skipped") is not True
+
+
+def test_risk_state_persists_across_simulated_restart(tmp_path: Path):
+    """Module global resets, but DB hydrate restores today's state."""
+    from core import risk_controls as rcg
+
+    db_file = tmp_path / "risk.sqlite"
+    with patch.object(rcg, "_db_path", return_value=str(db_file)):
+        rcg.reset_daily_state(equity=100)
+        rcg.update_risk_state(equity=100, realized_pnl_usd=-2.5)
+        before = rcg.get_risk_state()
+        assert before.daily_realized_loss_usd > 0
+        # Simulate process restart by clearing the module global state
+        rcg._runtime_state = rcg.RiskState()
+        after = rcg.get_risk_state()
+        assert after.daily_realized_loss_usd == before.daily_realized_loss_usd
+        assert after.utc_date == before.utc_date
+
+
+def test_risk_gate_fails_closed_on_internal_exception():
+    """Any exception inside evaluate_risk_gate must block, not silently pass."""
+    from core import risk_controls as rcg
+
+    with patch.object(rcg, "_ensure_today_state", side_effect=RuntimeError("boom")):
+        ok, code, ev = rcg.evaluate_risk_gate(side="buy", notional=10, equity=100, rt={})
+    assert not ok
+    assert code == rc.RISK_GATE_ERROR
+    assert ev.get("evaluate_risk_gate") is False
+    assert "boom" in ev.get("exception_message", "")
+
+
+def test_paper_forward_day_for_active_proposals_no_active(tmp_path: Path):
+    """No active proposals -> noop summary, never raises."""
+    with patch("core.momo_brain._brain_db_path", return_value=tmp_path / "brain_pf.sqlite"):
+        from core.momo_brain import _conn
+        from monitoring.paper_forward_tracker import record_paper_forward_day_for_active_proposals
+
+        _conn()  # bootstrap schema
+        out = record_paper_forward_day_for_active_proposals()
+    assert out.get("updated") == 0
+
+
+def test_idempotency_recorded_only_after_all_gates_pass():
+    """Buy that fails BP check must NOT leave a residual idempotency record."""
+    from core import order_idempotency as oid
+
+    with patch("execution.order_preflight.check_market_session", return_value=(True, "open", "")):
+        before = oid._dedup_cache.copy()
+        pf = run_preflight_checks(
+            symbol="TESTA",
+            asset_class="stock",
+            side="buy",
+            qty=1,
+            notional=10.0,
+            price=10.0,
+            buying_power=0.0,  # forces BP failure
+            session_state=SESSION_REGULAR,
+        )
+        assert not pf.allowed
+        # No new ids recorded for this rejected buy
+        added = {k: v for k, v in oid._dedup_cache.items() if k not in before}
+        assert not added, f"Idempotency leaked on rejected buy: {added}"
+
+
+def test_ac30_passes_when_execute_orders_off_regardless_of_timeframe():
+    """AC30 must PASS when execute_orders=0, regardless of timeframe (safe state)."""
+    from tools.live_grade_acceptance_audit import check_all
+
+    with patch("core.paper_trading_path.load_runtime_config_for_worker") as mock_rt:
+        mock_rt.return_value = {"crypto_fast_loop_execute_orders": 0, "crypto_fast_loop_timeframe": "daily"}
+        items = check_all({"canonical_truth": {}, "simple_status": {}, "bundle": {}, "mission_control": {}})
+    ac30 = next((it for it in items if it["item_id"] == "AC30"), None)
+    assert ac30 is not None
+    assert ac30["status"] == "PASS"

@@ -5800,6 +5800,20 @@ def run_worker_forever() -> None:
                 logger.info("[crypto_fast_loop] background thread started (paper-only until live readiness)")
             except Exception:
                 logger.debug("[crypto_fast_loop] thread start skipped", exc_info=True)
+            try:
+                from data_providers.alpaca_activities import start_activities_poller
+
+                start_activities_poller(enabled=True)
+                logger.info("[alpaca_activities] poller started (fills feed fill_state_machine and post-trade reviews)")
+            except Exception:
+                logger.debug("[alpaca_activities] poller start skipped", exc_info=True)
+            try:
+                from monitoring.daily_scheduler import start_daily_tick_thread
+
+                start_daily_tick_thread(stop_event=_stop)
+                logger.info("[daily_scheduler] tick thread started (autopsy + paper-forward day record)")
+            except Exception:
+                logger.debug("[daily_scheduler] start skipped", exc_info=True)
             while not _stop.is_set():
                 if _halted.is_set():
                     raise RuntimeError("worker halted flag set; forcing restart")

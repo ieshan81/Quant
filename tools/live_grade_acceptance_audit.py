@@ -616,16 +616,28 @@ def check_all(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         items.append(_item("AC29", "risk_controls", "FAIL", evidence={"error": str(exc)[:80]}))
     exec_orders = bool(rt_cfg.get("crypto_fast_loop_execute_orders"))
     tf = str(rt_cfg.get("crypto_fast_loop_timeframe") or "daily").lower()
+    # When execute_orders=0 the configuration is safe regardless of timeframe.
+    # When execute_orders=1 we require intraday bars or the gate must fail.
     if exec_orders:
         ac30_status = "PASS" if tf == "intraday" else "FAIL"
+        ac30_evidence = {
+            "execute_orders": exec_orders,
+            "timeframe": tf,
+            "note": "execute_orders=1 requires intraday timeframe",
+        }
     else:
-        ac30_status = "PARTIAL" if tf == "daily" else "PASS"
+        ac30_status = "PASS"
+        ac30_evidence = {
+            "execute_orders": exec_orders,
+            "timeframe": tf,
+            "note": "execute_orders=0 — safe regardless of timeframe",
+        }
     items.append(
         _item(
             "AC30",
             "fast-loop intraday required for execution",
             ac30_status,
-            evidence={"execute_orders": exec_orders, "timeframe": tf},
+            evidence=ac30_evidence,
             failing_module="execution/crypto_fast_loop.py",
         )
     )

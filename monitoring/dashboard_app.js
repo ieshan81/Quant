@@ -1069,7 +1069,9 @@
         equity_total: p.equity != null ? p.equity : p.equity_total
       };
     }).filter(function (r) {
-      return isFiniteNum(r.equity_total) && Number(r.equity_total) > 0;
+      // Allow zero equity so a fresh account renders a flat baseline instead
+      // of vanishing into a black canvas. Negatives are still excluded.
+      return isFiniteNum(r.equity_total) && Number(r.equity_total) >= 0;
     });
   }
 
@@ -2676,6 +2678,21 @@
     });
   }
 
+  // Persisted ops/logs level filter — reads from the level <select> if present.
+  var _opsLogLevel = "";
+  function _readOpsLogLevel() {
+    var sel = document.getElementById("opsLogLevelFilter");
+    var v = sel ? String(sel.value || "").trim().toLowerCase() : "";
+    _opsLogLevel = v && v !== "all" ? v : "";
+    return _opsLogLevel;
+  }
+  function _opsLogsUrl(limit) {
+    var lvl = _readOpsLogLevel();
+    var url = "/api/ops/logs?limit=" + (limit || 50);
+    if (lvl) url += "&level=" + encodeURIComponent(lvl);
+    return url;
+  }
+
   function loadOpsTab() {
     Promise.all([
       fetch("/api/ops/status", { cache: "no-store" }).then(function (r) {
@@ -2686,7 +2703,7 @@
         if (!r.ok) throw new Error("ops/resources HTTP " + r.status);
         return r.json();
       }),
-      fetch("/api/ops/logs?limit=50", { cache: "no-store" }).then(function (r) {
+      fetch(_opsLogsUrl(50), { cache: "no-store" }).then(function (r) {
         if (!r.ok) throw new Error("ops/logs HTTP " + r.status);
         return r.json();
       })
@@ -2757,6 +2774,25 @@
       renderOpsLogsTable(_opsLogsCache);
       if (!_opsLogsCache.length) {
         _opsStamp("No ops log rows yet — worker cycle events will appear after the next trading cycle.");
+      }
+      // Wire the level filter once so changes re-fetch with ?level=
+      var _lvlSel = document.getElementById("opsLogLevelFilter");
+      if (_lvlSel && !_lvlSel._opsLevelWired) {
+        _lvlSel._opsLevelWired = true;
+        _lvlSel.addEventListener("change", function () {
+          fetch(_opsLogsUrl(50), { cache: "no-store" })
+            .then(function (r) { return r.ok ? r.json() : { logs: [] }; })
+            .then(function (p) {
+              _opsLogsCache = (p && p.logs) || [];
+              renderOpsLogsTable(_opsLogsCache);
+              var lcEl = document.getElementById("opsLogCount");
+              if (lcEl) lcEl.textContent = String(_opsLogsCache.length);
+              if (!_opsLogsCache.length && _readOpsLogLevel()) {
+                _opsStamp("No '" + _opsLogLevel + "'-level rows in the recent window.");
+              }
+            })
+            .catch(function () {});
+        });
       }
       loadBrokerTransitionWizard();
       _opsLoaded = true;

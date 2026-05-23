@@ -1640,7 +1640,19 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" id="btnOpsResetRuntime" class="dash-action-btn">Reset Runtime (legacy)</button>
       </div>
       <div class="card">
-        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Recent ops logs</h2>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px;">
+          <h2 style="margin:0;font-size:1rem;font-weight:600;">Recent ops logs</h2>
+          <label style="font-size:12px;color:#9ca3af;">
+            Level:
+            <select id="opsLogLevelFilter" style="margin-left:6px;background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:4px;padding:2px 6px;font-size:12px;">
+              <option value="all">All</option>
+              <option value="critical">Critical</option>
+              <option value="error">Error</option>
+              <option value="warning">Warning</option>
+              <option value="info">Info</option>
+            </select>
+          </label>
+        </div>
         <div class="ops-log-preview">
           <table class="data" id="tblOpsLogs"><thead><tr>
             <th>Time</th><th>Level</th><th>Type</th><th>Message</th>

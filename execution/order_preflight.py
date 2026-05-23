@@ -300,31 +300,30 @@ def run_preflight_checks(
             **common,
         )
 
-    # 5b. Buy idempotency (all asset classes)
+    # 5b. Buy idempotency CHECK (record happens after Step 8 passes)
+    _idem_cid: str | None = None
     if s == "buy" and notional > 0:
         try:
             from core.order_idempotency import (
                 generate_client_order_id,
                 is_duplicate,
-                record,
             )
 
             meta = dict(extra_meta or {})
-            cid = meta.get("client_order_id") or generate_client_order_id(
+            _idem_cid = meta.get("client_order_id") or generate_client_order_id(
                 symbol=sym,
                 side=s,
                 qty=qty,
                 notional=notional,
-                cycle_id=str(meta.get("cycle_id") or config_snapshot.get("cycle_id") or ""),
+                cycle_id=str(meta.get("cycle_id") or (config_snapshot or {}).get("cycle_id") or ""),
             )
-            common["meta"] = {**meta, "client_order_id": cid}
-            if is_duplicate(cid):
+            common["meta"] = {**meta, "client_order_id": _idem_cid}
+            if is_duplicate(_idem_cid):
                 return OrderPreflightResult.blocked(
                     rc.ORDER_DUPLICATE_SUPPRESSED,
                     f"{sym}: Duplicate buy suppressed (idempotency)",
                     **common,
                 )
-            record(cid)
         except Exception:
             pass
 
@@ -416,7 +415,7 @@ def run_preflight_checks(
             **common,
         )
 
-    # 8. Risk controls gate
+    # 8. Risk controls gate — FAIL CLOSED on internal error
     if s == "buy" and notional > 0:
         try:
             from core.risk_controls import evaluate_risk_gate
@@ -431,7 +430,8 @@ def run_preflight_checks(
 
                 rt_snap = load_runtime_config_for_worker()
             except Exception:
-                pass
+                # Config load failure must not silently bypass risk gates.
+                rt_snap = dict(config_snapshot or {})
             ok_risk, risk_code, risk_ev = evaluate_risk_gate(
                 side=s,
                 notional=notional,
@@ -445,6 +445,24 @@ def run_preflight_checks(
                     f"{sym}: Risk gate — {risk_code}",
                     **common,
                 )
+        except Exception as exc:
+            # FAIL CLOSED: any unhandled exception in the risk gate blocks the order.
+            common["meta"] = {
+                **(common.get("meta") or {}),
+                "risk_gate_exception": str(exc)[:200],
+            }
+            return OrderPreflightResult.blocked(
+                rc.RISK_GATE_ERROR,
+                f"{sym}: Risk gate error — fail-closed ({type(exc).__name__})",
+                **common,
+            )
+
+    # 5b-commit: record idempotency only AFTER all gates approved.
+    if _idem_cid and s == "buy" and notional > 0:
+        try:
+            from core.order_idempotency import record as _idem_record
+
+            _idem_record(_idem_cid)
         except Exception:
             pass
 
