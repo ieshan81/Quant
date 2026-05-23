@@ -204,17 +204,21 @@ def answer_momo_question(
     _fast_path = include.get("momo_memory") is False
     if include.get("mission_control", True):
         try:
-            from monitoring.mission_control_cache import get_mission_control_cached
+            from monitoring.mission_control_cache import (
+                get_mission_control_cached,
+                get_cached_payload_only,
+            )
             from monitoring.mission_control_api import build_mission_control_summary_fast
 
             if _fast_path:
-                # Fast path: never block on a cold cache. 0.15s minimum guarantees the
-                # ThreadPoolExecutor returns within ~150ms; on miss we use minimal fallback.
-                ctx["mission_control"] = get_mission_control_cached(
-                    build_mission_control_summary_fast,
-                    ttl_sec=8.0,
-                    build_timeout_sec=0.15,
-                )
+                # Fast path: ONLY use existing cache. Never call builder, never call minimal
+                # fallback. Cache will be warm because /api/mission-control/summary fires
+                # frequently. If cold, MoMo answers from question keywords / refusal / growth math.
+                cached = get_cached_payload_only()
+                if cached is not None:
+                    ctx["mission_control"] = cached
+                else:
+                    missing.append("mission_control: cache_cold (fast path)")
             else:
                 ctx["mission_control"] = get_mission_control_cached(
                     build_mission_control_summary_fast,

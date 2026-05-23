@@ -36,6 +36,20 @@ def _minimal_fallback(err: str | None) -> dict[str, Any]:
     return build_mission_control_summary_minimal(degraded_reason=err)
 
 
+def get_cached_payload_only() -> dict[str, Any] | None:
+    """Return the cached MC payload without ever calling the builder. None if no cache."""
+    with _LOCK:
+        payload = _CACHE.get("payload")
+        if payload is None:
+            return None
+        age = time.time() - float(_CACHE.get("cached_at") or 0)
+        out = dict(payload)
+        out["cache_age_seconds"] = round(age, 2)
+        out["cache_hit"] = True
+        out["stale"] = age > DEFAULT_TTL_SEC
+        return out
+
+
 def get_mission_control_cached(
     builder: Callable[[], dict[str, Any]],
     *,
