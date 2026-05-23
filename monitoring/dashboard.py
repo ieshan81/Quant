@@ -2781,16 +2781,15 @@ def create_app() -> Flask:
     @app.get("/api/ops/storage-audit")
     def api_ops_storage_audit() -> Response:
         try:
-            import os, sys
+            import importlib.util, os
             from pathlib import Path as _P
 
             _root = _P(__file__).resolve().parents[1]
-            if str(_root) not in sys.path:
-                sys.path.insert(0, str(_root))
-            from tools.storage_audit import audit
-
             data_dir = os.environ.get("DATA_DIR") or os.environ.get("QUANTBOT_PERSIST_DIR") or str(_root / "data")
-            return Response(json.dumps(audit(data_dir), default=str), mimetype="application/json")
+            spec = importlib.util.spec_from_file_location("_storage_audit_mod", _root / "tools" / "storage_audit.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return Response(json.dumps(mod.audit(data_dir), default=str), mimetype="application/json")
         except Exception as exc:
             return Response(
                 json.dumps({"ok": False, "error": str(exc)[:200], "dbs": [], "corrupt_files": []}, default=str),
@@ -2814,6 +2813,12 @@ def create_app() -> Flask:
     def api_fresh_start_preview() -> Response:
         out: dict[str, Any] = {"ok": True}
         try:
+            import sys
+            from pathlib import Path as _P
+
+            _root = _P(__file__).resolve().parents[1]
+            if str(_root) not in sys.path:
+                sys.path.insert(0, str(_root))
             from tools.fresh_start_runtime import preview
             out.update(preview({}))
         except Exception as exc:
@@ -2830,6 +2835,12 @@ def create_app() -> Flask:
 
     @app.post("/api/ops/fresh-start/apply")
     def api_fresh_start_apply() -> Any:
+        import sys
+        from pathlib import Path as _P
+
+        _root = _P(__file__).resolve().parents[1]
+        if str(_root) not in sys.path:
+            sys.path.insert(0, str(_root))
         from monitoring.dashboard_auth import admin_required, fresh_start_enabled
         from tools.fresh_start_runtime import apply as fs_apply
         from tools.fresh_start_runtime import REQUIRED_PHRASE
@@ -2844,9 +2855,18 @@ def create_app() -> Flask:
 
     @app.get("/api/ops/fresh-start/history")
     def api_fresh_start_history() -> Response:
-        from tools.fresh_start_runtime import history
+        try:
+            import sys
+            from pathlib import Path as _P
 
-        return Response(json.dumps({"history": history()}, default=str), mimetype="application/json")
+            _root = _P(__file__).resolve().parents[1]
+            if str(_root) not in sys.path:
+                sys.path.insert(0, str(_root))
+            from tools.fresh_start_runtime import history
+
+            return Response(json.dumps({"history": history()}, default=str), mimetype="application/json")
+        except Exception as exc:
+            return Response(json.dumps({"ok": False, "error": str(exc)[:200], "history": []}), mimetype="application/json")
 
     @app.get("/api/monitoring/mode")
     def api_monitoring_mode() -> Response:
