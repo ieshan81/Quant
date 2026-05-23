@@ -2807,15 +2807,21 @@ def create_app() -> Flask:
 
     @app.get("/api/ops/fresh-start/preview")
     def api_fresh_start_preview() -> Response:
-        from tools.fresh_start_runtime import preview
-
-        opts = {}
+        out: dict[str, Any] = {"ok": True}
         try:
-            for k, v in (request.args or {}).items():
-                opts[str(k)] = v in ("1", "true", "True", "yes")
-        except Exception:
-            opts = {}
-        return Response(json.dumps(preview(opts), default=str), mimetype="application/json")
+            from tools.fresh_start_runtime import preview
+            out.update(preview({}))
+        except Exception as exc:
+            out = {
+                "ok": False,
+                "error": str(exc)[:200],
+                "required_phrase": "FRESH START PAPER RUNTIME",
+            }
+        try:
+            body = json.dumps(out, default=str)
+        except Exception as exc:
+            body = json.dumps({"ok": False, "error": f"json_encode_failed: {exc}", "required_phrase": "FRESH START PAPER RUNTIME"})
+        return Response(body, mimetype="application/json", status=200)
 
     @app.post("/api/ops/fresh-start/apply")
     def api_fresh_start_apply() -> Any:
