@@ -207,12 +207,20 @@ def answer_momo_question(
             from monitoring.mission_control_cache import get_mission_control_cached
             from monitoring.mission_control_api import build_mission_control_summary_fast
 
-            # Fast path: tight 1.5s build timeout so missing cache cannot hang the request.
-            ctx["mission_control"] = get_mission_control_cached(
-                build_mission_control_summary_fast,
-                ttl_sec=8.0,
-                build_timeout_sec=1.5 if _fast_path else 3.0,
-            )
+            if _fast_path:
+                # Fast path: never block on a cold cache. 0.15s minimum guarantees the
+                # ThreadPoolExecutor returns within ~150ms; on miss we use minimal fallback.
+                ctx["mission_control"] = get_mission_control_cached(
+                    build_mission_control_summary_fast,
+                    ttl_sec=8.0,
+                    build_timeout_sec=0.15,
+                )
+            else:
+                ctx["mission_control"] = get_mission_control_cached(
+                    build_mission_control_summary_fast,
+                    ttl_sec=8.0,
+                    build_timeout_sec=3.0,
+                )
         except Exception as exc:
             missing.append(f"mission_control: {exc}")
 
