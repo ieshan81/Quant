@@ -315,24 +315,49 @@ def answer_momo_question(
     if missing and "context unavailable" not in answer.lower():
         answer += "\n\n(Context gaps: " + "; ".join(missing[:4]) + ")"
 
-    # Build structured graphical response
-    blockers = list((canonical.get("live_readiness_state") or {}).get("architecture_blockers") or [])
+    # Build structured graphical response — labels are humanized via operator_language.
+    from monitoring.operator_language import translate
+
+    blockers_raw = list((canonical.get("live_readiness_state") or {}).get("architecture_blockers") or [])
+    if not blockers_raw:
+        mc_ct = ((ctx.get("mission_control") or {}).get("canonical_truth") or {})
+        blockers_raw = list((mc_ct.get("live_readiness_state") or {}).get("architecture_blockers") or [])
+    blockers_friendly = [translate(b)["label"] for b in blockers_raw[:10]]
     active_positions = list((canonical.get("position_state") or {}).get("active_positions") or [])
+    if not active_positions:
+        mc = ctx.get("mission_control") or {}
+        ct = mc.get("canonical_truth") or {}
+        ps = ct.get("position_state") or {}
+        active_positions = list(ps.get("active_positions") or [])
     cards = []
     if active_positions:
         cards.append({
             "title": "Active Positions",
             "kind": "positions",
-            "items": [{"symbol": p.get("symbol"), "net_qty": p.get("net_qty"), "asset_class": p.get("asset_class")} for p in active_positions[:6]],
+            "items": [
+                {
+                    "symbol": p.get("symbol"),
+                    "qty": p.get("net_qty"),
+                    "asset": (p.get("asset_class") or "").replace("_", " ").title(),
+                }
+                for p in active_positions[:6]
+            ],
         })
-    if blockers:
-        cards.append({"title": "Active Blockers", "kind": "blockers", "items": blockers[:8]})
+    if blockers_friendly:
+        cards.append({"title": "Active Blockers", "kind": "blockers", "items": blockers_friendly})
+    # Memory graph compact facts
+    if (ctx.get("memory_graph") or {}).get("facts"):
+        cards.append({
+            "title": "Memory Facts",
+            "kind": "memory",
+            "items": [f.get("title") or f.get("summary") for f in (ctx["memory_graph"]["facts"] or [])[:8] if f.get("title") or f.get("summary")],
+        })
     structured = build_structured_response(
         summary=answer[:600],
         confidence=0.6 if not missing else 0.35,
         cards=cards,
-        blockers=blockers,
-        raw={"missing": missing, "provider": provider},
+        blockers=blockers_friendly,
+        raw={"missing": missing, "provider": provider, "blockers_raw": blockers_raw},
     )
 
     return {
@@ -351,6 +376,60 @@ def answer_momo_question(
     }
 
 
+def _try_fallback_sources(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Walk the fallback chain. Populate ctx['mission_control'] etc. if any source produces data."""
+    if ctx.get("mission_control"):
+        return ctx
+    # 1. simple-status (always cheap)
+    try:
+        from monitoring.simple_status import build_simple_worker_status
+
+        ss = build_simple_worker_status()
+        if ss:
+            ctx["simple_status"] = ss
+            # Build a tiny mission_control-equivalent so deterministic answer has data
+            ctx.setdefault("mission_control", {
+                "ok": True,
+                "account": ss.get("account") or {},
+                "trading": ss.get("trading") or {},
+                "worker": ss.get("worker") or {},
+                "canonical_truth": ss.get("canonical_truth_summary") or {},
+                "source": "fallback_simple_status",
+            })
+    except Exception:
+        pass
+    # 2. connection status
+    try:
+        from monitoring.connection_profiles import list_profiles
+
+        ctx["connections"] = list_profiles()
+    except Exception:
+        pass
+    # 3. growth projection
+    try:
+        from core.growth_projection import build_growth_projection_output
+
+        ctx["growth_projection"] = build_growth_projection_output()
+    except Exception:
+        pass
+    # 4. storage audit
+    try:
+        from tools.storage_audit import audit
+        import os as _os
+
+        ctx["storage"] = audit(_os.environ.get("DATA_DIR") or "data")
+    except Exception:
+        pass
+    # 5. MoMo memory graph compact context
+    try:
+        from core.momo_memory_graph import fetch_compact_context
+
+        ctx["memory_graph"] = fetch_compact_context(max_nodes=20)
+    except Exception:
+        pass
+    return ctx
+
+
 def _deterministic_answer(
     question: str,
     ctx: dict[str, Any],
@@ -360,7 +439,10 @@ def _deterministic_answer(
     brain: dict[str, Any],
     order_flow: dict[str, Any],
 ) -> str:
+    # DEEP FALLBACK: try every cheap data source before giving up.
     if not canonical and not ctx.get("mission_control"):
+        ctx = _try_fallback_sources(ctx)
+    if not canonical and not ctx.get("mission_control") and not ctx.get("simple_status") and not ctx.get("memory_graph"):
         return "Context unavailable — cannot answer safely. Refresh Mission Control and retry."
 
     ql = question.lower()

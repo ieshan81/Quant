@@ -12,6 +12,23 @@ def _now() -> str:
 
 
 def write_post_trade_review_from_fill(st: Any, activity: dict[str, Any]) -> dict[str, Any]:
+    # Memory graph hook: record trade review + critical note when MoMo config produced loss.
+    try:
+        from core.momo_memory_graph import record_trade_review
+
+        pnl = float(getattr(st, "total_fees", 0) or 0)  # placeholder until full P&L wired
+        record_trade_review(
+            broker_order_id=str(getattr(st, "broker_order_id", "") or activity.get("order_id") or ""),
+            symbol=str(getattr(st, "symbol", "TEST") or "TEST"),
+            side=str(getattr(st, "side", "buy") or "buy"),
+            pnl_usd=pnl,
+            exit_reason=str(activity.get("activity_type") or "FILL"),
+            signal=activity,
+            momo_recommended_config=None,
+        )
+    except Exception:
+        pass
+
     from core.momo_brain import _conn
 
     row = {

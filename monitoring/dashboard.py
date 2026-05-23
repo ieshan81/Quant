@@ -2902,6 +2902,137 @@ def create_app() -> Flask:
         except Exception as exc:
             return Response(json.dumps({"ok": False, "error": str(exc)[:200], "history": []}), mimetype="application/json")
 
+    @app.get("/api/momo/memory-graph")
+    def api_momo_memory_graph() -> Response:
+        try:
+            import importlib.util, sys
+            from pathlib import Path as _P
+
+            _root = _P(__file__).resolve().parents[1]
+            if str(_root) not in sys.path:
+                sys.path.insert(0, str(_root))
+            from core.momo_memory_graph import fetch_graph
+
+            node_type = request.args.get("type")
+            status = request.args.get("status")
+            limit = int(request.args.get("limit", 200))
+            return Response(json.dumps(fetch_graph(node_type=node_type, status=status, limit=limit), default=str), mimetype="application/json")
+        except Exception as exc:
+            return Response(json.dumps({"ok": False, "error": str(exc)[:200], "nodes": [], "edges": []}), mimetype="application/json")
+
+    @app.post("/api/momo/memory-graph/seed")
+    def api_momo_memory_graph_seed() -> Any:
+        try:
+            from core.momo_memory_graph import seed_clean_boot_memory
+
+            return jsonify(seed_clean_boot_memory())
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)[:200]})
+
+    @app.get("/api/momo/critical-notes")
+    def api_momo_critical_notes() -> Response:
+        try:
+            from core.momo_memory_graph import fetch_critical_notes
+
+            return Response(json.dumps({"notes": fetch_critical_notes(limit=int(request.args.get("limit", 50)))}, default=str), mimetype="application/json")
+        except Exception as exc:
+            return Response(json.dumps({"ok": False, "error": str(exc)[:200], "notes": []}), mimetype="application/json")
+
+    @app.get("/api/momo/config-proposals")
+    def api_momo_config_proposals() -> Response:
+        try:
+            from core.momo_config_workflow import list_proposals, ALLOWLIST
+
+            return Response(
+                json.dumps(
+                    {
+                        "proposals": list_proposals(limit=int(request.args.get("limit", 50))),
+                        "allowlist": {
+                            k: {"label": v["label"], "min": v["min"], "max": v["max"], "kind": v["kind"]}
+                            for k, v in ALLOWLIST.items()
+                        },
+                    },
+                    default=str,
+                ),
+                mimetype="application/json",
+            )
+        except Exception as exc:
+            return Response(json.dumps({"ok": False, "error": str(exc)[:200], "proposals": []}), mimetype="application/json")
+
+    @app.post("/api/momo/config-proposals/propose")
+    def api_momo_propose() -> Any:
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            from core.momo_config_workflow import propose_config_change
+
+            return jsonify(
+                propose_config_change(
+                    operator_key=str(body.get("operator_key") or ""),
+                    new_value=body.get("new_value"),
+                    reason=str(body.get("reason") or ""),
+                    evidence=body.get("evidence") or {},
+                    rollback_plan=str(body.get("rollback_plan") or "revert to previous value"),
+                    risk_impact=str(body.get("risk_impact") or "low"),
+                )
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)[:200]})
+
+    @app.post("/api/momo/config-proposals/approve")
+    def api_momo_approve() -> Any:
+        from monitoring.dashboard_auth import admin_required
+
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            from core.momo_config_workflow import approve_and_apply
+
+            return jsonify(
+                approve_and_apply(
+                    proposal_key=str(body.get("proposal_key") or ""),
+                    operator_note=str(body.get("note") or ""),
+                )
+            )
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)[:200]})
+
+    @app.post("/api/momo/config-proposals/reject")
+    def api_momo_reject() -> Any:
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            from core.momo_config_workflow import reject_proposal
+
+            return jsonify(reject_proposal(proposal_key=str(body.get("proposal_key") or ""), operator_note=str(body.get("note") or "")))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)[:200]})
+
+    @app.get("/api/backtest/momo-runs")
+    def api_momo_backtest_runs() -> Response:
+        try:
+            from core.backtest_index import list_runs
+
+            return Response(json.dumps({"runs": list_runs(limit=int(request.args.get("limit", 50)))}, default=str), mimetype="application/json")
+        except Exception as exc:
+            return Response(json.dumps({"ok": False, "error": str(exc)[:200], "runs": []}), mimetype="application/json")
+
+    @app.get("/api/signals/enrichment")
+    def api_signals_enrichment() -> Response:
+        try:
+            from signals.signal_enrichment_registry import list_signals
+
+            return Response(json.dumps({"signals": list_signals()}, default=str), mimetype="application/json")
+        except Exception as exc:
+            return Response(json.dumps({"ok": False, "error": str(exc)[:200], "signals": []}), mimetype="application/json")
+
+    @app.get("/api/labels/translate")
+    def api_labels_translate() -> Response:
+        try:
+            from monitoring.operator_language import translate
+
+            code = request.args.get("code") or ""
+            return Response(json.dumps(translate(code), default=str), mimetype="application/json")
+        except Exception as exc:
+            return Response(json.dumps({"ok": False, "error": str(exc)[:200]}), mimetype="application/json")
+
     @app.get("/api/monitoring/mode")
     def api_monitoring_mode() -> Response:
         from core.canonical_state import build_canonical_state

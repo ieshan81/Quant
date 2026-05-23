@@ -1038,6 +1038,93 @@ def _final_refactor_items(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         ))
     except Exception as exc:
         items.append(_item("AC54", "momo fast path", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC55 — operator language mapper present and translates known codes
+    try:
+        from monitoring.operator_language import translate, looks_like_raw_code
+
+        sample = translate("BROKER_LOCAL_MISMATCH")
+        ac55_ok = "Broker" in sample["label"] and not looks_like_raw_code(sample["label"])
+        items.append(_item(
+            "AC55",
+            "operator language mapper translates raw codes",
+            "PASS" if ac55_ok else "FAIL",
+            evidence={"sample_label": sample["label"]},
+            failing_module="monitoring/operator_language.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC55", "operator language", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC56 — MoMo memory brain graph schema present
+    try:
+        from core.momo_memory_graph import fetch_graph
+
+        g = fetch_graph(limit=5)
+        items.append(_item(
+            "AC56",
+            "MoMo memory brain graph schema operational",
+            "PASS",
+            evidence={"current_node_count": g["node_count"], "edge_count": g["edge_count"]},
+            failing_module="core/momo_memory_graph.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC56", "memory graph", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC57 — MoMo config proposal allowlist denies forbidden keys
+    try:
+        from core.momo_config_workflow import validate_proposal
+
+        bad, _ = validate_proposal("LIVE_TRADING_ENABLED", True)
+        good, _ = validate_proposal("crypto_signal_threshold", 0.10)
+        items.append(_item(
+            "AC57",
+            "config proposal allowlist blocks forbidden + permits allowed",
+            "PASS" if (not bad and good) else "FAIL",
+            evidence={"forbidden_blocked": not bad, "allowed_passed": good},
+            failing_module="core/momo_config_workflow.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC57", "config workflow", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC58 — signal enrichment registry research-only by default
+    try:
+        from signals.signal_enrichment_registry import list_signals, can_trade_with_signal
+
+        all_signals = list_signals()
+        ok, reason = can_trade_with_signal("news_sentiment_finbert")
+        items.append(_item(
+            "AC58",
+            "untested signals cannot trade (research-only)",
+            "PASS" if (not ok and "research_only" in reason) else "FAIL",
+            evidence={"finbert_blocked": not ok, "reason": reason, "signal_count": len(all_signals)},
+            failing_module="signals/signal_enrichment_registry.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC58", "signal registry", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC59 — backtest index promote gates work
+    try:
+        from core.backtest_index import promote_run
+
+        gated = promote_run(run_id="nonexistent")
+        items.append(_item(
+            "AC59",
+            "backtest promotion gates evidence",
+            "PASS" if gated.get("ok") is False else "FAIL",
+            evidence={"error_on_missing_run": gated.get("error")},
+            failing_module="core/backtest_index.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC59", "backtest index", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC60 — Graphify path sanitization tool exists
+    try:
+        from tools.sanitize_graphify_paths import sanitize_text
+
+        out, _ = sanitize_text("C:/Users/operator/Desktop/Quant/x.py", repo_root=Path("/tmp"))
+        items.append(_item(
+            "AC60",
+            "Graphify path sanitization tool present",
+            "PASS" if "Desktop" not in out else "FAIL",
+            evidence={"sample_after": out},
+            failing_module="tools/sanitize_graphify_paths.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC60", "graphify sanitize", "FAIL", evidence={"error": str(exc)[:120]}))
     return items
 
 
