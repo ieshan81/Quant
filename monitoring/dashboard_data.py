@@ -411,7 +411,7 @@ def fetch_open_positions_from_trades(conn: sqlite3.Connection | None = None) -> 
         FROM trades
         WHERE status = 'filled'
         GROUP BY asset_class, symbol
-        HAVING ABS(net_qty) > 1e-8
+        HAVING net_qty > 1e-8
         ORDER BY symbol
         """
     )

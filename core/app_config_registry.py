@@ -302,11 +302,39 @@ def export_railway_env_template() -> str:
     return "\n".join(lines)
 
 
-def apply_config_updates(updates: list[dict[str, Any]]) -> dict[str, Any]:
+def apply_config_updates(
+    updates: list[dict[str, Any]],
+    *,
+    operator_confirm: str | None = None,
+) -> dict[str, Any]:
     applied: list[str] = []
     errors: list[str] = []
     for item in updates:
         key = str(item.get("key", "")).strip()
+        try:
+            from monitoring.config_safety import verify_dangerous_update
+
+            ok, msg = verify_dangerous_update(
+                key=key,
+                value=item.get("value"),
+                header_token=operator_confirm or item.get("operator_confirm"),
+            )
+            if not ok:
+                errors.append(msg)
+                try:
+                    from monitoring.ops_log_store import append_ops_event
+
+                    append_ops_event(
+                        event_type="DANGEROUS_CONFIG_BLOCKED",
+                        level="warning",
+                        message=msg[:200],
+                        evidence={"key": key, "value": item.get("value")},
+                    )
+                except Exception:
+                    pass
+                continue
+        except Exception:
+            pass
         ent = _REGISTRY.get(key)
         if not ent or not ent.editable:
             errors.append(f"{key}: not editable")

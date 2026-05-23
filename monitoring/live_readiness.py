@@ -54,11 +54,21 @@ def build_live_readiness(
     ]
     failed = [k for k, v in checks.items() if not v]
     passed = [k for k, v in checks.items() if v]
+    LIVE_TRADING_HARDCODE_LOCK = True  # SAFETY: False only after operator approval + paper-forward pass
+
     all_auto = len(failed) == 0
-    status = "approved" if all_auto and False else ("blocked" if failed else "pending_operator")
+    if failed:
+        status = "blocked"
+    elif LIVE_TRADING_HARDCODE_LOCK:
+        status = "pending_operator"
+    else:
+        status = "approved"
+    live_allowed = all_auto and (not LIVE_TRADING_HARDCODE_LOCK)
+    assert not (live_allowed and LIVE_TRADING_HARDCODE_LOCK), "LIVE_TRADING_HARDCODE_LOCK invariant violated"
     return {
         "status": status,
-        "live_allowed": False,
+        "live_allowed": live_allowed,
+        "LIVE_TRADING_HARDCODE_LOCK": LIVE_TRADING_HARDCODE_LOCK,
         "blockers": failed + required_operator,
         "passed_checks": passed,
         "failed_checks": failed,

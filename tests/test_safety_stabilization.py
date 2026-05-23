@@ -28,16 +28,19 @@ def test_execute_orders_calls_submit_order_with_preflight():
 
     ok_result = SimpleNamespace(ok=True, reason_code="PAPER_FILL", message="ok", broker_order_id="x")
     with patch("execution.crypto_buy_preflight.resolve_crypto_buy_account", return_value={"cash": 1000, "buying_power": 1000}):
-        with patch("execution.order_preflight.run_preflight_checks") as mock_pf:
-            mock_pf.return_value = MagicMock(allowed=True, reason_code="", human_reason="", buying_power_status={"status": "checked"})
-            with patch("execution.fast_loop_execution.submit_order_with_preflight", return_value=ok_result) as mock_submit:
-                ev = attempt_fast_loop_crypto_buy(
-                    symbol="BTC/USD",
-                    notional=50.0,
-                    mid=50000.0,
-                    rt={},
-                    loop_id="t1",
+        with patch("core.order_idempotency.is_duplicate", return_value=False):
+            with patch("execution.order_preflight.run_preflight_checks") as mock_pf:
+                mock_pf.return_value = MagicMock(
+                    allowed=True, reason_code="", human_reason="", buying_power_status={"status": "checked"}
                 )
+                with patch("execution.fast_loop_execution.submit_order_with_preflight", return_value=ok_result) as mock_submit:
+                    ev = attempt_fast_loop_crypto_buy(
+                        symbol="BTC/USD",
+                        notional=50.0,
+                        mid=50000.0,
+                        rt={},
+                        loop_id="t1",
+                    )
     mock_submit.assert_called_once()
     assert ev["broker_submit_attempted"] is True
     assert ev["event"] == "CRYPTO_FAST_ORDER_SUBMITTED"
@@ -86,8 +89,7 @@ def test_stock_buy_blocks_when_buying_power_none():
                 extra_meta={},
             )
     assert not pf.allowed
-    assert pf.buying_power_status.get("status") == "unknown"
-    assert "BUYING_POWER" in pf.reason_code or "UNKNOWN" in pf.reason_code
+    assert pf.reason_code == rc.PREFLIGHT_BLOCKED_BUYING_POWER_UNKNOWN
 
 
 def test_ondo_insufficient_usd_not_short():

@@ -1180,7 +1180,7 @@ _PAGE = """<!DOCTYPE html>
         <div class="grid-metrics" style="margin-bottom:8px;">
           <div class="metric"><div class="lab">Buying power</div><div class="val mono" id="ovBp">—</div></div>
           <div class="metric"><div class="lab">Capital recovery</div><div class="val" id="ovRecovery">—</div></div>
-          <div class="metric"><div class="lab">Fast loop</div><div class="val" id="ovFastLoop">—</div></div>
+          <div class="metric"><div class="lab">Crypto Re-Check Engine</div><div class="val" id="ovFastLoop">—</div></div>
           <div class="metric"><div class="lab">Live trading</div><div class="val" id="ovLiveAllowed">—</div></div>
         </div>
         <p class="mono" style="font-size:12px;margin:0 0 6px;line-height:1.5;" id="ovBlockers">—</p>
@@ -2719,7 +2719,12 @@ def create_app() -> Flask:
         body = request.get_json(force=True, silent=True) or {}
         updates = body.get("updates") or ([body] if body.get("key") else [])
         from core.app_config_registry import apply_config_updates
-        return jsonify(apply_config_updates(updates))
+        return jsonify(
+            apply_config_updates(
+                updates,
+                operator_confirm=request.headers.get("X-Operator-Confirm"),
+            )
+        )
 
     @app.post("/api/config/reset-key")
     def api_config_reset_key() -> Any:
@@ -2733,6 +2738,30 @@ def create_app() -> Flask:
     def api_config_railway_template() -> Response:
         from core.app_config_registry import export_railway_env_template
         return Response(export_railway_env_template(), mimetype="text/plain")
+
+    @app.get("/api/momo/post_trade_reviews")
+    def api_momo_post_trade_reviews() -> Response:
+        from monitoring.momo_post_trade_review import fetch_post_trade_reviews
+
+        return Response(
+            json.dumps({"reviews": fetch_post_trade_reviews(limit=int(request.args.get("limit", 50)))}, default=str),
+            mimetype="application/json",
+        )
+
+    @app.get("/api/momo/daily_pnl_autopsy")
+    def api_momo_daily_pnl_autopsy() -> Response:
+        from monitoring.momo_daily_pnl_autopsy import fetch_daily_autopsy
+
+        return Response(
+            json.dumps({"rows": fetch_daily_autopsy(limit=int(request.args.get("limit", 30)))}, default=str),
+            mimetype="application/json",
+        )
+
+    @app.get("/api/momo/loss_patterns")
+    def api_momo_loss_patterns() -> Response:
+        from monitoring.momo_loss_pattern_detector import detect_loss_patterns
+
+        return Response(json.dumps({"patterns": detect_loss_patterns()}, default=str), mimetype="application/json")
 
     @app.post("/api/momo/ask")
     def api_momo_ask() -> Any:

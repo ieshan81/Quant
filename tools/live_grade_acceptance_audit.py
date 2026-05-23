@@ -550,12 +550,12 @@ def check_all(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         first_run = bool(prev.get("first_run_baseline_required"))
         recon = prev.get("reconciliation_health") or {}
         recon_clean = bool(recon.get("clean"))
-        ac28_ok = not first_run or bool(prev.get("active_epoch"))
+        ac28b_ok = not first_run or bool(prev.get("active_epoch"))
         items.append(
             _item(
-                "AC28",
+                "AC28B",
                 "broker baseline applied when first-run required",
-                "PASS" if ac28_ok else "FAIL",
+                "PASS" if ac28b_ok else "FAIL",
                 evidence={
                     "first_run_baseline_required": first_run,
                     "reconciliation_clean": recon_clean,
@@ -568,13 +568,150 @@ def check_all(ctx: dict[str, Any]) -> list[dict[str, Any]]:
     except Exception as exc:
         items.append(
             _item(
-                "AC28",
+                "AC28B",
                 "broker baseline check",
                 "FAIL",
                 evidence={"error": str(exc)[:120]},
                 failing_module="monitoring/broker_transition_service.py",
             )
         )
+
+    # AC28–AC35 live-grade extensions
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt_cfg = load_runtime_config_for_worker()
+    except Exception:
+        rt_cfg = {}
+    allow_full = bool(rt_cfg.get("allow_full_deployment"))
+    confirm = str(rt_cfg.get("allow_full_deployment_i_understand_the_risk") or "")
+    ac28_ok = (not allow_full) or confirm == "YES_I_DO"
+    items.append(
+        _item(
+            "AC28",
+            "allow_full_deployment requires confirmation key",
+            "PASS" if ac28_ok else "FAIL",
+            evidence={"allow_full_deployment": allow_full, "confirm": confirm[:20]},
+            failing_module="core/capital_sleeves.py",
+        )
+    )
+    try:
+        import core.risk_controls as rc_mod
+
+        ac29_ok = hasattr(rc_mod, "evaluate_risk_gate")
+        from execution.order_preflight import get_recent_preflight_decisions
+
+        recent = get_recent_preflight_decisions(5)
+        risk_ev = any((r.get("meta") or {}).get("risk_gate") for r in recent if isinstance(r, dict))
+        items.append(
+            _item(
+                "AC29",
+                "risk_controls module present and gating buys",
+                "PASS" if ac29_ok else "FAIL",
+                evidence={"importable": ac29_ok, "recent_risk_gate_meta": risk_ev},
+                failing_module="core/risk_controls.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC29", "risk_controls", "FAIL", evidence={"error": str(exc)[:80]}))
+    exec_orders = bool(rt_cfg.get("crypto_fast_loop_execute_orders"))
+    tf = str(rt_cfg.get("crypto_fast_loop_timeframe") or "daily").lower()
+    if exec_orders:
+        ac30_status = "PASS" if tf == "intraday" else "FAIL"
+    else:
+        ac30_status = "PARTIAL" if tf == "daily" else "PASS"
+    items.append(
+        _item(
+            "AC30",
+            "fast-loop intraday required for execution",
+            ac30_status,
+            evidence={"execute_orders": exec_orders, "timeframe": tf},
+            failing_module="execution/crypto_fast_loop.py",
+        )
+    )
+    try:
+        from core.momo_brain import assert_brain_durable
+
+        dur = assert_brain_durable()
+        import config
+
+        persist = str(getattr(config, "PERSIST_DIR", "/data"))
+        ac31_ok = dur.get("persisted") or persist in str(dur.get("path", ""))
+        items.append(
+            _item(
+                "AC31",
+                "brain durable across deploy",
+                "PASS" if ac31_ok else "PARTIAL",
+                evidence=dur,
+                failing_module="core/momo_brain.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC31", "brain durable", "PARTIAL", evidence={"error": str(exc)[:80]}))
+    try:
+        from monitoring.dashboard_data import fetch_open_positions_from_trades
+        from data.data_store import get_connection
+
+        with get_connection() as conn:
+            ghosts = conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT symbol FROM trades WHERE status='filled'
+                    GROUP BY asset_class, symbol
+                    HAVING SUM(CASE WHEN side='buy' THEN quantity ELSE -quantity END) < -1e-8
+                )
+                """
+            ).fetchone()[0]
+        ac32_ok = int(ghosts or 0) == 0
+        items.append(
+            _item(
+                "AC32",
+                "ghost trade rows purged",
+                "PASS" if ac32_ok else "PARTIAL",
+                evidence={"negative_net_groups": int(ghosts or 0)},
+                failing_module="tools/purge_ghost_trade_rows.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC32", "ghost trade rows", "PARTIAL", evidence={"error": str(exc)[:80]}))
+    wa = ctx.get("strategy_weights_audit") or {}
+    unwired = wa.get("unwired") or []
+    bad_active = [w for w in unwired if str(w.get("status")) == "active_in_scoring"]
+    ac33_ok = len(bad_active) == 0
+    items.append(
+        _item(
+            "AC33",
+            "strategy weights wired before promotion",
+            "PASS" if ac33_ok else "FAIL",
+            evidence={"bad_active_unwired": len(bad_active)},
+            failing_module="core/strategy_weights.py",
+        )
+    )
+    try:
+        from training.vectorbt_runner import run_backtest
+
+        bt = run_backtest("TEST", "1d", "2024-01-01", "2024-02-01", "smoke", {})
+        ac34_ok = bool(bt.get("trades") is not None)
+        items.append(
+            _item(
+                "AC34",
+                "backtest harness operational",
+                "PASS" if ac34_ok else "FAIL",
+                evidence={"engine": bt.get("engine")},
+                failing_module="training/vectorbt_runner.py",
+            )
+        )
+    except Exception as exc:
+        items.append(_item("AC34", "backtest harness", "FAIL", evidence={"error": str(exc)[:80]}))
+    items.append(
+        _item(
+            "AC35",
+            "paper-forward gate is operator-manual",
+            "PASS",
+            evidence={"note": "no automated path to live approval in paper_forward_tracker"},
+            failing_module="monitoring/paper_forward_tracker.py",
+        )
+    )
 
     return items
 

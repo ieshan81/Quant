@@ -61,13 +61,35 @@ def score_fast_loop_symbol(
     rt = rt or {}
     rsi_oversold = float(rt.get("rsi_oversold", 35.0))
     rsi_overbought = float(rt.get("rsi_overbought", 70.0))
+    timeframe_mode = str(rt.get("crypto_fast_loop_timeframe") or "daily").strip().lower()
 
     t0 = time.perf_counter()
     df = None
-    try:
-        from training.backtester import load_yfinance_history
+    if timeframe_mode == "intraday":
+        try:
+            from data_providers.alpaca_crypto_bars import fetch_intraday_bars
 
-        df = load_yfinance_history(yf_sym, days=120)
+            df = fetch_intraday_bars(sym, interval="5Min", lookback_hours=24)
+            diag["signal_timeframe"] = "intraday"
+            diag["bar_interval"] = "5Min"
+            diag["bar_source"] = "alpaca_crypto"
+            diag["scalping_capable"] = True
+            diag["timeframe_warning"] = None
+            if df is None or getattr(df, "empty", True):
+                diag["bars_status"] = "intraday_empty"
+                return None, "NO_BARS", _finalize_row(diag, "NO_BARS")
+            _record_provider_success("alpaca_crypto_bars", latency_ms=(time.perf_counter() - t0) * 1000)
+        except Exception as exc:
+            _record_provider_failure("alpaca_crypto_bars", str(exc)[:200])
+            diag["bars_status"] = "intraday_failed"
+            return None, "NO_BARS", _finalize_row(diag, "NO_BARS")
+    else:
+        diag["timeframe_warning"] = "daily_signals_on_fast_clock"
+    try:
+        if df is None:
+            from training.backtester import load_yfinance_history
+
+            df = load_yfinance_history(yf_sym, days=120)
     except Exception as exc:
         _record_provider_failure("yfinance", str(exc)[:200])
         diag["bars_status"] = "load_failed"

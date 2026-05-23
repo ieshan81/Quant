@@ -292,6 +292,42 @@ def run_preflight_checks(
             **common,
         )
 
+    # 5a. Stock buy requires explicit buying_power (fail closed)
+    if ac == "stock" and s == "buy" and notional > 0 and buying_power is None:
+        return OrderPreflightResult.blocked(
+            rc.PREFLIGHT_BLOCKED_BUYING_POWER_UNKNOWN,
+            f"{sym}: Stock buy blocked — buying power unknown",
+            **common,
+        )
+
+    # 5b. Buy idempotency (all asset classes)
+    if s == "buy" and notional > 0:
+        try:
+            from core.order_idempotency import (
+                generate_client_order_id,
+                is_duplicate,
+                record,
+            )
+
+            meta = dict(extra_meta or {})
+            cid = meta.get("client_order_id") or generate_client_order_id(
+                symbol=sym,
+                side=s,
+                qty=qty,
+                notional=notional,
+                cycle_id=str(meta.get("cycle_id") or config_snapshot.get("cycle_id") or ""),
+            )
+            common["meta"] = {**meta, "client_order_id": cid}
+            if is_duplicate(cid):
+                return OrderPreflightResult.blocked(
+                    rc.ORDER_DUPLICATE_SUPPRESSED,
+                    f"{sym}: Duplicate buy suppressed (idempotency)",
+                    **common,
+                )
+            record(cid)
+        except Exception:
+            pass
+
     # 5. Buying power / crypto USD cash check
     if ac == "crypto" and s == "buy" and notional > 0:
         rt_snap = dict(config_snapshot or {})
@@ -379,6 +415,38 @@ def run_preflight_checks(
             f"{sym}: Capital allocator — {capital_allocator_reason}",
             **common,
         )
+
+    # 8. Risk controls gate
+    if s == "buy" and notional > 0:
+        try:
+            from core.risk_controls import evaluate_risk_gate
+
+            acct = (extra_meta or {}).get("canonical_account")
+            eq = float((extra_meta or {}).get("equity") or 0)
+            if isinstance(acct, dict):
+                eq = float(acct.get("equity") or eq or 0)
+            rt_snap = dict(config_snapshot or {})
+            try:
+                from core.paper_trading_path import load_runtime_config_for_worker
+
+                rt_snap = load_runtime_config_for_worker()
+            except Exception:
+                pass
+            ok_risk, risk_code, risk_ev = evaluate_risk_gate(
+                side=s,
+                notional=notional,
+                equity=eq,
+                rt=rt_snap,
+            )
+            common["meta"] = {**(common.get("meta") or {}), "risk_gate": risk_ev}
+            if not ok_risk:
+                return OrderPreflightResult.blocked(
+                    risk_code,
+                    f"{sym}: Risk gate — {risk_code}",
+                    **common,
+                )
+        except Exception:
+            pass
 
     # 7. Broker-authoritative sell qty (mandatory for sells)
     if s == "sell":

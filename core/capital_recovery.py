@@ -195,6 +195,32 @@ def build_capital_recovery_state(
 
     human = " ".join(lines)[:500]
 
+    auto_trim = bool(rt.get("auto_trim_enabled")) if isinstance(rt, dict) else False
+    if auto_trim and enabled and trim_candidates and not recovery_blocker:
+        for c in trim_candidates[:2]:
+            if not c.get("recovery_trim_eligible"):
+                continue
+            try:
+                from data.data_store import get_connection
+
+                with get_connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO exit_engine_recommendations (
+                            symbol, asset_class, side, reason, priority, created_at, meta_json
+                        ) VALUES (?, ?, 'sell', 'capital_recovery_auto_trim', 90, datetime('now'), ?)
+                        """,
+                        (
+                            c["symbol"],
+                            c.get("asset_class", "stock"),
+                            __import__("json").dumps({"source": "capital_recovery", "candidate": c}),
+                        ),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
+        recovery_action = "AUTO_TRIM_RECOMMENDATIONS_WRITTEN"
+
     return {
         "enabled": enabled,
         "reason": reason,

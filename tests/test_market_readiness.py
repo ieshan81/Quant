@@ -61,6 +61,7 @@ def test_preflight_approved_returns_allowed():
         buying_power=10_000.0,
         pdt_blocked=False,
         capital_allocator_ok=True,
+        extra_meta={"cycle_id": "test-preflight-approved-unique", "equity": 10_000.0},
     )
     assert result.allowed is True
     assert result.reason_code == rc.PREFLIGHT_APPROVED
@@ -215,6 +216,8 @@ def test_preflight_crypto_always_allowed_session():
         price=50_000.0,
         session_state=SESSION_CLOSED,
         extra_meta={
+            "cycle_id": "test-crypto-session-unique",
+            "equity": 2000.0,
             "canonical_account": {
                 "cash": 500.0,
                 "buying_power": 500.0,
@@ -222,7 +225,7 @@ def test_preflight_crypto_always_allowed_session():
                 "equity": 2000.0,
                 "min_remaining_cash_usd": 5.0,
                 "reserve_cash": 10.0,
-            }
+            },
         },
     )
     assert result.allowed is True
@@ -243,6 +246,7 @@ def test_preflight_decisions_logged():
         price=10.0,
         buying_power=500.0,
         session_state=SESSION_REGULAR,
+        extra_meta={"cycle_id": "test-preflight-logged-unique", "equity": 1000.0},
     )
     submit_order_with_preflight(
         preflight=pf,

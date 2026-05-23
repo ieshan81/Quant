@@ -136,21 +136,35 @@ def evaluate_sleeve_gate(
         return False, rc.BUY_BLOCKED_MIN_CASH_FLOOR, {"sleeves": sleeves, "candidate_notional": note}
 
     if cfg.get("allow_full_deployment"):
-        # Never bypass min cash floor — only relax sleeve caps with hard notional cap.
-        max_deploy = max(0.0, float(bp) - float(floor))
-        if note > max_deploy + 1e-9:
-            _record_sleeve(engine, False, rc.BUY_BLOCKED_MIN_CASH_FLOOR, note, bp, sleeves)
-            return False, rc.BUY_BLOCKED_MIN_CASH_FLOOR, {
+        confirmed = str(cfg.get("allow_full_deployment_i_understand_the_risk") or "").strip() == "YES_I_DO"
+        if not confirmed:
+            cfg = {**cfg, "allow_full_deployment": False}
+        else:
+            try:
+                from monitoring.ops_log_store import write_ops_event
+
+                write_ops_event(
+                    event_type="ALLOW_FULL_DEPLOYMENT_ACTIVE",
+                    level="critical",
+                    message="CRITICAL: allow_full_deployment active with operator confirmation",
+                    evidence={"engine": engine, "notional": note},
+                )
+            except Exception:
+                pass
+            max_deploy = max(0.0, float(bp) - float(floor))
+            if note > max_deploy + 1e-9:
+                _record_sleeve(engine, False, rc.BUY_BLOCKED_MIN_CASH_FLOOR, note, bp, sleeves)
+                return False, rc.BUY_BLOCKED_MIN_CASH_FLOOR, {
+                    "sleeves": sleeves,
+                    "candidate_notional": note,
+                    "note": "allow_full_deployment_still_respects_cash_floor",
+                }
+            _record_sleeve(engine, True, None, note, bp, sleeves)
+            return True, None, {
                 "sleeves": sleeves,
                 "candidate_notional": note,
-                "note": "allow_full_deployment_still_respects_cash_floor",
+                "note": "allow_full_deployment_sleeve_bypass_only",
             }
-        _record_sleeve(engine, True, None, note, bp, sleeves)
-        return True, None, {
-            "sleeves": sleeves,
-            "candidate_notional": note,
-            "note": "allow_full_deployment_sleeve_bypass_only",
-        }
 
     if cfg.get("tiny_account_mode") and eq < 50.0:
         priority = str(cfg.get("tiny_account_engine_priority") or "crypto").lower()

@@ -373,6 +373,22 @@ def _normalize_push_blocker(
     return c or "NO_SIGNAL"
 
 
+def _fast_loop_execute_preflight(rt: dict[str, Any], *, equity: float) -> tuple[bool, str]:
+    """Gate fast-loop broker execution: intraday timeframe + risk controls."""
+    tf = str(rt.get("crypto_fast_loop_timeframe") or "daily").strip().lower()
+    if tf != "intraday":
+        return False, reason_codes.FAST_LOOP_INTRADAY_REQUIRED
+    try:
+        from core.risk_controls import evaluate_risk_gate
+
+        ok, code, _ = evaluate_risk_gate(side="buy", notional=1.0, equity=equity, rt=rt)
+        if not ok:
+            return False, code
+    except Exception:
+        pass
+    return True, reason_codes.CRYPTO_PUSH_ALLOWED
+
+
 def run_crypto_fast_loop_once(
     *,
     trader: Any,
@@ -426,6 +442,17 @@ def run_crypto_fast_loop_once(
     from execution.fast_loop_scoring import build_scoring_batch_diagnostics
 
     scoring_diag = build_scoring_batch_diagnostics(scan_syms, min_score=min_score, rt=rt_eff)
+    _log_fast(
+        "FAST_LOOP_TIMEFRAME_MODE",
+        loop_id=lid,
+        evidence={
+            "crypto_fast_loop_timeframe": rt_eff.get("crypto_fast_loop_timeframe", "daily"),
+            "execute_orders": execute,
+            "timeframe_warning": (scoring_diag.get("per_symbol") or [{}])[0].get("timeframe_warning")
+            if scoring_diag.get("per_symbol")
+            else None,
+        },
+    )
     scored = [
         (p["symbol"], float(p["score"]))
         for p in scoring_diag.get("scored_pairs") or []
@@ -554,46 +581,54 @@ def run_crypto_fast_loop_once(
                 evidence={**pf, "final_action": "blocked", "exact_reason": push_blocker},
             )
         elif execute and config.MODE == "paper" and not config.trading_is_live():
-            from execution.fast_loop_execution import attempt_fast_loop_crypto_buy
-
-            min_n = crypto_push_pull.crypto_min_notional_usd(rt_eff)
-            order_notional = float(pf.get("required_notional") or pf.get("max_notional_after_buffer") or min_n)
-            mid_px = 0.0
-            for row in (scoring_diag.get("per_symbol_rejection_reasons") or scoring_diag.get("per_symbol") or []):
-                if str(row.get("symbol") or "").upper() == str(best_sym).upper():
-                    mid_px = float(row.get("last_close") or 0)
-                    break
-            if mid_px <= 0:
-                try:
-                    from execution import stock_broker
-
-                    mid_px = float(stock_broker.fetch_crypto_latest_price(str(best_sym)) or 0)
-                except Exception:
-                    mid_px = 0.0
-            if mid_px <= 0:
+            exec_ok, exec_code = _fast_loop_execute_preflight(rt_eff, equity=float(account.get("equity") or 0))
+            if not exec_ok:
                 _log_fast(
-                    "CRYPTO_FAST_EXECUTION_BLOCKED",
+                    "FAST_LOOP_EXECUTE_REFUSED",
                     loop_id=lid,
-                    evidence={
-                        "symbol": best_sym,
-                        "reason_code": "CRYPTO_FAST_NO_PRICE",
-                        "broker_submit_attempted": False,
-                    },
+                    evidence={"reason_code": exec_code, "timeframe": rt_eff.get("crypto_fast_loop_timeframe")},
                 )
             else:
-                exec_ev = attempt_fast_loop_crypto_buy(
-                    symbol=str(best_sym),
-                    notional=max(order_notional, min_n),
-                    mid=mid_px,
-                    rt=rt_eff,
-                    loop_id=lid,
-                    preflight_forensics=pf,
-                )
-                _log_fast(
-                    str(exec_ev.get("event") or "CRYPTO_FAST_ORDER_REJECTED"),
-                    loop_id=lid,
-                    evidence=exec_ev,
-                )
+                from execution.fast_loop_execution import attempt_fast_loop_crypto_buy
+
+                min_n = crypto_push_pull.crypto_min_notional_usd(rt_eff)
+                order_notional = float(pf.get("required_notional") or pf.get("max_notional_after_buffer") or min_n)
+                mid_px = 0.0
+                for row in (scoring_diag.get("per_symbol_rejection_reasons") or scoring_diag.get("per_symbol") or []):
+                    if str(row.get("symbol") or "").upper() == str(best_sym).upper():
+                        mid_px = float(row.get("last_close") or 0)
+                        break
+                if mid_px <= 0:
+                    try:
+                        from execution import stock_broker
+
+                        mid_px = float(stock_broker.fetch_crypto_latest_price(str(best_sym)) or 0)
+                    except Exception:
+                        mid_px = 0.0
+                if mid_px <= 0:
+                    _log_fast(
+                        "CRYPTO_FAST_EXECUTION_BLOCKED",
+                        loop_id=lid,
+                        evidence={
+                            "symbol": best_sym,
+                            "reason_code": "CRYPTO_FAST_NO_PRICE",
+                            "broker_submit_attempted": False,
+                        },
+                    )
+                else:
+                    exec_ev = attempt_fast_loop_crypto_buy(
+                        symbol=str(best_sym),
+                        notional=max(order_notional, min_n),
+                        mid=mid_px,
+                        rt=rt_eff,
+                        loop_id=lid,
+                        preflight_forensics=pf,
+                    )
+                    _log_fast(
+                        str(exec_ev.get("event") or "CRYPTO_FAST_ORDER_REJECTED"),
+                        loop_id=lid,
+                        evidence=exec_ev,
+                    )
         elif execute:
             _log_fast(
                 "CRYPTO_FAST_EXECUTION_NOT_IMPLEMENTED",

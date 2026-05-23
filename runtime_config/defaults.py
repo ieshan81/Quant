@@ -11,7 +11,10 @@ CAPITAL_DEFAULTS = {
     "min_cash_floor_usd": 5.0,
     "allow_stock_to_use_crypto_sleeve": False,
     "allow_crypto_to_use_stock_sleeve": False,
+    # DANGEROUS: bypasses sleeve caps when allow_full_deployment_i_understand_the_risk == YES_I_DO
     "allow_full_deployment": False,
+    "allow_full_deployment_i_understand_the_risk": "",
+    "auto_trim_enabled": False,
     "tiny_account_mode": True,
     "tiny_account_engine_priority": "crypto",
 }
@@ -19,6 +22,7 @@ CAPITAL_DEFAULTS = {
 FAST_LOOP_DEFAULTS = {
     "crypto_fast_loop_enabled": True,
     "crypto_fast_loop_execute_orders": False,
+    "crypto_fast_loop_timeframe": "daily",
     "crypto_fast_loop_cycle_seconds": 20,
     "crypto_fast_loop_batch_size": 15,
     "crypto_fast_loop_max_positions": 2,

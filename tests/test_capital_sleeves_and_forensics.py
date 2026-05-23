@@ -113,6 +113,7 @@ def test_capital_sleeve_allow_full_deployment_bypass():
 
     rt = {
         "allow_full_deployment": True,
+        "allow_full_deployment_i_understand_the_risk": "YES_I_DO",
         "min_cash_floor_usd": 0.0,
         "emergency_reserve_pct": 0.5,
     }

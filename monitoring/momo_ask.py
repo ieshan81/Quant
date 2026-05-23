@@ -21,11 +21,35 @@ def answer_momo_question(
     if not q:
         return {"ok": False, "error": "question required", "answer": ""}
 
+    ql = q.lower()
+    unsafe_phrases = (
+        "enable live trading",
+        "disable preflight",
+        "raise max notional",
+        "turn on live",
+        "flip live",
+    )
+    if any(p in ql for p in unsafe_phrases):
+        from core.momo_brain import MomoRefusal
+
+        return {
+            "ok": True,
+            "assistant_name": "Momo",
+            "provider": "momo_policy_refusal",
+            "answer": (
+                "Refused: QuantBot policy blocks changing live trading, preflight bypass, or max notional "
+                "via chat. Use Config with typed operator confirmation and paper-forward approval. "
+                f"(MomoRefusal: {MomoRefusal.__name__})"
+            ),
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            "refused": True,
+            "can_submit_orders": False,
+        }
+
     ctx: dict[str, Any] = {"question": q}
     missing: list[str] = []
     canonical: dict[str, Any] = {}
     brain: dict[str, Any] = {}
-    ql = q.lower()
     load_canonical = bool(include.get("canonical_truth", True))
     load_brain = bool(include.get("momo_brain", True))
     load_order_flow = bool(include.get("order_flow", True)) or any(

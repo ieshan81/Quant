@@ -53,7 +53,117 @@ CREATE TABLE IF NOT EXISTS momo_brain_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_momo_facts_status ON momo_brain_facts(status);
 CREATE INDEX IF NOT EXISTS idx_momo_facts_type ON momo_brain_facts(fact_type);
+
+CREATE TABLE IF NOT EXISTS momo_incident_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_key TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    canonical_truth_hash TEXT,
+    evidence_json TEXT,
+    detected_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolution_note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS momo_strategy_performance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    timeframe TEXT,
+    trades INTEGER DEFAULT 0,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0,
+    gross_pnl REAL DEFAULT 0,
+    net_pnl REAL DEFAULT 0,
+    expectancy_per_trade REAL,
+    sample_size_warning TEXT,
+    last_updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS momo_parameter_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_key TEXT NOT NULL UNIQUE,
+    config_key TEXT NOT NULL,
+    proposed_from TEXT NOT NULL,
+    proposed_to TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    backtest_result_json TEXT,
+    paper_forward_result_json TEXT,
+    rollback_condition TEXT NOT NULL,
+    approval_status TEXT NOT NULL DEFAULT 'pending',
+    operator_decision_at TEXT,
+    operator_decision_note TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS momo_post_trade_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    broker_order_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    entry_price REAL,
+    exit_price REAL,
+    qty REAL,
+    pnl_usd REAL,
+    slippage_pct REAL,
+    fees_usd REAL,
+    signal_at_entry_json TEXT,
+    exit_reason TEXT,
+    lesson TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS momo_daily_pnl_autopsy (
+    date_utc TEXT PRIMARY KEY,
+    realized_pnl_usd REAL,
+    unrealized_pnl_usd REAL,
+    trades INTEGER,
+    wins INTEGER,
+    losses INTEGER,
+    top_winner_symbol TEXT,
+    top_winner_pnl REAL,
+    top_loser_symbol TEXT,
+    top_loser_pnl REAL,
+    pattern_summary_json TEXT,
+    created_at TEXT NOT NULL
+);
 """
+
+
+class MomoRefusal(Exception):
+    """MoMo refuses unsafe operator requests."""
+
+    def __init__(self, message: str, *, policy: str = "") -> None:
+        super().__init__(message)
+        self.policy = policy
+
+
+def assert_brain_durable() -> dict[str, Any]:
+    """Log CRITICAL if brain DB is not on persistent volume."""
+    p = _brain_db_path()
+    persisted = False
+    try:
+        import config
+
+        persist = Path(getattr(config, "PERSIST_DIR", "/data"))
+        persisted = str(p).startswith(str(persist.resolve()))
+    except Exception:
+        persisted = "/data" in str(p) or "persist" in str(p).lower()
+    if not persisted:
+        try:
+            from monitoring.ops_log_store import append_ops_event
+
+            append_ops_event(
+                event_type="BRAIN_DURABILITY_WARN",
+                level="critical",
+                message=f"momo_brain path may not be durable: {p}",
+                evidence={"path": str(p)},
+            )
+        except Exception:
+            pass
+    return {"path": str(p), "persisted": persisted}
 
 
 def _brain_db_path() -> Path:

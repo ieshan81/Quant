@@ -159,6 +159,22 @@ def build_quant_risk_memo(canonical_truth: dict[str, Any]) -> dict[str, Any]:
             if ai not in blockers:
                 blockers.append(ai)
 
+    evidence_sources = [
+        s
+        for s, present in (
+            ("account_state", bool(account)),
+            ("capital_state", bool(capital)),
+            ("position_state", bool(position)),
+            ("crypto_state", bool(crypto)),
+            ("exit_state", bool(exit_st)),
+            ("fast_loop_state", bool(fast_loop)),
+            ("live_readiness_state", bool(live)),
+            ("strategy_weights_state", bool(weights)),
+            ("diagnostics_state", bool(diag)),
+        )
+        if present
+    ]
+
     return {
         "generated_at": _now(),
         "current_market_observation": market_obs,
@@ -172,7 +188,7 @@ def build_quant_risk_memo(canonical_truth: dict[str, Any]) -> dict[str, Any]:
         "rejected_trade_analysis": rejected_trade_analysis,
         "drawdown_alerts": drawdown_alerts,
         "stale_notes_resolved": (ct.get("momo_state") or {}).get("stale_resolved_notes") or [],
-        "confidence": 0.7 if blockers else 0.4,
+        "confidence": min(0.95, 0.3 + 0.1 * len(evidence_sources)),
         "evidence": {
             "capital_state": capital.get("reason_code"),
             "position_consistency": (position.get("consistency_check") or {}).get("status"),
