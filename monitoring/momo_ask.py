@@ -49,6 +49,18 @@ def answer_momo_question(
     include = include or {}
     if "momo_memory" not in include and _det_only:
         include["momo_memory"] = False
+    # Fast path: when momo_memory is explicitly False, also skip slow broker/order-flow
+    # context loaders unless the operator explicitly enables them. This keeps the
+    # default quick chip under 5 seconds even in production where broker calls are slow.
+    if include.get("momo_memory") is False:
+        if "broker_diagnostic" not in include:
+            include["broker_diagnostic"] = False
+        if "order_flow" not in include:
+            include["order_flow"] = False
+        if "ops_logs" not in include:
+            include["ops_logs"] = False
+        if "activity_export" not in include:
+            include["activity_export"] = False
     q = (question or "").strip()
     t0 = time.perf_counter()
     if not q:
