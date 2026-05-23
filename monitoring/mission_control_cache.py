@@ -61,14 +61,24 @@ def get_mission_control_cached(
     t0 = time.perf_counter()
     err: str | None = None
     fresh: dict[str, Any] | None = None
+    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(builder)
+        fut = pool.submit(builder)
+        try:
             fresh = fut.result(timeout=max(0.15, float(build_timeout_sec)))
-    except FuturesTimeoutError:
-        err = f"Mission Control build timed out after {build_timeout_sec:.0f}s"
-    except Exception as exc:
-        err = str(exc)[:200]
+        except FuturesTimeoutError:
+            err = f"Mission Control build timed out after {build_timeout_sec:.2f}s"
+            fut.cancel()
+        except Exception as exc:
+            err = str(exc)[:200]
+    finally:
+        # IMPORTANT: never wait for builder thread to finish — it can hang on Alpaca calls.
+        # Without this fix the `with ThreadPoolExecutor():` exit blocks until builder
+        # completes, which defeats build_timeout_sec entirely.
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=False)
     duration_ms = round((time.perf_counter() - t0) * 1000, 1)
 
     with _LOCK:
