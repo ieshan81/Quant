@@ -201,15 +201,17 @@ def answer_momo_question(
     )
     load_broker = bool(include.get("broker_diagnostic", True))
 
+    _fast_path = include.get("momo_memory") is False
     if include.get("mission_control", True):
         try:
             from monitoring.mission_control_cache import get_mission_control_cached
             from monitoring.mission_control_api import build_mission_control_summary_fast
 
+            # Fast path: tight 1.5s build timeout so missing cache cannot hang the request.
             ctx["mission_control"] = get_mission_control_cached(
                 build_mission_control_summary_fast,
                 ttl_sec=8.0,
-                build_timeout_sec=3.0,
+                build_timeout_sec=1.5 if _fast_path else 3.0,
             )
         except Exception as exc:
             missing.append(f"mission_control: {exc}")
