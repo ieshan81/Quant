@@ -54,11 +54,23 @@ def test_mission_control_summary_fast_under_one_second() -> None:
 
 
 def test_momo_ask_ops_under_one_second(dash_app) -> None:
+    mc_stub = {"ok": True, "worker": {"health": "ok"}, "account": {"buying_power": 50}}
     t0 = time.perf_counter()
-    r = dash_app.test_client().post(
-        "/api/momo/ask",
-        json={"question": "Why is the worker not trading?", "include": {"mission_control": True}},
-    )
+    with patch("monitoring.mission_control_cache.get_mission_control_cached", return_value=mc_stub):
+        r = dash_app.test_client().post(
+            "/api/momo/ask",
+            json={
+                "question": "Why is the worker not trading?",
+                "include": {
+                    "mission_control": True,
+                    "canonical_truth": False,
+                    "momo_brain": False,
+                    "broker_diagnostic": False,
+                    "order_flow": False,
+                    "momo_memory": False,
+                },
+            },
+        )
     elapsed = time.perf_counter() - t0
     assert r.status_code == 200
     data = json.loads(r.data)

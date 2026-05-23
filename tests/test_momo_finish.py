@@ -108,7 +108,7 @@ def dash_app(tmp_path: Path):
 
 def test_momo_reset_clean_runtime(dash_app) -> None:
     with patch(
-        "monitoring.mission_control_api.build_mission_control_summary_fast",
+        "monitoring.mission_control_cache.get_mission_control_cached",
         return_value={
             "ok": True,
             "account": {"buying_power": 10, "equity": 100},
@@ -121,7 +121,17 @@ def test_momo_reset_clean_runtime(dash_app) -> None:
     ):
         r = dash_app.test_client().post(
             "/api/momo/ask",
-            json={"question": "Should I reset runtime?"},
+            json={
+                "question": "Should I reset runtime?",
+                "include": {
+                    "mission_control": True,
+                    "canonical_truth": False,
+                    "momo_brain": False,
+                    "broker_diagnostic": False,
+                    "order_flow": False,
+                    "momo_memory": False,
+                },
+            },
         )
     data = json.loads(r.data)
     assert "no runtime reset required" in (data.get("answer") or "").lower()

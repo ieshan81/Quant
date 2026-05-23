@@ -538,6 +538,44 @@ def check_all(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         )
     )
 
+    try:
+        prev = ctx.get("broker_transition_preview") or {}
+        if not prev:
+            try:
+                from monitoring.broker_transition_service import preview_broker_transition
+
+                prev = preview_broker_transition()
+            except Exception:
+                prev = {}
+        first_run = bool(prev.get("first_run_baseline_required"))
+        recon = prev.get("reconciliation_health") or {}
+        recon_clean = bool(recon.get("clean"))
+        ac28_ok = not first_run or bool(prev.get("active_epoch"))
+        items.append(
+            _item(
+                "AC28",
+                "broker baseline applied when first-run required",
+                "PASS" if ac28_ok else "FAIL",
+                evidence={
+                    "first_run_baseline_required": first_run,
+                    "reconciliation_clean": recon_clean,
+                    "ghost_symbols": (prev.get("ghost_symbols") or [])[:6],
+                },
+                failing_module="monitoring/broker_transition_service.py",
+                next_action="Ops → Broker Account Transition → Apply reset & sync",
+            )
+        )
+    except Exception as exc:
+        items.append(
+            _item(
+                "AC28",
+                "broker baseline check",
+                "FAIL",
+                evidence={"error": str(exc)[:120]},
+                failing_module="monitoring/broker_transition_service.py",
+            )
+        )
+
     return items
 
 

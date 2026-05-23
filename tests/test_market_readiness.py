@@ -241,6 +241,7 @@ def test_preflight_decisions_logged():
         qty=1.0,
         notional=10.0,
         price=10.0,
+        buying_power=500.0,
         session_state=SESSION_REGULAR,
     )
     submit_order_with_preflight(

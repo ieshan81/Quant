@@ -107,15 +107,18 @@ def test_momo_why_no_crypto_under_one_second() -> None:
     with patch("monitoring.momo_ask.build_momo_status", return_value={}), patch(
         "monitoring.momo_ask.build_momo_authority_status", return_value={}
     ), patch(
-        "monitoring.mission_control_api.build_mission_control_summary_fast",
-        side_effect=_fast_mc,
+        "monitoring.mission_control_cache.get_mission_control_cached",
+        return_value=mc_stub,
     ):
         out = answer_momo_question(
             "why no crypto?",
             include={
                 "mission_control": True,
+                "canonical_truth": False,
+                "momo_brain": False,
                 "activity_export": False,
                 "broker_diagnostic": False,
+                "order_flow": False,
                 "momo_memory": False,
             },
         )

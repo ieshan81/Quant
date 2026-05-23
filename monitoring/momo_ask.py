@@ -1,7 +1,9 @@
-"""POST /api/momo/ask — operator Q&A from live mission data only."""
+"""POST /api/momo/ask — operator Q&A from canonical truth + brain (no hallucination)."""
 
 from __future__ import annotations
 
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 from monitoring.momo import build_momo_authority_status, build_momo_status
@@ -11,110 +13,132 @@ def answer_momo_question(
     question: str,
     *,
     include: dict[str, bool] | None = None,
+    timeout_sec: float = 30.0,
 ) -> dict[str, Any]:
     include = include or {}
     q = (question or "").strip()
+    t0 = time.perf_counter()
     if not q:
         return {"ok": False, "error": "question required", "answer": ""}
 
     ctx: dict[str, Any] = {"question": q}
     missing: list[str] = []
-
-    _ops_q = any(
-        k in q.lower()
-        for k in (
-            "buying power", "bp", "crypto", "recovery", "reconciliation", "why no",
-            "worker", "trade", "position", "running", "failed", "cycle",
-        )
+    canonical: dict[str, Any] = {}
+    brain: dict[str, Any] = {}
+    ql = q.lower()
+    load_canonical = bool(include.get("canonical_truth", True))
+    load_brain = bool(include.get("momo_brain", True))
+    load_order_flow = bool(include.get("order_flow", True)) or any(
+        k in ql for k in ("block", "sell", "amc", "apld", "ondo", "reject")
     )
-
-    _reset_q = "reset" in q.lower() and "runtime" in q.lower()
+    load_broker = bool(include.get("broker_diagnostic", True))
 
     if include.get("mission_control", True):
         try:
-            if _ops_q and not _reset_q:
-                from monitoring.simple_status import build_simple_worker_status
+            from monitoring.mission_control_cache import get_mission_control_cached
+            from monitoring.mission_control_api import build_mission_control_summary_fast
 
-                ctx["mission_control"] = build_simple_worker_status()
-            else:
-                from monitoring.mission_control_cache import get_mission_control_cached
-                from monitoring.mission_control_api import build_mission_control_summary_fast
-
-                ctx["mission_control"] = get_mission_control_cached(
-                    build_mission_control_summary_fast,
-                    ttl_sec=8.0,
-                    build_timeout_sec=3.0,
-                )
+            ctx["mission_control"] = get_mission_control_cached(
+                build_mission_control_summary_fast,
+                ttl_sec=8.0,
+                build_timeout_sec=3.0,
+            )
         except Exception as exc:
             missing.append(f"mission_control: {exc}")
 
-    if include.get("broker_diagnostic", True) and not _ops_q:
+    if load_canonical:
         try:
-            from monitoring.broker_diagnostic import build_broker_diagnostic
-            ctx["broker_diagnostic"] = build_broker_diagnostic()
-        except Exception as exc:
-            missing.append(f"broker_diagnostic: {exc}")
+            from core.canonical_state import build_canonical_state
 
-    if include.get("activity_export", True) and not _ops_q:
+            canonical = build_canonical_state()
+            ctx["canonical_truth"] = canonical
+        except Exception as exc:
+            missing.append(f"canonical_truth: {exc}")
+
+    if load_brain:
+        try:
+            from core.momo_brain import build_momo_brain_state, get_current_context
+
+            brain = build_momo_brain_state(canonical_truth=canonical)
+            ctx["momo_brain"] = brain
+            ctx["brain_context"] = get_current_context(canonical_truth=canonical)
+        except Exception as exc:
+            missing.append(f"momo_brain: {exc}")
+
+    if load_broker:
+        try:
+            from monitoring.broker_transition_service import preview_broker_transition
+
+            ctx["broker_transition_preview"] = preview_broker_transition()
+            from monitoring.broker_transition_service import build_transition_status
+
+            ctx["broker_transition_status"] = build_transition_status()
+        except Exception as exc:
+            missing.append(f"broker_transition: {exc}")
+
+    if include.get("ops_logs", False):
+        try:
+            from monitoring.ops_log_store import fetch_ops_logs
+
+            ctx["ops_logs"] = fetch_ops_logs(limit=25)
+        except Exception as exc:
+            missing.append(f"ops_logs: {exc}")
+
+    if include.get("activity_export", False):
         try:
             from data.data_store import get_connection
             from monitoring.cycle_activity_export import build_activity_export_payload
+
             with get_connection(timeout_sec=5.0) as conn:
                 ctx["activity_export"] = build_activity_export_payload(conn, limit=40)
         except Exception as exc:
             missing.append(f"activity_export: {exc}")
 
-    if include.get("ops_logs", False):
+    order_flow: dict[str, Any] = {}
+    if load_order_flow:
         try:
-            from monitoring.ops_log_store import fetch_ops_logs
-            ctx["ops_logs"] = fetch_ops_logs(limit=15)
+            from monitoring.forensic_debug import _order_flow_forensics
+
+            order_flow = _order_flow_forensics()
+            ctx["order_flow"] = order_flow
         except Exception as exc:
-            missing.append(f"ops_logs: {exc}")
+            missing.append(f"order_flow: {exc}")
 
     momo_st = build_momo_status()
     auth = build_momo_authority_status()
 
-    try:
-        from core.momo_graph_memory import query_nodes_for_question
+    answer = _deterministic_answer(q, ctx, missing, canonical=canonical, brain=brain, order_flow=order_flow)
+    provider = "momo_canonical_rules"
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
-        ctx["momo_graph_facts"] = query_nodes_for_question(q, limit=10)
-    except Exception as exc:
-        missing.append(f"momo_graph: {exc}")
-
-    # Deterministic path first (no hallucinated balances)
-    answer = _deterministic_answer(q, ctx, missing)
-    provider = "momo_rules"
-
-    if include.get("momo_memory", True) and not _ops_q:
+    if include.get("momo_memory", True) and elapsed_ms < int(timeout_sec * 1000):
         try:
             from monitoring.ai_observer import handle_chat
+
+            remaining = max(2.0, float(timeout_sec) - (time.perf_counter() - t0))
             gemini = handle_chat(
                 q,
                 include_activity_export=bool(include.get("activity_export")),
-                include_broker_diagnostic=bool(include.get("broker_diagnostic")),
+                include_broker_diagnostic=False,
                 include_memory=True,
-                gemini_timeout_sec=3,
+                gemini_timeout_sec=min(remaining, 12.0),
             )
             extra = str(gemini.get("answer") or "").strip()
-            generic = (
-                not extra
-                or "activity export included" in extra.lower()
-                or "enable 'include activity export'" in extra.lower()
-            )
-            if gemini.get("ok") and extra and not generic:
-                answer = answer + "\n\n" + extra
+            if gemini.get("ok") and extra and "context unavailable" not in extra.lower():
+                answer = answer + "\n\n" + extra[:800]
                 provider = str(gemini.get("provider") or provider)
         except Exception:
             pass
 
-    if "config" in q.lower() and "change" in q.lower():
-        answer += "\n\nConfig changes require operator approval (Momo cannot apply config)."
+    if missing and "context unavailable" not in answer.lower():
+        answer += "\n\n(Context gaps: " + "; ".join(missing[:4]) + ")"
 
     return {
         "ok": True,
         "assistant_name": "Momo",
         "provider": provider,
         "answer": answer,
+        "elapsed_ms": elapsed_ms,
         "missing_data": missing,
         "momo_status": momo_st,
         "momo_authority_status": auth,
@@ -124,178 +148,128 @@ def answer_momo_question(
     }
 
 
-def _deterministic_answer(question: str, ctx: dict[str, Any], missing: list[str]) -> str:
+def _deterministic_answer(
+    question: str,
+    ctx: dict[str, Any],
+    missing: list[str],
+    *,
+    canonical: dict[str, Any],
+    brain: dict[str, Any],
+    order_flow: dict[str, Any],
+) -> str:
+    if not canonical and not ctx.get("mission_control"):
+        return "Context unavailable — cannot answer safely. Refresh Mission Control and retry."
+
     ql = question.lower()
     mc = ctx.get("mission_control") or {}
-    ac = mc.get("account") or {}
-    alloc = (mc.get("capital_protection") or {}).get("allocator") or {}
-    trans = mc.get("broker_account_transition_status") or {}
+    acct = (canonical.get("account_state") or mc.get("account") or {})
+    pos = canonical.get("position_state") or mc.get("positions") or {}
+    exit_st = canonical.get("exit_state") or {}
+    lr = canonical.get("live_readiness_state") or {}
     parts: list[str] = []
 
-    if missing:
-        parts.append("Missing data: " + "; ".join(missing[:5]))
+    blocked_local = list(order_flow.get("local_blocks") or [])[:15]
+    broker_rej = list(order_flow.get("broker_rejections") or [])[:10]
+    stale_rows = list(pos.get("stale_local_rows") or [])
+    active = list(pos.get("active_positions") or pos.get("open") or [])
 
-    if "buying power" in ql or "bp" in ql:
-        bp = ac.get("buying_power")
-        cp = mc.get("capital_protection") or {}
-        diag = cp.get("buying_power_diagnostic") or {}
-        why = cp.get("why_buying_power_low") or diag.get("headline") or alloc.get("why_buying_power_low")
+    if "buying power" in ql or "buying_power" in ql:
+        cash = acct.get("cash")
+        bp = acct.get("buying_power")
         parts.append(
-            f"Buying power is ${bp if bp is not None else 'unknown'}. "
-            f"{why or diag.get('human_reason') or 'No allocator explanation in payload.'}"
-        )
-        if diag.get("reason_code"):
-            parts.append(f"Diagnostic: {diag.get('reason_code')} — broker BP ${diag.get('broker_buying_power')}, cash ${diag.get('broker_cash')}.")
-
-    if "recovery" in ql or "reconciliation" in ql:
-        rg = mc.get("recovery_gate") or {}
-        mi = mc.get("mission") or {}
-        parts.append(
-            f"Mission mode: {mi.get('mission_mode', '?')}. "
-            f"recovery_active={rg.get('recovery_active', '?')}. "
-            f"block_new_buys={rg.get('block_new_buys', '?')} "
-            f"({rg.get('block_new_buys_reason') or 'no reason'}). "
-            f"reconciliation_clean={rg.get('reconciliation_clean', '?')}."
+            f"Buying power is ${bp if bp is not None else '?'} (cash ${cash if cash is not None else '?'}, "
+            f"equity ${acct.get('equity', '?')}). "
+            "Low BP often reflects open positions, reserved cash floor, or crypto USD allocation."
         )
 
-    if "why" in ql and "trade" in ql:
-        act = ctx.get("activity_export") or {}
-        parts.append(str(act.get("why_no_trade") or "why_no_trade not in activity export."))
-
-    if "why" in ql and "sell" in ql:
-        act = ctx.get("activity_export") or {}
-        parts.append(str(act.get("why_no_sell") or "why_no_sell not in activity export."))
-
-    if "position" in ql:
-        pos = mc.get("positions") or {}
-        n = pos.get("count", len(pos.get("open") or []))
-        parts.append(f"Open positions (runtime): {n}.")
-
-    if "crypto" in ql:
-        push = mc.get("crypto_push") or (mc.get("crypto_night") or {}).get("crypto_push") or {}
-        pull = mc.get("crypto_pull") or (mc.get("crypto_night") or {}).get("crypto_pull") or {}
-        parts.append(
-            f"Crypto push: {push.get('label') or push.get('status') or '?'}"
-            f" — {push.get('human_reason') or push.get('headline') or 'n/a'}."
-        )
-        parts.append(
-            f"Crypto pull: {pull.get('label') or pull.get('status') or '?'}"
-            f" — {pull.get('human_reason') or pull.get('headline') or 'n/a'}."
-        )
-    graph = ctx.get("momo_graph_facts") or []
-    if graph and ("crypto" in ql or "why" in ql or "block" in ql or "eth" in ql):
-        parts.append("Graph memory: " + ", ".join(f"{g.get('node_type')}:{g.get('label')}" for g in graph[:5]))
-
-    if "crypto" in ql and "tonight" in ql:
-        cr = mc.get("crypto_night") or {}
-        parts.append(
-            f"Crypto push possible: {cr.get('push_possible')}. Blocked: {cr.get('blocked_reason') or 'none stated'}."
-        )
-
-    if "reset" in ql and "runtime" in ql:
-        if trans.get("aligned_with_broker") and not trans.get("runtime_reset_recommended"):
-            parts.append(
-                "No runtime reset required. Runtime appears aligned with broker. "
-                "A reset is only needed if you see mismatches or stale positions."
-            )
+    if ("reset" in ql and "runtime" in ql) or "should i reset" in ql:
+        st = ctx.get("broker_transition_status") or mc.get("broker_account_transition_status") or {}
+        if st.get("runtime_reset_recommended"):
+            parts.append(f"Runtime reset recommended: {st.get('headline', 'review broker transition wizard.')}")
         else:
-            parts.append(trans.get("headline") or "Transition status unavailable.")
-            if trans.get("detection_reasons"):
-                parts.append("Reasons: " + ", ".join(trans["detection_reasons"]))
-            if trans.get("runtime_reset_recommended"):
-                parts.append(
-                    "If issues persist after reviewing positions, consider Reset Runtime "
-                    "(operator must type RESET RUNTIME)."
-                )
+            parts.append(
+                st.get("headline")
+                or "No runtime reset required. Runtime appears aligned with broker."
+            )
 
-    if "risk" in ql or ("crypto" in ql and "enabl" in ql):
-        cr = mc.get("crypto_night") or {}
+    if "crypto" in ql and any(w in ql for w in ("why", "no", "not", "can't", "cannot", "trade")):
+        cer = mc.get("crypto_executor_readiness") or {}
         parts.append(
-            f"Crypto: push_possible={cr.get('push_possible')}. "
-            f"Blocked: {cr.get('blocked_reason') or 'none'}. "
-            "Check buying power, reserves, and market hours before enabling crypto."
+            f"Crypto executor: can_trade={cer.get('can_trade_crypto')}, "
+            f"push_blocked_reason={cer.get('push_blocked_reason')}, "
+            f"disabling_key={cer.get('disabling_config_key')}."
         )
 
-    if "summarize" in ql and "risk" in ql:
-        tr = trans
+    if "block" in ql and "sell" in ql:
+        sell_blocks = [
+            b
+            for b in blocked_local
+            if str(b.get("side") or "").lower() == "sell"
+            or str(b.get("block_reason_code") or "").startswith("SELL_BLOCKED")
+        ]
+        if sell_blocks:
+            lines = [
+                f"  {b.get('symbol')}: {b.get('block_reason_code')} ({b.get('created_at', '')[:16]})"
+                for b in sell_blocks[:8]
+            ]
+            parts.append(f"Recent blocked sells (local preflight): {len(sell_blocks)}.\n" + "\n".join(lines))
+        elif broker_rej:
+            parts.append(f"No local sell preflight blocks in recent journal; {len(broker_rej)} broker rejection(s) logged.")
+        else:
+            parts.append("No blocked sells in recent preflight journal (last ~25 rows).")
+
+    if "amc" in ql or "apld" in ql or "stale" in ql:
+        quarantined = [s for s in stale_rows if str(s.get("symbol", "")).upper() in ("AMC", "APLD")]
         parts.append(
-            f"Account equity ${ac.get('equity', '?')}, BP ${ac.get('buying_power', '?')}. "
-            f"Broker alignment: {tr.get('headline', '?')}."
+            f"Stale local rows: {len(stale_rows)} total"
+            + (f"; AMC/APLD in diagnostics: {len(quarantined)}" if quarantined else ".")
+        )
+        prior = (brain.get("resolved_issues") or []) + (brain.get("active_issues") or [])
+        for p in prior:
+            fk = str(p.get("fact_key") or p.get("title") or "")
+            if "stale_sell" in fk or "amc" in fk.lower():
+                parts.append(f"Brain: {p.get('title')} — {str(p.get('summary') or '')[:120]}")
+
+    if "ondo" in ql or "insufficient" in ql:
+        parts.append(
+            "ONDO/USD insufficient USD bug: crypto buy preflight now checks USD cash + buffer before submit. "
+            "Broker rejections with 'insufficient balance for USD' are not labeled as shorting."
         )
 
-    if "today" in ql or "happened" in ql:
-        ms = mc.get("momo_summary") or {}
-        saw = ms.get("saw") or []
-        att = ms.get("attention") or []
-        if saw:
-            parts.append("Saw: " + "; ".join(saw[:5]))
-        if att:
-            parts.append("Attention: " + "; ".join(att[:5]))
-
-    # Crypto failure / attempt / blocked questions
-    _crypto_fail_kw = (
-        ("crypto" in ql and ("fail" in ql or "block" in ql or "attempt" in ql or "try" in ql or "tried" in ql))
-        or ("crypto" in ql and "why" in ql and "trade" not in ql)
-        or "crypto push" in ql
-    )
-    if _crypto_fail_kw:
-        act = ctx.get("activity_export") or {}
-        evts = act.get("crypto_push_pull_events") or []
-        cr = mc.get("crypto_night") or {}
-        ex = mc.get("crypto_executor_readiness") or mc.get("crypto_eligibility") or {}
-        cpp = ex.get("crypto_push_pull_status") or act.get("crypto_push_pull_status") or {}
-        push_ok = ex.get("push_allowed") if ex else cr.get("push_possible")
-        blocked = (
-            ex.get("push_blocked_reason")
-            or ex.get("disabling_config_key")
-            or cr.get("blocked_reason")
-            or cpp.get("push_blocked_reason")
+    if "baseline" in ql or "transition" in ql or "reconcil" in ql:
+        prev = ctx.get("broker_transition_preview") or {}
+        st = ctx.get("broker_transition_status") or mc.get("broker_account_transition_status") or {}
+        parts.append(
+            f"Broker transition: {prev.get('transition_type') or st.get('headline') or 'unknown'}. "
+            f"first_run_baseline_required={prev.get('first_run_baseline_required')}. "
+            f"aligned={st.get('aligned_with_broker')}. "
+            f"ghost_symbols={prev.get('ghost_symbols') or []}."
         )
-        cfg = (ex.get("config_flags") or {}) if ex else {}
-        if cfg.get("paper_auto_enabled"):
-            parts.append(
-                f"Paper auto-enabled crypto push (raw push={cfg.get('crypto_push_enabled_raw')}, "
-                f"effective={cfg.get('crypto_push_enabled_effective')})."
-            )
-        if blocked:
-            parts.append(f"Crypto executor blocked: {blocked}.")
-        elif push_ok is False:
-            parts.append("Crypto push executor is off (see disabling_config_key in Mission Control).")
-        elif push_ok is True:
-            parts.append("Crypto push executor reports ready; check recent events for fills.")
-        if evts:
-            from monitoring.reason_human import human_reason_code
-            recent = evts[:5]
-            lines = []
-            for e in recent:
-                sym = e.get("symbol", "?")
-                rc_val = e.get("reason_code", e.get("decision", "?"))
-                human = e.get("human_reason") or human_reason_code(str(rc_val))
-                meta = e.get("meta") or {}
-                sub = meta.get("push_allowed_subreason") or e.get("sub_reason", "")
-                ts = e.get("created_at") or e.get("decided_at") or ""
-                lines.append(f"  {sym}: {human}{(' (' + str(sub) + ')') if sub else ''} [{rc_val}] {ts[:16]}")
-            parts.append("Recent crypto push/pull events:\n" + "\n".join(lines))
-        mc_ev = (mc.get("crypto_night") or {}).get("latest_crypto_attempts") or []
-        if mc_ev and not evts:
-            from monitoring.reason_human import human_reason_code
-            e0 = mc_ev[0]
-            parts.append(
-                f"Latest crypto attempt: {e0.get('symbol')} {e0.get('decision')} — "
-                f"{e0.get('human_reason') or human_reason_code(str(e0.get('reason_code')))}"
-            )
-        elif not blocked:
-            parts.append(
-                "No recent crypto push/pull events found. "
-                "Check that crypto_push_enabled=1 and buying power is available."
-            )
+        cc = pos.get("consistency_check") or {}
+        parts.append(f"Position consistency: {cc.get('status')} — {cc.get('reason', '')[:100]}")
+
+    if "live" in ql and "ready" in ql:
+        parts.append(f"Live allowed: {lr.get('live_allowed')}. Blockers: {', '.join((lr.get('architecture_blockers') or [])[:6])}.")
+
+    if "fast" in ql and "loop" in ql:
+        fl = canonical.get("fast_loop_state") or {}
+        parts.append(
+            f"Fast loop: mode={fl.get('execution_mode')}, execute_orders={fl.get('execute_orders')}, "
+            f"signal_timeframe={fl.get('signal_timeframe')}, scalping_capable={fl.get('scalping_capable')}."
+        )
+        parts.append(brain.get("next_best_action") or "")
+
+    if brain.get("current_context_summary"):
+        parts.append("System truth: " + str(brain["current_context_summary"])[:280])
+
+    blockers = brain.get("active_blockers") or lr.get("architecture_blockers") or []
+    if blockers:
+        parts.append("Active blockers: " + ", ".join(str(b) for b in blockers[:8]))
 
     if not parts:
-        eq = ac.get("equity")
-        mode = ac.get("mode", "paper")
         parts.append(
-            f"Mode {mode}. Equity ${eq if eq is not None else 'unknown'}. "
-            "Ask a specific question (buying power, positions, crypto tonight, reset)."
+            f"Equity ${acct.get('equity', '?')}, BP ${acct.get('buying_power', '?')}, "
+            f"{len(active)} active positions. Ask about blockers, baseline, ONDO bug, or fast loop."
         )
 
-    return "\n".join(parts)
+    return "\n".join(p for p in parts if p)

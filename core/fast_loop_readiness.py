@@ -60,6 +60,12 @@ def build_fast_loop_execution_readiness(
     sleeve = sleeve_audit or {}
     diag = scoring_diagnostics or build_fast_loop_scoring_diagnostics(fl)
     rt = rt or {}
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        rt = load_runtime_config_for_worker() if not rt else rt
+    except Exception:
+        pass
 
     blockers: list[str] = []
     scanned = int(diag.get("symbols_scanned") or fl.get("symbols_scanned") or 0)
@@ -71,6 +77,16 @@ def build_fast_loop_execution_readiness(
         blockers.append("fast_loop_observe_only_config")
     if not cfg_is_enabled(rt.get("crypto_fast_loop_execute_orders"), default=False):
         blockers.append("crypto_fast_loop_execute_orders_off")
+
+    sig_tf = str(fl.get("signal_timeframe") or "")
+    if sig_tf == "1d" and not fl.get("scalping_capable", False):
+        blockers.append("fast_loop_daily_signal_not_scalping")
+    cycle_sec = cfg_float(rt, "crypto_fast_loop_cycle_seconds", 20.0)
+    if sig_tf == "1d" and cycle_sec < 300.0:
+        blockers.append("fast_loop_cycle_faster_than_signal_timeframe")
+
+    if bool(rt.get("allow_full_deployment")):
+        blockers.append("allow_full_deployment_enabled")
 
     bp = _f(cap.get("buying_power"))
     if bp < 1.0 or rec.get("enabled"):

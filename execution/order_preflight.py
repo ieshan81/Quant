@@ -115,6 +115,42 @@ class OrderPreflightResult:
         )
 
 
+def _resolve_buying_power_for_buy(
+    *,
+    buying_power: float | None,
+    extra_meta: dict[str, Any] | None,
+    asset_class: str,
+) -> tuple[float | None, str]:
+    """Load canonical BP/cash for buy preflight — never leave unknown."""
+    if buying_power is not None and float(buying_power) >= 0:
+        return float(buying_power), "caller"
+    meta = extra_meta or {}
+    acct = meta.get("canonical_account")
+    if isinstance(acct, dict):
+        if str(asset_class).lower() == "crypto":
+            usable = acct.get("usable_crypto_cash")
+            if usable is not None:
+                return float(usable), "canonical_account.usable_crypto_cash"
+            cash = acct.get("cash")
+            if cash is not None:
+                return float(cash), "canonical_account.cash"
+        else:
+            bp = acct.get("buying_power")
+            if bp is not None:
+                return float(bp), "canonical_account.buying_power"
+    try:
+        from execution.crypto_buy_preflight import resolve_crypto_buy_account
+
+        canon = resolve_crypto_buy_account()
+        if str(asset_class).lower() == "crypto":
+            return float(canon.get("usable_crypto_cash") or canon.get("cash") or 0), str(
+                canon.get("primary_source") or "canonical_account"
+            )
+        return float(canon.get("buying_power") or canon.get("cash") or 0), str(canon.get("primary_source") or "canonical_account")
+    except Exception:
+        return None, "unavailable"
+
+
 # ---------------------------------------------------------------------------
 # Guard check helpers (composable building blocks)
 # ---------------------------------------------------------------------------
@@ -295,7 +331,41 @@ def run_preflight_checks(
                 **common,
             )
     elif s == "buy" and notional > 0:
-        common["buying_power_status"] = {"status": "not_checked", "warning": "buy_without_bp_check"}
+        resolved_bp, acct_src = _resolve_buying_power_for_buy(
+            buying_power=buying_power,
+            extra_meta=extra_meta,
+            asset_class=ac,
+        )
+        if resolved_bp is None:
+            code = (
+                rc.CRYPTO_BUY_BLOCKED_USD_BALANCE_UNKNOWN
+                if ac == "crypto"
+                else rc.STOCK_BUY_BLOCKED_BUYING_POWER_UNKNOWN
+            )
+            common["buying_power_status"] = {
+                "status": "unknown",
+                "source_attempted": acct_src,
+                "ok": False,
+            }
+            return OrderPreflightResult.blocked(
+                code,
+                f"{sym}: Buy blocked — buying power / cash unavailable for preflight",
+                **common,
+            )
+        bp_ok = float(resolved_bp) >= notional
+        common["buying_power_status"] = {
+            "status": "checked",
+            "buying_power": resolved_bp,
+            "required": notional,
+            "source": acct_src,
+            "ok": bp_ok,
+        }
+        if not bp_ok:
+            return OrderPreflightResult.blocked(
+                rc.PREFLIGHT_BLOCKED_BUYING_POWER,
+                f"{sym}: Insufficient buying power ${float(resolved_bp):.2f} < ${notional:.2f}",
+                **common,
+            )
     else:
         common["buying_power_status"] = {"status": "not_applicable"}
 

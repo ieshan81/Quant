@@ -1115,7 +1115,18 @@ def build_live_readiness_state(
         if stale_exits:
             arch_blockers.append("stale_exit_signals_quarantined")
             live_evidence["stale_exit_signals_quarantined"] = len(stale_exits)
+    try:
+        from core.paper_trading_path import load_runtime_config_for_worker
+
+        _rt_lr = load_runtime_config_for_worker()
+        if bool(_rt_lr.get("allow_full_deployment")):
+            arch_blockers.append("allow_full_deployment_enabled")
+    except Exception:
+        pass
+
     if fast_loop_state:
+        if str(fast_loop_state.get("signal_timeframe") or "") == "1d" and not fast_loop_state.get("scalping_capable"):
+            arch_blockers.append("fast_loop_daily_signal_not_scalping")
         fl_ready = fast_loop_state.get("fast_loop_execution_readiness") or {}
         scoring_diag = fast_loop_state.get("fast_loop_scoring_diagnostics")
         if fl_ready and not fl_ready.get("can_enable_paper_execution"):

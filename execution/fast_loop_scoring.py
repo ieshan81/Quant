@@ -50,6 +50,10 @@ def score_fast_loop_symbol(
         "quote_status": "unknown",
         "bars_status": "unknown",
         "required_fields_missing": [],
+        "signal_timeframe": "1d",
+        "bar_interval": "1d",
+        "bar_source": "yfinance_daily",
+        "scalping_capable": False,
     }
     if not sym:
         return None, "UNSUPPORTED_SYMBOL", _finalize_row({**diag, "detail": "empty symbol"}, "UNSUPPORTED_SYMBOL")
@@ -106,6 +110,11 @@ def score_fast_loop_symbol(
         return None, "NO_QUOTE", _finalize_row(diag, "NO_QUOTE")
 
     diag["last_close"] = round(mid, 6)
+    try:
+        if hasattr(df.index, "max") and len(df.index):
+            diag["last_bar_timestamp"] = str(df.index.max())
+    except Exception:
+        pass
     if mid <= 0:
         diag["quote_status"] = "missing"
         return None, "NO_QUOTE", _finalize_row({**diag, "detail": "non_positive close"}, "NO_QUOTE")

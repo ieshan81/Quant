@@ -142,7 +142,17 @@ def test_dashboard_js_mission_control_helpers(dash_app) -> None:
 def test_momo_ask_endpoint(dash_app) -> None:
     r = dash_app.test_client().post(
         "/api/momo/ask",
-        json={"question": "Why is buying power low?", "include": {"mission_control": True}},
+        json={
+            "question": "Why is buying power low?",
+            "include": {
+                "mission_control": True,
+                "canonical_truth": False,
+                "momo_brain": False,
+                "broker_diagnostic": False,
+                "order_flow": False,
+                "momo_memory": False,
+            },
+        },
     )
     assert r.status_code == 200
     data = __import__("json").loads(r.data)

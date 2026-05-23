@@ -525,7 +525,11 @@ def _run_acceptance_audit(*, production_url: str | None = None) -> dict[str, Any
     try:
         proc = subprocess.run(cmd, cwd=str(tool.parents[1]), capture_output=True, text=True, timeout=300)
         report_path = tool.parents[1] / "data" / "exports" / "live_grade_acceptance_report.json"
-        result = {"exit_code": proc.returncode, "stdout_tail": (proc.stdout or "")[-1500:]}
+        result = {
+            "exit_code": proc.returncode,
+            "stdout_tail": (proc.stdout or "")[-1500:],
+            "stderr_tail": (proc.stderr or "")[-1500:],
+        }
         if report_path.is_file():
             result["report_path"] = str(report_path)
             result.update(json.loads(report_path.read_text(encoding="utf-8")))
@@ -533,7 +537,13 @@ def _run_acceptance_audit(*, production_url: str | None = None) -> dict[str, Any
         result["generated_at"] = _now()
         return result
     except Exception as exc:
-        return {"acceptance_status": "FAIL", "error": str(exc)[:200], "generated_at": _now()}
+        return {
+            "acceptance_status": "FAIL",
+            "error": str(exc)[:200],
+            "stderr_tail": str(exc)[:1500],
+            "stdout_tail": "",
+            "generated_at": _now(),
+        }
 
 
 def apply_broker_transition(
@@ -700,6 +710,10 @@ def build_transition_status() -> dict[str, Any]:
     preview = preview_broker_transition()
     active = get_active_epoch()
     last_audit = (active or {}).get("acceptance_audit_result") or {}
+    recon = preview.get("reconciliation_health") or {}
+    recon_clean = bool(recon.get("clean"))
+    first_run = bool(preview.get("first_run_baseline_required"))
+    aligned = recon_clean and not first_run and not bool(preview.get("runtime_reset_recommended"))
     return {
         "wizard_state": preview.get("wizard_state"),
         "transition_type": preview.get("transition_type"),
@@ -711,6 +725,19 @@ def build_transition_status() -> dict[str, Any]:
         "generated_at": _now(),
         "config_display": preview.get("config_display"),
         "warnings": preview.get("warnings") or [],
+        "aligned_with_broker": aligned,
+        "runtime_reset_recommended": bool(preview.get("runtime_reset_recommended")),
+        "first_run_baseline_required": first_run,
+        "reconciliation_clean": recon_clean,
+        "broker_positions_count": preview.get("broker_positions_count"),
+        "runtime_positions_count": preview.get("runtime_positions_count"),
+        "ghost_symbols": preview.get("ghost_symbols") or [],
+        "stale_symbols": preview.get("stale_symbols") or [],
+        "headline": (
+            "Apply broker baseline required before trusting alignment."
+            if first_run
+            else ("Broker aligned." if aligned else "Broker/runtime mismatch — review transition wizard.")
+        ),
     }
 
 

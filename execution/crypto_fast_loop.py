@@ -67,7 +67,13 @@ def get_crypto_fast_loop_status() -> dict[str, Any]:
     try:
         from monitoring.ui_truth_helpers import attach_fast_loop_display_fields
 
-        return attach_fast_loop_display_fields(_finalize_status_readout(out))
+        st = attach_fast_loop_display_fields(_finalize_status_readout(out))
+        try:
+            from execution.fast_loop_signal_truth import merge_signal_truth_into_status
+
+            return merge_signal_truth_into_status(st)
+        except Exception:
+            return st
     except Exception:
         return _finalize_status_readout(out)
 
@@ -548,10 +554,57 @@ def run_crypto_fast_loop_once(
                 evidence={**pf, "final_action": "blocked", "exact_reason": push_blocker},
             )
         elif execute and config.MODE == "paper" and not config.trading_is_live():
+            from execution.fast_loop_execution import attempt_fast_loop_crypto_buy
+
+            min_n = crypto_push_pull.crypto_min_notional_usd(rt_eff)
+            order_notional = float(pf.get("required_notional") or pf.get("max_notional_after_buffer") or min_n)
+            mid_px = 0.0
+            for row in (scoring_diag.get("per_symbol_rejection_reasons") or scoring_diag.get("per_symbol") or []):
+                if str(row.get("symbol") or "").upper() == str(best_sym).upper():
+                    mid_px = float(row.get("last_close") or 0)
+                    break
+            if mid_px <= 0:
+                try:
+                    from execution import stock_broker
+
+                    mid_px = float(stock_broker.fetch_crypto_latest_price(str(best_sym)) or 0)
+                except Exception:
+                    mid_px = 0.0
+            if mid_px <= 0:
+                _log_fast(
+                    "CRYPTO_FAST_EXECUTION_BLOCKED",
+                    loop_id=lid,
+                    evidence={
+                        "symbol": best_sym,
+                        "reason_code": "CRYPTO_FAST_NO_PRICE",
+                        "broker_submit_attempted": False,
+                    },
+                )
+            else:
+                exec_ev = attempt_fast_loop_crypto_buy(
+                    symbol=str(best_sym),
+                    notional=max(order_notional, min_n),
+                    mid=mid_px,
+                    rt=rt_eff,
+                    loop_id=lid,
+                    preflight_forensics=pf,
+                )
+                _log_fast(
+                    str(exec_ev.get("event") or "CRYPTO_FAST_ORDER_REJECTED"),
+                    loop_id=lid,
+                    evidence=exec_ev,
+                )
+        elif execute:
             _log_fast(
-                "CRYPTO_FAST_ORDER_SUBMITTED",
+                "CRYPTO_FAST_EXECUTION_NOT_IMPLEMENTED",
                 loop_id=lid,
-                evidence={"symbol": best_sym, "note": "execute_orders flag on"},
+                evidence={
+                    "symbol": best_sym,
+                    "reason_code": "CRYPTO_FAST_LIVE_OR_DISABLED_MODE",
+                    "broker_submit_attempted": False,
+                    "mode": config.MODE,
+                    "live": config.trading_is_live(),
+                },
             )
     else:
         reason = push_blocker or "SCORE_BELOW_THRESHOLD"
@@ -607,8 +660,10 @@ def run_crypto_fast_loop_once(
     }
     st = _finalize_status_readout(st)
     try:
+        from execution.fast_loop_signal_truth import merge_signal_truth_into_status
         from monitoring.ui_truth_helpers import attach_fast_loop_display_fields
 
+        st = merge_signal_truth_into_status(st, rt=rt_eff)
         st = attach_fast_loop_display_fields(st)
     except Exception:
         pass

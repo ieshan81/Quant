@@ -2738,9 +2738,20 @@ def create_app() -> Flask:
     def api_momo_ask() -> Any:
         body = request.get_json(force=True, silent=True) or {}
         from monitoring.momo_ask import answer_momo_question
+        inc = body.get("include") if isinstance(body.get("include"), dict) else None
+        if inc is None:
+            inc = {
+                "mission_control": True,
+                "canonical_truth": True,
+                "momo_brain": True,
+                "broker_diagnostic": True,
+                "ops_logs": True,
+                "order_flow": True,
+                "momo_memory": True,
+            }
         return jsonify(answer_momo_question(
             str(body.get("question", "")),
-            include=body.get("include") if isinstance(body.get("include"), dict) else None,
+            include=inc,
         ))
 
     @app.post("/api/ops/gpt-analyze-bundle/send-telegram")
