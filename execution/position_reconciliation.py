@@ -132,11 +132,34 @@ def compute_broker_positions(rest_client: Any | None) -> dict[tuple[str, str], d
             if qty_raw is None and isinstance(p, dict):
                 qty_raw = p.get("qty") or p.get("quantity")
             qty = float(qty_raw or 0.0)
+            qty_av_raw = None
+            if isinstance(p, dict):
+                qty_av_raw = p.get("qty_available") or p.get("available")
+            else:
+                # Use vars() / __dict__ first so MagicMock auto-attrs don't poison the value.
+                d = getattr(p, "__dict__", None) or {}
+                if isinstance(d, dict) and "qty_available" in d:
+                    qty_av_raw = d.get("qty_available")
+                elif hasattr(p.__class__, "qty_available") and not callable(
+                    getattr(p.__class__, "qty_available", None)
+                ):
+                    qty_av_raw = getattr(p, "qty_available", None)
+            qty_available = qty
+            if qty_av_raw is not None and isinstance(qty_av_raw, (int, float, str)):
+                try:
+                    qty_available = float(qty_av_raw)
+                except (TypeError, ValueError):
+                    qty_available = qty
             apx = getattr(p, "avg_entry_price", None) or (p.get("avg_entry_price") if isinstance(p, dict) else None)
+            # Use qty_available for sell sizing — Alpaca rejects sells > qty_available with 40310000
+            # ("insufficient balance for <ASSET>") which we do NOT want to misread as shorting.
+            sell_qty = min(qty, qty_available) if qty_available >= 0 else qty
             out[key] = {
                 "symbol": sym,
                 "asset_class": key[0],
-                "broker_qty": qty,
+                "broker_qty": sell_qty,
+                "broker_qty_total": qty,
+                "broker_qty_available": qty_available,
                 "avg_entry": float(apx or 0.0),
             }
         except (TypeError, ValueError, AttributeError):

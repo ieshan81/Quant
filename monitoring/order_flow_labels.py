@@ -138,7 +138,20 @@ def classify_broker_rejection_reason(
         if asset_l == "crypto":
             return "BROKER_REJECT_INSUFFICIENT_USD_BALANCE"
         return "BROKER_REJECT_INSUFFICIENT_BALANCE"
-    if code == "40310000" or "not allowed to short" in detail:
+    # Sells with code 40310000 and message "insufficient balance for <ASSET>" (not USD) are
+    # NOT shorting — they mean the broker's available qty is below the requested qty
+    # (qty is held for other orders, settled-yesterday, or rotating). Classify accurately.
+    if side_l == "sell" and (
+        "insufficient balance for" in detail and "for usd" not in detail
+    ):
+        return "BROKER_REJECT_INSUFFICIENT_ASSET_BALANCE"
+    if "not allowed to short" in detail:
+        return "BROKER_REJECT_SHORT_NOT_ALLOWED"
+    if code == "40310000":
+        # Generic 40310000 without explicit text — keep historical default but mark sells as
+        # asset-balance issue not shorting (paper crypto does not short).
+        if side_l == "sell" and asset_l == "crypto":
+            return "BROKER_REJECT_INSUFFICIENT_ASSET_BALANCE"
         return "BROKER_REJECT_SHORT_NOT_ALLOWED"
     if "insufficient buying power" in detail or "buying power" in detail:
         return "BROKER_REJECT_INSUFFICIENT_BUYING_POWER"
@@ -168,6 +181,8 @@ def format_broker_rejected_human(
     )
     if reason_class == "BROKER_REJECT_INSUFFICIENT_USD_BALANCE":
         return f"{sym} broker rejected: insufficient USD balance for this order."
+    if reason_class == "BROKER_REJECT_INSUFFICIENT_ASSET_BALANCE":
+        return f"{sym} broker rejected: sell qty exceeds broker available qty (asset balance encumbered/settling)."
     if reason_class == "BROKER_REJECT_SHORT_NOT_ALLOWED":
         return f"{sym} broker rejected: Alpaca {code or '40310000'} account is not allowed to short."
     if reason_class == "BROKER_REJECT_INSUFFICIENT_BUYING_POWER":

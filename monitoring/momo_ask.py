@@ -40,7 +40,15 @@ def answer_momo_question(
     include: dict[str, bool] | None = None,
     timeout_sec: float = 30.0,
 ) -> dict[str, Any]:
+    import os as _os
+
+    # FAST DEFAULT: deterministic-only path runs under 5s. Gemini enhancement is opt-in
+    # via include["momo_memory"]=True OR MOMO_DETERMINISTIC_FALLBACK_ENABLED=0.
+    # Operator UI quick chips do not pass include.momo_memory, so they stay fast.
+    _det_only = _os.environ.get("MOMO_DETERMINISTIC_FALLBACK_ENABLED", "1").strip() not in ("0", "false", "False")
     include = include or {}
+    if "momo_memory" not in include and _det_only:
+        include["momo_memory"] = False
     q = (question or "").strip()
     t0 = time.perf_counter()
     if not q:

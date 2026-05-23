@@ -1034,6 +1034,7 @@ _PAGE = """<!DOCTYPE html>
         <button type="button" class="tab-btn" data-tab="ops">Ops Center</button>
         <button type="button" class="tab-btn" data-tab="files">Files</button>
         <button type="button" class="tab-btn" data-tab="config">Config</button>
+        <button type="button" class="tab-btn" data-tab="settings">Settings &amp; Connections</button>
       </nav>
       <div class="sidebar-footer glass-card">
         <div class="sidebar-account-lab">Paper account</div>
@@ -1765,6 +1766,39 @@ _PAGE = """<!DOCTYPE html>
         </div>
         <p id="configEditorStatus" class="empty-hint"></p>
         <div id="configEditorRoot"></div>
+      </div>
+    </section>
+
+    <section id="panel-settings" class="tab-panel cockpit-tab">
+      <div class="tab-panel-header"><h2>Settings &amp; Connections</h2><p>Broker, AI, Telegram. Masked secrets. No full keys. No withdraw.</p></div>
+      <div class="grid-metrics" style="margin-bottom:12px;">
+        <div class="metric glass-card"><div class="lab">Admin auth</div><div class="val" id="setAuthStatus">—</div></div>
+        <div class="metric glass-card"><div class="lab">Live trading</div><div class="val" id="setLiveStatus">—</div></div>
+        <div class="metric glass-card"><div class="lab">Broker truth</div><div class="val" id="setBrokerTruth">—</div></div>
+        <div class="metric glass-card"><div class="lab">Fresh Start</div><div class="val" id="setFreshStart">—</div></div>
+      </div>
+      <div id="settingsAuthBanner" class="card glass-card" style="margin-bottom:12px;"></div>
+      <div class="card glass-card">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Connections</h2>
+        <p class="empty-hint" style="margin:0 0 10px;">Secrets stay in Railway env. Keys are masked. Use Test Connection to check health.</p>
+        <div id="connectionsCards"></div>
+      </div>
+      <div class="card glass-card" style="margin-top:12px;">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Storage health</h2>
+        <p class="empty-hint" style="margin:0 0 10px;">Canonical DBs, legacy DBs, and corrupt files. Quarantine via Fresh Start wizard.</p>
+        <div id="storageAuditCards"></div>
+      </div>
+      <div class="card glass-card" style="margin-top:12px;border:1px solid var(--danger,#dc2626);">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;color:var(--danger,#dc2626);">Danger Zone — Fresh Start Runtime</h2>
+        <p class="empty-hint" style="margin:0 0 10px;">
+          Never touches Alpaca, secrets, env vars, or live trading. Backup-first. Typed phrase required.
+          Disabled when admin auth missing.
+        </p>
+        <div id="freshStartPreview" class="mono" style="font-size:12px;line-height:1.5;background:rgba(0,0,0,0.2);padding:10px;border-radius:6px;max-height:300px;overflow:auto;">Loading preview…</div>
+        <div class="mc-actions" style="margin-top:10px;">
+          <button type="button" id="btnFreshStartRefresh" class="btn secondary">Refresh preview</button>
+          <button type="button" id="btnFreshStartApply" class="btn-sell" disabled title="Admin auth required">Apply (admin only)</button>
+        </div>
       </div>
     </section>
 
@@ -2813,14 +2847,14 @@ def create_app() -> Flask:
     def api_fresh_start_preview() -> Response:
         out: dict[str, Any] = {"ok": True}
         try:
-            import sys
+            import importlib.util
             from pathlib import Path as _P
 
             _root = _P(__file__).resolve().parents[1]
-            if str(_root) not in sys.path:
-                sys.path.insert(0, str(_root))
-            from tools.fresh_start_runtime import preview
-            out.update(preview({}))
+            spec = importlib.util.spec_from_file_location("_fsr_mod", _root / "tools" / "fresh_start_runtime.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            out.update(mod.preview({}))
         except Exception as exc:
             out = {
                 "ok": False,

@@ -4889,43 +4889,70 @@
     var askBtn = document.getElementById("btnMcAskMomo");
     var input = document.getElementById("mcMomoInput");
     var out = document.getElementById("mcMomoAnswer");
-    function sendQ(q) {
+    function renderMomoStructured(d) {
+      if (!out) return;
+      var elapsed = d.elapsed_ms != null ? " · " + d.elapsed_ms + " ms" : "";
+      var provider = d.provider ? " · " + d.provider : "";
+      var refused = d.refused ? " · refused" : "";
+      var s = d.structured || {};
+      var parts = [];
+      parts.push("<div style='font-size:12px;color:var(--muted);margin-bottom:6px;'>Momo" + provider + elapsed + refused + "</div>");
+      if (s.summary || d.answer) {
+        parts.push("<div style='white-space:pre-wrap;line-height:1.5;'>" + safeText(s.summary || d.answer, "") + "</div>");
+      }
+      if (s.blockers && s.blockers.length) {
+        parts.push("<div style='margin-top:8px;'><strong>Blockers:</strong><ul style='margin:4px 0 0 16px;'>" + s.blockers.slice(0, 8).map(function (b) { return "<li class='mono' style='font-size:12px;'>" + safeText(b, "") + "</li>"; }).join("") + "</ul></div>");
+      }
+      if (s.cards && s.cards.length) {
+        parts.push("<div style='margin-top:8px;'><strong>Cards:</strong></div>");
+        s.cards.forEach(function (c) {
+          var items = (c.items || []).map(function (it) { return "<li class='mono' style='font-size:12px;'>" + (typeof it === "string" ? safeText(it, "") : JSON.stringify(it)) + "</li>"; }).join("");
+          parts.push("<div class='glass-card' style='padding:8px;margin-top:6px;'><div class='lab'>" + safeText(c.title, "") + "</div><ul style='margin:4px 0 0 16px;'>" + items + "</ul></div>");
+        });
+      }
+      if (s.recommended_actions && s.recommended_actions.length) {
+        parts.push("<div style='margin-top:8px;'><strong>Actions:</strong><ul style='margin:4px 0 0 16px;'>" + s.recommended_actions.slice(0, 6).map(function (a) { return "<li style='font-size:13px;'>" + safeText(a, "") + "</li>"; }).join("") + "</ul></div>");
+      }
+      parts.push("<details style='margin-top:10px;'><summary class='empty-hint' style='cursor:pointer;'>Advanced (raw)</summary><pre class='mono' style='font-size:11px;max-height:200px;overflow:auto;'>" + safeText(JSON.stringify(d, null, 2), "") + "</pre></details>");
+      out.innerHTML = parts.join("");
+    }
+    function sendQ(q, opts) {
       if (!q) return;
-      if (out) out.textContent = "Asking Momo…";
+      var fast = !!(opts && opts.fast);
+      if (out) out.textContent = fast ? "Asking Momo (fast)…" : "Asking Momo…";
+      var include = {
+        mission_control: true,
+        broker_diagnostic: true,
+        activity_export: false,
+        capital_allocator: true,
+        momo_memory: !fast,
+        ops_logs: false
+      };
       fetch("/api/momo/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question: q,
-          include: {
-            mission_control: true,
-            broker_diagnostic: true,
-            activity_export: true,
-            capital_allocator: true,
-            momo_memory: true,
-            ops_logs: false
-          }
-        })
+        body: JSON.stringify({ question: q, include: include })
       })
         .then(function (r) {
           if (!r.ok) throw new Error("/api/momo/ask HTTP " + r.status);
           return r.json();
         })
         .then(function (d) {
-          if (out) out.textContent = d.answer || safeText(d.error, "No answer");
+          renderMomoStructured(d);
         })
         .catch(function (e) {
           if (out) out.textContent = safeText(e && e.message, String(e));
         });
     }
     if (askBtn) askBtn.addEventListener("click", function () {
-      sendQ(input ? input.value.trim() : "");
+      sendQ(input ? input.value.trim() : "", { fast: false });
     });
     document.querySelectorAll(".mc-quick").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var q = btn.getAttribute("data-q") || "";
         if (input) input.value = q;
-        sendQ(q);
+        // Quick chips use fast deterministic path (< 5s) — Gemini enhancement off by default.
+        sendQ(q, { fast: true });
       });
     });
   }
@@ -5542,8 +5569,108 @@
         if (b.getAttribute("data-tab") === "ops") loadOpsTab();
         if (b.getAttribute("data-tab") === "files") loadFilesTab();
         if (b.getAttribute("data-tab") === "config") loadConfigEditor();
+        if (b.getAttribute("data-tab") === "settings") loadSettingsTab();
       });
     });
+  }
+
+  // Settings & Connections tab loader (Final UI Pass)
+  async function loadSettingsTab() {
+    try {
+      var flagsR = await fetch("/api/ops/safe-flags", { cache: "no-store" });
+      var flags = flagsR.ok ? await flagsR.json() : {};
+      var connR = await fetch("/api/connections/status", { cache: "no-store" });
+      var conn = connR.ok ? await connR.json() : { profiles: [] };
+      var stR = await fetch("/api/ops/storage-audit", { cache: "no-store" });
+      var st = stR.ok ? await stR.json() : { dbs: [] };
+      var fsR = await fetch("/api/ops/fresh-start/preview", { cache: "no-store" });
+      var fs = fsR.ok ? await fsR.json() : {};
+
+      var authEnabled = !!flags.auth_enabled;
+      var liveLock = !!flags.live_trading_hardcode_lock;
+      var brokerTruth = String(flags.broker_truth_source || "?");
+      var freshOk = !!flags.fresh_start_enabled;
+      var setEl = function (id, txt) { var e = document.getElementById(id); if (e) e.textContent = txt; };
+      setEl("setAuthStatus", authEnabled ? "Enabled" : "Read-only (no DASHBOARD_ADMIN_TOKEN)");
+      setEl("setLiveStatus", liveLock ? "Hard-locked" : "WARN: lock disabled");
+      setEl("setBrokerTruth", brokerTruth);
+      setEl("setFreshStart", freshOk ? "Enabled" : "Disabled");
+
+      var banner = document.getElementById("settingsAuthBanner");
+      if (banner) {
+        if (!authEnabled) {
+          banner.innerHTML = '<strong style="color:#f59e0b;">Read-only admin mode.</strong> Set <span class="mono">DASHBOARD_ADMIN_TOKEN</span> in Railway to enable destructive actions (Fresh Start, secret update, DB download).';
+        } else {
+          banner.innerHTML = '<strong style="color:#10b981;">Admin auth enabled.</strong> Destructive actions require X-Admin-Token header + typed confirmation.';
+        }
+      }
+
+      var connRoot = document.getElementById("connectionsCards");
+      if (connRoot) {
+        var html = "";
+        (conn.profiles || []).forEach(function (p) {
+          var badge = p.enabled
+            ? '<span class="status-badge ok">OK</span>'
+            : '<span class="status-badge warn">Blocked</span>';
+          var lines = [
+            "<div><span class='lab'>Provider:</span> " + (p.provider || "?") + "</div>",
+            "<div><span class='lab'>Mode:</span> " + (p.mode || "-") + "</div>",
+            "<div><span class='lab'>Key:</span> <span class='mono'>" + (p.masked_key_id || "—") + "</span></div>",
+            "<div><span class='lab'>Can trade:</span> " + (p.can_trade ? "yes" : "no") + "</div>",
+            "<div><span class='lab'>Can withdraw:</span> " + (p.can_withdraw ? "<span style='color:#dc2626'>YES (alarm)</span>" : "no") + "</div>",
+          ];
+          if (p.blocked_reason) lines.push("<div><span class='lab'>Blocked:</span> " + p.blocked_reason + "</div>");
+          if (p.health && p.health.reachable) lines.push("<div><span class='lab'>Health:</span> reachable</div>");
+          html += "<div class='glass-card' style='padding:12px;margin-bottom:8px;'>" +
+            "<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;'>" +
+            "<strong>" + (p.name || "?") + "</strong>" + badge + "</div>" +
+            lines.join("") + "</div>";
+        });
+        connRoot.innerHTML = html || "<p class='empty-hint'>No profiles available.</p>";
+      }
+
+      var storRoot = document.getElementById("storageAuditCards");
+      if (storRoot) {
+        var dbs = (st.dbs || []);
+        var canonical = dbs.filter(function (d) { return d.category === "main"; });
+        var extras = dbs.filter(function (d) { return d.category === "extra"; });
+        var quarantine = dbs.filter(function (d) { return d.category === "quarantine"; });
+        var fmtBytes = function (n) { if (n > 1e6) return (n / 1e6).toFixed(1) + " MB"; if (n > 1e3) return (n / 1e3).toFixed(1) + " KB"; return (n || 0) + " B"; };
+        var section = function (label, items, cls) {
+          if (!items.length) return "";
+          var rows = items.map(function (d) {
+            var path = (d.path || "").split(/[\\/]/).pop();
+            return "<li class='mono' style='font-size:12px;'>" + path + " — " + fmtBytes(d.size_bytes) + " · tables " + (d.tables || 0) + "</li>";
+          }).join("");
+          return "<div style='margin-bottom:10px;'><strong class='" + cls + "'>" + label + " (" + items.length + ")</strong><ul style='margin:4px 0 0 18px;'>" + rows + "</ul></div>";
+        };
+        storRoot.innerHTML =
+          section("Canonical DBs", canonical, "") +
+          section("Legacy / extras", extras, "") +
+          section("Quarantine candidates", quarantine, "");
+        if (!storRoot.innerHTML) storRoot.innerHTML = "<p class='empty-hint'>Storage clean — no DBs detected (production volume may not be mapped locally).</p>";
+      }
+
+      var fsRoot = document.getElementById("freshStartPreview");
+      if (fsRoot) {
+        if (fs.ok === false) {
+          fsRoot.textContent = "Preview error: " + (fs.error || "unknown");
+        } else {
+          fsRoot.textContent = JSON.stringify(fs, null, 2);
+        }
+      }
+      var fsBtn = document.getElementById("btnFreshStartApply");
+      if (fsBtn) {
+        fsBtn.disabled = !authEnabled;
+        fsBtn.title = authEnabled ? "Type FRESH START PAPER RUNTIME to apply" : "Admin auth required";
+      }
+      var fsRefresh = document.getElementById("btnFreshStartRefresh");
+      if (fsRefresh) {
+        fsRefresh.onclick = loadSettingsTab;
+      }
+    } catch (e) {
+      console.error("[settings] load failed", e);
+    }
   }
 
   if (document.readyState === "loading") {

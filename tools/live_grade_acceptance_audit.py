@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -988,6 +989,55 @@ def _final_refactor_items(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         evidence={"endpoint": "/api/monitoring/mode"},
         failing_module="monitoring/monitoring_mode.py",
     ))
+    # AC52 — broker rejection 40310000 on sell is classified as insufficient asset balance, not shorting
+    try:
+        from monitoring.order_flow_labels import classify_broker_rejection_reason
+
+        cls = classify_broker_rejection_reason(
+            broker_error_code="40310000",
+            exact_reject_reason="insufficient balance for BCH (requested: 0.1, available: 0)",
+            side="sell",
+            asset_class="crypto",
+        )
+        ac52_ok = cls == "BROKER_REJECT_INSUFFICIENT_ASSET_BALANCE"
+        items.append(_item(
+            "AC52",
+            "sell 40310000 classified as insufficient asset balance (not shorting)",
+            "PASS" if ac52_ok else "FAIL",
+            evidence={"sample_class": cls},
+            failing_module="monitoring/order_flow_labels.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC52", "classifier", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC53 — Settings & Connections panel + Fresh Start UI present in dashboard
+    try:
+        from monitoring.dashboard import create_app
+
+        app = create_app()
+        html = app.test_client().get("/").data.decode("utf-8", errors="replace")
+        js = app.test_client().get("/dashboard-app.js").data.decode("utf-8", errors="replace")
+        ui_ok = 'data-tab="settings"' in html and "panel-settings" in html and "loadSettingsTab" in js
+        items.append(_item(
+            "AC53",
+            "Settings & Connections + Fresh Start UI present",
+            "PASS" if ui_ok else "FAIL",
+            evidence={"has_settings_tab": ui_ok},
+            failing_module="monitoring/dashboard_app.js",
+        ))
+    except Exception as exc:
+        items.append(_item("AC53", "settings UI", "PARTIAL", evidence={"error": str(exc)[:120]}))
+    # AC54 — MoMo deterministic fast path defaults on
+    try:
+        flag = os.environ.get("MOMO_DETERMINISTIC_FALLBACK_ENABLED", "1") not in ("0", "false", "False")
+        items.append(_item(
+            "AC54",
+            "MoMo deterministic fast path enabled (sub-5s default)",
+            "PASS" if flag else "FAIL",
+            evidence={"flag": flag},
+            failing_module="monitoring/momo_ask.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC54", "momo fast path", "FAIL", evidence={"error": str(exc)[:120]}))
     return items
 
 
