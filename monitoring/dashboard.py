@@ -2781,10 +2781,15 @@ def create_app() -> Flask:
     @app.get("/api/ops/storage-audit")
     def api_ops_storage_audit() -> Response:
         try:
-            import os
+            import os, sys
+            from pathlib import Path as _P
+
+            _root = _P(__file__).resolve().parents[1]
+            if str(_root) not in sys.path:
+                sys.path.insert(0, str(_root))
             from tools.storage_audit import audit
 
-            data_dir = os.environ.get("DATA_DIR") or os.environ.get("QUANTBOT_PERSIST_DIR") or "data"
+            data_dir = os.environ.get("DATA_DIR") or os.environ.get("QUANTBOT_PERSIST_DIR") or str(_root / "data")
             return Response(json.dumps(audit(data_dir), default=str), mimetype="application/json")
         except Exception as exc:
             return Response(
