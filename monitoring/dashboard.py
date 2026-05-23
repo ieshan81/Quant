@@ -2780,9 +2780,18 @@ def create_app() -> Flask:
 
     @app.get("/api/ops/storage-audit")
     def api_ops_storage_audit() -> Response:
-        from tools.storage_audit import audit
+        try:
+            import os
+            from tools.storage_audit import audit
 
-        return Response(json.dumps(audit("data"), default=str), mimetype="application/json")
+            data_dir = os.environ.get("DATA_DIR") or os.environ.get("QUANTBOT_PERSIST_DIR") or "data"
+            return Response(json.dumps(audit(data_dir), default=str), mimetype="application/json")
+        except Exception as exc:
+            return Response(
+                json.dumps({"ok": False, "error": str(exc)[:200], "dbs": [], "corrupt_files": []}, default=str),
+                mimetype="application/json",
+                status=200,
+            )
 
     @app.get("/api/connections/status")
     def api_connections_status() -> Response:
