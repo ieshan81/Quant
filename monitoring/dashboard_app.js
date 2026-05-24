@@ -5673,9 +5673,531 @@
     }
   }
 
+  // ============================================================
+  // FRONTEND COMPLETION PASS — operator-language helpers + renderers
+  // ============================================================
+
+  // Mirror of monitoring/operator_language.LABELS for known codes.
+  // Unknown codes fall back to title-cased de-snaked humanization.
+  var OPERATOR_LABELS = {
+    "BROKER_LOCAL_MISMATCH": { label: "Broker / local mismatch", severity: "warn" },
+    "BROKER_RECONCILE_ADJUST": { label: "Local ledger sync", severity: "info" },
+    "BROKER_REJECT_INSUFFICIENT_USD_BALANCE": { label: "Not enough USD", severity: "warn" },
+    "BROKER_REJECT_INSUFFICIENT_ASSET_BALANCE": { label: "Sell qty exceeds available", severity: "warn" },
+    "BROKER_REJECT_SHORT_NOT_ALLOWED": { label: "Shorting not allowed", severity: "warn" },
+    "BROKER_REJECT_INSUFFICIENT_BUYING_POWER": { label: "Insufficient buying power", severity: "warn" },
+    "BROKER_POSITION_UNTRACKED": { label: "Broker position not in local audit", severity: "info" },
+    "LOCAL_POSITION_STALE": { label: "Stale local row", severity: "info" },
+    "LOCAL_POSITION_GHOST_QUARANTINED": { label: "Ghost row quarantined", severity: "info" },
+    "PREFLIGHT_APPROVED": { label: "Preflight approved", severity: "ok" },
+    "PREFLIGHT_BLOCKED_BUYING_POWER": { label: "Not enough buying power", severity: "warn" },
+    "PREFLIGHT_BLOCKED_BUYING_POWER_UNKNOWN": { label: "Buying power unknown", severity: "error" },
+    "PREFLIGHT_BLOCKED_PDT": { label: "PDT protection", severity: "warn" },
+    "PREFLIGHT_BLOCKED_SPREAD": { label: "Spread too wide", severity: "warn" },
+    "STOCK_BUY_BLOCKED_BUYING_POWER_UNKNOWN": { label: "Stock buy: BP unknown", severity: "error" },
+    "CRYPTO_BUY_BLOCKED_USD_BALANCE_UNKNOWN": { label: "Crypto buy: USD unknown", severity: "error" },
+    "CRYPTO_BUY_BLOCKED_INSUFFICIENT_USD_BALANCE": { label: "Not enough USD for crypto buy", severity: "warn" },
+    "CRYPTO_BUY_BLOCKED_CASH_CUSHION_REQUIRED": { label: "Cash cushion blocked", severity: "warn" },
+    "CRYPTO_PUSH_ALLOWED": { label: "Signal found", severity: "ok" },
+    "CRYPTO_PUSH_BLOCKED_PREFLIGHT": { label: "Preflight blocked", severity: "warn" },
+    "CRYPTO_PUSH_DISABLED": { label: "Crypto buys paused", severity: "info" },
+    "NO_CRYPTO_CANDIDATES": { label: "No crypto candidates", severity: "info" },
+    "SCORE_BELOW_THRESHOLD": { label: "Score below threshold", severity: "info" },
+    "MARKET_CLOSED": { label: "Market closed", severity: "info" },
+    "ORDER_DUPLICATE_SUPPRESSED": { label: "Duplicate suppressed", severity: "info" },
+    "RISK_DAILY_LOSS_KILL": { label: "Daily loss kill-switch", severity: "error" },
+    "RISK_DRAWDOWN_KILL": { label: "Drawdown kill-switch", severity: "error" },
+    "RISK_MAX_TRADES": { label: "Max trades reached", severity: "info" },
+    "FAST_LOOP_INTRADAY_REQUIRED": { label: "Intraday timeframe required", severity: "warn" },
+    "fast_loop_observe_only": { label: "Monitoring mode", severity: "info" },
+    "fast_loop_daily_signal_not_scalping": { label: "Daily signal only", severity: "info" },
+    "fast_loop_execution_readiness_blocked": { label: "Fast-loop execution gated", severity: "info" },
+    "active_broker_rejection_unresolved": { label: "Broker rejection needs review", severity: "warn" },
+    "first_run_baseline_required": { label: "Baseline needed", severity: "warn" },
+    "no_real_backtest_run": { label: "No real backtest yet", severity: "info" },
+    "closed_trades_lt_20": { label: "Need 20 closed trades", severity: "info" },
+    "allow_full_deployment_enabled": { label: "Full deployment override", severity: "critical" },
+    "LIVE_TRADING_HARDCODE_LOCK": { label: "Live trading hard-locked", severity: "info" }
+  };
+
+  function _humanize(code) {
+    if (code == null) return "";
+    var s = String(code).trim();
+    if (!s) return "";
+    if (OPERATOR_LABELS[s]) return OPERATOR_LABELS[s].label;
+    // Lowercase + space-normalize underscores and camelCase
+    s = s.replace(/[_\-]+/g, " ").replace(/(?!^)([A-Z])/g, " $1");
+    return s.split(/\s+/).map(function (w) {
+      if (!w) return "";
+      var up = w.toUpperCase();
+      if (["USD","BCH","BTC","ETH","DOGE","API","BP","PDT","TTL"].indexOf(up) !== -1) return up;
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    }).join(" ").trim();
+  }
+  function translateCode(code) {
+    var e = OPERATOR_LABELS[code];
+    if (e) return { label: e.label, severity: e.severity, raw: code };
+    return { label: _humanize(code), severity: "info", raw: code };
+  }
+  function operatorChip(code) {
+    var t = translateCode(code);
+    return '<span class="op-chip op-chip-' + (t.severity || "info") + '" title="' + (t.raw || "") + '">' + (t.label || "") + "</span>";
+  }
+  // Expose for tests
+  window.translateCode = translateCode;
+  window.operatorChip = operatorChip;
+
+  // ---------- Monitoring Mode + Operator cards on Mission Control ----------
+  async function loadMonitoringModeAndCards() {
+    try {
+      var mmR = await fetch("/api/monitoring/mode", { cache: "no-store" });
+      if (mmR.ok) {
+        var mm = await mmR.json();
+        var strip = document.getElementById("mcMonitoringStrip");
+        var hd = document.getElementById("mcMonitoringHeadline");
+        var ex = document.getElementById("mcMonitoringExplain");
+        if (strip && hd && ex) {
+          hd.textContent = mm.headline || "Monitoring Mode";
+          ex.textContent = mm.explanation || "";
+          strip.style.display = "flex";
+        }
+        var whatNext = document.getElementById("mcWhatNext");
+        var whatNextSub = document.getElementById("mcWhatNextSub");
+        if (whatNext) whatNext.textContent = mm.next_allowed_action || "—";
+        if (whatNextSub) whatNextSub.textContent = "Current: " + (mm.current_action || "—");
+        var why = document.getElementById("mcWhyNoBuy");
+        if (why) {
+          var reasons = (mm.why_no_new_buy || []);
+          why.innerHTML = reasons.length
+            ? reasons.map(function (r) { return '<div style="font-size:0.85rem;color:#fbbf24;line-height:1.5;">• ' + r + "</div>"; }).join("")
+            : "—";
+        }
+      }
+      // What can sell — derive from broker positions (anything held can be sold subject to broker available qty)
+      var ws = document.getElementById("mcWhatCanSell");
+      if (ws) {
+        try {
+          var pR = await fetch("/api/connections/status", { cache: "no-store" });
+          // For now, show holdings via mission control summary if available
+          var mcR = await fetch("/api/mission-control/summary", { cache: "no-store" });
+          if (mcR.ok) {
+            var mc = await mcR.json();
+            var ct = mc.canonical_truth || {};
+            var pos = (ct.position_state || {}).active_positions || [];
+            if (pos.length === 0) ws.innerHTML = "<span class='muted'>No active positions</span>";
+            else ws.innerHTML = pos.slice(0, 4).map(function (p) {
+              return '<div style="font-size:0.85rem;margin-bottom:2px;">' + (p.symbol || "?") + ' <span class="op-chip op-chip-ok">Sell allowed</span></div>';
+            }).join("");
+          }
+        } catch (e) { /* no-op */ }
+      }
+      // Active blockers — translate raw codes into chips
+      var blkRoot = document.getElementById("mcActiveBlockers");
+      if (blkRoot) {
+        try {
+          var mcR2 = await fetch("/api/mission-control/summary", { cache: "no-store" });
+          if (mcR2.ok) {
+            var mc2 = await mcR2.json();
+            var ct2 = mc2.canonical_truth || {};
+            var blockers = ((ct2.live_readiness_state || {}).architecture_blockers || []);
+            if (!blockers.length) {
+              blkRoot.innerHTML = '<span class="op-chip op-chip-ok">No blockers</span>';
+            } else {
+              blkRoot.innerHTML = blockers.slice(0, 10).map(operatorChip).join("");
+            }
+          }
+        } catch (e) { /* no-op */ }
+      }
+      // Latest MoMo thinking strip (use simple deterministic question for snapshot)
+      var thinkText = document.getElementById("mcMomoThinkingText");
+      var thinkStrip = document.getElementById("mcMomoThinkingStrip");
+      if (thinkText && thinkStrip) {
+        try {
+          var r = await fetch("/api/momo/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question: "summarize current state", include: { momo_memory: false } })
+          });
+          if (r.ok) {
+            var d = await r.json();
+            thinkText.textContent = (d.answer || "").slice(0, 180);
+            thinkStrip.style.display = "flex";
+          }
+        } catch (e) { /* no-op */ }
+      }
+    } catch (e) {
+      console.warn("[mc-operator-cards] load failed", e);
+    }
+  }
+
+  // ---------- MoMo Brain Graph (SVG renderer) ----------
+  var BRAIN_STATE = { filter: "", search: "", nodes: [], edges: [] };
+
+  function _nodeColor(node) {
+    var sev = node.severity || "info";
+    var palette = { ok:"#10b981", info:"#38bdf8", warn:"#fbbf24", error:"#f87171", critical:"#ef4444" };
+    return palette[sev] || "#9ca3af";
+  }
+
+  function _renderBrainGraph() {
+    var svg = document.getElementById("brainGraphSvg");
+    var status = document.getElementById("brainGraphStatus");
+    if (!svg) return;
+    var nodes = BRAIN_STATE.nodes || [];
+    var edges = BRAIN_STATE.edges || [];
+    // Apply filter + search
+    var q = (BRAIN_STATE.search || "").toLowerCase();
+    var f = BRAIN_STATE.filter || "";
+    var filtered = nodes.filter(function (n) {
+      if (f && n.node_type !== f) return false;
+      if (q && !((n.title || "").toLowerCase().indexOf(q) !== -1 || (n.short_summary || "").toLowerCase().indexOf(q) !== -1)) return false;
+      return true;
+    });
+    var keys = {};
+    filtered.forEach(function (n) { keys[n.node_key] = true; });
+    var filteredEdges = (edges || []).filter(function (e) { return keys[e.source_node_key] && keys[e.target_node_key]; });
+    // Layout: circle around center
+    var W = 800, H = 480, cx = W / 2, cy = H / 2;
+    var R = Math.min(W, H) / 2 - 60;
+    var positions = {};
+    var N = Math.max(filtered.length, 1);
+    filtered.forEach(function (n, i) {
+      var a = (i / N) * 2 * Math.PI - Math.PI / 2;
+      positions[n.node_key] = { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) };
+    });
+    var lines = filteredEdges.map(function (e) {
+      var s = positions[e.source_node_key]; var t = positions[e.target_node_key];
+      if (!s || !t) return "";
+      var strong = (e.strength || 0) >= 0.8 ? " strong" : "";
+      return '<line class="brain-edge-line' + strong + '" x1="' + s.x + '" y1="' + s.y + '" x2="' + t.x + '" y2="' + t.y + '" />';
+    }).join("");
+    var nodesSvg = filtered.map(function (n) {
+      var p = positions[n.node_key];
+      var col = _nodeColor(n);
+      var r = 14;
+      var safeTitle = String(n.title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 22);
+      return '<g data-key="' + n.node_key + '">' +
+        '<circle class="brain-node-circle" cx="' + p.x + '" cy="' + p.y + '" r="' + r + '" fill="' + col + '" fill-opacity="0.22" stroke="' + col + '" stroke-width="1.8" />' +
+        '<text class="brain-node-label" x="' + p.x + '" y="' + (p.y + r + 14) + '">' + safeTitle + "</text>" +
+        "</g>";
+    }).join("");
+    svg.innerHTML = lines + nodesSvg;
+    if (status) status.textContent = "Showing " + filtered.length + " nodes / " + filteredEdges.length + " edges (total " + nodes.length + " / " + edges.length + ")";
+    // Click handler for inspector
+    svg.querySelectorAll("g[data-key]").forEach(function (g) {
+      g.addEventListener("click", function () {
+        var key = g.getAttribute("data-key");
+        var n = filtered.find(function (x) { return x.node_key === key; });
+        var ins = document.getElementById("brainNodeInspector");
+        if (!ins || !n) return;
+        ins.innerHTML = '<h5>' + (n.title || "") + "</h5>" +
+          '<div><span class="op-chip op-chip-' + (n.severity || "info") + '">' + (n.node_type || "?") + "</span></div>" +
+          '<p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">' + (n.short_summary || "—") + "</p>" +
+          '<div style="font-size:11px;color:var(--muted);">Confidence: ' + (typeof n.confidence === "number" ? (n.confidence * 100).toFixed(0) + "%" : "—") + "</div>" +
+          '<details style="margin-top:8px;"><summary class="empty-hint" style="cursor:pointer;font-size:11px;">Advanced</summary>' +
+          '<pre style="font-size:10px;color:#9ca3af;max-height:200px;overflow:auto;">' + JSON.stringify(n, null, 2) + "</pre></details>";
+        ins.classList.add("visible");
+      });
+    });
+  }
+
+  async function loadMomoBrainGraph() {
+    var svg = document.getElementById("brainGraphSvg");
+    if (!svg) return;
+    try {
+      var r = await fetch("/api/momo/memory-graph?limit=200", { cache: "no-store" });
+      var d = r.ok ? await r.json() : { nodes: [], edges: [] };
+      BRAIN_STATE.nodes = d.nodes || [];
+      BRAIN_STATE.edges = d.edges || [];
+      if (BRAIN_STATE.nodes.length === 0) {
+        var status = document.getElementById("brainGraphStatus");
+        if (status) status.innerHTML = "Memory is empty. Click <strong>Seed clean-boot facts</strong> to seed standing knowledge.";
+      }
+      _renderBrainGraph();
+    } catch (e) {
+      console.warn("[brain-graph] load failed", e);
+    }
+    // Wire filter chips
+    document.querySelectorAll(".brain-filter-chip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        document.querySelectorAll(".brain-filter-chip").forEach(function (c) { c.classList.remove("active"); });
+        chip.classList.add("active");
+        BRAIN_STATE.filter = chip.getAttribute("data-type") || "";
+        _renderBrainGraph();
+      });
+    });
+    var search = document.getElementById("brainSearchInput");
+    if (search) {
+      search.addEventListener("input", function () {
+        BRAIN_STATE.search = search.value || "";
+        _renderBrainGraph();
+      });
+    }
+    var seedBtn = document.getElementById("brainSeedBtn");
+    if (seedBtn) {
+      seedBtn.addEventListener("click", async function () {
+        try {
+          await fetch("/api/momo/memory-graph/seed", { method: "POST" });
+          await loadMomoBrainGraph();
+        } catch (e) { console.warn(e); }
+      });
+    }
+  }
+
+  // ---------- Secondary MoMo panels: critical notes / loss patterns / config proposals / thinking ----------
+  async function loadMomoSecondaryPanels() {
+    try {
+      var cnR = await fetch("/api/momo/critical-notes?limit=10", { cache: "no-store" });
+      var notes = cnR.ok ? (await cnR.json()).notes || [] : [];
+      var cnRoot = document.getElementById("momoCriticalNotesList");
+      if (cnRoot) {
+        cnRoot.innerHTML = notes.length
+          ? notes.slice(0, 8).map(function (n) {
+              return '<div style="margin-bottom:6px;font-size:12px;">' +
+                '<span class="severity-dot ' + (n.severity || "warn") + '"></span>' +
+                '<strong>' + (n.title || "") + "</strong><br/>" +
+                '<span style="color:var(--muted);">' + (String(n.summary || "").slice(0, 120)) + "</span></div>";
+            }).join("")
+          : "<span class='muted' style='font-size:12px;'>No critical notes.</span>";
+      }
+    } catch (e) { /* no-op */ }
+    try {
+      var bgR = await fetch("/api/momo/memory-graph?type=loss_pattern", { cache: "no-store" });
+      var bg = bgR.ok ? await bgR.json() : { nodes: [] };
+      var lpRoot = document.getElementById("momoLossPatternsList");
+      if (lpRoot) {
+        lpRoot.innerHTML = (bg.nodes || []).length
+          ? bg.nodes.slice(0, 6).map(function (n) {
+              return '<div style="font-size:12px;margin-bottom:4px;">' +
+                '<span class="op-chip op-chip-warn">' + (n.title || "Pattern") + "</span></div>";
+            }).join("")
+          : "<span class='muted' style='font-size:12px;'>No repeated loss patterns detected.</span>";
+      }
+    } catch (e) { /* no-op */ }
+    try {
+      var cpR = await fetch("/api/momo/config-proposals?limit=10", { cache: "no-store" });
+      var cp = cpR.ok ? await cpR.json() : { proposals: [], allowlist: {} };
+      var cpRoot = document.getElementById("momoConfigProposalsList");
+      if (cpRoot) {
+        var props = (cp.proposals || []).slice(0, 6);
+        cpRoot.innerHTML = props.length
+          ? props.map(function (p) {
+              return '<div style="font-size:12px;margin-bottom:6px;">' +
+                '<strong>' + (p.operator_key || "?") + "</strong> · " + (p.proposed_from || "?") + " → " + (p.proposed_to || "?") +
+                ' <span class="op-chip op-chip-info">' + (p.approval_status || "pending") + "</span></div>";
+            }).join("")
+          : "<span class='muted' style='font-size:12px;'>No proposals yet.</span>";
+      }
+    } catch (e) { /* no-op */ }
+    var thinking = document.getElementById("momoLatestThinking");
+    if (thinking) {
+      try {
+        var r = await fetch("/api/momo/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: "what is the next milestone", include: { momo_memory: false } })
+        });
+        if (r.ok) {
+          var d = await r.json();
+          thinking.innerHTML = '<div style="font-size:12px;line-height:1.5;color:#e5e7eb;">' +
+            (String(d.answer || "").slice(0, 220).replace(/</g, "&lt;")) + "</div>";
+        }
+      } catch (e) { /* no-op */ }
+    }
+  }
+
+  // ---------- Backtest Lab UI ----------
+  async function loadBacktestLab() {
+    var root = document.getElementById("btLabRunsList");
+    if (!root) return;
+    try {
+      var r = await fetch("/api/backtest/momo-runs?limit=20", { cache: "no-store" });
+      var d = r.ok ? await r.json() : { runs: [] };
+      var runs = d.runs || [];
+      if (runs.length === 0) {
+        root.innerHTML = "<p class='empty-hint' style='font-size:12px;'>No backtest runs recorded yet. Run a backtest via the manual setup below or via vectorbt_runner.</p>";
+        return;
+      }
+      root.innerHTML = runs.map(function (run) {
+        var gatesPassed = (run.trades || 0) >= 20 && (run.expectancy || 0) > 0 && (run.max_drawdown || 0) < 0.10;
+        var winClass = (run.win_rate || 0) > 0.5 ? "win" : "loss";
+        var expClass = (run.expectancy || 0) > 0 ? "win" : "loss";
+        return '<div class="backtest-run-card">' +
+          '<div><div class="lab">Strategy</div><div class="val">' + (run.strategy_id || "—") + "</div></div>" +
+          '<div><div class="lab">Symbol</div><div class="val">' + (run.symbol || "—") + "</div></div>" +
+          '<div><div class="lab">Timeframe</div><div class="val">' + (run.timeframe || "—") + "</div></div>" +
+          '<div><div class="lab">Trades</div><div class="val">' + (run.trades || 0) + "</div></div>" +
+          '<div><div class="lab">Win Rate</div><div class="val ' + winClass + '">' + ((run.win_rate || 0) * 100).toFixed(1) + "%</div></div>" +
+          '<div><div class="lab">Expectancy</div><div class="val ' + expClass + '">' + (run.expectancy || 0).toFixed(4) + "</div></div>" +
+          '<div><div class="lab">Max DD</div><div class="val">' + ((run.max_drawdown || 0) * 100).toFixed(1) + "%</div></div>" +
+          '<div><div class="lab">Fees</div><div class="val">' + (run.fee_assumption || 0).toFixed(4) + "</div></div>" +
+          '<div><div class="lab">Status</div><div class="val">' + operatorChip(run.promotion_status || "pending") + "</div></div>" +
+          '<div style="grid-column: span 2;"><div class="lab">MoMo Verdict</div><div class="val" style="font-size:12px;">' + (run.momo_verdict || "—") + "</div></div>" +
+          '<div style="grid-column: span 2;"><div class="lab">Actions</div>' +
+          '<button type="button" class="btn ' + (gatesPassed ? "primary" : "secondary") + '" ' + (gatesPassed ? "" : "disabled") +
+          ' data-bt-promote="' + (run.run_id || "") + '" style="font-size:11px;padding:4px 10px;">Promote</button> ' +
+          '<button type="button" class="btn secondary" data-bt-reject="' + (run.run_id || "") + '" style="font-size:11px;padding:4px 10px;">Reject</button></div>' +
+          "</div>";
+      }).join("");
+    } catch (e) {
+      console.warn("[backtest-lab] load failed", e);
+      root.innerHTML = "<p class='empty-hint'>Failed to load runs.</p>";
+    }
+  }
+
+  // ---------- Files tab storage audit cards ----------
+  async function loadFilesStorageAudit() {
+    var root = document.getElementById("filesStorageAudit");
+    if (!root) return;
+    try {
+      var r = await fetch("/api/ops/storage-audit", { cache: "no-store" });
+      var d = r.ok ? await r.json() : { dbs: [] };
+      if (d.ok === false) {
+        root.innerHTML = "<p class='empty-hint'>Storage audit unavailable: " + (d.error || "") + "</p>";
+        return;
+      }
+      var dbs = d.dbs || [];
+      var canonical = dbs.filter(function (x) { return x.category === "main"; });
+      var extras = dbs.filter(function (x) { return x.category === "extra"; });
+      var quarantine = dbs.filter(function (x) { return x.category === "quarantine"; });
+      function _fmt(n) { if (n > 1e6) return (n / 1e6).toFixed(1) + " MB"; if (n > 1e3) return (n / 1e3).toFixed(1) + " KB"; return (n || 0) + " B"; }
+      function _row(name, items, sev) {
+        if (!items.length) return "";
+        return '<div class="files-card"><strong>' + name + ' (' + items.length + ")</strong>" +
+          items.map(function (x) {
+            // sanitize path (strip leading absolute)
+            var p = (x.path || "").split(/[\\/]/).pop();
+            return '<div style="display:flex;justify-content:space-between;font-size:12px;margin-top:4px;">' +
+              '<span class="op-chip op-chip-' + (sev || "info") + '">' + p + "</span>" +
+              '<span style="color:var(--muted);">' + _fmt(x.size_bytes || 0) + " · " + (x.tables || 0) + " tables</span></div>";
+          }).join("") + "</div>";
+      }
+      root.innerHTML =
+        _row("Canonical DBs", canonical, "ok") +
+        _row("Legacy / extras", extras, "info") +
+        _row("Quarantine candidates", quarantine, "warn") ||
+        "<p class='empty-hint'>Storage clean.</p>";
+    } catch (e) {
+      console.warn("[files-storage] failed", e);
+    }
+  }
+
+  // ---------- Settings: config proposals UI ----------
+  async function loadSettingsProposals() {
+    var root = document.getElementById("settingsConfigProposals");
+    if (!root) return;
+    try {
+      var r = await fetch("/api/momo/config-proposals?limit=20", { cache: "no-store" });
+      var d = r.ok ? await r.json() : { proposals: [], allowlist: {} };
+      var props = d.proposals || [];
+      var allowlist = d.allowlist || {};
+      if (props.length === 0) {
+        root.innerHTML = "<p class='empty-hint' style='font-size:12px;'>No proposals. Allowlisted keys: " +
+          Object.keys(allowlist).slice(0, 8).map(function (k) { return '<span class="op-chip op-chip-info">' + (allowlist[k].label || k) + "</span>"; }).join(" ") + "</p>";
+        return;
+      }
+      root.innerHTML = props.map(function (p) {
+        var status = (p.approval_status || "pending");
+        var sev = status === "applied" ? "ok" : status === "rejected" ? "error" : status === "rolled_back" ? "warn" : "info";
+        return '<div class="config-proposal-card">' +
+          '<div class="pp-row" style="margin-bottom:6px;"><strong>' + (allowlist[p.operator_key]||{}).label + "</strong>" +
+          ' <span class="op-chip op-chip-' + sev + '">' + status + "</span></div>" +
+          '<div class="pp-row"><span class="lab" style="color:var(--muted);font-size:11px;">From</span> <span class="mono" style="font-size:12px;">' + (p.proposed_from || "—") + "</span>" +
+          ' → <span class="lab" style="color:var(--muted);font-size:11px;">To</span> <span class="mono" style="font-size:12px;">' + (p.proposed_to || "—") + "</span></div>" +
+          '<div class="pp-row" style="margin-top:4px;font-size:12px;color:var(--muted);">' + (p.reason || "") + "</div>" +
+          '<div class="pp-row" style="margin-top:6px;">' +
+          '<button type="button" class="btn secondary" data-cp-approve="' + (p.proposal_key || "") + '" ' + (status === "pending" ? "" : "disabled") + ' style="font-size:11px;padding:4px 10px;">Approve &amp; Apply</button> ' +
+          '<button type="button" class="btn secondary" data-cp-reject="' + (p.proposal_key || "") + '" ' + (status === "pending" ? "" : "disabled") + ' style="font-size:11px;padding:4px 10px;">Reject</button> ' +
+          '<button type="button" class="btn secondary" data-cp-rollback="' + (p.proposal_key || "") + '" ' + (status === "applied" ? "" : "disabled") + ' style="font-size:11px;padding:4px 10px;">Rollback</button>' +
+          "</div></div>";
+      }).join("");
+    } catch (e) {
+      console.warn("[settings-proposals] failed", e);
+    }
+  }
+
+  // ---------- Activity tab label translation ----------
+  async function loadActivityOperatorView() {
+    var root = document.getElementById("activityOperatorSections");
+    if (!root) return;
+    root.style.display = "block";
+    // Pull recent ops + preflight + broker rejections
+    try {
+      var [bundleR, logsR] = await Promise.all([
+        fetch("/api/ops/gpt-analyze-bundle", { cache: "no-store" }),
+        fetch("/api/ops/logs?limit=80", { cache: "no-store" })
+      ]);
+      var bundle = bundleR.ok ? await bundleR.json() : {};
+      var logs = logsR.ok ? await logsR.json() : { logs: [] };
+      var orderFlow = ((bundle.forensic_debug || {}).order_flow || {});
+      var fills = (orderFlow.broker_fills || []).slice(0, 8);
+      var preflightBlocks = (orderFlow.local_blocks || orderFlow.blocked_before_submit || []).slice(0, 8);
+      var rejections = (orderFlow.broker_rejections || []).slice(0, 8);
+      var ledgerSyncs = (logs.logs || []).filter(function (l) { return String(l.event_type || "").indexOf("RECONCILE") !== -1; }).slice(0, 6);
+
+      function _renderActRows(rows, codeKey) {
+        if (!rows || rows.length === 0) return "<span class='muted' style='font-size:12px;'>None.</span>";
+        return rows.map(function (r) {
+          var sym = r.symbol || r.canonical_symbol || "—";
+          var ts = (r.ts || r.created_at || "").slice(0, 19).replace("T", " ");
+          var code = r[codeKey] || r.reason_code || r.event_type || r.block_reason_code || "";
+          return '<div class="activity-row">' +
+            '<span class="ts">' + ts + "</span>" +
+            "<strong>" + sym + "</strong>" +
+            " " + operatorChip(code) +
+            "</div>";
+        }).join("");
+      }
+      var f = document.getElementById("activityBrokerFills");
+      if (f) f.innerHTML = _renderActRows(fills, "reason_code");
+      var pb = document.getElementById("activityPreflightBlocks");
+      if (pb) pb.innerHTML = _renderActRows(preflightBlocks, "block_reason_code");
+      var br = document.getElementById("activityBrokerRejections");
+      if (br) br.innerHTML = _renderActRows(rejections, "exact_reject_reason");
+      var ls = document.getElementById("activityLedgerSyncs");
+      if (ls) ls.innerHTML = _renderActRows(ledgerSyncs, "event_type");
+      var mp = document.getElementById("activityMomoProposals");
+      if (mp) {
+        try {
+          var cp = await (await fetch("/api/momo/config-proposals?limit=5")).json();
+          var props = (cp.proposals || []).slice(0, 5);
+          mp.innerHTML = props.length
+            ? props.map(function (p) {
+                return '<div class="activity-row"><span class="ts">' + (p.created_at || "").slice(0, 19).replace("T", " ") + "</span>" +
+                  "<strong>" + (p.operator_key || "") + "</strong> " + operatorChip(p.approval_status || "pending") + "</div>";
+              }).join("")
+            : "<span class='muted' style='font-size:12px;'>No proposals.</span>";
+        } catch (e) { /* no-op */ }
+      }
+    } catch (e) {
+      console.warn("[activity-operator] failed", e);
+    }
+  }
+
+  // ---------- Wire all loaders ----------
+  function wireFrontendCompletion() {
+    // Mission Control panels load on init + when MC tab activates
+    loadMonitoringModeAndCards();
+    document.querySelectorAll("nav .tab-btn").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var name = b.getAttribute("data-tab");
+        if (name === "mission") loadMonitoringModeAndCards();
+        if (name === "ai") { loadMomoBrainGraph(); loadMomoSecondaryPanels(); }
+        if (name === "backtest") loadBacktestLab();
+        if (name === "files") loadFilesStorageAudit();
+        if (name === "settings") loadSettingsProposals();
+        if (name === "activity") loadActivityOperatorView();
+      });
+    });
+    // Auto-load when each tab is currently active
+    var activeBtn = document.querySelector("nav .tab-btn.active");
+    if (activeBtn && activeBtn.getAttribute("data-tab") === "mission") loadMonitoringModeAndCards();
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", startDashboard);
+    document.addEventListener("DOMContentLoaded", function () { startDashboard(); wireFrontendCompletion(); });
   } else {
     startDashboard();
+    wireFrontendCompletion();
   }
 })();

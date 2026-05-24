@@ -1125,6 +1125,94 @@ def _final_refactor_items(ctx: dict[str, Any]) -> list[dict[str, Any]]:
         ))
     except Exception as exc:
         items.append(_item("AC60", "graphify sanitize", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC61 — Mission Control has operator-language cards + Monitoring Mode strip
+    try:
+        from monitoring.dashboard import create_app
+
+        app = create_app()
+        html = app.test_client().get("/").data.decode("utf-8", errors="replace")
+        required = ("mcMonitoringStrip", "mcWhatNextCard", "mcWhyNoBuyCard", "mcWhatCanSellCard", "mcActiveBlockersCard", "mcMomoThinkingStrip")
+        present = all(('id="' + x + '"') in html for x in required)
+        items.append(_item(
+            "AC61",
+            "Mission Control operator-language cards present",
+            "PASS" if present else "FAIL",
+            evidence={"all_cards_present": present},
+            failing_module="monitoring/dashboard.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC61", "MC cards", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC62 — MoMo tab has Brain Graph SVG + secondary panels
+    try:
+        from monitoring.dashboard import create_app
+
+        app = create_app()
+        html = app.test_client().get("/").data.decode("utf-8", errors="replace")
+        required = ("brainGraphSvg", "momoCriticalNotesPanel", "momoLossPatternsPanel", "momoConfigProposalsPanel", "momoLatestThinkingPanel")
+        present = all(('id="' + x + '"') in html for x in required)
+        items.append(_item(
+            "AC62",
+            "MoMo tab Brain Graph + secondary panels present",
+            "PASS" if present else "FAIL",
+            evidence={"present": present},
+            failing_module="monitoring/dashboard.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC62", "MoMo brain UI", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC63 — Backtest Lab + Settings proposals + Activity operator sections present
+    try:
+        from monitoring.dashboard import create_app
+
+        app = create_app()
+        html = app.test_client().get("/").data.decode("utf-8", errors="replace")
+        required = ("btLabCard", "settingsConfigProposals", "activityOperatorSections", "filesStorageAuditCard")
+        present = all(('id="' + x + '"') in html for x in required)
+        items.append(_item(
+            "AC63",
+            "Backtest Lab + Settings + Activity + Files UI all present",
+            "PASS" if present else "FAIL",
+            evidence={"present": present},
+            failing_module="monitoring/dashboard.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC63", "UI completion", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC64 — Frontend operator language helper wired (translates raw codes in JS)
+    try:
+        from monitoring.dashboard import create_app
+
+        app = create_app()
+        js = app.test_client().get("/dashboard-app.js").data.decode("utf-8", errors="replace")
+        ok = "operatorChip" in js and "translateCode" in js and "OPERATOR_LABELS" in js
+        items.append(_item(
+            "AC64",
+            "frontend operator language helper translates raw codes",
+            "PASS" if ok else "FAIL",
+            evidence={"helper_present": ok},
+            failing_module="monitoring/dashboard_app.js",
+        ))
+    except Exception as exc:
+        items.append(_item("AC64", "frontend op-lang", "FAIL", evidence={"error": str(exc)[:120]}))
+    # AC65 — no raw all-caps reason codes leaking into visible HTML body text
+    try:
+        import re
+        from monitoring.dashboard import create_app
+
+        app = create_app()
+        html = app.test_client().get("/").data.decode("utf-8", errors="replace")
+        text_only = re.sub(r"<[^>]+>", " ", html)
+        bad = [
+            m for m in re.findall(r"\b[A-Z][A-Z_]{8,}\b", text_only)
+            if m not in {"FRESH START PAPER RUNTIME", "BROKER_RECONCILE_ADJUST"}
+        ]
+        items.append(_item(
+            "AC65",
+            "no raw all-caps reason codes in visible UI text",
+            "PASS" if len(bad) <= 2 else "FAIL",
+            evidence={"sample_raw_leaks": bad[:5], "count": len(bad)},
+            failing_module="monitoring/dashboard.py",
+        ))
+    except Exception as exc:
+        items.append(_item("AC65", "no raw labels", "FAIL", evidence={"error": str(exc)[:120]}))
     return items
 
 

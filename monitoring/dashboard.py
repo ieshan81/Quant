@@ -1005,6 +1005,108 @@ _PAGE = """<!DOCTYPE html>
       z-index: 10000; padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
       font-size: 13px; display: none; max-width: min(520px, 92vw);
     }
+    /* ---------- Frontend Completion Pass: cockpit UI primitives ---------- */
+    .op-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 9px; border-radius: 999px; font-size: 11px;
+      font-weight: 500; line-height: 1.4; letter-spacing: 0.01em;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.03);
+    }
+    .op-chip-ok       { background: rgba(16,185,129,0.10); color:#34d399; border-color:rgba(16,185,129,0.25); }
+    .op-chip-info     { background: rgba(56,189,248,0.08); color:#7dd3fc; border-color:rgba(56,189,248,0.22); }
+    .op-chip-warn     { background: rgba(251,191,36,0.10); color:#fbbf24; border-color:rgba(251,191,36,0.25); }
+    .op-chip-error    { background: rgba(248,113,113,0.10); color:#f87171; border-color:rgba(248,113,113,0.25); }
+    .op-chip-critical { background: rgba(239,68,68,0.18);  color:#fca5a5; border-color:rgba(239,68,68,0.45); }
+    .cockpit-grid     { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; }
+    .cockpit-card     {
+      background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.0));
+      border: 1px solid rgba(255,255,255,0.06); border-radius: 12px;
+      padding: 14px; min-height: 80px; position: relative;
+    }
+    .cockpit-card h4  { margin:0 0 8px; font-size:0.78rem; color:var(--muted); font-weight:600; letter-spacing:0.04em; text-transform:uppercase; }
+    .cockpit-card .lead { font-size:1.4rem; font-weight:600; color:var(--text); }
+    .cockpit-card .sub  { font-size:0.78rem; color:var(--muted); margin-top:4px; }
+    .progress-ring     { display:inline-flex; align-items:center; justify-content:center; position:relative; width:80px; height:80px; }
+    .progress-ring svg { transform: rotate(-90deg); }
+    .progress-ring .pct { position:absolute; font-size:0.95rem; font-weight:600; color:var(--text); }
+    .severity-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+    .severity-dot.ok       { background:#10b981; }
+    .severity-dot.info     { background:#38bdf8; }
+    .severity-dot.warn     { background:#fbbf24; }
+    .severity-dot.error    { background:#f87171; }
+    .severity-dot.critical { background:#ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.6); }
+    .thinking-strip {
+      display:flex; align-items:center; gap:10px; padding:10px 14px;
+      background: rgba(167,139,250,0.05); border:1px solid rgba(167,139,250,0.22);
+      border-radius:10px; margin-bottom:12px;
+    }
+    .thinking-strip .pulse-dot {
+      width:10px; height:10px; border-radius:50%; background:#a78bfa;
+      animation: pulseDot 1.4s infinite ease-in-out;
+    }
+    @keyframes pulseDot {
+      0%, 100% { transform: scale(0.9); opacity:0.6; }
+      50% { transform: scale(1.3); opacity:1; }
+    }
+    .momo-thinking-step { font-size:12px; color:var(--muted); margin-right:10px; }
+    .momo-thinking-step.active { color:#a78bfa; font-weight:600; }
+    /* Brain graph */
+    .brain-graph-host {
+      position:relative; width:100%; min-height:480px;
+      background: radial-gradient(ellipse at center, rgba(167,139,250,0.05), transparent 70%);
+      border:1px solid rgba(255,255,255,0.06); border-radius:12px; overflow:hidden;
+    }
+    .brain-graph-host svg { width:100%; height:480px; display:block; }
+    .brain-node-circle { cursor:pointer; transition:r 0.2s, stroke-width 0.2s; }
+    .brain-node-circle:hover { stroke-width:3; }
+    .brain-node-label { font-size:10px; fill:#e5e7eb; pointer-events:none; text-anchor:middle; }
+    .brain-edge-line { stroke:rgba(255,255,255,0.18); stroke-width:1.2; fill:none; }
+    .brain-edge-line.strong { stroke:rgba(167,139,250,0.55); stroke-width:1.6; }
+    .brain-filter-bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; align-items:center; }
+    .brain-filter-chip {
+      padding:4px 10px; border-radius:14px; font-size:11px; cursor:pointer;
+      background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); color:var(--muted);
+    }
+    .brain-filter-chip.active { background:rgba(167,139,250,0.18); color:#c4b5fd; border-color:rgba(167,139,250,0.4); }
+    .brain-node-inspector {
+      position:absolute; top:10px; right:10px; width:260px; max-height:440px;
+      background: rgba(10,14,20,0.92); border:1px solid rgba(255,255,255,0.1); border-radius:10px;
+      padding:12px; display:none; overflow:auto; font-size:12px;
+    }
+    .brain-node-inspector.visible { display:block; }
+    .brain-node-inspector h5 { margin:0 0 6px; font-size:13px; color:#c4b5fd; }
+    .momo-secondary-panels { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; margin-top:14px; }
+    .momo-panel-card { background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:12px; }
+    .momo-panel-card h4 { margin:0 0 8px; font-size:0.8rem; color:var(--muted); }
+    /* Backtest Lab cards */
+    .backtest-run-card {
+      display:grid; grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));
+      gap:8px; padding:12px; border:1px solid rgba(255,255,255,0.06);
+      border-radius:10px; background:rgba(255,255,255,0.02); margin-bottom:10px;
+    }
+    .backtest-run-card .lab { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
+    .backtest-run-card .val { font-size:14px; color:var(--text); font-weight:500; }
+    .backtest-run-card .val.win { color:#34d399; } .backtest-run-card .val.loss { color:#f87171; }
+    /* Settings */
+    .settings-profile-card {
+      display:flex; justify-content:space-between; align-items:flex-start;
+      gap:10px; padding:14px; border:1px solid rgba(255,255,255,0.06);
+      border-radius:10px; background:rgba(255,255,255,0.02); margin-bottom:8px;
+    }
+    .config-proposal-card {
+      padding:12px; border:1px solid rgba(255,255,255,0.08); border-radius:10px;
+      background:rgba(56,189,248,0.04); margin-bottom:8px;
+    }
+    .config-proposal-card .pp-row { display:flex; gap:12px; align-items:center; font-size:12px; flex-wrap:wrap; }
+    /* Activity */
+    .activity-section { margin-bottom:14px; }
+    .activity-section h4 { margin:0 0 6px; font-size:0.78rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; }
+    .activity-row { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,0.05); font-size:12px; display:flex; gap:8px; align-items:center; }
+    .activity-row:last-child { border-bottom:none; }
+    .activity-row .ts { color:var(--muted); font-size:11px; min-width:110px; }
+    /* Files */
+    .files-card { background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:12px; margin-bottom:8px; }
   </style>
 </head>
 <body class="qb-app">
@@ -1064,6 +1166,44 @@ _PAGE = """<!DOCTYPE html>
       </header>
       <main class="tab-content">
     <section id="panel-mission" class="tab-panel cockpit-tab active">
+      <!-- Monitoring Mode strip (replaces raw "Observe Only" jargon) -->
+      <div class="thinking-strip" id="mcMonitoringStrip" style="display:none;">
+        <div class="pulse-dot"></div>
+        <div style="flex:1;">
+          <strong style="font-size:13px;color:#a78bfa;" id="mcMonitoringHeadline">Monitoring Mode</strong>
+          <span style="display:block;font-size:11px;color:var(--muted);margin-top:2px;" id="mcMonitoringExplain">Loading…</span>
+        </div>
+      </div>
+      <!-- Latest MoMo Thinking strip -->
+      <div class="thinking-strip" id="mcMomoThinkingStrip" style="display:none;background:rgba(56,189,248,0.05);border-color:rgba(56,189,248,0.22);">
+        <div class="pulse-dot" style="background:#38bdf8;"></div>
+        <div style="flex:1;">
+          <strong style="font-size:13px;color:#7dd3fc;">MoMo is thinking</strong>
+          <span style="display:block;font-size:11px;color:var(--muted);margin-top:2px;" id="mcMomoThinkingText">—</span>
+        </div>
+      </div>
+      <!-- Operator-language cards: What can happen / Why no buy / What can sell -->
+      <div class="cockpit-grid" id="mcOperatorCards" style="margin-bottom:14px;">
+        <div class="cockpit-card" id="mcWhatNextCard">
+          <h4>What Can Happen Next</h4>
+          <div id="mcWhatNext" class="lead" style="font-size:0.9rem;">—</div>
+          <div id="mcWhatNextSub" class="sub">—</div>
+        </div>
+        <div class="cockpit-card" id="mcWhyNoBuyCard">
+          <h4>Why No New Buy</h4>
+          <div id="mcWhyNoBuy" class="lead" style="font-size:0.9rem;">—</div>
+        </div>
+        <div class="cockpit-card" id="mcWhatCanSellCard">
+          <h4>What Can Sell</h4>
+          <div id="mcWhatCanSell" class="lead" style="font-size:0.9rem;">—</div>
+        </div>
+        <div class="cockpit-card" id="mcActiveBlockersCard">
+          <h4>Active Blockers</h4>
+          <div id="mcActiveBlockers" style="display:flex;flex-wrap:wrap;gap:6px;">
+            <span class="op-chip op-chip-info">Loading…</span>
+          </div>
+        </div>
+      </div>
       <div class="mc-command-strip" id="mcCommandStrip"></div>
       <div class="mc-mock-grid" id="mcCockpitMain">
         <div class="mc-row-charts">
@@ -1370,6 +1510,29 @@ _PAGE = """<!DOCTYPE html>
 
     <section id="panel-activity" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Activity</h2><p>Readable bot timeline — decisions, scans, orders, and real errors only.</p></div>
+      <!-- Operator-language sections (raw codes translated; raw view under Advanced) -->
+      <div id="activityOperatorSections" style="display:none;">
+        <div class="activity-section">
+          <h4>Broker Fills</h4>
+          <div id="activityBrokerFills"><span class="muted" style="font-size:12px;">No fills.</span></div>
+        </div>
+        <div class="activity-section">
+          <h4>Preflight Blocks (Safety)</h4>
+          <div id="activityPreflightBlocks"><span class="muted" style="font-size:12px;">No safety blocks.</span></div>
+        </div>
+        <div class="activity-section">
+          <h4>Broker Rejections</h4>
+          <div id="activityBrokerRejections"><span class="muted" style="font-size:12px;">No rejections.</span></div>
+        </div>
+        <div class="activity-section">
+          <h4>Local Ledger Syncs</h4>
+          <div id="activityLedgerSyncs"><span class="muted" style="font-size:12px;">No syncs.</span></div>
+        </div>
+        <div class="activity-section">
+          <h4>MoMo Proposals &amp; Backtests</h4>
+          <div id="activityMomoProposals"><span class="muted" style="font-size:12px;">No proposals.</span></div>
+        </div>
+      </div>
       <div class="activity-summary glass-card" id="activitySummary">
         <div class="metric"><div class="lab">Last decision</div><div class="val mono" id="actSumDecision">—</div></div>
         <div class="metric"><div class="lab">Crypto scan</div><div class="val mono" id="actSumCrypto">—</div></div>
@@ -1439,6 +1602,15 @@ _PAGE = """<!DOCTYPE html>
 
     <section id="panel-backtest" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Backtest</h2><p>MoMo research lab — manual runs and strategy experiments (autonomous mode off unless enabled).</p></div>
+      <!-- Backtest Lab: real MoMo runs from /api/backtest/momo-runs -->
+      <div class="card glass-card" id="btLabCard">
+        <h2 style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Backtest Lab — Real Runs</span>
+          <button type="button" id="btLabRefresh" class="btn secondary" style="font-size:11px;padding:4px 10px;">Refresh</button>
+        </h2>
+        <p class="empty-hint" style="margin:0 0 10px;font-size:12px;">Real strategy runs recorded via vectorbt. Promote/Reject buttons enable only when evidence gates pass (≥20 trades, expectancy &gt; 0, drawdown &lt; 10%).</p>
+        <div id="btLabRunsList"><span class="muted" style="font-size:12px;">Loading runs…</span></div>
+      </div>
       <div class="card bt-setup-card glass-card">
         <h2>Backtest Setup</h2>
         <div class="bt-grid">
@@ -1540,6 +1712,52 @@ _PAGE = """<!DOCTYPE html>
         <p id="aiStatusFootnote" style="margin:10px 0 0;font-size:12px;color:var(--muted);">
           Loading MoMo status…
         </p>
+      </div>
+
+      <!-- Brain Graph (Memory) -->
+      <div class="card glass-card">
+        <h2 class="dash-section-title">MoMo Brain Graph</h2>
+        <div class="brain-filter-bar" id="brainFilterBar">
+          <span style="font-size:11px;color:var(--muted);">Filter:</span>
+          <span class="brain-filter-chip active" data-type="">All</span>
+          <span class="brain-filter-chip" data-type="risk_rule">Risk Rule</span>
+          <span class="brain-filter-chip" data-type="module">Module</span>
+          <span class="brain-filter-chip" data-type="symbol">Symbol</span>
+          <span class="brain-filter-chip" data-type="strategy">Strategy</span>
+          <span class="brain-filter-chip" data-type="configuration">Configuration</span>
+          <span class="brain-filter-chip" data-type="incident">Incident</span>
+          <span class="brain-filter-chip" data-type="lesson">Lesson</span>
+          <span class="brain-filter-chip" data-type="decision">Decision</span>
+          <span class="brain-filter-chip" data-type="backtest">Backtest</span>
+          <span class="brain-filter-chip" data-type="loss_pattern">Loss Pattern</span>
+          <input type="text" id="brainSearchInput" placeholder="Search nodes…" style="margin-left:auto;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:11px;" />
+          <button type="button" id="brainSeedBtn" class="btn secondary" style="font-size:11px;padding:4px 10px;">Seed clean-boot facts</button>
+        </div>
+        <div class="brain-graph-host" id="brainGraphHost">
+          <svg id="brainGraphSvg" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="brain-node-inspector" id="brainNodeInspector"></div>
+        </div>
+        <p id="brainGraphStatus" class="empty-hint" style="margin-top:8px;font-size:11px;">Loading memory graph…</p>
+      </div>
+
+      <!-- Secondary panels: critical notes / loss patterns / config proposals / latest thinking -->
+      <div class="momo-secondary-panels">
+        <div class="momo-panel-card" id="momoCriticalNotesPanel">
+          <h4>Critical Notes</h4>
+          <div id="momoCriticalNotesList"><span class="muted" style="font-size:12px;">Loading…</span></div>
+        </div>
+        <div class="momo-panel-card" id="momoLossPatternsPanel">
+          <h4>Loss Patterns</h4>
+          <div id="momoLossPatternsList"><span class="muted" style="font-size:12px;">No patterns yet.</span></div>
+        </div>
+        <div class="momo-panel-card" id="momoConfigProposalsPanel">
+          <h4>Config Proposals</h4>
+          <div id="momoConfigProposalsList"><span class="muted" style="font-size:12px;">No proposals yet.</span></div>
+        </div>
+        <div class="momo-panel-card" id="momoLatestThinkingPanel">
+          <h4>Latest MoMo Thinking</h4>
+          <div id="momoLatestThinking"><span class="muted" style="font-size:12px;">—</span></div>
+        </div>
       </div>
 
       <div class="card glass-card momo-ask-card">
@@ -1691,6 +1909,12 @@ _PAGE = """<!DOCTYPE html>
 
     <section id="panel-files" class="tab-panel cockpit-tab">
       <div class="tab-panel-header"><h2>Files</h2><p>Logs, GPT bundles, exports, and memory — no secrets on disk view.</p></div>
+      <!-- Storage audit cards (sanitized) -->
+      <div class="card glass-card" id="filesStorageAuditCard">
+        <h2 style="margin:0 0 8px;font-size:0.95rem;">Storage Health</h2>
+        <p class="empty-hint" style="margin:0 0 10px;font-size:12px;">Operator-friendly DB status. Secrets are never listed here. Desktop paths sanitized.</p>
+        <div id="filesStorageAudit"><span class="muted" style="font-size:12px;">Loading…</span></div>
+      </div>
       <div class="files-vault-summary" id="filesVaultSummary">
         <div class="vault-card glass-card"><div class="vault-n" id="vaultBundles">—</div><div class="vault-l">GPT bundles</div></div>
         <div class="vault-card glass-card"><div class="vault-n" id="vaultLogs">—</div><div class="vault-l">Log files</div></div>
@@ -1787,6 +2011,14 @@ _PAGE = """<!DOCTYPE html>
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Storage health</h2>
         <p class="empty-hint" style="margin:0 0 10px;">Canonical DBs, legacy DBs, and corrupt files. Quarantine via Fresh Start wizard.</p>
         <div id="storageAuditCards"></div>
+      </div>
+      <div class="card glass-card" style="margin-top:12px;">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">MoMo Config Proposals</h2>
+        <p class="empty-hint" style="margin:0 0 10px;font-size:12px;">
+          Paper-safe config changes proposed by MoMo. Operator approval required.
+          Approve / Reject / Rollback require admin auth.
+        </p>
+        <div id="settingsConfigProposals"><span class="muted" style="font-size:12px;">Loading…</span></div>
       </div>
       <div class="card glass-card" style="margin-top:12px;border:1px solid var(--danger,#dc2626);">
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;color:var(--danger,#dc2626);">Danger Zone — Fresh Start Runtime</h2>
