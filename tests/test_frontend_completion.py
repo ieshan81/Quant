@@ -41,13 +41,15 @@ def test_mission_control_has_what_next_card(dash_html):
 def test_mission_control_has_latest_momo_thinking_strip(dash_html):
     assert 'id="mcMomoThinkingStrip"' in dash_html
     assert 'id="mcMomoThinkingText"' in dash_html
+    assert 'id="mcMomoCockpitFields"' in dash_html
+    assert 'id="mcOpenMomoBrain"' in dash_html
 
 
-def test_mission_control_growth_plan_card_present(dash_html):
-    # Growth plan panel from prior pass
+def test_mission_control_growth_plan_has_progress_ring(dash_html):
     assert 'id="growthPlanPanel"' in dash_html
-    assert 'id="growthConfidenceBadge"' in dash_html
-    assert 'id="growthNextMilestone"' in dash_html
+    assert 'id="growthProgressRing"' in dash_html
+    assert 'id="growthRingPct"' in dash_html
+    assert 'id="growthDailyChips"' in dash_html
 
 
 # ---------- MoMo Brain Graph ----------
@@ -58,15 +60,30 @@ def test_momo_tab_has_brain_graph_svg(dash_html):
     assert 'id="brainFilterBar"' in dash_html
     assert 'id="brainSearchInput"' in dash_html
     assert 'id="brainSeedBtn"' in dash_html
+    assert 'id="brainCockpit"' in dash_html
+    assert 'id="brainMinimap"' in dash_html
+    assert 'id="brainEvidenceStrip"' in dash_html
+    assert 'id="brainStatusChips"' in dash_html
+
+
+def test_momo_tab_has_authority_panel(dash_html):
+    assert 'id="momoAuthorityPanel"' in dash_html
+    assert 'id="momoAuthorityAllowed"' in dash_html
+    assert 'id="momoAuthorityLocked"' in dash_html
+
+
+def test_momo_tab_has_learned_and_proposals(dash_html):
+    assert 'id="momoLearnedSection"' in dash_html
+    assert 'id="momoProposalsSection"' in dash_html
 
 
 def test_momo_tab_has_secondary_panels(dash_html):
-    for el in ("momoCriticalNotesPanel", "momoLossPatternsPanel", "momoConfigProposalsPanel", "momoLatestThinkingPanel"):
+    for el in ("momoCriticalNotesPanel", "momoLossPatternsPanel"):
         assert 'id="' + el + '"' in dash_html
 
 
 def test_momo_brain_filter_has_node_types(dash_html):
-    for typ in ("risk_rule", "module", "symbol", "strategy", "configuration", "incident", "lesson", "decision", "backtest", "loss_pattern"):
+    for typ in ("risk_rule", "broker_event", "symbol", "strategy", "configuration", "lesson", "backtest", "loss_pattern", "operator_action", "market_regime"):
         assert 'data-type="' + typ + '"' in dash_html
 
 
@@ -89,6 +106,16 @@ def test_settings_has_config_proposals(dash_html):
 def test_settings_has_profile_cards_root(dash_html):
     assert 'id="connectionsCards"' in dash_html
     assert 'id="storageAuditCards"' in dash_html
+
+
+def test_settings_has_env_health(dash_html):
+    assert 'id="envHealthCategories"' in dash_html
+    assert 'id="envHealthLegacy"' in dash_html
+
+
+def test_activity_has_extended_sections(dash_html):
+    for el in ("activityBacktestRuns", "activityMemoryUpdates", "activityCriticalNotes"):
+        assert 'id="' + el + '"' in dash_html
 
 
 # ---------- Activity ----------
@@ -127,6 +154,18 @@ def test_js_has_brain_graph_renderer(dash_js):
     assert "loadMomoBrainGraph" in dash_js
     assert "_renderBrainGraph" in dash_js
     assert "brainNodeInspector" in dash_js
+    assert "loadBrainEvidenceStrip" in dash_js
+    assert "BRAIN_CLUSTERS" in dash_js
+
+
+def test_js_has_momo_visual_renderer(dash_js):
+    assert "renderMomoStructuredVisual" in dash_js
+    assert "showMomoThinking" in dash_js
+    assert "MOMO_THINK_STEPS" in dash_js
+
+
+def test_js_has_env_health_loader(dash_js):
+    assert "loadEnvHealthCategories" in dash_js
 
 
 def test_js_has_backtest_lab_loader(dash_js):
@@ -199,8 +238,7 @@ def test_dashboard_app_js_wires_completion_loaders(dash_js):
 
 
 def test_js_brain_graph_filter_chips_match_backend_types(dash_html):
-    # Backend supports these node types — HTML filter chips expose them via data-type
-    for t in ("risk_rule", "module", "symbol", "strategy", "configuration", "incident", "lesson", "decision", "backtest", "loss_pattern"):
+    for t in ("risk_rule", "broker_event", "symbol", "strategy", "configuration", "lesson", "backtest", "loss_pattern", "operator_action", "market_regime"):
         assert 'data-type="' + t + '"' in dash_html
 
 

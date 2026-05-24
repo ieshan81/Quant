@@ -1107,6 +1107,84 @@ _PAGE = """<!DOCTYPE html>
     .activity-row .ts { color:var(--muted); font-size:11px; min-width:110px; }
     /* Files */
     .files-card { background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:12px; margin-bottom:8px; }
+    /* Hive-mind Brain Graph cockpit */
+    .brain-cockpit { padding:0; overflow:hidden; }
+    .brain-cockpit-header { padding:14px 16px 10px; border-bottom:1px solid rgba(255,255,255,0.06); }
+    .brain-cockpit-header h2 { margin:0 0 10px; font-size:1rem; }
+    .brain-status-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+    .brain-status-chip { padding:3px 10px; border-radius:14px; font-size:11px; cursor:pointer; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); color:var(--muted); }
+    .brain-status-chip.active { background:rgba(56,189,248,0.15); color:#7dd3fc; border-color:rgba(56,189,248,0.35); }
+    .brain-cockpit-body { display:grid; grid-template-columns:1fr 300px; min-height:520px; position:relative; }
+    .brain-canvas-wrap { position:relative; min-height:520px; background:radial-gradient(ellipse at 50% 45%, rgba(139,92,246,0.08), transparent 65%); }
+    .brain-canvas-wrap svg { width:100%; height:520px; display:block; }
+    .brain-cluster-bubble { cursor:pointer; transition:opacity 0.2s; }
+    .brain-cluster-bubble:hover { opacity:0.95; }
+    .brain-cluster-label { font-size:11px; font-weight:600; fill:#e5e7eb; pointer-events:none; }
+    .brain-cluster-count { font-size:9px; fill:#9ca3af; pointer-events:none; }
+    .brain-hub-node { filter:drop-shadow(0 0 12px rgba(167,139,250,0.55)); cursor:pointer; }
+    .brain-edge-label { font-size:8px; fill:#94a3b8; pointer-events:none; }
+    .brain-minimap { position:absolute; bottom:12px; left:12px; width:120px; height:72px; background:rgba(10,14,20,0.85); border:1px solid rgba(255,255,255,0.12); border-radius:8px; overflow:hidden; pointer-events:none; }
+    .brain-minimap svg { width:100%; height:100%; }
+    .brain-zoom-controls { position:absolute; bottom:12px; right:12px; display:flex; flex-direction:column; gap:4px; }
+    .brain-zoom-btn { width:28px; height:28px; border-radius:6px; border:1px solid rgba(255,255,255,0.12); background:rgba(10,14,20,0.9); color:#e5e7eb; cursor:pointer; font-size:14px; }
+    .brain-zoom-btn:hover { background:rgba(167,139,250,0.2); border-color:rgba(167,139,250,0.4); }
+    .brain-inspector-panel {
+      border-left:1px solid rgba(255,255,255,0.06); padding:14px; overflow-y:auto; max-height:520px;
+      background:linear-gradient(180deg, rgba(10,14,20,0.95), rgba(15,20,30,0.98));
+    }
+    .brain-inspector-panel .ins-title { margin:0 0 8px; font-size:14px; color:#c4b5fd; font-weight:600; }
+    .brain-inspector-panel .ins-meta { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+    .brain-inspector-panel .ins-summary { font-size:12px; line-height:1.55; color:#d1d5db; margin-bottom:10px; }
+    .brain-inspector-panel .ins-lesson { padding:8px 10px; border-radius:8px; background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.18); font-size:11px; margin-bottom:10px; }
+    .brain-inspector-actions { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
+    .brain-inspector-actions button { font-size:11px; padding:6px 10px; }
+    .brain-evidence-strip { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; padding:12px 16px; border-top:1px solid rgba(255,255,255,0.06); background:rgba(0,0,0,0.15); }
+    .brain-evidence-card { padding:10px 12px; border-radius:10px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); min-height:72px; }
+    .brain-evidence-card h5 { margin:0 0 6px; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.05em; }
+    .brain-evidence-card .ev-val { font-size:13px; font-weight:600; color:#e5e7eb; }
+    .brain-evidence-card .ev-sub { font-size:10px; color:var(--muted); margin-top:2px; }
+    /* MoMo Authority */
+    .momo-authority-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px; }
+    @media (max-width:720px) { .momo-authority-grid { grid-template-columns:1fr; } .brain-cockpit-body { grid-template-columns:1fr; } }
+    .authority-card { padding:14px; border-radius:12px; border:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02); }
+    .authority-card h4 { margin:0 0 10px; font-size:0.78rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
+    .authority-card.locked { border-color:rgba(248,113,113,0.2); background:rgba(248,113,113,0.04); }
+    .authority-card.allowed { border-color:rgba(16,185,129,0.2); background:rgba(16,185,129,0.04); }
+    .authority-list { list-style:none; margin:0; padding:0; font-size:12px; line-height:1.8; }
+    .authority-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+    /* MoMo Ask visual */
+    .momo-ask-visual { margin-top:12px; }
+    .momo-thinking-orb { width:48px; height:48px; border-radius:50%; background:radial-gradient(circle, rgba(167,139,250,0.6), rgba(56,189,248,0.2)); animation:momoOrbPulse 1.6s infinite ease-in-out; flex-shrink:0; }
+    @keyframes momoOrbPulse { 0%,100%{transform:scale(0.92);opacity:0.7;} 50%{transform:scale(1.08);opacity:1;} }
+    .momo-thinking-steps { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
+    .momo-answer-cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-top:12px; }
+    .momo-answer-card { padding:12px; border-radius:10px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
+    .momo-answer-card h5 { margin:0 0 6px; font-size:11px; color:var(--muted); text-transform:uppercase; }
+    .momo-quick-chips { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0; }
+    .momo-quick-chip { padding:5px 12px; border-radius:16px; font-size:11px; cursor:pointer; background:rgba(167,139,250,0.1); border:1px solid rgba(167,139,250,0.25); color:#c4b5fd; }
+    .momo-quick-chip:hover { background:rgba(167,139,250,0.22); }
+    /* Growth plan premium */
+    .growth-cockpit { display:grid; grid-template-columns:auto 1fr; gap:14px; align-items:start; }
+    .growth-metrics-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(90px, 1fr)); gap:8px; margin:8px 0; }
+    .growth-metric-tile { padding:8px; border-radius:8px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.05); text-align:center; }
+    .growth-metric-tile .gm-lab { font-size:9px; color:var(--muted); text-transform:uppercase; }
+    .growth-metric-tile .gm-val { font-size:14px; font-weight:600; margin-top:2px; }
+    .growth-blocked-banner { padding:10px 12px; border-radius:8px; background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.25); color:#fbbf24; font-size:12px; margin:8px 0; }
+    .growth-daily-chips { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
+    .growth-daily-chip { padding:3px 8px; border-radius:12px; font-size:10px; background:rgba(56,189,248,0.08); border:1px solid rgba(56,189,248,0.2); color:#7dd3fc; }
+    /* Mission Control MoMo strip */
+    .mc-momo-cockpit-strip { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; padding:12px 14px; margin-bottom:14px; }
+    .mc-momo-field .mf-lab { font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
+    .mc-momo-field .mf-val { font-size:12px; color:#e5e7eb; margin-top:2px; }
+    /* Env health categories */
+    .env-category { margin-bottom:12px; padding:12px; border-radius:10px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); }
+    .env-category h4 { margin:0 0 8px; font-size:0.8rem; color:var(--muted); }
+    .env-var-row { display:flex; justify-content:space-between; font-size:12px; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.04); }
+    .learned-card { padding:10px 12px; border-radius:10px; margin-bottom:8px; border:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02); }
+    .learned-card.sev-warn { border-color:rgba(251,191,36,0.3); box-shadow:0 0 12px rgba(251,191,36,0.08); }
+    .learned-card.sev-error { border-color:rgba(248,113,113,0.3); box-shadow:0 0 12px rgba(248,113,113,0.08); }
+    .proposal-card-full { padding:14px; border-radius:12px; margin-bottom:10px; border:1px solid rgba(56,189,248,0.15); background:rgba(56,189,248,0.04); }
+    .proposal-card-full.locked { opacity:0.6; border-color:rgba(248,113,113,0.2); }
   </style>
 </head>
 <body class="qb-app">
@@ -1174,12 +1252,23 @@ _PAGE = """<!DOCTYPE html>
           <span style="display:block;font-size:11px;color:var(--muted);margin-top:2px;" id="mcMonitoringExplain">Loading…</span>
         </div>
       </div>
-      <!-- Latest MoMo Thinking strip -->
-      <div class="thinking-strip" id="mcMomoThinkingStrip" style="display:none;background:rgba(56,189,248,0.05);border-color:rgba(56,189,248,0.22);">
-        <div class="pulse-dot" style="background:#38bdf8;"></div>
-        <div style="flex:1;">
-          <strong style="font-size:13px;color:#7dd3fc;">MoMo is thinking</strong>
-          <span style="display:block;font-size:11px;color:var(--muted);margin-top:2px;" id="mcMomoThinkingText">—</span>
+      <!-- Latest MoMo Thinking strip — full cockpit strip -->
+      <div class="thinking-strip" id="mcMomoThinkingStrip" style="display:none;background:rgba(56,189,248,0.05);border-color:rgba(56,189,248,0.22);flex-direction:column;align-items:stretch;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div class="pulse-dot" style="background:#38bdf8;"></div>
+          <div style="flex:1;">
+            <strong style="font-size:13px;color:#7dd3fc;">Latest MoMo Thinking</strong>
+            <span style="display:block;font-size:11px;color:var(--muted);margin-top:2px;" id="mcMomoThinkingText">—</span>
+          </div>
+          <button type="button" id="mcOpenMomoBrain" class="btn secondary" style="font-size:11px;padding:4px 12px;">Open MoMo Brain</button>
+        </div>
+        <div class="mc-momo-cockpit-strip" id="mcMomoCockpitFields">
+          <div class="mc-momo-field"><div class="mf-lab">Thesis</div><div class="mf-val" id="mcMomoThesis">—</div></div>
+          <div class="mc-momo-field"><div class="mf-lab">Active risk</div><div class="mf-val" id="mcMomoRisk">—</div></div>
+          <div class="mc-momo-field"><div class="mf-lab">Next allowed action</div><div class="mf-val" id="mcMomoNextAction">—</div></div>
+          <div class="mc-momo-field"><div class="mf-lab">Current blocker</div><div class="mf-val" id="mcMomoBlocker">—</div></div>
+          <div class="mc-momo-field"><div class="mf-lab">Confidence</div><div class="mf-val" id="mcMomoConfidence">—</div></div>
+          <div class="mc-momo-field"><div class="mf-lab">Last updated</div><div class="mf-val mono" id="mcMomoUpdated">—</div></div>
         </div>
       </div>
       <!-- Operator-language cards: What can happen / Why no buy / What can sell -->
@@ -1248,39 +1337,37 @@ _PAGE = """<!DOCTYPE html>
           <div class="mc-panel mc-crypto-scanner glass-card" id="mcCryptoScannerPanel"><h4>Crypto Scanner</h4><div id="mcCryptoScanner"><span class="muted">Loading…</span></div></div>
           <div class="mc-panel glass-card"><h4>Last Actions</h4><ul class="mc-feed timeline-feed" id="mcActionFeed"><li>—</li></ul></div>
           <div class="mc-panel mc-growth-plan glass-card" id="growthPlanPanel">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 6px;">
-              <h4 style="margin:0;">Growth Plan · Milestone Forecast</h4>
-              <span class="growth-confidence-badge" id="growthConfidenceBadge" style="font-size:11px;color:#9ca3af;">Confidence: —</span>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px;">
+              <h4 style="margin:0;">Growth Plan</h4>
+              <span class="op-chip op-chip-info" id="growthConfidenceBadge">Confidence —</span>
             </div>
-            <div class="growth-current-row" style="display:flex;gap:10px;align-items:center;font-size:12px;flex-wrap:wrap;margin-bottom:6px;">
-              <span>Current: <strong id="growthCurrentEquity">—</strong></span>
-              <span>Next: <strong id="growthNextMilestone">—</strong></span>
-              <span id="growthProgressLabel">Progress —</span>
+            <div id="growthBlockedBanner" class="growth-blocked-banner" style="display:none;">Projection blocked — insufficient evidence</div>
+            <div class="growth-cockpit">
+              <div class="progress-ring" id="growthProgressRing" aria-label="Milestone progress">
+                <svg width="80" height="80" viewBox="0 0 80 80"><circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="6"/><circle id="growthRingArc" cx="40" cy="40" r="34" fill="none" stroke="url(#growthGrad)" stroke-width="6" stroke-linecap="round" stroke-dasharray="0 213.6" transform="rotate(-90 40 40)"/><defs><linearGradient id="growthGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#38bdf8"/><stop offset="100%" stop-color="#a78bfa"/></linearGradient></defs></svg>
+                <span class="pct" id="growthRingPct">—</span>
+              </div>
+              <div style="flex:1;min-width:0;">
+                <div class="growth-metrics-grid">
+                  <div class="growth-metric-tile"><div class="gm-lab">Current equity</div><div class="gm-val" id="growthCurrentEquity">—</div></div>
+                  <div class="growth-metric-tile"><div class="gm-lab">Next milestone</div><div class="gm-val" id="growthNextMilestone">—</div></div>
+                  <div class="growth-metric-tile"><div class="gm-lab">Required return</div><div class="gm-val" id="growthRequiredReturn">—</div></div>
+                  <div class="growth-metric-tile"><div class="gm-lab">Risk of ruin</div><div class="gm-val" id="growthMcRuin">—</div></div>
+                </div>
+                <div class="growth-daily-chips" id="growthDailyChips"></div>
+                <div id="growthBlockersBlock" style="display:none;margin-top:6px;">
+                  <div id="growthBlockersList" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+                </div>
+                <div class="mc-momo-row" style="margin-top:8px;">
+                  <div class="mc-momo-avatar" aria-hidden="true"><img src="/momo-logo.png" alt="" class="momo-avatar-img"/></div>
+                  <div id="growthVerdict" style="flex:1;min-width:0;font-size:11px;color:#e5e7eb;line-height:1.5;">Loading projection…</div>
+                </div>
+              </div>
             </div>
-            <div class="growth-progress-bar" style="height:6px;background:#1f2937;border-radius:3px;overflow:hidden;margin-bottom:6px;">
-              <div id="growthProgressFill" style="height:100%;width:0%;background:linear-gradient(90deg,#38bdf8,#a78bfa);transition:width 0.5s;"></div>
-            </div>
-            <div id="growthRequiredBlock" style="font-size:11px;color:#9ca3af;margin-bottom:4px;">
-              Required return: <span id="growthRequiredReturn">—</span><br/>
-              Required daily compounded:<br/>
-              <span class="mono" id="growthDailyTable" style="display:inline-block;margin-left:4px;">—</span>
-            </div>
-            <div id="growthMonteCarloBlock" style="font-size:11px;color:#9ca3af;margin-bottom:4px;">
-              Monte Carlo (90d):<br/>
-              <span class="mono" style="display:inline-block;margin-left:4px;">
-                Hit: <span id="growthMcHit">—</span> ·
-                Median: <span id="growthMcMedian">—</span> ·
-                Ruin: <span id="growthMcRuin">—</span>
-              </span>
-            </div>
-            <div id="growthBlockersBlock" style="font-size:11px;color:#fbbf24;margin-bottom:6px;display:none;">
-              <strong>Blockers:</strong>
-              <ul id="growthBlockersList" style="margin:2px 0 0 14px;padding:0;font-size:11px;"></ul>
-            </div>
-            <div class="mc-momo-row" style="margin-top:6px;">
-              <div class="mc-momo-avatar" aria-hidden="true"><img src="/momo-logo.png" alt="" class="momo-avatar-img"/></div>
-              <div id="growthVerdict" style="flex:1;min-width:0;font-size:11px;color:#e5e7eb;">Loading projection…</div>
-            </div>
+            <span id="growthProgressLabel" style="display:none;">—</span>
+            <div id="growthProgressFill" style="display:none;"></div>
+            <div id="growthRequiredBlock" style="display:none;"><span id="growthDailyTable"></span></div>
+            <div id="growthMonteCarloBlock" style="display:none;"><span id="growthMcHit"></span><span id="growthMcMedian"></span></div>
           </div>
         </div>
       </div>
@@ -1305,13 +1392,17 @@ _PAGE = """<!DOCTYPE html>
           <input type="text" id="mcMomoInput" placeholder="Ask a question or request analysis…" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px;" />
           <button type="button" id="btnMcAskMomo" class="btn primary">Send</button>
         </div>
-        <div class="mc-quick-btns">
-          <button type="button" class="btn secondary mc-quick" data-q="Why no crypto?">Why no crypto?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Summarize risk">Summarize risk</button>
-          <button type="button" class="btn secondary mc-quick" data-q="What changed?">What changed?</button>
-          <button type="button" class="btn secondary mc-quick" data-q="Can it trade tonight?">Can it trade tonight?</button>
+        <div class="mc-quick-btns momo-quick-chips">
+          <button type="button" class="momo-quick-chip mc-quick" data-q="Summarize risk">Summarize risk</button>
+          <button type="button" class="momo-quick-chip mc-quick" data-q="What changed?">What changed?</button>
+          <button type="button" class="momo-quick-chip mc-quick" data-q="Why are we below $200?">Why are we below $200?</button>
+          <button type="button" class="momo-quick-chip mc-quick" data-q="What can sell?">What can sell?</button>
+          <button type="button" class="momo-quick-chip mc-quick" data-q="What blocks buys?">What blocks buys?</button>
+          <button type="button" class="momo-quick-chip mc-quick" data-q="Next milestone">Next milestone</button>
+          <button type="button" class="momo-quick-chip mc-quick" data-q="Is live ready?">Is live ready?</button>
         </div>
-        <div id="mcMomoAnswer" class="mc-body" style="margin-top:8px;min-height:1.25rem;max-height:100px;overflow:auto;font-size:12px;color:var(--muted);">—</div>
+        <div id="mcMomoThinkingAnim" class="momo-thinking-steps" style="display:none;"></div>
+        <div id="mcMomoAnswer" class="mc-body momo-ask-visual" style="margin-top:8px;min-height:1.25rem;font-size:12px;color:var(--muted);">—</div>
       </div>
       <details class="diag-drawer mc-diagnostics-zone" id="mcDiagnosticsZone">
         <summary>Advanced diagnostics &amp; exports (operator)</summary>
@@ -1532,6 +1623,18 @@ _PAGE = """<!DOCTYPE html>
           <h4>MoMo Proposals &amp; Backtests</h4>
           <div id="activityMomoProposals"><span class="muted" style="font-size:12px;">No proposals.</span></div>
         </div>
+        <div class="activity-section">
+          <h4>Backtest Runs</h4>
+          <div id="activityBacktestRuns"><span class="muted" style="font-size:12px;">No runs.</span></div>
+        </div>
+        <div class="activity-section">
+          <h4>Memory Updates</h4>
+          <div id="activityMemoryUpdates"><span class="muted" style="font-size:12px;">No updates.</span></div>
+        </div>
+        <div class="activity-section">
+          <h4>Critical Notes</h4>
+          <div id="activityCriticalNotes"><span class="muted" style="font-size:12px;">No notes.</span></div>
+        </div>
       </div>
       <div class="activity-summary glass-card" id="activitySummary">
         <div class="metric"><div class="lab">Last decision</div><div class="val mono" id="actSumDecision">—</div></div>
@@ -1687,133 +1790,206 @@ _PAGE = """<!DOCTYPE html>
           <img src="/momo-logo.png" alt="" width="32" height="32" class="momo-header-logo"/>
           <div>
             <h2>MoMo Console</h2>
-            <p>Observer intelligence — notes, patterns, proposals. Cannot trade live.</p>
+            <p>Hive-mind intelligence — memory graph, proposals, and paper-safe recommendations.</p>
           </div>
         </div>
       </div>
-      <div class="card glass-card ai-hero momo-hero-card">
-        <div class="ai-avatar momo-avatar-frame" aria-hidden="true"><img src="/momo-logo.png" alt="" class="momo-avatar-img"/></div>
-        <div style="flex:1;min-width:200px;">
-          <div class="status-badge warn" style="margin-bottom:8px;display:inline-flex;">Live trading not authorized</div>
-          <p style="margin:0;font-size:12px;color:var(--muted);">MoMo observes, recommends, and proposes paper-mode config changes only. Operator approval required.</p>
+      <!-- MoMo Authority Panel -->
+      <div class="momo-authority-grid" id="momoAuthorityPanel">
+        <div class="authority-card allowed">
+          <h4>MoMo Can</h4>
+          <ul class="authority-list" id="momoAuthorityAllowed">
+            <li>Analyze account &amp; positions</li>
+            <li>Write memory &amp; critical notes</li>
+            <li>Run backtests &amp; track outcomes</li>
+            <li>Propose paper-safe config changes</li>
+            <li>Apply approved paper config (admin)</li>
+            <li>Recommend rollback when evidence supports it</li>
+          </ul>
+          <div class="authority-chips">
+            <span class="op-chip op-chip-info">Paper recommendations only</span>
+            <span class="op-chip op-chip-info">Config approval required</span>
+            <span class="op-chip op-chip-info">Backtest evidence required</span>
+          </div>
         </div>
-      </div>
-      <div class="card glass-card">
-        <h2 class="dash-section-title">MoMo Status</h2>
-        <div class="grid-metrics" id="aiStatusMetrics">
-          <div class="metric"><div class="lab">Provider</div><div class="val mono" id="aiProvider">—</div></div>
-          <div class="metric"><div class="lab">Model</div><div class="val mono" id="aiModel">—</div></div>
-          <div class="metric"><div class="lab">Observer</div><div class="val mono" id="aiEnabled">—</div></div>
-          <div class="metric"><div class="lab">Notes</div><div class="val mono" id="aiNotesCount">—</div></div>
-          <div class="metric"><div class="lab">Patterns</div><div class="val mono" id="aiPatternsCount">—</div></div>
-          <div class="metric"><div class="lab">Skills</div><div class="val mono" id="aiSkillsCount">—</div></div>
-          <div class="metric"><div class="lab">Last run</div><div class="val mono" id="aiLastRun">—</div></div>
-        </div>
-        <p id="aiStatusFootnote" style="margin:10px 0 0;font-size:12px;color:var(--muted);">
-          Loading MoMo status…
-        </p>
-      </div>
-
-      <!-- Brain Graph (Memory) -->
-      <div class="card glass-card">
-        <h2 class="dash-section-title">MoMo Brain Graph</h2>
-        <div class="brain-filter-bar" id="brainFilterBar">
-          <span style="font-size:11px;color:var(--muted);">Filter:</span>
-          <span class="brain-filter-chip active" data-type="">All</span>
-          <span class="brain-filter-chip" data-type="risk_rule">Risk Rule</span>
-          <span class="brain-filter-chip" data-type="module">Module</span>
-          <span class="brain-filter-chip" data-type="symbol">Symbol</span>
-          <span class="brain-filter-chip" data-type="strategy">Strategy</span>
-          <span class="brain-filter-chip" data-type="configuration">Configuration</span>
-          <span class="brain-filter-chip" data-type="incident">Incident</span>
-          <span class="brain-filter-chip" data-type="lesson">Lesson</span>
-          <span class="brain-filter-chip" data-type="decision">Decision</span>
-          <span class="brain-filter-chip" data-type="backtest">Backtest</span>
-          <span class="brain-filter-chip" data-type="loss_pattern">Loss Pattern</span>
-          <input type="text" id="brainSearchInput" placeholder="Search nodes…" style="margin-left:auto;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:11px;" />
-          <button type="button" id="brainSeedBtn" class="btn secondary" style="font-size:11px;padding:4px 10px;">Seed clean-boot facts</button>
-        </div>
-        <div class="brain-graph-host" id="brainGraphHost">
-          <svg id="brainGraphSvg" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
-          <div class="brain-node-inspector" id="brainNodeInspector"></div>
-        </div>
-        <p id="brainGraphStatus" class="empty-hint" style="margin-top:8px;font-size:11px;">Loading memory graph…</p>
-      </div>
-
-      <!-- Secondary panels: critical notes / loss patterns / config proposals / latest thinking -->
-      <div class="momo-secondary-panels">
-        <div class="momo-panel-card" id="momoCriticalNotesPanel">
-          <h4>Critical Notes</h4>
-          <div id="momoCriticalNotesList"><span class="muted" style="font-size:12px;">Loading…</span></div>
-        </div>
-        <div class="momo-panel-card" id="momoLossPatternsPanel">
-          <h4>Loss Patterns</h4>
-          <div id="momoLossPatternsList"><span class="muted" style="font-size:12px;">No patterns yet.</span></div>
-        </div>
-        <div class="momo-panel-card" id="momoConfigProposalsPanel">
-          <h4>Config Proposals</h4>
-          <div id="momoConfigProposalsList"><span class="muted" style="font-size:12px;">No proposals yet.</span></div>
-        </div>
-        <div class="momo-panel-card" id="momoLatestThinkingPanel">
-          <h4>Latest MoMo Thinking</h4>
-          <div id="momoLatestThinking"><span class="muted" style="font-size:12px;">—</span></div>
+        <div class="authority-card locked">
+          <h4>MoMo Cannot</h4>
+          <ul class="authority-list" id="momoAuthorityLocked">
+            <li>Live trading or direct order placement</li>
+            <li>Secret editing or file mutation</li>
+            <li>Preflight bypass or fast execution</li>
+            <li>Withdrawals (never supported)</li>
+          </ul>
+          <div class="authority-chips">
+            <span class="op-chip op-chip-warn">Live locked</span>
+            <span class="op-chip op-chip-warn">Secrets locked</span>
+            <span class="op-chip op-chip-warn">Fast execution locked</span>
+          </div>
         </div>
       </div>
 
+      <!-- Hive-mind Brain Graph Cockpit -->
+      <div class="card glass-card brain-cockpit" id="brainCockpit">
+        <div class="brain-cockpit-header">
+          <h2 class="dash-section-title" style="margin:0;">MoMo Brain Graph</h2>
+          <div class="brain-status-chips" id="brainStatusChips">
+            <span class="brain-status-chip active" data-status="">All</span>
+            <span class="brain-status-chip" data-status="active">Active</span>
+            <span class="brain-status-chip" data-status="stale">Stale</span>
+            <span class="brain-status-chip" data-status="resolved">Resolved</span>
+          </div>
+          <div class="brain-filter-bar" id="brainFilterBar">
+            <span style="font-size:11px;color:var(--muted);">Node type:</span>
+            <span class="brain-filter-chip active" data-type="">All</span>
+            <span class="brain-filter-chip" data-type="risk_rule">Risk Rule</span>
+            <span class="brain-filter-chip" data-type="broker_event">Broker</span>
+            <span class="brain-filter-chip" data-type="symbol">Symbol</span>
+            <span class="brain-filter-chip" data-type="strategy">Strategy</span>
+            <span class="brain-filter-chip" data-type="configuration">Configuration</span>
+            <span class="brain-filter-chip" data-type="lesson">Lesson</span>
+            <span class="brain-filter-chip" data-type="backtest">Backtest</span>
+            <span class="brain-filter-chip" data-type="loss_pattern">Loss Pattern</span>
+            <span class="brain-filter-chip" data-type="operator_action">Operator</span>
+            <span class="brain-filter-chip" data-type="market_regime">Signal</span>
+            <input type="text" id="brainSearchInput" placeholder="Search nodes…" style="margin-left:auto;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-size:11px;" />
+            <button type="button" id="brainSeedBtn" class="btn secondary" style="font-size:11px;padding:4px 10px;">Seed facts</button>
+          </div>
+        </div>
+        <div class="brain-cockpit-body">
+          <div class="brain-canvas-wrap" id="brainGraphHost">
+            <svg id="brainGraphSvg" viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="brain-minimap" id="brainMinimap"><svg viewBox="0 0 900 520"></svg></div>
+            <div class="brain-zoom-controls">
+              <button type="button" class="brain-zoom-btn" id="brainZoomIn" title="Zoom in">+</button>
+              <button type="button" class="brain-zoom-btn" id="brainZoomOut" title="Zoom out">−</button>
+              <button type="button" class="brain-zoom-btn" id="brainZoomFit" title="Fit">◎</button>
+            </div>
+          </div>
+          <aside class="brain-inspector-panel" id="brainNodeInspector">
+            <p class="empty-hint" style="font-size:12px;">Click a cluster or node to inspect.</p>
+          </aside>
+        </div>
+        <div class="brain-evidence-strip" id="brainEvidenceStrip">
+          <div class="brain-evidence-card" id="evidenceBroker"><h5>Broker Snapshot</h5><div class="ev-val" id="evBrokerVal">—</div><div class="ev-sub" id="evBrokerSub">Loading…</div></div>
+          <div class="brain-evidence-card" id="evidenceBacktest"><h5>Backtest Evidence</h5><div class="ev-val" id="evBacktestVal">—</div><div class="ev-sub" id="evBacktestSub">—</div></div>
+          <div class="brain-evidence-card" id="evidenceActivity"><h5>Recent Activity</h5><div class="ev-val" id="evActivityVal">—</div><div class="ev-sub" id="evActivitySub">—</div></div>
+          <div class="brain-evidence-card" id="evidenceRisk"><h5>Risk Rule Evidence</h5><div class="ev-val" id="evRiskVal">—</div><div class="ev-sub" id="evRiskSub">—</div></div>
+          <div class="brain-evidence-card" id="evidenceLesson"><h5>Strategy Lesson</h5><div class="ev-val" id="evLessonVal">—</div><div class="ev-sub" id="evLessonSub">—</div></div>
+        </div>
+        <p id="brainGraphStatus" class="empty-hint" style="margin:8px 16px;font-size:11px;">Loading memory graph…</p>
+      </div>
+
+      <!-- What MoMo Learned -->
+      <div class="card glass-card" id="momoLearnedSection">
+        <h2 class="dash-section-title">What MoMo Learned</h2>
+        <div class="momo-secondary-panels">
+          <div class="momo-panel-card" id="momoCriticalNotesPanel">
+            <h4>Critical Notes</h4>
+            <div id="momoCriticalNotesList"><span class="muted" style="font-size:12px;">Loading…</span></div>
+          </div>
+          <div class="momo-panel-card" id="momoLossPatternsPanel">
+            <h4>Loss Patterns</h4>
+            <div id="momoLossPatternsList"><span class="muted" style="font-size:12px;">No patterns yet.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MoMo Proposals -->
+      <div class="card glass-card" id="momoProposalsSection">
+        <h2 class="dash-section-title">MoMo Proposals</h2>
+        <div id="momoConfigProposalsList"><span class="muted" style="font-size:12px;">Loading proposals…</span></div>
+      </div>
+
+      <!-- Ask MoMo visual -->
       <div class="card glass-card momo-ask-card">
         <h2 class="dash-section-title">Ask MoMo</h2>
-        <textarea id="aiChatInput" placeholder="e.g. Why did HAO not sell? What is the current capital allocation status?" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
+        <textarea id="aiChatInput" placeholder="Ask about risk, milestones, blockers, or what changed…" rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:13px;resize:vertical;font-family:inherit;"></textarea>
+        <div class="momo-quick-chips" id="momoAskQuickChips">
+          <button type="button" class="momo-quick-chip ai-quick" data-q="Summarize risk">Summarize risk</button>
+          <button type="button" class="momo-quick-chip ai-quick" data-q="What changed?">What changed?</button>
+          <button type="button" class="momo-quick-chip ai-quick" data-q="Why are we below $200?">Why below $200?</button>
+          <button type="button" class="momo-quick-chip ai-quick" data-q="What can sell?">What can sell?</button>
+          <button type="button" class="momo-quick-chip ai-quick" data-q="What blocks buys?">What blocks buys?</button>
+          <button type="button" class="momo-quick-chip ai-quick" data-q="Next milestone">Next milestone</button>
+          <button type="button" class="momo-quick-chip ai-quick" data-q="Is live ready?">Is live ready?</button>
+        </div>
         <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
           <button type="button" class="btn primary" id="aiChatSend">Ask MoMo</button>
-          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncExport" checked> Activity export</label>
-          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncBroker"> Broker diagnostic</label>
-          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncMemory" checked> MoMo memory</label>
+          <label style="font-size:12px;color:var(--muted);cursor:pointer;"><input type="checkbox" id="aiIncMemory" checked> Deep memory</label>
         </div>
-        <div id="aiChatResult" class="momo-chat-result" style="display:none;">
-          <div class="momo-chat-head"><img src="/momo-logo.png" alt="" width="22" height="22" class="momo-avatar-img"/><strong>MoMo</strong> <span id="aiChatProvider" class="mono" style="font-size:11px;color:var(--muted);"></span></div>
-          <div id="aiChatAnswer" class="mono" style="font-size:13px;line-height:1.6;white-space:pre-wrap;"></div>
+        <div id="aiThinkingAnim" class="momo-thinking-steps" style="display:none;"></div>
+        <div id="aiChatResult" class="momo-chat-result momo-ask-visual" style="display:none;">
+          <div class="momo-chat-head" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <div class="momo-thinking-orb" id="aiChatOrb" style="display:none;width:32px;height:32px;"></div>
+            <img src="/momo-logo.png" alt="" width="22" height="22" class="momo-avatar-img"/>
+            <strong>MoMo</strong> <span id="aiChatProvider" style="font-size:11px;color:var(--muted);"></span>
+          </div>
+          <div id="aiChatAnswer"></div>
           <div id="aiChatEvidence" style="margin-top:8px;font-size:12px;color:var(--muted);"></div>
-          <div id="aiChatActions" style="margin-top:8px;font-size:12px;"></div>
-          <p class="momo-disclaimer">MoMo is observe-only. Cannot execute trades or change configuration.</p>
+          <p class="momo-disclaimer" style="font-size:11px;color:var(--muted);margin-top:10px;">MoMo proposes paper-safe changes only. Operator approval required for config.</p>
         </div>
       </div>
 
-      <div class="card glass-card">
-        <h2 class="dash-section-title">MoMo Memory Export</h2>
-        <div class="mc-action-btns" style="margin-top:8px;">
-          <button type="button" class="btn secondary" id="btnCopyAiMemories">Copy MoMo Memories</button>
-          <button type="button" class="btn secondary" id="btnCopyFullAiBundle">Copy Full MoMo Bundle</button>
-          <button type="button" class="btn secondary" id="btnDownloadAiMemories">Download MoMo Memories</button>
-          <button type="button" class="btn secondary" id="btnDownloadFullAiBundle">Download Full MoMo Bundle</button>
-        <div id="aiBundleProgress" class="mc-progress"><div id="aiBundleProgressBar" class="mc-progress-bar"></div></div>
+      <details class="diag-drawer" id="momoLegacyAdvanced">
+        <summary>Advanced — legacy tables, memory export, raw status</summary>
+        <div class="card glass-card ai-hero momo-hero-card" style="margin-top:10px;">
+          <div class="ai-avatar momo-avatar-frame" aria-hidden="true"><img src="/momo-logo.png" alt="" class="momo-avatar-img"/></div>
+          <div style="flex:1;min-width:200px;">
+            <div class="status-badge warn" style="margin-bottom:8px;display:inline-flex;">Live trading not authorized</div>
+            <p style="margin:0;font-size:12px;color:var(--muted);">Legacy status metrics and exports.</p>
+          </div>
         </div>
-        <p id="aiMemoryCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
-      </div>
-
-      <div class="card glass-card">
-        <h2 class="dash-section-title">Latest MoMo Notes</h2>
-        <div class="scroll-table">
-          <table class="data" id="tblAiNotes"><thead><tr>
-            <th>Time</th><th>Severity</th><th>Category</th><th>Symbol</th><th>Finding</th><th>Action</th><th>Conf.</th>
-          </tr></thead><tbody></tbody></table>
+        <div class="card glass-card">
+          <h2 class="dash-section-title">MoMo Status (Advanced)</h2>
+          <div class="grid-metrics" id="aiStatusMetrics">
+            <div class="metric"><div class="lab">Provider</div><div class="val mono" id="aiProvider">—</div></div>
+            <div class="metric"><div class="lab">Model</div><div class="val mono" id="aiModel">—</div></div>
+            <div class="metric"><div class="lab">Observer</div><div class="val mono" id="aiEnabled">—</div></div>
+            <div class="metric"><div class="lab">Notes</div><div class="val mono" id="aiNotesCount">—</div></div>
+            <div class="metric"><div class="lab">Patterns</div><div class="val mono" id="aiPatternsCount">—</div></div>
+            <div class="metric"><div class="lab">Skills</div><div class="val mono" id="aiSkillsCount">—</div></div>
+            <div class="metric"><div class="lab">Last run</div><div class="val mono" id="aiLastRun">—</div></div>
+          </div>
+          <p id="aiStatusFootnote" style="margin:10px 0 0;font-size:12px;color:var(--muted);">Loading MoMo status…</p>
         </div>
-      </div>
-
-      <div class="card glass-card">
-        <h2 class="dash-section-title">Patterns &amp; Skills</h2>
-        <h3 style="font-size:0.85rem;font-weight:600;margin:0 0 6px;">Repeated Patterns</h3>
-        <div class="scroll-table">
-          <table class="data" id="tblAiPatterns"><thead><tr>
-            <th>Pattern</th><th>Seen</th><th>Symbols</th><th>Risk</th><th>Conf.</th>
-          </tr></thead><tbody></tbody></table>
+        <div class="card glass-card">
+          <h2 class="dash-section-title">MoMo Memory Export</h2>
+          <div class="mc-action-btns" style="margin-top:8px;">
+            <button type="button" class="btn secondary" id="btnCopyAiMemories">Copy MoMo Memories</button>
+            <button type="button" class="btn secondary" id="btnCopyFullAiBundle">Copy Full MoMo Bundle</button>
+            <button type="button" class="btn secondary" id="btnDownloadAiMemories">Download MoMo Memories</button>
+            <button type="button" class="btn secondary" id="btnDownloadFullAiBundle">Download Full MoMo Bundle</button>
+            <div id="aiBundleProgress" class="mc-progress"><div id="aiBundleProgressBar" class="mc-progress-bar"></div></div>
+          </div>
+          <p id="aiMemoryCopyStatus" style="margin:8px 0 0;font-size:12px;color:var(--muted);"></p>
         </div>
-        <h3 style="font-size:0.85rem;font-weight:600;margin:12px 0 6px;">Candidate Skills</h3>
-        <div class="scroll-table">
-          <table class="data" id="tblAiSkills"><thead><tr>
-            <th>Skill</th><th>Purpose</th><th>Status</th><th>Conf.</th><th>Executable</th>
-          </tr></thead><tbody></tbody></table>
+        <div class="card glass-card">
+          <h2 class="dash-section-title">Latest MoMo Notes</h2>
+          <div class="scroll-table">
+            <table class="data" id="tblAiNotes"><thead><tr>
+              <th>Time</th><th>Severity</th><th>Category</th><th>Symbol</th><th>Finding</th><th>Action</th><th>Conf.</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
         </div>
-      </div>
+        <div class="card glass-card">
+          <h2 class="dash-section-title">Patterns &amp; Skills</h2>
+          <div class="scroll-table">
+            <table class="data" id="tblAiPatterns"><thead><tr>
+              <th>Pattern</th><th>Seen</th><th>Symbols</th><th>Risk</th><th>Conf.</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
+          <div class="scroll-table" style="margin-top:10px;">
+            <table class="data" id="tblAiSkills"><thead><tr>
+              <th>Skill</th><th>Purpose</th><th>Status</th><th>Conf.</th><th>Executable</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </details>
+      <span id="aiIncExport" style="display:none;"></span><span id="aiIncBroker" style="display:none;"></span>
+      <span id="aiChatActions" style="display:none;"></span>
+      <div id="momoConfigProposalsPanel" style="display:none;"></div>
+      <div id="momoLatestThinkingPanel" style="display:none;"></div>
+      <div id="momoLatestThinking" style="display:none;"></div>
     </section>
 
     <section id="panel-ops" class="tab-panel cockpit-tab">
@@ -2011,6 +2187,14 @@ _PAGE = """<!DOCTYPE html>
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Storage health</h2>
         <p class="empty-hint" style="margin:0 0 10px;">Canonical DBs, legacy DBs, and corrupt files. Quarantine via Fresh Start wizard.</p>
         <div id="storageAuditCards"></div>
+      </div>
+      <div class="card glass-card" style="margin-top:12px;">
+        <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">Environment Health</h2>
+        <p class="empty-hint" style="margin:0 0 10px;font-size:12px;">Required secrets, hard safety locks, and Railway ops vars. Path tuning belongs in dynamic config.</p>
+        <div id="envHealthCategories"><span class="muted" style="font-size:12px;">Loading…</span></div>
+        <details style="margin-top:10px;"><summary class="empty-hint" style="cursor:pointer;font-size:11px;">Advanced — legacy optional path vars</summary>
+          <div id="envHealthLegacy" style="font-size:11px;color:var(--muted);margin-top:6px;"></div>
+        </details>
       </div>
       <div class="card glass-card" style="margin-top:12px;">
         <h2 style="margin:0 0 8px;font-size:1rem;font-weight:600;">MoMo Config Proposals</h2>

@@ -3643,11 +3643,9 @@
             (compact.next_compaction_checkpoint != null
               ? " · next checkpoint " + esc(String(compact.next_compaction_checkpoint))
               : "") +
-            "<br>Assistant: <strong>" + esc(assistant) + "</strong> · authority: " +
-            esc(safeText(momo.authority_level || auth.authority_level, "backtester")) +
-            "<br>can_submit_orders: <strong style=\"color:var(--bad);\">false</strong> · " +
-            "can_change_config: <strong style=\"color:var(--bad);\">false</strong> · " +
-            "allowed_to_execute: <strong style=\"color:var(--bad);\">false</strong>";
+            "<br>Assistant: <strong>" + esc(assistant) + "</strong> · role: " +
+            esc(safeText(momo.authority_level || auth.authority_level, "Paper advisor")) +
+            "<br>Orders: locked · Config: propose-only · Execution: locked (Advanced details only)";
           if (momo.can_touch_crypto_execution_loop === false) {
             foot.innerHTML += "<br>Crypto execution: deterministic math only (MoMo not in execution loop).";
           }
@@ -4132,7 +4130,7 @@
   }
 
   function renderGrowthPlanPanel(p) {
-    var INSUFFICIENT = "── insufficient evidence ──";
+    var INSUFFICIENT = "Insufficient evidence";
     var insufficient = !!(p && p.insufficient_evidence);
     var current = Number(p.current_equity || 0);
     var target = Number(p.target_milestone || 0);
@@ -4140,26 +4138,37 @@
     _setText("growthCurrentEquity", "$" + current.toFixed(2));
     _setText("growthNextMilestone", "$" + target.toFixed(0));
     _setText("growthProgressLabel", "Progress " + progress.toFixed(1) + "%");
+
+    var ringPct = document.getElementById("growthRingPct");
+    var ringArc = document.getElementById("growthRingArc");
+    if (ringPct) ringPct.textContent = progress.toFixed(0) + "%";
+    if (ringArc) {
+      var circ = 2 * Math.PI * 34;
+      ringArc.setAttribute("stroke-dasharray", (circ * Math.min(100, Math.max(0, progress)) / 100) + " " + circ);
+    }
     var bar = document.getElementById("growthProgressFill");
     if (bar) bar.style.width = Math.min(100, Math.max(0, progress)) + "%";
 
     var conf = Number(((p.confidence || {}).confidence_score) || 0) * 100;
     var confBadge = document.getElementById("growthConfidenceBadge");
     if (confBadge) {
-      confBadge.textContent = "Confidence: " + conf.toFixed(0) + "%";
-      confBadge.style.color = conf < 20 ? "#fbbf24" : (conf < 50 ? "#a78bfa" : "#10b981");
+      confBadge.textContent = insufficient ? "Projection blocked" : ("Confidence " + conf.toFixed(0) + "%");
+      confBadge.className = "op-chip " + (insufficient || conf < 20 ? "op-chip-warn" : conf < 50 ? "op-chip-info" : "op-chip-ok");
     }
+    var blockedBanner = document.getElementById("growthBlockedBanner");
+    if (blockedBanner) blockedBanner.style.display = insufficient ? "block" : "none";
 
     var reqPct = Number(p.required_return_pct || 0);
     _setText("growthRequiredReturn", "+" + reqPct.toFixed(0) + "%");
     var daily = (p.required_daily_return_pct || {});
-    var ann = (p.annualized_equivalent_pct || {});
-    var rows = ["30d", "60d", "90d", "180d"].map(function (k) {
-      var d = Number(daily[k] || 0);
-      var a = Number(ann[k] || 0);
-      return k.padEnd(4, " ") + ": " + d.toFixed(2) + "%  (ann " + a.toLocaleString() + "%)";
-    }).join("<br/>");
-    _setHtml("growthDailyTable", rows);
+    var chipsRoot = document.getElementById("growthDailyChips");
+    if (chipsRoot) {
+      chipsRoot.innerHTML = ["30d", "60d", "90d", "180d"].map(function (k) {
+        var d = Number(daily[k] || 0);
+        return '<span class="growth-daily-chip">' + k + ": " + d.toFixed(2) + "%/day</span>";
+      }).join("");
+    }
+    _setHtml("growthDailyTable", "");
 
     var mc = p.monte_carlo_90d || {};
     if (insufficient || mc.insufficient_evidence) {
@@ -4167,8 +4176,7 @@
       _setText("growthMcMedian", INSUFFICIENT);
       _setText("growthMcRuin", INSUFFICIENT);
     } else {
-      var hit = Number(mc.probability_hit || 0);
-      _setText("growthMcHit", (hit * 100).toFixed(1) + "%");
+      _setText("growthMcHit", (Number(mc.probability_hit || 0) * 100).toFixed(1) + "%");
       _setText("growthMcMedian", "$" + Number(mc.median_final_equity || 0).toFixed(0));
       var ruin = (p.risk_of_ruin != null) ? p.risk_of_ruin : mc.risk_of_ruin;
       _setText("growthMcRuin", ruin != null ? (Number(ruin) * 100).toFixed(1) + "%" : INSUFFICIENT);
@@ -4178,11 +4186,9 @@
     var blockersWrap = document.getElementById("growthBlockersBlock");
     var blockersList = document.getElementById("growthBlockersList");
     if (blockersList) {
-      blockersList.innerHTML = blockers.map(function (b) { return "<li>" + esc(String(b)) + "</li>"; }).join("");
+      blockersList.innerHTML = blockers.map(function (b) { return operatorChip(String(b)); }).join("");
     }
-    if (blockersWrap) {
-      blockersWrap.style.display = blockers.length ? "block" : "none";
-    }
+    if (blockersWrap) blockersWrap.style.display = blockers.length ? "block" : "none";
 
     _setText("growthVerdict", String(p.verdict || ""));
 
@@ -4889,44 +4895,20 @@
     var askBtn = document.getElementById("btnMcAskMomo");
     var input = document.getElementById("mcMomoInput");
     var out = document.getElementById("mcMomoAnswer");
-    function renderMomoStructured(d) {
-      if (!out) return;
-      var elapsed = d.elapsed_ms != null ? " · " + d.elapsed_ms + " ms" : "";
-      var provider = d.provider ? " · " + d.provider : "";
-      var refused = d.refused ? " · refused" : "";
-      var s = d.structured || {};
-      var parts = [];
-      parts.push("<div style='font-size:12px;color:var(--muted);margin-bottom:6px;'>Momo" + provider + elapsed + refused + "</div>");
-      if (s.summary || d.answer) {
-        parts.push("<div style='white-space:pre-wrap;line-height:1.5;'>" + safeText(s.summary || d.answer, "") + "</div>");
-      }
-      if (s.blockers && s.blockers.length) {
-        parts.push("<div style='margin-top:8px;'><strong>Blockers:</strong><ul style='margin:4px 0 0 16px;'>" + s.blockers.slice(0, 8).map(function (b) { return "<li class='mono' style='font-size:12px;'>" + safeText(b, "") + "</li>"; }).join("") + "</ul></div>");
-      }
-      if (s.cards && s.cards.length) {
-        parts.push("<div style='margin-top:8px;'><strong>Cards:</strong></div>");
-        s.cards.forEach(function (c) {
-          var items = (c.items || []).map(function (it) { return "<li class='mono' style='font-size:12px;'>" + (typeof it === "string" ? safeText(it, "") : JSON.stringify(it)) + "</li>"; }).join("");
-          parts.push("<div class='glass-card' style='padding:8px;margin-top:6px;'><div class='lab'>" + safeText(c.title, "") + "</div><ul style='margin:4px 0 0 16px;'>" + items + "</ul></div>");
-        });
-      }
-      if (s.recommended_actions && s.recommended_actions.length) {
-        parts.push("<div style='margin-top:8px;'><strong>Actions:</strong><ul style='margin:4px 0 0 16px;'>" + s.recommended_actions.slice(0, 6).map(function (a) { return "<li style='font-size:13px;'>" + safeText(a, "") + "</li>"; }).join("") + "</ul></div>");
-      }
-      parts.push("<details style='margin-top:10px;'><summary class='empty-hint' style='cursor:pointer;'>Advanced (raw)</summary><pre class='mono' style='font-size:11px;max-height:200px;overflow:auto;'>" + safeText(JSON.stringify(d, null, 2), "") + "</pre></details>");
-      out.innerHTML = parts.join("");
-    }
     function sendQ(q, opts) {
       if (!q) return;
       var fast = !!(opts && opts.fast);
-      if (out) out.textContent = fast ? "Asking Momo (fast)…" : "Asking Momo…";
+      showMomoThinking("mcMomoThinkingAnim");
+      if (out) out.innerHTML = "";
       var include = {
         mission_control: true,
-        broker_diagnostic: true,
+        broker_diagnostic: !fast,
         activity_export: false,
         capital_allocator: true,
         momo_memory: !fast,
-        ops_logs: false
+        ops_logs: false,
+        canonical_truth: !fast,
+        momo_brain: !fast
       };
       fetch("/api/momo/ask", {
         method: "POST",
@@ -4938,10 +4920,12 @@
           return r.json();
         })
         .then(function (d) {
-          renderMomoStructured(d);
+          hideMomoThinking("mcMomoThinkingAnim");
+          renderMomoStructuredVisual(d, out);
         })
         .catch(function (e) {
-          if (out) out.textContent = safeText(e && e.message, String(e));
+          hideMomoThinking("mcMomoThinkingAnim");
+          if (out) out.innerHTML = '<span class="op-chip op-chip-error">' + esc(safeText(e && e.message, String(e))) + "</span>";
         });
     }
     if (askBtn) askBtn.addEventListener("click", function () {
@@ -4951,8 +4935,13 @@
       btn.addEventListener("click", function () {
         var q = btn.getAttribute("data-q") || "";
         if (input) input.value = q;
-        // Quick chips use fast deterministic path (< 5s) — Gemini enhancement off by default.
         sendQ(q, { fast: true });
+      });
+    });
+    var openBrain = document.getElementById("mcOpenMomoBrain");
+    if (openBrain) openBrain.addEventListener("click", function () {
+      document.querySelectorAll("nav .tab-btn").forEach(function (b) {
+        if (b.getAttribute("data-tab") === "ai") b.click();
       });
     });
   }
@@ -5185,46 +5174,57 @@
   function wireAiChat() {
     var btn = document.getElementById("aiChatSend");
     if (!btn) return;
-    btn.addEventListener("click", function () {
-      var input = document.getElementById("aiChatInput");
-      var msg = (input ? input.value : "").trim();
+    function sendAiQ(msg, fast) {
       if (!msg) return;
       btn.disabled = true;
-      btn.textContent = "Thinking...";
-      var body = {
-        message: msg,
-        include_activity_export: document.getElementById("aiIncExport") ? document.getElementById("aiIncExport").checked : true,
-        include_broker_diagnostic: document.getElementById("aiIncBroker") ? document.getElementById("aiIncBroker").checked : false,
-        include_memory: document.getElementById("aiIncMemory") ? document.getElementById("aiIncMemory").checked : true
+      btn.textContent = "Thinking…";
+      var wrap = document.getElementById("aiChatResult");
+      if (wrap) wrap.style.display = "block";
+      showMomoThinking("aiThinkingAnim");
+      var include = {
+        mission_control: true,
+        broker_diagnostic: !fast,
+        activity_export: false,
+        capital_allocator: true,
+        momo_memory: document.getElementById("aiIncMemory") ? document.getElementById("aiIncMemory").checked : !fast,
+        ops_logs: false,
+        canonical_truth: !fast,
+        momo_brain: !fast
       };
-      fetch("/api/ai/chat", {
+      fetch("/api/momo/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      }).then(function (r) { return r.json();       }).then(function (d) {
+        body: JSON.stringify({ question: msg, include: include })
+      }).then(function (r) { return r.json(); }).then(function (d) {
         _lastMomoAnswer = d;
         _lastJarvisAnswer = d;
-        var wrap = document.getElementById("aiChatResult");
-        if (wrap) wrap.style.display = "block";
+        hideMomoThinking("aiThinkingAnim");
         var prov = document.getElementById("aiChatProvider");
-        if (prov) prov.textContent = "(" + (d.provider || "unknown") + ", conf=" + (d.confidence != null ? Number(d.confidence).toFixed(2) : "—") + ")";
-        var ans = document.getElementById("aiChatAnswer");
-        if (ans) ans.textContent = d.answer || "No answer.";
+        if (prov) prov.textContent = (d.provider || "MoMo") + (d.elapsed_ms != null ? " · " + d.elapsed_ms + " ms" : "");
+        renderMomoStructuredVisual(d, document.getElementById("aiChatAnswer"));
         var ev = document.getElementById("aiChatEvidence");
-        if (ev) ev.textContent = d.evidence_used && d.evidence_used.length ? "Evidence: " + d.evidence_used.join(", ") : "";
-        var acts = document.getElementById("aiChatActions");
-        if (acts) {
-          var actions = d.suggested_operator_actions || [];
-          acts.innerHTML = actions.length ? "<strong>Suggested actions:</strong> " + actions.map(esc).join("; ") : "";
-        }
+        if (ev) ev.textContent = d.context_sources && d.context_sources.length ? "Sources: " + d.context_sources.join(", ") : "";
       }).catch(function (e) {
+        hideMomoThinking("aiThinkingAnim");
         var ans = document.getElementById("aiChatAnswer");
-        if (ans) ans.textContent = "Error: " + e;
+        if (ans) ans.innerHTML = '<span class="op-chip op-chip-error">' + esc(String(e)) + "</span>";
         var wrap = document.getElementById("aiChatResult");
         if (wrap) wrap.style.display = "block";
       }).finally(function () {
         btn.disabled = false;
         btn.textContent = "Ask MoMo";
+      });
+    }
+    btn.addEventListener("click", function () {
+      var input = document.getElementById("aiChatInput");
+      sendAiQ((input ? input.value : "").trim(), false);
+    });
+    document.querySelectorAll(".ai-quick").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        var q = chip.getAttribute("data-q") || "";
+        var input = document.getElementById("aiChatInput");
+        if (input) input.value = q;
+        sendAiQ(q, true);
       });
     });
   }
@@ -5668,6 +5668,8 @@
       if (fsRefresh) {
         fsRefresh.onclick = loadSettingsTab;
       }
+      loadEnvHealthCategories(conn, flags);
+      loadSettingsProposals();
     } catch (e) {
       console.error("[settings] load failed", e);
     }
@@ -5714,8 +5716,11 @@
     "fast_loop_execution_readiness_blocked": { label: "Fast-loop execution gated", severity: "info" },
     "active_broker_rejection_unresolved": { label: "Broker rejection needs review", severity: "warn" },
     "first_run_baseline_required": { label: "Baseline needed", severity: "warn" },
-    "no_real_backtest_run": { label: "No real backtest yet", severity: "info" },
+    "BROKER_ONLY_BASELINE_REQUIRED": { label: "Broker baseline needed", severity: "warn" },
+    "FIRST_RUN_BASELINE_REQUIRED": { label: "First broker baseline needed", severity: "warn" },
+    "no_real_backtest_run": { label: "Need real backtest", severity: "info" },
     "closed_trades_lt_20": { label: "Need 20 closed trades", severity: "info" },
+    "acceptance_audit_not_pass": { label: "Acceptance audit not passed", severity: "warn" },
     "allow_full_deployment_enabled": { label: "Full deployment override", severity: "critical" },
     "LIVE_TRADING_HARDCODE_LOCK": { label: "Live trading hard-locked", severity: "info" }
   };
@@ -5747,12 +5752,115 @@
   window.translateCode = translateCode;
   window.operatorChip = operatorChip;
 
+  var MOMO_THINK_STEPS = ["Reading broker truth", "Checking risk", "Searching memory graph", "Reviewing recent activity", "Building answer"];
+  var _momoThinkTimers = {};
+  function showMomoThinking(containerId) {
+    var el = document.getElementById(containerId);
+    if (!el) return;
+    el.style.display = "flex";
+    var i = 0;
+    el.innerHTML = MOMO_THINK_STEPS.map(function (s, idx) {
+      return '<span class="momo-thinking-step' + (idx === 0 ? " active" : "") + '">' + s + "</span>";
+    }).join("");
+    if (_momoThinkTimers[containerId]) clearInterval(_momoThinkTimers[containerId]);
+    _momoThinkTimers[containerId] = setInterval(function () {
+      i = Math.min(i + 1, MOMO_THINK_STEPS.length - 1);
+      el.querySelectorAll(".momo-thinking-step").forEach(function (s, idx) {
+        s.classList.toggle("active", idx === i);
+      });
+    }, 450);
+  }
+  function hideMomoThinking(containerId) {
+    if (_momoThinkTimers[containerId]) {
+      clearInterval(_momoThinkTimers[containerId]);
+      delete _momoThinkTimers[containerId];
+    }
+    var el = document.getElementById(containerId);
+    if (el) el.style.display = "none";
+  }
+  function renderMomoStructuredVisual(d, outEl) {
+    if (!outEl) return;
+    var s = d.structured || {};
+    var parts = [];
+    if (s.summary || d.answer) {
+      parts.push('<div class="momo-answer-card" style="grid-column:1/-1;"><h5>Summary</h5><div style="line-height:1.55;font-size:13px;">' +
+        esc(String(s.summary || d.answer || "")) + "</div></div>");
+    }
+    if (d.confidence != null || s.confidence != null) {
+      var c = Number(d.confidence != null ? d.confidence : s.confidence) * (Number(d.confidence) <= 1 ? 100 : 1);
+      parts.push('<div class="momo-answer-card"><h5>Confidence</h5><div class="ev-val">' + (isNaN(c) ? "—" : c.toFixed(0) + "%") + "</div></div>");
+    }
+    if (s.blockers && s.blockers.length) {
+      parts.push('<div class="momo-answer-card"><h5>Active blockers</h5><div style="display:flex;flex-wrap:wrap;gap:4px;">' +
+        s.blockers.slice(0, 8).map(function (b) { return operatorChip(String(b)); }).join("") + "</div></div>");
+    }
+    if (s.cards && s.cards.length) {
+      s.cards.forEach(function (c) {
+        var items = (c.items || []).map(function (it) {
+          return "<li style='font-size:12px;margin-bottom:2px;'>" + esc(typeof it === "string" ? it : JSON.stringify(it)) + "</li>";
+        }).join("");
+        parts.push('<div class="momo-answer-card"><h5>' + esc(c.title || "Detail") + "</h5><ul style='margin:4px 0 0 14px;padding:0;'>" + items + "</ul></div>");
+      });
+    }
+    if (s.recommended_actions && s.recommended_actions.length) {
+      parts.push('<div class="momo-answer-card"><h5>Recommended actions</h5><ul style="margin:4px 0 0 14px;">' +
+        s.recommended_actions.slice(0, 6).map(function (a) { return "<li style='font-size:12px;'>" + esc(String(a)) + "</li>"; }).join("") + "</ul></div>");
+    }
+    if (d.context_missing && d.context_missing.length) {
+      parts.push('<div class="momo-answer-card"><h5>Missing context</h5><div style="font-size:11px;color:#fbbf24;">' +
+        d.context_missing.map(esc).join(", ") + "</div></div>");
+    }
+    parts.push('<details style="grid-column:1/-1;margin-top:6px;"><summary class="empty-hint" style="cursor:pointer;font-size:11px;">Advanced (raw)</summary>' +
+      '<pre style="font-size:10px;max-height:180px;overflow:auto;color:#9ca3af;">' + esc(JSON.stringify(d, null, 2)) + "</pre></details>");
+    outEl.innerHTML = '<div class="momo-answer-cards">' + parts.join("") + "</div>";
+  }
+  window.renderMomoStructuredVisual = renderMomoStructuredVisual;
+
+  // ---------- Environment health categories ----------
+  function loadEnvHealthCategories(conn, flags) {
+    var root = document.getElementById("envHealthCategories");
+    if (!root) return;
+    flags = flags || {};
+    var profiles = (conn || {}).profiles || [];
+    var alpacaOk = profiles.some(function (p) { return String(p.provider || "").indexOf("alpaca") >= 0 && p.enabled; });
+    function cat(title, rows) {
+      return '<div class="env-category"><h4>' + title + "</h4>" +
+        rows.map(function (r) {
+          return '<div class="env-var-row"><span>' + r[0] + "</span><span class='op-chip op-chip-" + r[1] + "'>" + r[2] + "</span></div>";
+        }).join("") + "</div>";
+    }
+    root.innerHTML =
+      cat("Required secrets", [
+        ["Alpaca API Key", alpacaOk ? "ok" : "warn", alpacaOk ? "Configured" : "Check Railway"],
+        ["Alpaca Secret Key", alpacaOk ? "ok" : "warn", "Masked in UI"],
+        ["Gemini API Key", "info", "Optional — deterministic fallback available"],
+        ["Telegram Bot Token", "info", "Optional"],
+        ["Dashboard Admin Token", flags.auth_enabled ? "ok" : "warn", flags.auth_enabled ? "Set" : "Read-only mode"],
+        ["Railway Project Token", "info", "Ops only"]
+      ]) +
+      cat("Hard safety locks", [
+        ["Live Trading Armed", "ok", "Off"],
+        ["Live Trading Hard Lock", flags.live_trading_hardcode_lock ? "ok" : "error", flags.live_trading_hardcode_lock ? "Locked" : "UNLOCKED"],
+        ["Fast Loop Execution Hard Lock", "ok", "Locked"],
+        ["Promotion Gates Passed", "info", "Operator baseline"]
+      ]) +
+      cat("Railway operations", [
+        ["Railway API Enabled", "info", "Separate from trading"],
+        ["Railway Project ID", "info", "Deploy ops"],
+        ["Railway Service ID", "info", "Deploy ops"],
+        ["Logging Level", "info", "LOG_LEVEL"]
+      ]);
+    var leg = document.getElementById("envHealthLegacy");
+    if (leg) leg.textContent = "Legacy optional: DATA_DIR, QUANTBOT_PERSIST_DIR, log paths, export paths — not required for normal operation.";
+  }
+
   // ---------- Monitoring Mode + Operator cards on Mission Control ----------
   async function loadMonitoringModeAndCards() {
+    var mm = {};
     try {
       var mmR = await fetch("/api/monitoring/mode", { cache: "no-store" });
       if (mmR.ok) {
-        var mm = await mmR.json();
+        mm = await mmR.json();
         var strip = document.getElementById("mcMonitoringStrip");
         var hd = document.getElementById("mcMonitoringHeadline");
         var ex = document.getElementById("mcMonitoringExplain");
@@ -5808,7 +5916,7 @@
           }
         } catch (e) { /* no-op */ }
       }
-      // Latest MoMo thinking strip (use simple deterministic question for snapshot)
+      // Latest MoMo thinking strip + cockpit fields
       var thinkText = document.getElementById("mcMomoThinkingText");
       var thinkStrip = document.getElementById("mcMomoThinkingStrip");
       if (thinkText && thinkStrip) {
@@ -5816,12 +5924,20 @@
           var r = await fetch("/api/momo/ask", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question: "summarize current state", include: { momo_memory: false } })
+            body: JSON.stringify({ question: "summarize current state", include: { momo_memory: false, canonical_truth: false, momo_brain: false } })
           });
           if (r.ok) {
             var d = await r.json();
-            thinkText.textContent = (d.answer || "").slice(0, 180);
+            var s = d.structured || {};
+            thinkText.textContent = String(s.summary || d.answer || "").slice(0, 200);
             thinkStrip.style.display = "flex";
+            var setMf = function (id, val) { var e = document.getElementById(id); if (e) e.textContent = val || "—"; };
+            setMf("mcMomoThesis", s.summary ? String(s.summary).slice(0, 80) : "Monitoring mode");
+            setMf("mcMomoRisk", (s.blockers && s.blockers[0]) ? translateCode(String(s.blockers[0])).label : "Normal");
+            setMf("mcMomoNextAction", mm && mm.next_allowed_action ? mm.next_allowed_action : "Observe and recommend");
+            setMf("mcMomoBlocker", (s.blockers && s.blockers.length) ? translateCode(String(s.blockers[0])).label : "None");
+            setMf("mcMomoConfidence", d.confidence != null ? (Number(d.confidence) * (Number(d.confidence) <= 1 ? 100 : 1)).toFixed(0) + "%" : "—");
+            setMf("mcMomoUpdated", new Date().toLocaleTimeString());
           }
         } catch (e) { /* no-op */ }
       }
@@ -5830,77 +5946,185 @@
     }
   }
 
-  // ---------- MoMo Brain Graph (SVG renderer) ----------
-  var BRAIN_STATE = { filter: "", search: "", nodes: [], edges: [] };
+  // ---------- MoMo Brain Graph (hive-mind cluster renderer) ----------
+  var BRAIN_STATE = { filter: "", statusFilter: "", search: "", nodes: [], edges: [], selectedKey: null, zoom: 1 };
+  var BRAIN_CLUSTERS = [
+    { name: "Broker Truth", types: ["broker_event", "module"], color: "#38bdf8" },
+    { name: "Active Positions", types: ["symbol"], color: "#22d3ee" },
+    { name: "Risk Rules", types: ["risk_rule"], color: "#fbbf24" },
+    { name: "Strategy Lessons", types: ["lesson", "strategy", "trade_pattern"], color: "#a78bfa" },
+    { name: "Configuration Lessons", types: ["configuration", "decision"], color: "#c084fc" },
+    { name: "Loss Patterns", types: ["loss_pattern", "incident"], color: "#f87171" },
+    { name: "Backtests", types: ["backtest"], color: "#64748b" },
+    { name: "Growth Targets", types: ["memory_summary"], color: "#34d399" },
+    { name: "Operator Actions", types: ["operator_action"], color: "#2dd4bf" },
+    { name: "Market Signals", types: ["market_regime"], color: "#818cf8" }
+  ];
+  var RELATION_LABELS = { caused: "caused", learned_from: "learned from", blocked_by: "blocked by", depends_on: "depends on", tested_by: "tested by", proposed_change: "proposed change", risk_linked: "risk linked", related_to: "related to" };
 
+  function _clusterForType(t) {
+    for (var i = 0; i < BRAIN_CLUSTERS.length; i++) {
+      if (BRAIN_CLUSTERS[i].types.indexOf(t) !== -1) return BRAIN_CLUSTERS[i];
+    }
+    return { name: "Other", types: [], color: "#9ca3af" };
+  }
   function _nodeColor(node) {
     var sev = node.severity || "info";
-    var palette = { ok:"#10b981", info:"#38bdf8", warn:"#fbbf24", error:"#f87171", critical:"#ef4444" };
+    var palette = { ok: "#10b981", info: "#38bdf8", warn: "#fbbf24", error: "#f87171", critical: "#ef4444" };
     return palette[sev] || "#9ca3af";
   }
-
+  function _humanType(t) {
+    return _humanize(String(t || "").replace(/_/g, " "));
+  }
+  function _renderBrainInspector(n) {
+    var ins = document.getElementById("brainNodeInspector");
+    if (!ins || !n) return;
+    BRAIN_STATE.selectedKey = n.node_key;
+    var linked = (BRAIN_STATE.edges || []).filter(function (e) {
+      return e.source_node_key === n.node_key || e.target_node_key === n.node_key;
+    }).slice(0, 8);
+    var status = n.status || (n.stale_flag ? "stale" : "active");
+    var conf = typeof n.confidence === "number" ? (n.confidence * 100).toFixed(0) + "%" : "—";
+    ins.innerHTML =
+      '<div class="ins-title">' + esc(n.title || "") + "</div>" +
+      '<div class="ins-meta">' +
+      '<span class="op-chip op-chip-' + (n.severity || "info") + '">' + esc(_humanType(n.node_type)) + "</span>" +
+      '<span class="op-chip op-chip-info">' + esc(status) + "</span>" +
+      '<span class="op-chip op-chip-ok">' + conf + " confidence</span></div>" +
+      '<div class="ins-summary">' + esc(n.short_summary || "—") + "</div>" +
+      (linked.length ? '<div style="font-size:11px;margin-bottom:8px;"><strong>Linked:</strong> ' +
+        linked.map(function (e) {
+          var rel = RELATION_LABELS[e.relation] || _humanize(e.relation);
+          return '<span class="op-chip op-chip-info" style="margin:2px;">' + esc(rel) + "</span>";
+        }).join("") + "</div>" : "") +
+      '<div class="brain-inspector-actions">' +
+      '<button type="button" class="btn secondary" id="brainBtnEvidence">View Evidence</button>' +
+      '<button type="button" class="btn secondary" id="brainBtnTrace">Trace Relationships</button></div>' +
+      '<details style="margin-top:10px;"><summary class="empty-hint" style="cursor:pointer;font-size:11px;">Advanced</summary>' +
+      '<pre style="font-size:10px;color:#9ca3af;max-height:160px;overflow:auto;">' + esc(JSON.stringify(n, null, 2)) + "</pre></details>";
+    var btnEv = document.getElementById("brainBtnEvidence");
+    if (btnEv) btnEv.onclick = function () { loadBrainEvidenceStrip(); };
+    var btnTr = document.getElementById("brainBtnTrace");
+    if (btnTr) btnTr.onclick = function () { _renderBrainGraph(); };
+  }
   function _renderBrainGraph() {
     var svg = document.getElementById("brainGraphSvg");
     var status = document.getElementById("brainGraphStatus");
     if (!svg) return;
+    var W = 900, H = 520, cx = W / 2, cy = H / 2;
     var nodes = BRAIN_STATE.nodes || [];
     var edges = BRAIN_STATE.edges || [];
-    // Apply filter + search
     var q = (BRAIN_STATE.search || "").toLowerCase();
     var f = BRAIN_STATE.filter || "";
+    var sf = BRAIN_STATE.statusFilter || "";
     var filtered = nodes.filter(function (n) {
       if (f && n.node_type !== f) return false;
+      if (sf === "stale" && !n.stale_flag && n.status !== "stale") return false;
+      if (sf === "active" && (n.stale_flag || n.status === "resolved" || n.status === "stale")) return false;
+      if (sf === "resolved" && n.status !== "resolved") return false;
       if (q && !((n.title || "").toLowerCase().indexOf(q) !== -1 || (n.short_summary || "").toLowerCase().indexOf(q) !== -1)) return false;
       return true;
     });
     var keys = {};
     filtered.forEach(function (n) { keys[n.node_key] = true; });
-    var filteredEdges = (edges || []).filter(function (e) { return keys[e.source_node_key] && keys[e.target_node_key]; });
-    // Layout: circle around center
-    var W = 800, H = 480, cx = W / 2, cy = H / 2;
-    var R = Math.min(W, H) / 2 - 60;
-    var positions = {};
-    var N = Math.max(filtered.length, 1);
-    filtered.forEach(function (n, i) {
-      var a = (i / N) * 2 * Math.PI - Math.PI / 2;
-      positions[n.node_key] = { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) };
+    var filteredEdges = edges.filter(function (e) { return keys[e.source_node_key] && keys[e.target_node_key]; });
+    var groups = {};
+    filtered.forEach(function (n) {
+      var cl = _clusterForType(n.node_type);
+      if (!groups[cl.name]) groups[cl.name] = { def: cl, nodes: [] };
+      groups[cl.name].nodes.push(n);
     });
-    var lines = filteredEdges.map(function (e) {
-      var s = positions[e.source_node_key]; var t = positions[e.target_node_key];
-      if (!s || !t) return "";
-      var strong = (e.strength || 0) >= 0.8 ? " strong" : "";
-      return '<line class="brain-edge-line' + strong + '" x1="' + s.x + '" y1="' + s.y + '" x2="' + t.x + '" y2="' + t.y + '" />';
-    }).join("");
-    var nodesSvg = filtered.map(function (n) {
-      var p = positions[n.node_key];
-      var col = _nodeColor(n);
-      var r = 14;
-      var safeTitle = String(n.title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 22);
-      return '<g data-key="' + n.node_key + '">' +
-        '<circle class="brain-node-circle" cx="' + p.x + '" cy="' + p.y + '" r="' + r + '" fill="' + col + '" fill-opacity="0.22" stroke="' + col + '" stroke-width="1.8" />' +
-        '<text class="brain-node-label" x="' + p.x + '" y="' + (p.y + r + 14) + '">' + safeTitle + "</text>" +
-        "</g>";
-    }).join("");
-    svg.innerHTML = lines + nodesSvg;
-    if (status) status.textContent = "Showing " + filtered.length + " nodes / " + filteredEdges.length + " edges (total " + nodes.length + " / " + edges.length + ")";
-    // Click handler for inspector
-    svg.querySelectorAll("g[data-key]").forEach(function (g) {
-      g.addEventListener("click", function () {
-        var key = g.getAttribute("data-key");
-        var n = filtered.find(function (x) { return x.node_key === key; });
-        var ins = document.getElementById("brainNodeInspector");
-        if (!ins || !n) return;
-        ins.innerHTML = '<h5>' + (n.title || "") + "</h5>" +
-          '<div><span class="op-chip op-chip-' + (n.severity || "info") + '">' + (n.node_type || "?") + "</span></div>" +
-          '<p style="font-size:12px;color:var(--muted);margin:8px 0 4px;">' + (n.short_summary || "—") + "</p>" +
-          '<div style="font-size:11px;color:var(--muted);">Confidence: ' + (typeof n.confidence === "number" ? (n.confidence * 100).toFixed(0) + "%" : "—") + "</div>" +
-          '<details style="margin-top:8px;"><summary class="empty-hint" style="cursor:pointer;font-size:11px;">Advanced</summary>' +
-          '<pre style="font-size:10px;color:#9ca3af;max-height:200px;overflow:auto;">' + JSON.stringify(n, null, 2) + "</pre></details>";
-        ins.classList.add("visible");
+    var clusterNames = Object.keys(groups);
+    var positions = {};
+    var clusterCenters = {};
+    var clusterR = 200;
+    clusterNames.forEach(function (name, i) {
+      var a = (i / Math.max(clusterNames.length, 1)) * 2 * Math.PI - Math.PI / 2;
+      var ccx = cx + clusterR * Math.cos(a);
+      var ccy = cy + clusterR * Math.sin(a);
+      clusterCenters[name] = { x: ccx, y: ccy, def: groups[name].def };
+      var sub = groups[name].nodes;
+      sub.forEach(function (n, j) {
+        var sa = (j / Math.max(sub.length, 1)) * 2 * Math.PI;
+        positions[n.node_key] = { x: ccx + 28 * Math.cos(sa), y: ccy + 28 * Math.sin(sa), node: n };
       });
     });
+    var hub = filtered.find(function (n) { return n.node_key === BRAIN_STATE.selectedKey; }) ||
+      filtered.slice().sort(function (a, b) { return (b.confidence || 0) - (a.confidence || 0); })[0];
+    var parts = [];
+    clusterNames.forEach(function (name) {
+      var c = clusterCenters[name];
+      var cnt = groups[name].nodes.length;
+      var conf = groups[name].nodes.reduce(function (s, n) { return s + (n.confidence || 0); }, 0) / Math.max(cnt, 1);
+      parts.push('<g class="brain-cluster-bubble" data-cluster="' + esc(name) + '">' +
+        '<ellipse cx="' + c.x + '" cy="' + c.y + '" rx="52" ry="38" fill="' + c.def.color + '" fill-opacity="0.08" stroke="' + c.def.color + '" stroke-width="1.5" stroke-dasharray="4 3" />' +
+        '<text class="brain-cluster-label" x="' + c.x + '" y="' + (c.y - 4) + '" text-anchor="middle">' + esc(name) + "</text>" +
+        '<text class="brain-cluster-count" x="' + c.x + '" y="' + (c.y + 10) + '" text-anchor="middle">' + cnt + " · " + (conf * 100).toFixed(0) + "%</text></g>");
+    });
+    filteredEdges.forEach(function (e) {
+      var s = positions[e.source_node_key]; var t = positions[e.target_node_key];
+      if (!s || !t) return;
+      var strong = (e.strength || 0) >= 0.7;
+      parts.push('<line class="brain-edge-line' + (strong ? " strong" : "") + '" x1="' + s.x + '" y1="' + s.y + '" x2="' + t.x + '" y2="' + t.y + '" />');
+      if (strong && e.relation) {
+        var mx = (s.x + t.x) / 2; var my = (s.y + t.y) / 2;
+        parts.push('<text class="brain-edge-label" x="' + mx + '" y="' + my + '" text-anchor="middle">' +
+          esc(RELATION_LABELS[e.relation] || _humanize(e.relation)) + "</text>");
+      }
+    });
+    filtered.forEach(function (n) {
+      var p = positions[n.node_key]; if (!p) return;
+      var col = _nodeColor(n);
+      var sel = hub && hub.node_key === n.node_key;
+      parts.push('<g data-key="' + esc(n.node_key) + '">' +
+        '<circle class="brain-node-circle' + (sel ? " brain-hub-node" : "") + '" cx="' + p.x + '" cy="' + p.y + '" r="' + (sel ? 16 : 8) + '" fill="' + col + '" fill-opacity="0.35" stroke="' + col + '" stroke-width="' + (sel ? 2.5 : 1.2) + '" /></g>');
+    });
+    if (hub && positions[hub.node_key]) {
+      var hp = positions[hub.node_key];
+      parts.push('<text class="brain-node-label" x="' + hp.x + '" y="' + (hp.y + 26) + '">' + esc(String(hub.title || "").slice(0, 24)) + "</text>");
+    }
+    svg.innerHTML = parts.join("");
+    var mini = document.querySelector("#brainMinimap svg");
+    if (mini) mini.innerHTML = parts.join("");
+    if (status) status.textContent = clusterNames.length + " clusters · " + filtered.length + " nodes · " + filteredEdges.length + " edges";
+    svg.querySelectorAll("g[data-key]").forEach(function (g) {
+      g.onclick = function () {
+        var key = g.getAttribute("data-key");
+        var n = filtered.find(function (x) { return x.node_key === key; });
+        if (n) _renderBrainInspector(n);
+        _renderBrainGraph();
+      };
+    });
+    svg.querySelectorAll("g[data-cluster]").forEach(function (g) {
+      g.onclick = function () {
+        var name = g.getAttribute("data-cluster");
+        var first = (groups[name] || {}).nodes[0];
+        if (first) _renderBrainInspector(first);
+      };
+    });
   }
-
+  async function loadBrainEvidenceStrip() {
+    try {
+      var mcR = await fetch("/api/mission-control/summary", { cache: "no-store" });
+      var mc = mcR.ok ? await mcR.json() : {};
+      var acct = (mc.canonical_truth || {}).account_state || {};
+      var set = function (vid, sid, val, sub) {
+        var v = document.getElementById(vid); var s = document.getElementById(sid);
+        if (v) v.textContent = val; if (s) s.textContent = sub;
+      };
+      set("evBrokerVal", "evBrokerSub", "$" + Number(acct.equity || 0).toFixed(2), "Equity · BP $" + Number(acct.buying_power || 0).toFixed(0));
+      var btR = await fetch("/api/backtest/momo-runs?limit=1", { cache: "no-store" });
+      var bt = btR.ok ? await btR.json() : { runs: [] };
+      var run = (bt.runs || [])[0];
+      if (run) set("evBacktestVal", "evBacktestSub", ((run.win_rate || 0) * 100).toFixed(1) + "% win", (run.trades || 0) + " trades · DD " + ((run.max_drawdown || 0) * 100).toFixed(1) + "%");
+      else set("evBacktestVal", "evBacktestSub", "No runs", "Run backtest in Strategy Lab");
+      var lesson = (BRAIN_STATE.nodes || []).find(function (n) { return n.node_type === "lesson"; });
+      set("evLessonVal", "evLessonSub", lesson ? String(lesson.title || "").slice(0, 30) : "—", lesson ? String(lesson.short_summary || "").slice(0, 50) : "No lessons yet");
+      set("evActivityVal", "evActivitySub", "Synced", new Date().toLocaleTimeString());
+      set("evRiskVal", "evRiskSub", "Limits active", "Daily loss · drawdown gates");
+    } catch (e) { console.warn("[brain-evidence]", e); }
+  }
+  var _brainWired = false;
   async function loadMomoBrainGraph() {
     var svg = document.getElementById("brainGraphSvg");
     if (!svg) return;
@@ -5910,14 +6134,14 @@
       BRAIN_STATE.nodes = d.nodes || [];
       BRAIN_STATE.edges = d.edges || [];
       if (BRAIN_STATE.nodes.length === 0) {
-        var status = document.getElementById("brainGraphStatus");
-        if (status) status.innerHTML = "Memory is empty. Click <strong>Seed clean-boot facts</strong> to seed standing knowledge.";
+        var st = document.getElementById("brainGraphStatus");
+        if (st) st.innerHTML = "Memory is empty. Click <strong>Seed facts</strong> to seed standing knowledge.";
       }
       _renderBrainGraph();
-    } catch (e) {
-      console.warn("[brain-graph] load failed", e);
-    }
-    // Wire filter chips
+      loadBrainEvidenceStrip();
+    } catch (e) { console.warn("[brain-graph] load failed", e); }
+    if (_brainWired) return;
+    _brainWired = true;
     document.querySelectorAll(".brain-filter-chip").forEach(function (chip) {
       chip.addEventListener("click", function () {
         document.querySelectorAll(".brain-filter-chip").forEach(function (c) { c.classList.remove("active"); });
@@ -5926,22 +6150,31 @@
         _renderBrainGraph();
       });
     });
-    var search = document.getElementById("brainSearchInput");
-    if (search) {
-      search.addEventListener("input", function () {
-        BRAIN_STATE.search = search.value || "";
+    document.querySelectorAll(".brain-status-chip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        document.querySelectorAll(".brain-status-chip").forEach(function (c) { c.classList.remove("active"); });
+        chip.classList.add("active");
+        BRAIN_STATE.statusFilter = chip.getAttribute("data-status") || "";
         _renderBrainGraph();
       });
-    }
+    });
+    var search = document.getElementById("brainSearchInput");
+    if (search) search.addEventListener("input", function () { BRAIN_STATE.search = search.value || ""; _renderBrainGraph(); });
     var seedBtn = document.getElementById("brainSeedBtn");
-    if (seedBtn) {
-      seedBtn.addEventListener("click", async function () {
-        try {
-          await fetch("/api/momo/memory-graph/seed", { method: "POST" });
-          await loadMomoBrainGraph();
-        } catch (e) { console.warn(e); }
-      });
-    }
+    if (seedBtn) seedBtn.addEventListener("click", async function () {
+      try { await fetch("/api/momo/memory-graph/seed", { method: "POST" }); await loadMomoBrainGraph(); } catch (e) { console.warn(e); }
+    });
+    ["brainZoomIn", "brainZoomOut", "brainZoomFit"].forEach(function (id, idx) {
+      var btn = document.getElementById(id);
+      if (!btn) return;
+      btn.onclick = function () {
+        if (idx === 0) BRAIN_STATE.zoom = Math.min(2, BRAIN_STATE.zoom + 0.15);
+        else if (idx === 1) BRAIN_STATE.zoom = Math.max(0.5, BRAIN_STATE.zoom - 0.15);
+        else BRAIN_STATE.zoom = 1;
+        svg.style.transform = "scale(" + BRAIN_STATE.zoom + ")";
+        svg.style.transformOrigin = "center center";
+      };
+    });
   }
 
   // ---------- Secondary MoMo panels: critical notes / loss patterns / config proposals / thinking ----------
@@ -5953,10 +6186,11 @@
       if (cnRoot) {
         cnRoot.innerHTML = notes.length
           ? notes.slice(0, 8).map(function (n) {
-              return '<div style="margin-bottom:6px;font-size:12px;">' +
+              var sevCls = (n.severity === "critical" || n.severity === "error") ? "sev-error" : "sev-warn";
+              return '<div class="learned-card ' + sevCls + '">' +
                 '<span class="severity-dot ' + (n.severity || "warn") + '"></span>' +
-                '<strong>' + (n.title || "") + "</strong><br/>" +
-                '<span style="color:var(--muted);">' + (String(n.summary || "").slice(0, 120)) + "</span></div>";
+                '<strong>' + esc(n.title || "") + "</strong><br/>" +
+                '<span style="color:var(--muted);font-size:12px;">' + esc(String(n.summary || "").slice(0, 140)) + "</span></div>";
             }).join("")
           : "<span class='muted' style='font-size:12px;'>No critical notes.</span>";
       }
@@ -5979,14 +6213,23 @@
       var cp = cpR.ok ? await cpR.json() : { proposals: [], allowlist: {} };
       var cpRoot = document.getElementById("momoConfigProposalsList");
       if (cpRoot) {
-        var props = (cp.proposals || []).slice(0, 6);
+        var props = (cp.proposals || []).slice(0, 8);
+        var allowlist = cp.allowlist || {};
         cpRoot.innerHTML = props.length
           ? props.map(function (p) {
-              return '<div style="font-size:12px;margin-bottom:6px;">' +
-                '<strong>' + (p.operator_key || "?") + "</strong> · " + (p.proposed_from || "?") + " → " + (p.proposed_to || "?") +
-                ' <span class="op-chip op-chip-info">' + (p.approval_status || "pending") + "</span></div>";
+              var label = (allowlist[p.operator_key] || {}).label || _humanize(p.operator_key);
+              var status = p.approval_status || "pending";
+              var sev = status === "applied" ? "ok" : status === "rejected" ? "error" : status === "rolled_back" ? "warn" : "info";
+              return '<div class="proposal-card-full">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
+                '<strong>' + esc(label) + "</strong> " + operatorChip(status) + "</div>" +
+                '<div style="font-size:12px;color:var(--muted);">' + esc(p.proposed_from || "—") + " → " + esc(p.proposed_to || "—") + "</div>" +
+                '<div style="font-size:12px;margin-top:4px;">' + esc(p.reason || "") + "</div>" +
+                '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">' +
+                '<button type="button" class="btn secondary" data-cp-approve="' + esc(p.proposal_key || "") + '" ' + (status === "pending" ? "" : "disabled") + ' style="font-size:11px;">Approve Paper Change</button>' +
+                '<button type="button" class="btn secondary" data-cp-reject="' + esc(p.proposal_key || "") + '" ' + (status === "pending" ? "" : "disabled") + ' style="font-size:11px;">Reject</button></div></div>';
             }).join("")
-          : "<span class='muted' style='font-size:12px;'>No proposals yet.</span>";
+          : "<span class='muted' style='font-size:12px;'>No proposals yet. MoMo will propose paper-safe config when evidence supports it.</span>";
       }
     } catch (e) { /* no-op */ }
     var thinking = document.getElementById("momoLatestThinking");
@@ -6161,12 +6404,53 @@
         try {
           var cp = await (await fetch("/api/momo/config-proposals?limit=5")).json();
           var props = (cp.proposals || []).slice(0, 5);
+          var al = cp.allowlist || {};
           mp.innerHTML = props.length
             ? props.map(function (p) {
+                var label = (al[p.operator_key] || {}).label || _humanize(p.operator_key);
                 return '<div class="activity-row"><span class="ts">' + (p.created_at || "").slice(0, 19).replace("T", " ") + "</span>" +
-                  "<strong>" + (p.operator_key || "") + "</strong> " + operatorChip(p.approval_status || "pending") + "</div>";
+                  "<strong>" + esc(label) + "</strong> " + operatorChip(p.approval_status || "pending") + "</div>";
               }).join("")
             : "<span class='muted' style='font-size:12px;'>No proposals.</span>";
+        } catch (e) { /* no-op */ }
+      }
+      var btAct = document.getElementById("activityBacktestRuns");
+      if (btAct) {
+        try {
+          var bt = await (await fetch("/api/backtest/momo-runs?limit=5")).json();
+          var runs = (bt.runs || []).slice(0, 5);
+          btAct.innerHTML = runs.length
+            ? runs.map(function (r) {
+                return '<div class="activity-row"><span class="ts">' + esc(r.created_at || "").slice(0, 19).replace("T", " ") + "</span>" +
+                  "<strong>" + esc(r.strategy_id || "?") + "</strong> · " + esc(r.symbol || "") +
+                  " " + operatorChip("Backtest completed") + "</div>";
+              }).join("")
+            : "<span class='muted' style='font-size:12px;'>No runs.</span>";
+        } catch (e) { /* no-op */ }
+      }
+      var memAct = document.getElementById("activityMemoryUpdates");
+      if (memAct) {
+        var memLogs = (logs.logs || []).filter(function (l) {
+          return String(l.event_type || "").indexOf("MOMO") !== -1 || String(l.message || "").toLowerCase().indexOf("memory") !== -1;
+        }).slice(0, 5);
+        memAct.innerHTML = memLogs.length
+          ? memLogs.map(function (l) {
+              return '<div class="activity-row"><span class="ts">' + esc(String(l.created_at || "").slice(0, 19).replace("T", " ")) + "</span>" +
+                operatorChip("Memory update") + " <span style='color:var(--muted);'>" + esc(String(l.message || "").slice(0, 60)) + "</span></div>";
+            }).join("")
+          : "<span class='muted' style='font-size:12px;'>No memory updates.</span>";
+      }
+      var cnAct = document.getElementById("activityCriticalNotes");
+      if (cnAct) {
+        try {
+          var cn = await (await fetch("/api/momo/critical-notes?limit=5")).json();
+          var notes = (cn.notes || []).slice(0, 5);
+          cnAct.innerHTML = notes.length
+            ? notes.map(function (n) {
+                return '<div class="activity-row"><span class="ts">' + esc(String(n.created_at || "").slice(0, 19).replace("T", " ")) + "</span>" +
+                  "<strong>" + esc(n.title || "") + "</strong> " + operatorChip(n.severity || "warn") + "</div>";
+              }).join("")
+            : "<span class='muted' style='font-size:12px;'>No notes.</span>";
         } catch (e) { /* no-op */ }
       }
     } catch (e) {
@@ -6185,7 +6469,7 @@
         if (name === "ai") { loadMomoBrainGraph(); loadMomoSecondaryPanels(); }
         if (name === "backtest") loadBacktestLab();
         if (name === "files") loadFilesStorageAudit();
-        if (name === "settings") loadSettingsProposals();
+        if (name === "settings") { loadSettingsTab(); loadSettingsProposals(); }
         if (name === "activity") loadActivityOperatorView();
       });
     });
